@@ -179,9 +179,6 @@ export class AntigravityAdapter implements CliAdapter {
     if (options.effort) {
       args.push('--effort', options.effort);
     }
-    if (options.schemaFilePath) {
-      args.push('--json-schema', options.schemaFilePath);
-    }
     args.push(`-p=${options.prompt}`);
 
     const invocation = await wrapWithBwrap(

@@ -13,6 +13,7 @@ import {
   getProjectLogsDir,
   getProjectTmpDir,
 } from '../paths.js';
+import { readArtifactFile, writeArtifactFile } from '../safe-fs.js';
 
 function checkSymlinkPointsTo(linkPath: string, targetName: string): boolean {
   try {
@@ -87,12 +88,12 @@ export function ensureProjectScaffold(
 
   const dalangIgnore = path.join(getProjectDalangDir(projectPath), '.gitignore');
   if (!fs.existsSync(dalangIgnore)) {
-    fs.writeFileSync(dalangIgnore, 'tmp/\n', 'utf8');
+    writeArtifactFile(projectPath, dalangIgnore, 'tmp/\n', 'refuse');
   }
 
   const projectMdPath = path.join(projectPath, 'PROJECT.md');
   if (!fs.existsSync(projectMdPath)) {
-    fs.writeFileSync(projectMdPath, buildDefaultProjectMd(name, stackHint), 'utf8');
+    writeArtifactFile(projectPath, projectMdPath, buildDefaultProjectMd(name, stackHint), 'refuse');
   }
 
   const symlinksValid = ensureSymlinks(projectPath);
@@ -242,7 +243,7 @@ export class ProjectService {
     const row = this.getProjectRow(id);
     const projectMdPath = path.join(row.path, 'PROJECT.md');
     const content = fs.existsSync(projectMdPath)
-      ? fs.readFileSync(projectMdPath, 'utf8')
+      ? readArtifactFile(row.path, projectMdPath)
       : buildDefaultProjectMd(row.name);
     const symlinksValid = {
       claudeMd: checkSymlinkPointsTo(path.join(row.path, 'CLAUDE.md'), 'PROJECT.md'),
@@ -258,7 +259,7 @@ export class ProjectService {
   ): { content: string; symlinksValid: { claudeMd: boolean; agentsMd: boolean } } {
     const row = this.getProjectRow(id);
     const projectMdPath = path.join(row.path, 'PROJECT.md');
-    fs.writeFileSync(projectMdPath, content, 'utf8');
+    writeArtifactFile(row.path, projectMdPath, content, 'refuse');
 
     if (repairSymlinks) {
       ensureSymlinks(row.path);

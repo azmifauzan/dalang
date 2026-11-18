@@ -31,8 +31,6 @@ export interface AdapterTurnOptions {
   sessionId?: string | null;
   model?: string | null;
   effort?: EffortLevel;
-  jsonSchema?: Record<string, unknown>;
-  schemaFilePath?: string;
   outputFilePath?: string;
   timeoutMs?: number;
   idleTimeoutMs?: number;

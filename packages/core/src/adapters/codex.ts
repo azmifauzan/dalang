@@ -233,9 +233,6 @@ export class CodexAdapter implements CliAdapter {
     if (options.effort) {
       args.push('-c', `model_reasoning_effort="${options.effort}"`);
     }
-    if (options.schemaFilePath) {
-      args.push('--output-schema', options.schemaFilePath);
-    }
     if (options.outputFilePath) {
       args.push('-o', options.outputFilePath);
     }

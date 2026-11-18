@@ -73,8 +73,11 @@ export const PlanMilestoneSchema = z.object({
 });
 export type PlanMilestone = z.infer<typeof PlanMilestoneSchema>;
 
+// Task ids become file names (split drafts, schema files), so they must be plain tokens.
+export const TaskIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/, 'Task id must be letters, digits, "-" or "_"');
+
 export const PlanTaskContractSchema = z.object({
-  id: z.string().min(1),
+  id: TaskIdSchema,
   title: z.string().min(1),
   milestone: z.string().min(1),
   role: PlanTaskRoleSchema.default('engineer'),

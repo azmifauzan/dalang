@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z, type ZodType } from 'zod';
 import type { AdapterTurnResult, CliAdapter } from '../adapters/types.js';
-import { ensureDir, getProjectLogsDir, getProjectTmpDir } from '../paths.js';
+import { getProjectLogsDir, getProjectTmpDir } from '../paths.js';
+import { ensureProjectDir, readArtifactFile } from '../safe-fs.js';
 
 export interface RunContractOptions<T> {
   adapter: CliAdapter;
@@ -25,6 +26,14 @@ export interface RunContractResult<T> {
   lastTurn: AdapterTurnResult;
 }
 
+function isLink(target: string): boolean {
+  try {
+    return fs.lstatSync(target).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
 export function formatZodError(error: z.ZodError): string {
   return error.issues
     .map((issue) => {
@@ -34,19 +43,48 @@ export function formatZodError(error: z.ZodError): string {
     .join('; ');
 }
 
+type Validation<T> = { ok: true; data: T } | { ok: false; error: string };
+
+function readAndValidate<T>(options: RunContractOptions<T>): Validation<T> {
+  const rel = path.relative(options.projectPath, options.targetFilePath);
+  if (!fs.existsSync(options.targetFilePath) && !isLink(options.targetFilePath)) {
+    return { ok: false, error: `Expected file was not written at ${rel}` };
+  }
+
+  let raw: string;
+  try {
+    raw = readArtifactFile(options.projectPath, options.targetFilePath).trim();
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    // The parser message can quote file content, so it is never sent back to the agent.
+    return { ok: false, error: `${rel} is not valid JSON.` };
+  }
+
+  const validated = options.schema.safeParse(parsed);
+  return validated.success
+    ? { ok: true, data: validated.data }
+    : { ok: false, error: `Zod validation error: ${formatZodError(validated.error)}` };
+}
+
 export async function runContractTurn<T>(
   options: RunContractOptions<T>,
 ): Promise<RunContractResult<T>> {
   const maxRetries = options.maxRetries ?? 2;
   const tmpDir = getProjectTmpDir(options.projectPath);
   const logsDir = getProjectLogsDir(options.projectPath);
-  ensureDir(tmpDir);
-  ensureDir(logsDir);
-  ensureDir(path.dirname(options.targetFilePath));
+  ensureProjectDir(options.projectPath, tmpDir);
+  ensureProjectDir(options.projectPath, logsDir);
+  ensureProjectDir(options.projectPath, path.dirname(options.targetFilePath));
 
-  const jsonSchema = z.toJSONSchema(options.schema) as Record<string, unknown>;
-  const schemaFilePath = path.join(tmpDir, `${options.schemaName}.schema.json`);
-  fs.writeFileSync(schemaFilePath, JSON.stringify(jsonSchema, null, 2), 'utf8');
+  // The schema goes into the retry prompt only. The CLIs' own schema flags constrain the final chat
+  // message (and reject optional or defaulted fields), while the contract is the file the agent writes.
+  const jsonSchema = z.toJSONSchema(options.schema);
 
   const logFilePath = path.join(
     logsDir,
@@ -54,7 +92,7 @@ export async function runContractTurn<T>(
   );
 
   // A file left by an earlier run would pass validation without the agent writing anything.
-  fs.rmSync(options.targetFilePath, { force: true });
+  fs.rmSync(options.targetFilePath, { force: true, recursive: false });
 
   let currentSessionId = options.sessionId ?? null;
   let currentPrompt = options.prompt;
@@ -70,8 +108,6 @@ export async function runContractTurn<T>(
       sessionId: currentSessionId,
       model: options.model,
       effort: options.effort ?? 'high',
-      jsonSchema,
-      schemaFilePath,
       outputFilePath: outFilePath,
       logFilePath,
       onLogLine: options.onLogLine,
@@ -82,31 +118,16 @@ export async function runContractTurn<T>(
       currentSessionId = turn.sessionId;
     }
 
-    if (fs.existsSync(options.targetFilePath)) {
-      const rawContent = fs.readFileSync(options.targetFilePath, 'utf8').trim();
-      try {
-        const parsedJson: unknown = JSON.parse(rawContent);
-        const validated = options.schema.safeParse(parsedJson);
-        if (validated.success) {
-          return {
-            data: validated.data,
-            sessionId: currentSessionId,
-            attempts: attempt,
-            lastTurn: turn,
-          };
-        }
-        lastError = `Zod validation error: ${formatZodError(validated.error)}`;
-      } catch (err) {
-        lastError = `Invalid JSON in ${path.relative(options.projectPath, options.targetFilePath)}: ${
-          err instanceof Error ? err.message : String(err)
-        }`;
-      }
-    } else {
-      lastError = `Expected file was not written at ${path.relative(
-        options.projectPath,
-        options.targetFilePath,
-      )}`;
+    const outcome = readAndValidate(options);
+    if (outcome.ok) {
+      return {
+        data: outcome.data,
+        sessionId: currentSessionId,
+        attempts: attempt,
+        lastTurn: turn,
+      };
     }
+    lastError = outcome.error;
 
     if (attempt <= maxRetries) {
       const relTarget = path.relative(options.projectPath, options.targetFilePath);

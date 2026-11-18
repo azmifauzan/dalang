@@ -30,7 +30,8 @@ import {
 import type { ProviderRegistry } from '../adapters/registry.js';
 import type { DalangDb } from '../db/client.js';
 import { briefs, messages, plans, projects, sessions, taskDependencies, tasks } from '../db/schema.js';
-import { ensureDir, getProjectDalangDir, getProjectDiscussDir, getProjectTmpDir } from '../paths.js';
+import { getProjectDalangDir, getProjectDiscussDir, getProjectTmpDir } from '../paths.js';
+import { ensureProjectDir, readArtifactFile, writeArtifactFile } from '../safe-fs.js';
 import { runContractTurn } from './contract.js';
 import type { DalangEventBus } from './events.js';
 
@@ -269,13 +270,13 @@ export class LeadService {
     this.events?.emitEvent({ type: 'discuss.updated', projectId });
 
     const discussDir = getProjectDiscussDir(project.path);
-    ensureDir(discussDir);
+    ensureProjectDir(project.path, discussDir);
     const roundFilePath = path.join(discussDir, `round-${nextRound}.json`);
     const relRoundPath = path.relative(project.path, roundFilePath);
 
     const projectMdPath = path.join(project.path, 'PROJECT.md');
     const projectContext = fs.existsSync(projectMdPath)
-      ? fs.readFileSync(projectMdPath, 'utf8')
+      ? readArtifactFile(project.path, projectMdPath)
       : '';
 
     const prompt = [
@@ -353,7 +354,7 @@ export class LeadService {
     const nextVersion = existingBriefs.length > 0 ? existingBriefs[0].version + 1 : 1;
 
     const dalangDir = getProjectDalangDir(project.path);
-    ensureDir(dalangDir);
+    ensureProjectDir(project.path, dalangDir);
     const briefFilePath = path.join(dalangDir, `brief.v${nextVersion}.json`);
     const relBriefPath = path.relative(project.path, briefFilePath);
 
@@ -394,7 +395,7 @@ export class LeadService {
       });
 
       const normalized: BriefContent = { ...result.data, version: nextVersion };
-      fs.writeFileSync(briefFilePath, JSON.stringify(normalized, null, 2), 'utf8');
+      writeArtifactFile(project.path, briefFilePath, JSON.stringify(normalized, null, 2));
 
       this.db
         .update(sessions)
@@ -481,7 +482,7 @@ export class LeadService {
     const parsed = BriefContentSchema.parse(rawContent);
     const content: BriefContent = { ...parsed, version };
     const absPath = path.join(project.path, row.filePath);
-    fs.writeFileSync(absPath, JSON.stringify(content, null, 2), 'utf8');
+    writeArtifactFile(project.path, absPath, JSON.stringify(content, null, 2));
 
     this.events?.emitEvent({ type: 'brief.updated', projectId, version });
     return this.readBriefRow(project.path, row);
@@ -531,7 +532,7 @@ export class LeadService {
       });
 
       const normalized: BriefContent = { ...result.data, version: nextVersion };
-      fs.writeFileSync(briefFilePath, JSON.stringify(normalized, null, 2), 'utf8');
+      writeArtifactFile(project.path, briefFilePath, JSON.stringify(normalized, null, 2));
 
       this.db
         .update(sessions)
@@ -681,7 +682,7 @@ export class LeadService {
         })),
       };
       const finalContract = PlanContractSchema.parse(finalCandidate);
-      fs.writeFileSync(planFilePath, JSON.stringify(finalContract, null, 2), 'utf8');
+      writeArtifactFile(project.path, planFilePath, JSON.stringify(finalContract, null, 2));
 
       this.db
         .update(sessions)
@@ -919,7 +920,7 @@ export class LeadService {
     const absPath = path.join(project.path, planRow.filePath);
     if (fs.existsSync(absPath)) {
       try {
-        const parsed = JSON.parse(fs.readFileSync(absPath, 'utf8')) as {
+        const parsed = JSON.parse(readArtifactFile(project.path, absPath)) as {
           milestones?: PlanMilestone[];
         };
         milestones = parsed.milestones ?? [];
@@ -1258,14 +1259,12 @@ export class LeadService {
       })),
     };
 
-    const absPath = path.join(project.path, plan.filePath);
-    ensureDir(path.dirname(absPath));
-    fs.writeFileSync(absPath, JSON.stringify(contract, null, 2), 'utf8');
+    writeArtifactFile(project.path, path.join(project.path, plan.filePath), JSON.stringify(contract, null, 2));
   }
 
   private readBriefRow(projectPath: string, row: typeof briefs.$inferSelect): BriefDTO {
     const absPath = path.join(projectPath, row.filePath);
-    const raw = JSON.parse(fs.readFileSync(absPath, 'utf8')) as unknown;
+    const raw = JSON.parse(readArtifactFile(projectPath, absPath)) as unknown;
     const content = BriefContentSchema.parse(raw);
     return {
       id: row.id,

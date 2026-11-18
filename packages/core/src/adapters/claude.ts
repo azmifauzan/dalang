@@ -185,9 +185,6 @@ export class ClaudeCodeAdapter implements CliAdapter {
     if (options.effort) {
       args.push('--effort', options.effort);
     }
-    if (options.jsonSchema) {
-      args.push('--json-schema', JSON.stringify(options.jsonSchema));
-    }
 
     const invocation = await wrapWithBwrap(
       this.runner,

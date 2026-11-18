@@ -15,7 +15,12 @@ export function createTurnLogger(logFilePath?: string): TurnLogger {
   }
 
   fs.mkdirSync(path.dirname(logFilePath), { recursive: true });
-  const fd = fs.openSync(logFilePath, 'a');
+  // O_NOFOLLOW: a symlink planted at the log path fails instead of redirecting the append.
+  const fd = fs.openSync(
+    logFilePath,
+    fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW,
+    0o644,
+  );
   let closed = false;
 
   return {
