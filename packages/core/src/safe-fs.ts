@@ -45,15 +45,28 @@ export function readArtifactFile(projectPath: string, target: string): string {
   // fstat/readlink on the descriptor cannot be raced the way a separate lstat and read can.
   let fd: number;
   try {
-    fd = fs.openSync(target, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    // O_NONBLOCK: opening a FIFO the agent planted must return at once instead of hanging DALANG.
+    fd = fs.openSync(target, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ELOOP') throw new Error(`${rel} is not a regular file.`);
     throw err;
   }
   try {
-    if (!fs.fstatSync(fd).isFile()) throw new Error(`${rel} is not a regular file.`);
+    const opened = fs.fstatSync(fd);
+    if (!opened.isFile()) throw new Error(`${rel} is not a regular file.`);
+
+    // Fail closed: prove the descriptor is the file inside the project, by path where the OS
+    // can tell us (Linux) and by device and inode against the resolved path everywhere else.
     const actual = descriptorPath(fd);
-    if (actual && !isInside(root, actual)) throw new Error(`${rel} is outside the project.`);
+    if (actual !== null) {
+      if (!isInside(root, actual)) throw new Error(`${rel} is outside the project.`);
+    } else {
+      const resolved = path.join(fs.realpathSync(path.dirname(target)), path.basename(target));
+      const check = fs.lstatSync(resolved);
+      if (!check.isFile() || check.ino !== opened.ino || check.dev !== opened.dev) {
+        throw new Error(`${rel} changed while it was being read.`);
+      }
+    }
     return fs.readFileSync(fd, 'utf8');
   } finally {
     fs.closeSync(fd);

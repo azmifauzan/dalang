@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import os from 'node:os';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
@@ -60,6 +61,13 @@ describe('safe artifact I/O (an agent can plant symlinks in the project)', () =>
     const { project, victim } = setup();
     const target = path.join(project, '.dalang', 'brief.v1.json');
     fs.symlinkSync(victim, target);
+    expect(() => readArtifactFile(project, target)).toThrow(/not a regular file/);
+  });
+
+  it('returns at once on a FIFO instead of blocking on it', () => {
+    const { project } = setup();
+    const target = path.join(project, '.dalang', 'plan.json');
+    execFileSync('mkfifo', [target]);
     expect(() => readArtifactFile(project, target)).toThrow(/not a regular file/);
   });
 
