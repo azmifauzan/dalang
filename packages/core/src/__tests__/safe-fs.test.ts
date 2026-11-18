@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { PlanTaskContractSchema } from '@dalang/shared';
 import type { AdapterTurnResult, CliAdapter } from '../adapters/types.js';
-import { ensureProjectDir, readArtifactFile, writeArtifactFile } from '../safe-fs.js';
+import { ensureProjectDir, readArtifactFile, removeArtifactFile, writeArtifactFile } from '../safe-fs.js';
 import { runContractTurn } from '../services/contract.js';
 
 const tempDirs: string[] = [];
@@ -55,6 +55,18 @@ describe('safe artifact I/O (an agent can plant symlinks in the project)', () =>
     fs.symlinkSync(outside, path.join(project, '.dalang'));
     expect(() => ensureProjectDir(project, path.join(project, '.dalang', 'tmp'))).toThrow(/outside the project/);
     expect(fs.readdirSync(outside)).toEqual([]);
+  });
+
+  it('does not delete a file outside the project through a planted folder link', () => {
+    const { project, outside, victim } = setup();
+    const tasks = path.join(project, '.dalang', 'tasks');
+    fs.mkdirSync(tasks, { recursive: true });
+    fs.symlinkSync(outside, path.join(tasks, 'T-001'));
+    fs.writeFileSync(path.join(outside, 'result.json'), 'keep me');
+
+    expect(() => removeArtifactFile(project, path.join(tasks, 'T-001', 'result.json'))).toThrow(/outside the project/);
+    expect(fs.readFileSync(path.join(outside, 'result.json'), 'utf8')).toBe('keep me');
+    expect(fs.readFileSync(victim, 'utf8')).toBe('SECRET-CONTENT');
   });
 
   it('refuses to read a symlinked artifact', () => {

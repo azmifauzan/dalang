@@ -22,7 +22,7 @@ import type { ProviderRegistry } from '../adapters/registry.js';
 import type { DalangDb } from '../db/client.js';
 import { agentProfiles, projects, providerEvents, runs, tasks } from '../db/schema.js';
 import { getProjectLogsDir, getTaskArtifactDir } from '../paths.js';
-import { ensureProjectDir, readArtifactFile } from '../safe-fs.js';
+import { ensureProjectDir, readArtifactFile, removeArtifactFile } from '../safe-fs.js';
 import { formatZodError } from './contract.js';
 import type { DalangEventBus } from './events.js';
 import {
@@ -603,7 +603,7 @@ export class ExecutionService {
     const relResultPath = path.join('.dalang', 'tasks', task.externalId, 'result.json');
     const absResultPath = path.join(project.path, relResultPath);
     // Clear stale result.json before checkpointing so only an output written by this run counts.
-    fs.rmSync(absResultPath, { force: true });
+    removeArtifactFile(project.path, absResultPath);
 
     const checkpointBefore = await createGitCheckpoint(
       project.path,
@@ -1064,7 +1064,7 @@ export class ExecutionService {
         `run-${ctx.task.externalId}-fb-${Date.now()}.log`,
       );
       const fbAbsLog = path.join(ctx.projectPath, fbRelLog);
-      fs.rmSync(ctx.absResultPath, { force: true });
+      removeArtifactFile(ctx.projectPath, ctx.absResultPath);
 
       const fbNow = new Date().toISOString();
       this.db

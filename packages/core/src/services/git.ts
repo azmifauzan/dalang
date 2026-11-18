@@ -8,24 +8,39 @@ const SAFE_GIT_CONFIG = ['core.hooksPath=/dev/null', 'core.fsmonitor=false', 'co
 
 /**
  * DALANG runs git outside the sandbox on a repo the agent can edit. A clean/smudge filter defined in
- * `.git/config` (and selected by a `.gitattributes` the agent also controls) would run on the host at
- * `git add`, so repo-local config that can execute commands is refused before any git operation.
+ * the repo config or a worktree config (and selected by a `.gitattributes` the agent also controls)
+ * would run on the host at `git add`, so config that can execute commands is refused before any git operation.
  */
-const UNSAFE_LOCAL_CONFIG = [/^filter\./i, /^include(if\..+)?\.path$/i, /^core\.worktree$/i];
+const UNSAFE_REPO_CONFIG = [/^filter\./i, /^include(if\..+)?\.path$/i, /^core\.worktree$/i];
+// Settings that make git read a config the plain repo config does not show.
+const UNSAFE_ANY_SCOPE = [/^extensions\.worktreeconfig$/i];
 
 export async function assertRepoConfigSafe(projectPath: string): Promise<void> {
   const gitEntry = path.join(projectPath, '.git');
   if (fs.existsSync(gitEntry) && !fs.lstatSync(gitEntry).isDirectory()) {
     throw new Error('.git is not a plain folder (a gitdir link or symlink); DALANG will not run git on it.');
   }
-  const out = await simpleGit({ baseDir: projectPath }).raw(['config', '--local', '--list']).catch(() => '');
-  const bad = out
-    .split(/\r?\n/)
-    .map((line) => line.split('=')[0].trim())
-    .filter((key) => UNSAFE_LOCAL_CONFIG.some((re) => re.test(key)));
-  if (bad.length > 0) {
+  if (fs.existsSync(path.join(gitEntry, 'config.worktree'))) {
+    throw new Error('.git/config.worktree exists; DALANG will not run git on a repo with a worktree-specific config.');
+  }
+
+  // Every scope git will use, not just the repo file. An error here must stop the run, never pass it.
+  const out = await simpleGit({ baseDir: projectPath }).raw(['config', '--list', '--show-scope', '-z']);
+  // `-z --show-scope` prints "scope NUL key NEWLINE value NUL" for each entry.
+  const tokens = out.split('\0');
+  const bad = new Set<string>();
+  for (let i = 0; i + 1 < tokens.length; i += 2) {
+    const scope = tokens[i];
+    const key = tokens[i + 1].split('\n')[0];
+    if (UNSAFE_ANY_SCOPE.some((re) => re.test(key))) bad.add(key);
+    // System and global config are the user's own (Git LFS defines filters there); the rest is agent-reachable.
+    if ((scope === 'local' || scope === 'worktree' || scope === 'command') && UNSAFE_REPO_CONFIG.some((re) => re.test(key))) {
+      bad.add(key);
+    }
+  }
+  if (bad.size > 0) {
     throw new Error(
-      `Repository config defines settings that can run commands (${[...new Set(bad)].join(', ')}). Remove them from .git/config before running tasks.`,
+      `Repository config defines settings that can run commands (${[...bad].join(', ')}). Remove them from .git/config before running tasks.`,
     );
   }
 }

@@ -119,6 +119,37 @@ describe('ExecutionService hardening', () => {
     }
   });
 
+  it.each([
+    [
+      'a worktree-specific config',
+      (dir: string, marker: string) => {
+        fs.appendFileSync(path.join(dir, '.git', 'config'), '\n[extensions]\n\tworktreeConfig = true\n');
+        fs.writeFileSync(path.join(dir, '.git', 'config.worktree'), `[filter "pwn"]\n\tclean = touch ${marker}\n`);
+      },
+    ],
+    [
+      'an included config file',
+      (dir: string, marker: string) => {
+        fs.writeFileSync(path.join(dir, '.git', 'extra.cfg'), `[filter "pwn"]\n\tclean = touch ${marker}\n`);
+        fs.appendFileSync(path.join(dir, '.git', 'config'), `\n[include]\n\tpath = ${path.join(dir, '.git', 'extra.cfg')}\n`);
+      },
+    ],
+  ])('also refuses a filter hidden in %s', async (_name, plant) => {
+    const marker = path.join(makeTempDir('dalang-marker-'), 'pwned');
+    const { conn, project, plan, execSvc, projDir } = await setupApprovedProject(agentRunner('completed'));
+    try {
+      plant(projDir, marker);
+      fs.writeFileSync(path.join(projDir, '.gitattributes'), '* filter=pwn\n');
+      fs.writeFileSync(path.join(projDir, 'new.txt'), 'x');
+      await expect(
+        execSvc.startExecution(project.id, { taskId: plan.tasks[0].id, allowUnconfined: true }),
+      ).rejects.toThrow(/worktree|can run commands/);
+      expect(fs.existsSync(marker)).toBe(false);
+    } finally {
+      conn.close();
+    }
+  });
+
   it('refuses a rollback that would discard commits or edits DALANG did not make', async () => {
     const { conn, project, plan, execSvc, projDir } = await setupApprovedProject(agentRunner('completed'));
     try {

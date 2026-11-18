@@ -3,7 +3,7 @@ import path from 'node:path';
 import { z, type ZodType } from 'zod';
 import type { AdapterTurnResult, CliAdapter } from '../adapters/types.js';
 import { getProjectLogsDir, getProjectTmpDir } from '../paths.js';
-import { ensureProjectDir, readArtifactFile } from '../safe-fs.js';
+import { ensureProjectDir, readArtifactFile, removeArtifactFile } from '../safe-fs.js';
 
 export interface RunContractOptions<T> {
   adapter: CliAdapter;
@@ -92,7 +92,7 @@ export async function runContractTurn<T>(
   );
 
   // A file left by an earlier run would pass validation without the agent writing anything.
-  fs.rmSync(options.targetFilePath, { force: true, recursive: false });
+  removeArtifactFile(options.projectPath, options.targetFilePath);
 
   let currentSessionId = options.sessionId ?? null;
   let currentPrompt = options.prompt;

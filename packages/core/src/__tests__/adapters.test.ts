@@ -155,3 +155,31 @@ describe('Provider adapters & bwrap wrapper', () => {
     expect(calls[4].args.join(' ')).toContain('--mode plan');
   });
 });
+
+describe('bwrap session bus', () => {
+  const runner: CliRunner = {
+    async which(bin) {
+      return bin === 'bwrap' ? '/usr/bin/bwrap' : null;
+    },
+    async run(): Promise<RunCommandResult> {
+      throw new Error('unused');
+    },
+  };
+
+  it('hides /run/user for every provider and mounts only the filtered proxy socket as the bus', async () => {
+    if (process.platform !== 'linux' || typeof process.getuid !== 'function') return;
+    const proj = makeTempDir('dalang-bus-proj-');
+    const withProxy = await wrapWithBwrap(runner, 'antigravity', proj, '/bin/true', [], { dbusSocket: '/tmp/proxy/bus' });
+    const joined = withProxy.args.join(' ');
+    expect(joined).toContain('--tmpfs /run/user');
+    expect(joined).toContain(`--ro-bind /tmp/proxy/bus /run/user/${process.getuid()}/bus`);
+    expect(joined).toContain('DBUS_SESSION_BUS_ADDRESS');
+
+    for (const provider of ['claude-code', 'codex', 'antigravity'] as const) {
+      const noBus = await wrapWithBwrap(runner, provider, proj, '/bin/true', []);
+      expect(noBus.args.join(' ')).toContain('--tmpfs /run/user');
+      expect(noBus.args.join(' ')).not.toContain('/bus');
+    }
+  });
+});
+

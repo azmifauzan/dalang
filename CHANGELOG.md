@@ -2,6 +2,13 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
+## Unreleased (security fixes after 0.2.0)
+
+Security
+- The git guard introduced in 0.2.0 could be bypassed: a clean filter in `.git/config.worktree` (with `extensions.worktreeConfig`) or in an included file still ran on the host at `git add`, and a git error let the check pass. It now reads every config scope git uses and fails closed. Confirmed with a test before the fix.
+- agy no longer gets the real desktop session bus, which can start units outside the sandbox. It runs behind a filtered `xdg-dbus-proxy` that allows only the keyring (`org.freedesktop.secrets`), and `/run/user` is hidden for every provider.
+- Deleting a task result no longer follows a planted folder link outside the project.
+
 ## 0.2.0 (Jalan), 18 Nov
 
 Tasks now run. The Lead's plan is dispatched to agents one task at a time.

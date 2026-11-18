@@ -1,7 +1,7 @@
 import os from 'node:os';
 import type { ProviderStatus, ProviderUsage, UsageWindow } from '@dalang/shared';
 import { createTurnLogger } from './logger.js';
-import { findBwrap, wrapWithBwrap } from './sandbox.js';
+import { findBwrap, startDbusProxy, wrapWithBwrap } from './sandbox.js';
 import type { AdapterTurnOptions, AdapterTurnResult, CliAdapter, CliRunner } from './types.js';
 
 interface AgyUsageJson {
@@ -186,12 +186,19 @@ export class AntigravityAdapter implements CliAdapter {
     }
     args.push(`-p=${options.prompt}`);
 
+    const dbusProxy = bwrapAvailable ? await startDbusProxy(this.runner) : null;
+    if (bwrapAvailable && !dbusProxy) {
+      throw new Error(
+        'Antigravity signs in through the desktop session bus, and a sandboxed run only gets a filtered one. Install xdg-dbus-proxy and run DALANG from a desktop session.',
+      );
+    }
     const invocation = await wrapWithBwrap(
       this.runner,
       this.id,
       options.projectPath,
       binaryPath,
       args,
+      { dbusSocket: dbusProxy?.socketPath },
     );
 
     const logger = createTurnLogger(options.logFilePath);
@@ -259,6 +266,7 @@ export class AntigravityAdapter implements CliAdapter {
       };
     } finally {
       logger.close();
+      dbusProxy?.stop();
     }
   }
 }

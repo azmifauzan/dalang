@@ -111,3 +111,9 @@ export function writeArtifactFile(
   }
   fs.renameSync(temp, target);
 }
+
+/** Remove an agent-reachable file, after proving its folder is not a link that leads outside the project. */
+export function removeArtifactFile(projectPath: string, target: string): void {
+  ensureProjectDir(projectPath, path.dirname(target));
+  fs.rmSync(target, { force: true });
+}

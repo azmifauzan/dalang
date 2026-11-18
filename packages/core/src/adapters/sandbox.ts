@@ -206,12 +206,48 @@ export async function findBwrap(runner: CliRunner): Promise<string | null> {
   return runner.which('bwrap');
 }
 
+export interface DbusProxy {
+  socketPath: string;
+  stop: () => void;
+}
+
+/**
+ * agy signs in through the desktop keyring over the session bus. The bus can also start units outside
+ * the sandbox, so the run gets a filtered proxy that only allows the secrets service.
+ */
+export async function startDbusProxy(runner: CliRunner): Promise<DbusProxy | null> {
+  const address = process.env.DBUS_SESSION_BUS_ADDRESS ?? '';
+  const proxyBinary = await runner.which('xdg-dbus-proxy');
+  if (!proxyBinary || !address.startsWith('unix:')) return null;
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dalang-bus-'));
+  const socketPath = path.join(dir, 'bus');
+  const child = spawn(proxyBinary, [address, socketPath, '--filter', '--talk=org.freedesktop.secrets'], {
+    stdio: 'ignore',
+  });
+  const stop = () => {
+    child.kill('SIGTERM');
+    fs.rmSync(dir, { recursive: true, force: true });
+  };
+
+  const deadline = Date.now() + 3000;
+  while (!fs.existsSync(socketPath)) {
+    if (Date.now() > deadline || child.exitCode !== null) {
+      stop();
+      return null;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return { socketPath, stop };
+}
+
 export async function wrapWithBwrap(
   runner: CliRunner,
   provider: ProviderId,
   projectPath: string,
   command: string,
   args: string[],
+  options: { dbusSocket?: string } = {},
 ): Promise<BwrapInvocation> {
   const bwrapPath = await findBwrap(runner);
   if (!bwrapPath) {
@@ -239,8 +275,12 @@ export async function wrapWithBwrap(
   ];
 
   // Keep user-session and container sockets out of reach (a socket there lets a run act outside the sandbox).
-  // agy reads its login from the desktop keyring over the session bus, so it keeps /run/user.
-  if (provider !== 'antigravity' && fs.existsSync('/run/user')) bwrapArgs.push('--tmpfs', '/run/user');
+  // The only bus a run may see is a filtered proxy socket, mounted where the CLI expects the session bus.
+  if (fs.existsSync('/run/user')) bwrapArgs.push('--tmpfs', '/run/user');
+  if (options.dbusSocket && typeof process.getuid === 'function') {
+    const busPath = `/run/user/${process.getuid()}/bus`;
+    bwrapArgs.push('--ro-bind', options.dbusSocket, busPath, '--setenv', 'DBUS_SESSION_BUS_ADDRESS', `unix:path=${busPath}`);
+  }
   const dockerSock = '/run/docker.sock'; // /var/run is a symlink to /run on Linux
   if (fs.existsSync(dockerSock)) bwrapArgs.push('--ro-bind', '/dev/null', dockerSock);
 

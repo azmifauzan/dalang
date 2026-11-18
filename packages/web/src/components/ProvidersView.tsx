@@ -123,7 +123,7 @@ export function ProvidersView() {
                   )}
                   {p.id === 'antigravity' && p.sandboxReady && (
                     <p className="mt-3 text-xs" style={{ color: 'var(--text-secondary)' }}>
-                      agy signs in through the desktop session bus, so a sandboxed run can still reach it.
+                      agy signs in through a filtered desktop keyring proxy (needs xdg-dbus-proxy and a desktop session).
                     </p>
                   )}
 
