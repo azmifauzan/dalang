@@ -2,7 +2,7 @@
 
 > One goal in, a running app out. A local web tool that orchestrates Claude Code, Codex, and Antigravity CLI as a small team.
 
-**Status: pre-alpha. This repository currently contains the product requirements document ([docs/PRD .md](docs/PRD%20.md)) only. No code has been released yet.**
+**Status: pre-alpha. This repository currently contains the product requirements document ([docs/PRD.md](docs/PRD.md)) only. No code has been released yet.**
 
 DALANG is named after the traditional Javanese puppeteer who directs the whole show. The name is also an acronym for the workflow:
 
@@ -66,7 +66,7 @@ Key findings: `agy` writes outside the workspace even with its sandbox flag, so 
 
 ## Documentation
 
-- [Product requirements (Indonesian)](docs/PRD%20.md)
+- [Product requirements](docs/PRD.md)
 
 ## License
 
