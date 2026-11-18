@@ -80,37 +80,15 @@ export function extractJsonCandidate(turn: AdapterTurnResult): unknown | undefin
 
 export function validateReviewTurnOutput(opts: {
   projectPath: string;
-  absReviewPath: string;
   expectedTaskId: string;
   verifyExitCode: number;
-  allowStdoutFallback: boolean;
   turn: AdapterTurnResult;
 }): { ok: true; data: ReviewContract } | { ok: false; error: string } {
-  const rel = path.relative(opts.projectPath, opts.absReviewPath);
-  let parsed: unknown = undefined;
-
-  if (fs.existsSync(opts.absReviewPath)) {
-    let raw: string;
-    try {
-      raw = readArtifactFile(opts.projectPath, opts.absReviewPath).trim();
-    } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) };
-    }
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      return { ok: false, error: `${rel} is not valid JSON.` };
-    }
-  } else if (opts.allowStdoutFallback) {
-    parsed = extractJsonCandidate(opts.turn);
-    if (parsed === undefined) {
-      return {
-        ok: false,
-        error: `Read-only reviewer did not return valid JSON matching ReviewContractSchema.`,
-      };
-    }
-  } else {
-    return { ok: false, error: `Expected review file was not written at ${rel}` };
+  // Reviews are read-only, so the verdict comes from the reply only: the verify command runs agent-written
+  // code with write access and could plant a review.json on disk.
+  const parsed = extractJsonCandidate(opts.turn);
+  if (parsed === undefined) {
+    return { ok: false, error: 'Reviewer did not return valid JSON matching ReviewContractSchema.' };
   }
 
   const validated = ReviewContractSchema.safeParse(parsed);

@@ -1466,12 +1466,15 @@ export class ExecutionService {
       this.events?.emitEvent({ type: 'plan.updated', projectId: ctx.projectId });
 
       const currentHead = (await getHeadCommit(ctx.projectPath)) ?? ctx.baseMainSha;
-      const changedFiles = await getChangedFilesBetween(
-        ctx.projectPath,
-        ctx.baseMainSha,
-        currentHead,
-      ).catch(() => [] as string[]);
-      activeScopeWarnings = findScopeViolations(changedFiles, ctx.task.filesAllowed);
+      let changedFiles: string[] = [];
+      try {
+        changedFiles = await getChangedFilesBetween(ctx.projectPath, ctx.baseMainSha, currentHead);
+        activeScopeWarnings = findScopeViolations(changedFiles, ctx.task.filesAllowed);
+      } catch (err) {
+        activeScopeWarnings = [
+          `Could not verify files_allowed: ${err instanceof Error ? err.message : String(err)}`,
+        ];
+      }
       const diffData = await getTaskDiff(
         ctx.projectPath,
         ctx.task.id,
@@ -1877,10 +1880,8 @@ export class ExecutionService {
 
           const checked = validateReviewTurnOutput({
             projectPath: opts.projectPath,
-            absReviewPath: opts.absReviewPath,
             expectedTaskId: opts.task.externalId,
             verifyExitCode,
-            allowStdoutFallback: isReadOnly,
             turn,
           });
           if (checked.ok) {
