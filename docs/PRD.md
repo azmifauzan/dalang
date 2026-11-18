@@ -1,4 +1,4 @@
-# PRD — DALANG
+# PRD: DALANG
 
 Nov 18, 2026 · @Fauzan
 
@@ -60,8 +60,6 @@ Similar tools already exist: Agentty, ordewell, Orchestrator.inc, and Vibe Kanba
 | Resuming a project after a break | Opening an old project in DALANG | State, plan, and remaining tasks are restored, then work continues |
 
 ## Product flow: D-A-L-A-N-G
-
-[Embedded diagram: DALANG flow · 6 steps, 2 approval gates]
 
 The user steps in only at Agree and Guard. Discussion can take several rounds, and a task that fails review goes back to the coder before it reaches the user.
 
@@ -208,8 +206,6 @@ All orchestrator decisions come from JSON files the agent writes to `.dalang/`, 
 
 ## Architecture and technology stack
 
-[Embedded diagram: DALANG architecture · UI, server, CLI, workspace]
-
 **Decision: one global DALANG instance for many projects**, not one instance per project. Subscription quota is shared across projects, so the per-provider parallel limit (F-12), limit fallback (F-13), and statistics (F-24) must see all projects at once. CLI login is also per user, not per project.
 
 | Location | Contents |
@@ -264,15 +260,15 @@ SQLite stores state and indexes, while the full content of artifacts (brief, pla
 | --- | --- | --- |
 | `project` | id, name, path, main branch, created | has many `session`, `task` |
 | `session` | id, project\_id, phase (discuss/agree/list/run), cli\_session\_id | has many `message` |
-| `message` | id, session\_id, role (user/lead), type (text/questions/brief), content, time | — |
+| `message` | id, session\_id, role (user/lead), type (text/questions/brief), content, time | none |
 | `brief` | id, project\_id, version, status (draft/approved), file path | one approved `brief` → one `plan` |
 | `plan` | id, brief\_id, version, file path | has many `task` |
 | `task` | id, plan\_id, title, role, complexity, status, profile\_override, review\_rounds | `task_dependency`, many `run` |
-| `task_dependency` | task\_id, depends\_on\_id | — |
+| `task_dependency` | task\_id, depends\_on\_id | none |
 | `run` | id, task\_id, profile\_id, provider, model, started, finished, exit\_code, failure\_reason, commit\_before, commit\_after, log path | one `review` (for coder runs) |
-| `review` | id, run\_id, status, file path | — |
+| `review` | id, run\_id, status, file path | none |
 | `agent_profile` | id, name, provider, model, effort, role\_prompt, permission\_mode, timeout, max\_parallel | used by `routing_rule` and `run` |
-| `routing_rule` | id, order, role, complexity, profile\_id, fallback\_profile\_id | — |
+| `routing_rule` | id, order, role, complexity, profile\_id, fallback\_profile\_id | none |
 | `provider_event` | id, provider, type (rate\_limit/error/login\_expired), time | for statistics and fallback |
 
 ## Phased release plan
@@ -281,10 +277,10 @@ Each phase must be useful on its own before the next one starts.
 
 | Phase | Scope | Done when |
 | --- | --- | --- |
-| v0.1 — Rembuk | Project, Lead chat (Discuss), brief (Agree), plan generation and kanban (List), provider status page. No execution yet. | One goal yields a valid brief and plan that pass the schema, for 3 sample projects |
-| v0.2 — Jalan | Sequential execution, one task at a time, adapters for all three CLIs, live logs, checkpoint commits, stop/retry | A small CRUD application is finished end to end without opening a CLI manually |
-| v0.3 — Kawal | Reviewer and fix loop, diff view, approve merge, integration tests, agent profiles and routing in the UI | ≥ 70% of tasks pass review within at most 2 rounds across 5 test projects |
-| v0.4 — Paralel | Worktree per task, dependency graph, per-provider parallel limits, quota fallback, usage statistics | Two independent tasks run at the same time without conflict; a quota limit automatically reroutes to a backup profile |
+| v0.1 Rembuk | Project, Lead chat (Discuss), brief (Agree), plan generation and kanban (List), provider status page. No execution yet. | One goal yields a valid brief and plan that pass the schema, for 3 sample projects |
+| v0.2 Jalan | Sequential execution, one task at a time, adapters for all three CLIs, live logs, checkpoint commits, stop/retry | A small CRUD application is finished end to end without opening a CLI manually |
+| v0.3 Kawal | Reviewer and fix loop, diff view, approve merge, integration tests, agent profiles and routing in the UI | ≥ 70% of tasks pass review within at most 2 rounds across 5 test projects |
+| v0.4 Paralel | Worktree per task, dependency graph, per-provider parallel limits, quota fallback, usage statistics | Two independent tasks run at the same time without conflict; a quota limit automatically reroutes to a backup profile |
 | v1.0 | Polish, Windows support, documentation, npm release | Used by the author to build 10 real projects |
 
 ## Risks, mitigations, and open questions
