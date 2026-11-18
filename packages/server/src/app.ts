@@ -5,6 +5,7 @@ import fastifyWebsocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
+  AssignTaskProfileInputSchema,
   BriefContentSchema,
   BriefReviseInputSchema,
   CreateOrOpenProjectInputSchema,
@@ -12,11 +13,13 @@ import {
   DiscussMessageInputSchema,
   ProviderIdSchema,
   ReorderTasksInputSchema,
+  StartExecutionInputSchema,
   UpdateTaskInputSchema,
   type ProviderStatus,
 } from '@dalang/shared';
 import {
   DalangEventBus,
+  ExecutionService,
   LeadService,
   NodeCliRunner,
   ProfileService,
@@ -47,6 +50,7 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
   const projectService = new ProjectService(conn.db);
   const profileService = new ProfileService(conn.db);
   const leadService = new LeadService(conn.db, registry, events);
+  const executionService = new ExecutionService(conn.db, registry, leadService, events);
 
   let cachedProviderStatuses: ProviderStatus[] | null = null;
   let statusRefreshInFlight: Promise<ProviderStatus[]> | null = null;
@@ -100,7 +104,7 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     return reply.status(statusCode >= 400 ? statusCode : 400).send({ error: message });
   });
 
-  app.get('/api/health', async () => ({ ok: true, version: '0.1.0' }));
+  app.get('/api/health', async () => ({ ok: true, version: '0.2.0' }));
 
   // WebSocket live event stream
   app.get('/ws', { websocket: true }, (socket) => {
@@ -128,6 +132,7 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
   }));
 
   app.delete<{ Params: { id: string } }>('/api/projects/:id', async (req) => {
+    await executionService.stopExecution(req.params.id);
     projectService.deleteProject(req.params.id);
     return { ok: true };
   });
@@ -242,7 +247,62 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     return { plan: leadService.reorderTasks(req.params.id, body) };
   });
 
-  // Providers & Profiles (F-22, F-10 support)
+  // Assign & Navigate (v0.2 Jalan: F-11, F-12, F-13, F-14, F-15, F-17, F-23)
+  app.get<{ Params: { id: string } }>('/api/projects/:id/execution', async (req) => {
+    return { execution: await executionService.getExecutionState(req.params.id) };
+  });
+
+  app.post<{ Params: { id: string } }>('/api/projects/:id/execution/start', async (req, reply) => {
+    const body = StartExecutionInputSchema.parse(req.body ?? {});
+    const result = await executionService.startExecution(req.params.id, body);
+    return reply.status(202).send(result);
+  });
+
+  app.post<{ Params: { id: string } }>('/api/projects/:id/execution/stop', async (req) => {
+    return executionService.stopExecution(req.params.id);
+  });
+
+  app.post<{ Params: { id: string; taskId: string } }>(
+    '/api/projects/:id/tasks/:taskId/run',
+    async (req, reply) => {
+      const body = StartExecutionInputSchema.omit({ taskId: true }).parse(req.body ?? {});
+      const result = await executionService.startExecution(req.params.id, {
+        ...body,
+        taskId: req.params.taskId,
+      });
+      return reply.status(202).send(result);
+    },
+  );
+
+  app.patch<{ Params: { id: string; taskId: string } }>(
+    '/api/projects/:id/tasks/:taskId/profile',
+    async (req) => {
+      const body = AssignTaskProfileInputSchema.parse(req.body);
+      return {
+        task: executionService.assignTaskProfile(
+          req.params.id,
+          req.params.taskId,
+          body.profileOverride,
+        ),
+      };
+    },
+  );
+
+  app.get<{ Params: { id: string; runId: string } }>(
+    '/api/projects/:id/runs/:runId/log',
+    async (req) => {
+      return executionService.getRunLog(req.params.id, req.params.runId);
+    },
+  );
+
+  app.post<{ Params: { id: string; runId: string } }>(
+    '/api/projects/:id/runs/:runId/rollback',
+    async (req) => {
+      return { run: await executionService.rollbackRun(req.params.id, req.params.runId) };
+    },
+  );
+
+  // Providers & Profiles (F-22, F-10, F-11 support)
   app.get('/api/providers/status', async () => {
     return { providers: await getProviderStatuses(false) };
   });
@@ -253,6 +313,10 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
 
   app.get('/api/profiles', async () => {
     return { profiles: profileService.listProfiles() };
+  });
+
+  app.get('/api/routing', async () => {
+    return { rules: profileService.listRoutingRules() };
   });
 
   // Static web assets (when built)
@@ -274,6 +338,7 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     app,
     events,
     close: async () => {
+      await executionService.stopAll();
       await app.close();
       conn.close();
     },

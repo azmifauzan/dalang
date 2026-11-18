@@ -13,7 +13,7 @@ export interface DbConnection {
   close: () => void;
 }
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 const BOOTSTRAP_SQL = `
 PRAGMA journal_mode = WAL;
@@ -132,6 +132,28 @@ CREATE TABLE IF NOT EXISTS provider_events (
   detail TEXT,
   created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS runs (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  profile_id TEXT NOT NULL REFERENCES agent_profiles(id),
+  provider TEXT NOT NULL,
+  model TEXT,
+  status TEXT NOT NULL DEFAULT 'running',
+  cli_session_id TEXT,
+  attempt INTEGER NOT NULL DEFAULT 1,
+  used_fallback INTEGER NOT NULL DEFAULT 0,
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  exit_code INTEGER,
+  failure_reason TEXT,
+  commit_before TEXT,
+  commit_after TEXT,
+  log_path TEXT NOT NULL,
+  result_path TEXT,
+  scope_warnings_json TEXT NOT NULL DEFAULT '[]'
+);
 `;
 
 function seedDefaults(db: DalangDb): void {
@@ -222,13 +244,21 @@ function seedDefaults(db: DalangDb): void {
         id: crypto.randomUUID(),
         sortOrder: 3,
         role: 'engineer',
-        complexity: 'high',
+        complexity: 'medium',
         profileId: 'profile-coder-heavy',
         fallbackProfileId: 'profile-lead',
       },
       {
         id: crypto.randomUUID(),
         sortOrder: 4,
+        role: 'engineer',
+        complexity: 'high',
+        profileId: 'profile-coder-heavy',
+        fallbackProfileId: 'profile-lead',
+      },
+      {
+        id: crypto.randomUUID(),
+        sortOrder: 5,
         role: 'qa',
         complexity: null,
         profileId: 'profile-reviewer',
@@ -236,6 +266,30 @@ function seedDefaults(db: DalangDb): void {
       },
     ])
     .run();
+}
+
+function migrateV1ToV2(db: DalangDb): void {
+  const existingRules = db.select().from(schema.routingRules).all();
+  const hasMediumEngineer = existingRules.some(
+    (r) => r.role === 'engineer' && r.complexity === 'medium',
+  );
+  if (hasMediumEngineer) return;
+
+  const profiles = db.select().from(schema.agentProfiles).all();
+  const heavy = profiles.find((p) => p.id === 'profile-coder-heavy');
+  const lead = profiles.find((p) => p.id === 'profile-lead');
+  if (heavy) {
+    db.insert(schema.routingRules)
+      .values({
+        id: crypto.randomUUID(),
+        sortOrder: 3,
+        role: 'engineer',
+        complexity: 'medium',
+        profileId: heavy.id,
+        fallbackProfileId: lead ? lead.id : null,
+      })
+      .run();
+  }
 }
 
 export function openDatabase(dbFilePath: string = getDbPath()): DbConnection {
@@ -251,9 +305,12 @@ export function openDatabase(dbFilePath: string = getDbPath()): DbConnection {
     );
   }
   sqlite.exec(BOOTSTRAP_SQL);
-  sqlite.pragma(`user_version = ${SCHEMA_VERSION}`);
   const db = drizzle(sqlite, { schema });
   seedDefaults(db);
+  if (storedVersion > 0 && storedVersion < 2) {
+    migrateV1ToV2(db);
+  }
+  sqlite.pragma(`user_version = ${SCHEMA_VERSION}`);
 
   return {
     db,

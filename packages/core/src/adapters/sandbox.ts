@@ -41,6 +41,17 @@ export class NodeCliRunner implements CliRunner {
   }
 
   run(command: string, args: string[], options: RunCommandOptions): Promise<RunCommandResult> {
+    if (options.signal?.aborted) {
+      return Promise.resolve({
+        exitCode: null,
+        stdout: '',
+        stderr: '',
+        timedOut: false,
+        idleTimedOut: false,
+        aborted: true,
+      });
+    }
+
     return new Promise((resolve, reject) => {
       const useStdinPipe = options.stdinData !== undefined || Boolean(options.interactiveStdin);
       const child = spawn(command, args, {
@@ -55,6 +66,7 @@ export class NodeCliRunner implements CliRunner {
       let stderrRemainder = '';
       let timedOut = false;
       let idleTimedOut = false;
+      let aborted = false;
       let settled = false;
 
       const totalMs = options.timeoutMs ?? 600_000;
@@ -80,6 +92,23 @@ export class NodeCliRunner implements CliRunner {
               setTimeout(() => child.kill('SIGKILL'), 2000).unref();
             }, totalMs)
           : null;
+
+      const onAbort = () => {
+        aborted = true;
+        if (!settled) {
+          child.kill('SIGTERM');
+          setTimeout(() => {
+            if (!settled) child.kill('SIGKILL');
+          }, 2000).unref();
+        }
+      };
+      options.signal?.addEventListener('abort', onAbort, { once: true });
+
+      const cleanupTimers = () => {
+        if (totalTimer) clearTimeout(totalTimer);
+        if (idleTimer) clearTimeout(idleTimer);
+        options.signal?.removeEventListener('abort', onAbort);
+      };
 
       resetIdle();
 
@@ -114,16 +143,14 @@ export class NodeCliRunner implements CliRunner {
       child.on('error', (err) => {
         if (settled) return;
         settled = true;
-        if (totalTimer) clearTimeout(totalTimer);
-        if (idleTimer) clearTimeout(idleTimer);
+        cleanupTimers();
         reject(err);
       });
 
       child.on('close', (exitCode) => {
         if (settled) return;
         settled = true;
-        if (totalTimer) clearTimeout(totalTimer);
-        if (idleTimer) clearTimeout(idleTimer);
+        cleanupTimers();
         if (stdoutRemainder) options.onStdoutLine?.(stdoutRemainder);
         if (stderrRemainder) options.onStderrLine?.(stderrRemainder);
         resolve({
@@ -132,6 +159,7 @@ export class NodeCliRunner implements CliRunner {
           stderr,
           timedOut,
           idleTimedOut,
+          aborted,
         });
       });
 
@@ -234,6 +262,12 @@ export async function wrapWithBwrap(
     if (fs.existsSync(abs)) {
       bwrapArgs.push('--bind', abs, abs);
     }
+  }
+
+  // Prevent sandboxed agents from writing executable hooks into `.git/hooks`.
+  const gitHooksDir = path.join(projectPath, '.git', 'hooks');
+  if (fs.existsSync(gitHooksDir)) {
+    bwrapArgs.push('--ro-bind', gitHooksDir, gitHooksDir);
   }
 
   bwrapArgs.push('--chdir', projectPath, '--', command, ...args);

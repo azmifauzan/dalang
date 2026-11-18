@@ -171,6 +171,29 @@ function createMultiProjectFakeRunner(projectSpecs: Record<string, { title: stri
         return emit(`sess-${path.basename(cwd)}`, 'Plan done');
       }
 
+      const taskMatch = promptArg.match(/\.dalang\/tasks\/([A-Za-z0-9_-]+)\/result\.json/);
+      if (taskMatch) {
+        const extId = taskMatch[1];
+        const target = path.join(cwd, '.dalang', 'tasks', extId, 'result.json');
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.mkdirSync(path.join(cwd, 'src'), { recursive: true });
+        fs.writeFileSync(path.join(cwd, 'src', 'index.ts'), 'export const ok = true;\n');
+        fs.writeFileSync(
+          target,
+          JSON.stringify({
+            task_id: extId,
+            status: 'completed',
+            changed_files: ['src/index.ts'],
+            summary: `Completed ${extId}`,
+            notes: [],
+            blockers: [],
+            verify_command: 'pnpm test',
+            verify_exit_code: 0,
+          }),
+        );
+        return emit(`sess-exec-${extId}`, `Task ${extId} done`);
+      }
+
       return emit('sess-generic', 'ok');
     },
   };
@@ -199,7 +222,7 @@ describe('@dalang/server API (v0.1 Rembuk)', () => {
     try {
       const health = await app.inject({ method: 'GET', url: '/api/health' });
       expect(health.statusCode).toBe(200);
-      expect(health.json()).toEqual({ ok: true, version: '0.1.0' });
+      expect(health.json()).toEqual({ ok: true, version: '0.2.0' });
 
       const providersRes = await app.inject({ method: 'GET', url: '/api/providers/status' });
       expect(providersRes.statusCode).toBe(200);
@@ -261,6 +284,94 @@ describe('@dalang/server API (v0.1 Rembuk)', () => {
         );
         expect(() => PlanContractSchema.parse(onDiskPlan)).not.toThrow();
       }
+    } finally {
+      await close();
+    }
+  });
+
+  it('runs v0.2 Assign & Navigate execution, log replay, and checkpoint rollback via HTTP API', async () => {
+    const dbDir = makeTempDir('dalang-srv-v2-db-');
+    const projDir = path.join(makeTempDir('dalang-srv-v2-proj-'), 'app');
+    const runner = createMultiProjectFakeRunner({
+      [projDir]: { title: 'Notes App', stack: ['TypeScript'], taskTitle: 'Create notes store' },
+    });
+
+    const { app, close } = await createDalangServer({
+      dbPath: path.join(dbDir, 'dalang.db'),
+      runner,
+    });
+
+    try {
+      const routingRes = await app.inject({ method: 'GET', url: '/api/routing' });
+      expect(routingRes.statusCode).toBe(200);
+      expect(routingRes.json().rules.length).toBeGreaterThanOrEqual(4);
+
+      const createRes = await app.inject({
+        method: 'POST',
+        url: '/api/projects',
+        payload: { mode: 'create', name: 'Notes App', path: projDir },
+      });
+      const projectId = createRes.json().project.id as string;
+
+      await app.inject({ method: 'POST', url: `/api/projects/${projectId}/discuss/finish` });
+      await app.inject({ method: 'POST', url: `/api/projects/${projectId}/briefs/1/approve` });
+      const planRes = await app.inject({
+        method: 'POST',
+        url: `/api/projects/${projectId}/plan/generate`,
+      });
+      const taskId = planRes.json().plan.tasks[0].id as string;
+
+      const approvePlanRes = await app.inject({
+        method: 'POST',
+        url: `/api/projects/${projectId}/plan/approve`,
+      });
+      expect(approvePlanRes.statusCode).toBe(200);
+
+      // Override task profile in Assign
+      const assignRes = await app.inject({
+        method: 'PATCH',
+        url: `/api/projects/${projectId}/tasks/${taskId}/profile`,
+        payload: { profileOverride: 'profile-coder-heavy' },
+      });
+      expect(assignRes.statusCode).toBe(200);
+      expect(assignRes.json().task.profileOverride).toBe('profile-coder-heavy');
+
+      // Start sequential execution
+      const startRes = await app.inject({
+        method: 'POST',
+        url: `/api/projects/${projectId}/execution/start`,
+        payload: { allowUnconfined: true },
+      });
+      expect(startRes.statusCode).toBe(202);
+      const runId = startRes.json().run.id as string;
+
+      // Poll until run finishes
+      let execState: { activeRun: unknown; runs: Array<{ id: string; status: string }>; dispatchPreviews: Array<{ status: string }> } | null = null;
+      for (let i = 0; i < 40; i++) {
+        const res = await app.inject({ method: 'GET', url: `/api/projects/${projectId}/execution` });
+        execState = res.json().execution;
+        if (!execState?.activeRun && execState?.runs[0]?.status === 'completed') break;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+
+      expect(execState?.runs[0].status).toBe('completed');
+      expect(execState?.dispatchPreviews[0].status).toBe('done');
+      expect(fs.existsSync(path.join(projDir, 'src', 'index.ts'))).toBe(true);
+
+      const logRes = await app.inject({
+        method: 'GET',
+        url: `/api/projects/${projectId}/runs/${runId}/log`,
+      });
+      expect(logRes.statusCode).toBe(200);
+      expect(logRes.json().content).toContain('T-001');
+
+      const rollbackRes = await app.inject({
+        method: 'POST',
+        url: `/api/projects/${projectId}/runs/${runId}/rollback`,
+      });
+      expect(rollbackRes.statusCode).toBe(200);
+      expect(rollbackRes.json().run.status).toBe('rolled_back');
+      expect(fs.existsSync(path.join(projDir, 'src', 'index.ts'))).toBe(false);
     } finally {
       await close();
     }

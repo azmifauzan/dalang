@@ -145,7 +145,7 @@ export class CodexAdapter implements CliAdapter {
               jsonrpc: '2.0',
               id: 1,
               method: 'initialize',
-              params: { clientInfo: { name: 'dalang', version: '0.1.0' } },
+              params: { clientInfo: { name: 'dalang', version: '0.2.0' } },
             }) +
               '\n' +
               JSON.stringify({ jsonrpc: '2.0', method: 'initialized', params: {} }) +
@@ -225,8 +225,13 @@ export class CodexAdapter implements CliAdapter {
 
     // Codex's own sandbox cannot nest inside bwrap ("No permissions to create a new namespace"),
     // so when bwrap is the boundary Codex runs unsandboxed inside it.
-    const sandboxMode = (await findBwrap(this.runner)) ? 'danger-full-access' : 'workspace-write';
-    args.push('-c', `sandbox_mode="${sandboxMode}"`);
+    const sandboxMode =
+      options.permissionMode === 'read-only'
+        ? 'read-only'
+        : (await findBwrap(this.runner))
+          ? 'danger-full-access'
+          : 'workspace-write';
+    args.push('-c', `sandbox_mode="${sandboxMode}"`, '-c', 'approval_policy="never"');
     if (options.model) {
       args.push('-m', options.model);
     }
@@ -255,6 +260,7 @@ export class CodexAdapter implements CliAdapter {
         cwd: options.projectPath,
         timeoutMs: options.timeoutMs ?? 600_000,
         idleTimeoutMs: options.idleTimeoutMs ?? 180_000,
+        signal: options.signal,
         onStdoutLine: (line) => {
           logger.write(line);
           options.onLogLine?.(line);
@@ -281,7 +287,7 @@ export class CodexAdapter implements CliAdapter {
         },
       });
 
-      if (res.timedOut || res.idleTimedOut) {
+      if (!res.aborted && (res.timedOut || res.idleTimedOut)) {
         throw new Error(`Codex turn timed out (${res.idleTimedOut ? 'idle' : 'total'})`);
       }
 
@@ -307,6 +313,7 @@ export class CodexAdapter implements CliAdapter {
         stdout: res.stdout,
         stderr: res.stderr,
         logFilePath: options.logFilePath,
+        aborted: Boolean(res.aborted),
       };
     } finally {
       logger.close();

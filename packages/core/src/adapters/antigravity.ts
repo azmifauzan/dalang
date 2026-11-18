@@ -1,7 +1,7 @@
 import os from 'node:os';
 import type { ProviderStatus, ProviderUsage, UsageWindow } from '@dalang/shared';
 import { createTurnLogger } from './logger.js';
-import { wrapWithBwrap } from './sandbox.js';
+import { findBwrap, wrapWithBwrap } from './sandbox.js';
 import type { AdapterTurnOptions, AdapterTurnResult, CliAdapter, CliRunner } from './types.js';
 
 interface AgyUsageJson {
@@ -163,12 +163,17 @@ export class AntigravityAdapter implements CliAdapter {
       throw new Error('Antigravity CLI (agy) is not installed');
     }
 
+    const bwrapAvailable = Boolean(await findBwrap(this.runner));
+    const modeFlag = options.permissionMode === 'read-only' ? 'plan' : 'accept-edits';
     const args: string[] = [
       '--output-format',
       'stream-json',
       '--mode',
-      'accept-edits',
+      modeFlag,
     ];
+    if (options.permissionMode === 'workspace-write' && bwrapAvailable) {
+      args.push('--dangerously-skip-permissions');
+    }
 
     if (options.sessionId) {
       args.push('--conversation', options.sessionId);
@@ -200,6 +205,7 @@ export class AntigravityAdapter implements CliAdapter {
         cwd: options.projectPath,
         timeoutMs: options.timeoutMs ?? 600_000,
         idleTimeoutMs: options.idleTimeoutMs ?? 180_000,
+        signal: options.signal,
         onStdoutLine: (line) => {
           logger.write(line);
           options.onLogLine?.(line);
@@ -237,7 +243,7 @@ export class AntigravityAdapter implements CliAdapter {
         },
       });
 
-      if (res.timedOut || res.idleTimedOut) {
+      if (!res.aborted && (res.timedOut || res.idleTimedOut)) {
         throw new Error(`Antigravity turn timed out (${res.idleTimedOut ? 'idle' : 'total'})`);
       }
 
@@ -249,6 +255,7 @@ export class AntigravityAdapter implements CliAdapter {
         stdout: res.stdout,
         stderr: res.stderr,
         logFilePath: options.logFilePath,
+        aborted: Boolean(res.aborted),
       };
     } finally {
       logger.close();

@@ -2,8 +2,10 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import type { ProjectSummary } from '@dalang/shared';
 import { AgreeView } from './components/AgreeView.js';
+import { AssignView } from './components/AssignView.js';
 import { DiscussView } from './components/DiscussView.js';
 import { ListView } from './components/ListView.js';
+import { NavigateView } from './components/NavigateView.js';
 import { ProjectsView } from './components/ProjectsView.js';
 import { ProvidersView } from './components/ProvidersView.js';
 import { EmptyPanel } from './components/StateViews.js';
@@ -13,7 +15,7 @@ import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { NativeSelect } from '@/components/ui/native-select';
 
-type RouteView = 'projects' | 'discuss' | 'agree' | 'list' | 'providers';
+type RouteView = 'projects' | 'discuss' | 'agree' | 'list' | 'assign' | 'navigate' | 'providers';
 
 const STAGE_ITEMS: Array<{
   id: 'discuss' | 'agree' | 'list' | 'assign' | 'navigate' | 'guard';
@@ -58,6 +60,7 @@ export function App() {
   });
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [liveLogs, setLiveLogs] = useState<string[]>([]);
+  const [runLogsByRunId, setRunLogsByRunId] = useState<Record<string, string[]>>({});
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -82,6 +85,7 @@ export function App() {
           const msg = JSON.parse(ev.data as string) as {
             type: string;
             projectId?: string;
+            runId?: string;
             line?: string;
           };
           if (msg.type === 'lead.turn_started' && msg.projectId === activeProjectId) {
@@ -95,7 +99,22 @@ export function App() {
             qc.invalidateQueries({ queryKey: ['projects'] });
           } else if (msg.type === 'plan.updated' && msg.projectId) {
             qc.invalidateQueries({ queryKey: ['plan', msg.projectId] });
+            qc.invalidateQueries({ queryKey: ['execution', msg.projectId] });
             qc.invalidateQueries({ queryKey: ['projects'] });
+          } else if (msg.type === 'run.started' && msg.projectId && msg.runId) {
+            setRunLogsByRunId((prev) => ({ ...prev, [msg.runId!]: [] }));
+            qc.invalidateQueries({ queryKey: ['execution', msg.projectId] });
+          } else if (msg.type === 'run.log' && msg.projectId && msg.runId && msg.line) {
+            setRunLogsByRunId((prev) => ({
+              ...prev,
+              [msg.runId!]: [...(prev[msg.runId!] ?? []).slice(-300), msg.line!],
+            }));
+          } else if (msg.type === 'run.finished' && msg.projectId) {
+            qc.invalidateQueries({ queryKey: ['execution', msg.projectId] });
+            qc.invalidateQueries({ queryKey: ['plan', msg.projectId] });
+            if (msg.runId) {
+              qc.invalidateQueries({ queryKey: ['run-log', msg.projectId, msg.runId] });
+            }
           }
         } catch {
           // ignore malformed event
@@ -202,7 +221,7 @@ export function App() {
                 />
               </svg>
               <span className="text-base font-bold tracking-tight">DALANG</span>
-              <Badge>v0.1</Badge>
+              <Badge>v0.2</Badge>
             </button>
 
             {activeProject && (
@@ -336,7 +355,7 @@ export function App() {
               className="mx-auto flex max-w-7xl flex-wrap items-center gap-2 px-4 py-2"
             >
               {STAGE_ITEMS.map((stage) => {
-                const isLive = stage.availableIn === 'v0.1';
+                const isLive = stage.availableIn === 'v0.1' || stage.availableIn === 'v0.2';
                 const isActive = view === stage.id;
                 return (
                   <Button
@@ -383,20 +402,26 @@ export function App() {
 
         {view === 'providers' && <ProvidersView />}
 
-        {(view === 'discuss' || view === 'agree' || view === 'list') && !activeProject && (
-          <EmptyPanel
-            title="Select or create a project first"
-            description="No active project is selected. Create a new folder or open an existing git repository in Projects."
-            action={
-              <Button type="button" onClick={() => setView('projects')} >
-                Go to Projects
-              </Button>
-            }
-          />
-        )}
+        {(view === 'discuss' ||
+          view === 'agree' ||
+          view === 'list' ||
+          view === 'assign' ||
+          view === 'navigate') &&
+          !activeProject && (
+            <EmptyPanel
+              title="Select or create a project first"
+              description="No active project is selected. Create a new folder or open an existing git repository in Projects."
+              action={
+                <Button type="button" onClick={() => setView('projects')}>
+                  Go to Projects
+                </Button>
+              }
+            />
+          )}
 
         {view === 'discuss' && activeProject && (
           <DiscussView
+            key={activeProject.id}
             project={activeProject}
             liveLogs={liveLogs}
             onGoToAgree={() => setView('agree')}
@@ -405,6 +430,7 @@ export function App() {
 
         {view === 'agree' && activeProject && (
           <AgreeView
+            key={activeProject.id}
             project={activeProject}
             onGoToDiscuss={() => setView('discuss')}
             onGoToList={() => setView('list')}
@@ -413,8 +439,29 @@ export function App() {
 
         {view === 'list' && activeProject && (
           <ListView
+            key={activeProject.id}
             project={activeProject}
             onGoToAgree={() => setView('agree')}
+            onGoToAssign={() => setView('assign')}
+          />
+        )}
+
+        {view === 'assign' && activeProject && (
+          <AssignView
+            key={activeProject.id}
+            project={activeProject}
+            onGoToList={() => setView('list')}
+            onGoToNavigate={() => setView('navigate')}
+          />
+        )}
+
+        {view === 'navigate' && activeProject && (
+          <NavigateView
+            key={activeProject.id}
+            project={activeProject}
+            liveLogsByRunId={runLogsByRunId}
+            onGoToList={() => setView('list')}
+            onGoToAssign={() => setView('assign')}
           />
         )}
       </main>

@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import type { RunStatus } from '@dalang/shared';
 
 export type DalangEvent =
   | { type: 'lead.turn_started'; projectId: string; phase: string; provider: string }
@@ -6,7 +7,24 @@ export type DalangEvent =
   | { type: 'lead.turn_finished'; projectId: string; phase: string; ok: boolean; error?: string }
   | { type: 'discuss.updated'; projectId: string }
   | { type: 'brief.updated'; projectId: string; version: number }
-  | { type: 'plan.updated'; projectId: string };
+  | { type: 'plan.updated'; projectId: string }
+  | {
+      type: 'run.started';
+      projectId: string;
+      taskId: string;
+      runId: string;
+      profileName: string;
+      provider: string;
+    }
+  | { type: 'run.log'; projectId: string; taskId: string; runId: string; line: string }
+  | {
+      type: 'run.finished';
+      projectId: string;
+      taskId: string;
+      runId: string;
+      status: RunStatus;
+      error?: string;
+    };
 
 export class DalangEventBus extends EventEmitter {
   emitEvent(event: DalangEvent): void {

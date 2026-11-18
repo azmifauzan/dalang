@@ -1,7 +1,7 @@
 import os from 'node:os';
 import type { ProviderStatus, ProviderUsage, UsageWindow } from '@dalang/shared';
 import { createTurnLogger } from './logger.js';
-import { wrapWithBwrap } from './sandbox.js';
+import { findBwrap, wrapWithBwrap } from './sandbox.js';
 import type { AdapterTurnOptions, AdapterTurnResult, CliAdapter, CliRunner } from './types.js';
 
 export function parseClaudeUsageText(text: string): UsageWindow[] {
@@ -162,6 +162,15 @@ export class ClaudeCodeAdapter implements CliAdapter {
       throw new Error('Claude Code CLI (claude) is not installed');
     }
 
+    const bwrapAvailable = Boolean(await findBwrap(this.runner));
+    const permissionFlag =
+      options.permissionMode === 'read-only'
+        ? 'plan'
+        : options.permissionMode === 'workspace-write'
+          ? bwrapAvailable
+            ? 'bypassPermissions'
+            : 'auto'
+          : 'acceptEdits';
     const args: string[] = [
       '-p',
       options.prompt,
@@ -173,7 +182,7 @@ export class ClaudeCodeAdapter implements CliAdapter {
       '--strict-mcp-config',
       '--disable-slash-commands',
       '--permission-mode',
-      'acceptEdits',
+      permissionFlag,
     ];
 
     if (options.sessionId) {
@@ -205,6 +214,7 @@ export class ClaudeCodeAdapter implements CliAdapter {
         cwd: options.projectPath,
         timeoutMs: options.timeoutMs ?? 600_000,
         idleTimeoutMs: options.idleTimeoutMs ?? 180_000,
+        signal: options.signal,
         onStdoutLine: (line) => {
           logger.write(line);
           options.onLogLine?.(line);
@@ -238,7 +248,7 @@ export class ClaudeCodeAdapter implements CliAdapter {
       });
 
       const text = resultText || assistantChunks.join('\n').trim();
-      if (res.timedOut || res.idleTimedOut) {
+      if (!res.aborted && (res.timedOut || res.idleTimedOut)) {
         throw new Error(`Claude turn timed out (${res.idleTimedOut ? 'idle' : 'total'})`);
       }
 
@@ -250,6 +260,7 @@ export class ClaudeCodeAdapter implements CliAdapter {
         stdout: res.stdout,
         stderr: res.stderr,
         logFilePath: options.logFilePath,
+        aborted: Boolean(res.aborted),
       };
     } finally {
       logger.close();

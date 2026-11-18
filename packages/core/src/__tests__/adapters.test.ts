@@ -137,5 +137,21 @@ describe('Provider adapters & bwrap wrapper', () => {
     expect(r3.text).toBe('ok-agy');
     expect(calls[2].args.join(' ')).toContain('--conversation prev-a');
     expect(calls[2].args.join(' ')).toContain('-p=hello');
+
+    await claude.runTurn({
+      projectPath: projectDir,
+      prompt: 'exec',
+      permissionMode: 'workspace-write',
+    });
+    expect(calls[3].args.join(' ')).toContain(
+      process.platform === 'linux' ? '--permission-mode bypassPermissions' : '--permission-mode auto',
+    );
+
+    await agy.runTurn({
+      projectPath: projectDir,
+      prompt: 'review',
+      permissionMode: 'read-only',
+    });
+    expect(calls[4].args.join(' ')).toContain('--mode plan');
   });
 });

@@ -56,6 +56,19 @@ export function ensureSymlinks(projectPath: string): { claudeMd: boolean; agents
   };
 }
 
+const DEFAULT_GITIGNORE = [
+  'node_modules/',
+  '.venv/',
+  '__pycache__/',
+  'dist/',
+  'build/',
+  '.env',
+  '.env.*',
+  '*.log',
+  '.DS_Store',
+  '',
+].join('\n');
+
 export function buildDefaultProjectMd(name: string, stackHint?: string): string {
   const stackLine = stackHint?.trim() || 'To be confirmed with Lead during Discuss phase.';
   return `# ${name}
@@ -89,6 +102,12 @@ export function ensureProjectScaffold(
   const dalangIgnore = path.join(getProjectDalangDir(projectPath), '.gitignore');
   if (!fs.existsSync(dalangIgnore)) {
     writeArtifactFile(projectPath, dalangIgnore, 'tmp/\n', 'refuse');
+  }
+
+  // Checkpoints run `git add -A`; without an ignore file an agent's `npm install` would be committed.
+  const rootIgnore = path.join(projectPath, '.gitignore');
+  if (!fs.existsSync(rootIgnore)) {
+    writeArtifactFile(projectPath, rootIgnore, DEFAULT_GITIGNORE, 'refuse');
   }
 
   const projectMdPath = path.join(projectPath, 'PROJECT.md');

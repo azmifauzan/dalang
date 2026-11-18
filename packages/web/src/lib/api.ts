@@ -7,12 +7,16 @@ import type {
   DiscussMessageDTO,
   DiscussMessageInput,
   DiscussRound,
+  ExecutionStateDTO,
   PlanDTO,
   ProjectSummary,
   ProviderId,
   ProviderStatus,
   ReorderTasksInput,
+  RoutingRuleDTO,
+  StartExecutionInput,
   TaskDTO,
+  TaskRunDTO,
   UpdateTaskInput,
 } from '@dalang/shared';
 
@@ -130,6 +134,48 @@ export const api = {
     request<{ plan: PlanDTO }>(`/api/projects/${id}/tasks/reorder`, {
       method: 'POST',
       body: JSON.stringify(body),
+    }),
+
+  // Assign & Navigate (v0.2 Jalan)
+  listRoutingRules: () => request<{ rules: RoutingRuleDTO[] }>('/api/routing'),
+  getExecutionState: (id: string) =>
+    request<{ execution: ExecutionStateDTO }>(`/api/projects/${id}/execution`),
+  startExecution: (id: string, body: Partial<StartExecutionInput> = {}) =>
+    request<{ started: boolean; run: TaskRunDTO | null; queueMode: boolean }>(
+      `/api/projects/${id}/execution/start`,
+      {
+        method: 'POST',
+        body: JSON.stringify(body),
+      },
+    ),
+  stopExecution: (id: string) =>
+    request<{ stopped: boolean }>(`/api/projects/${id}/execution/stop`, {
+      method: 'POST',
+    }),
+  runTask: (
+    id: string,
+    taskId: string,
+    body: { allowUnconfined?: boolean; resumeSession?: boolean } = {},
+  ) =>
+    request<{ started: boolean; run: TaskRunDTO | null; queueMode: boolean }>(
+      `/api/projects/${id}/tasks/${taskId}/run`,
+      {
+        method: 'POST',
+        body: JSON.stringify(body),
+      },
+    ),
+  assignTaskProfile: (id: string, taskId: string, profileOverride: string | null) =>
+    request<{ task: TaskDTO }>(`/api/projects/${id}/tasks/${taskId}/profile`, {
+      method: 'PATCH',
+      body: JSON.stringify({ profileOverride }),
+    }),
+  getRunLog: (id: string, runId: string) =>
+    request<{ runId: string; logPath: string; content: string }>(
+      `/api/projects/${id}/runs/${runId}/log`,
+    ),
+  rollbackRun: (id: string, runId: string) =>
+    request<{ run: TaskRunDTO }>(`/api/projects/${id}/runs/${runId}/rollback`, {
+      method: 'POST',
     }),
 
   // Providers & Profiles

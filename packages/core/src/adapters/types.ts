@@ -4,6 +4,7 @@ export interface RunCommandOptions {
   cwd: string;
   timeoutMs?: number;
   idleTimeoutMs?: number;
+  signal?: AbortSignal;
   stdinData?: string;
   interactiveStdin?: boolean;
   onSpawn?: (controls: { writeStdin: (data: string) => void; endStdin: () => void; kill: () => void }) => void;
@@ -18,6 +19,7 @@ export interface RunCommandResult {
   stderr: string;
   timedOut: boolean;
   idleTimedOut: boolean;
+  aborted?: boolean;
 }
 
 export interface CliRunner {
@@ -31,9 +33,11 @@ export interface AdapterTurnOptions {
   sessionId?: string | null;
   model?: string | null;
   effort?: EffortLevel;
+  permissionMode?: 'workspace-write' | 'read-only' | 'accept-edits';
   outputFilePath?: string;
   timeoutMs?: number;
   idleTimeoutMs?: number;
+  signal?: AbortSignal;
   logFilePath?: string;
   onLogLine?: (line: string) => void;
 }
@@ -46,6 +50,7 @@ export interface AdapterTurnResult {
   stdout: string;
   stderr: string;
   logFilePath?: string;
+  aborted?: boolean;
 }
 
 export interface CliAdapter {

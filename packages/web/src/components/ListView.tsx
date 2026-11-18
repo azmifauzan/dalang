@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, type DragEvent, type FormEvent } from 'react';
 import type {
+  AgentProfileDTO,
   CreateTaskInput,
   EditableTaskStatus,
   PlanTaskRole,
@@ -22,8 +23,10 @@ const COLUMNS: Array<{ id: TaskStatus; title: string; note: string }> = [
   { id: 'draft', title: 'Draft', note: 'Needs review before ready' },
   { id: 'needs_split', title: 'Needs split', note: 'Flagged for decomposition' },
   { id: 'ready', title: 'Ready', note: 'Scoped & ready for approval' },
-  { id: 'approved', title: 'Approved', note: 'Locked for v0.2 execution' },
+  { id: 'approved', title: 'Approved', note: 'Ready for Assign & Navigate' },
 ];
+
+const EXECUTION_STATUSES = new Set<TaskStatus>(['approved', 'running', 'done', 'failed', 'stopped']);
 
 function linesToArray(text: string): string[] {
   return text
@@ -68,7 +71,10 @@ function emptyTaskForm(defaultMilestone = 'M1'): TaskFormState {
   };
 }
 
-function taskToForm(task: TaskDTO): TaskFormState {
+function taskToForm(task: TaskDTO, profiles: AgentProfileDTO[]): TaskFormState {
+  const matchedProfile = task.profileOverride
+    ? profiles.find((p) => p.id === task.profileOverride || p.name === task.profileOverride)
+    : undefined;
   return {
     id: task.id,
     externalId: task.externalId,
@@ -76,14 +82,17 @@ function taskToForm(task: TaskDTO): TaskFormState {
     milestone: task.milestone,
     role: task.role,
     complexity: task.complexity,
-    status: task.status === 'approved' ? 'ready' : task.status,
+    status:
+      task.status === 'draft' || task.status === 'needs_split' || task.status === 'ready'
+        ? task.status
+        : 'ready',
     goal: task.goal,
     filesAllowed: task.filesAllowed.join('\n'),
     filesReference: task.filesReference.join('\n'),
     acceptanceCriteria: task.acceptanceCriteria.join('\n'),
     verify: task.verify,
     needsSplit: task.needsSplit,
-    profileOverride: task.profileOverride ?? '',
+    profileOverride: matchedProfile?.id ?? task.profileOverride ?? '',
     dependsOn: task.dependsOn,
   };
 }
@@ -91,9 +100,11 @@ function taskToForm(task: TaskDTO): TaskFormState {
 export function ListView({
   project,
   onGoToAgree,
+  onGoToAssign,
 }: {
   project: ProjectSummary;
   onGoToAgree: () => void;
+  onGoToAssign?: () => void;
 }) {
   const qc = useQueryClient();
   const [milestoneFilter, setMilestoneFilter] = useState<string>('ALL');
@@ -182,7 +193,7 @@ export function ListView({
   };
 
   const openEditModal = (task: TaskDTO) => {
-    setFormState(taskToForm(task));
+    setFormState(taskToForm(task, profiles));
     setFormError(null);
     setConfirmingDelete(false);
     setModalOpen(true);
@@ -339,6 +350,12 @@ export function ListView({
               </Button>
             </>
           )}
+
+          {plan && isLocked && onGoToAssign && (
+            <Button type="button" onClick={onGoToAssign}>
+              Open Assign
+            </Button>
+          )}
         </div>
       </div>
 
@@ -393,7 +410,9 @@ export function ListView({
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
           {COLUMNS.map((col) => {
             const colTasks = visibleTasks
-              .filter((t) => t.status === col.id)
+              .filter((t) =>
+                col.id === 'approved' ? EXECUTION_STATUSES.has(t.status) : t.status === col.id,
+              )
               .sort((a, b) => a.position - b.position);
 
             return (
@@ -446,6 +465,7 @@ export function ListView({
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <Badge>{task.externalId}</Badge>
                           <div className="flex flex-wrap items-center gap-1 text-xs">
+                            {task.status !== col.id && <Badge>{task.status}</Badge>}
                             <Badge>{task.milestone}</Badge>
                             <Badge>{task.complexity}</Badge>
                           </div>
@@ -459,7 +479,16 @@ export function ListView({
                         <div className="mt-2 space-y-1 text-xs" style={{ color: 'var(--text-secondary)' }}>
                           <div>
                             Role: <strong>{task.role}</strong> · Profile:{' '}
-                            <strong>{task.profileOverride || 'routing default'}</strong>
+                            <strong>
+                              {(task.profileOverride &&
+                                profiles.find(
+                                  (p) =>
+                                    p.id === task.profileOverride ||
+                                    p.name === task.profileOverride,
+                                )?.name) ||
+                                task.profileOverride ||
+                                'routing default'}
+                            </strong>
                           </div>
                           {task.dependsOn.length > 0 && (
                             <div className="font-mono-token">
@@ -634,7 +663,7 @@ export function ListView({
               >
                 <option value="">Use routing rule default</option>
                 {profiles.map((p) => (
-                  <option key={p.id} value={p.name}>
+                  <option key={p.id} value={p.id}>
                     {p.name} ({p.provider})
                   </option>
                 ))}

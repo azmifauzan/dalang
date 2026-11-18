@@ -12,8 +12,20 @@ export type TaskRole = z.infer<typeof TaskRoleSchema>;
 export const TaskComplexitySchema = z.enum(['low', 'medium', 'high']);
 export type TaskComplexity = z.infer<typeof TaskComplexitySchema>;
 
-export const TaskStatusSchema = z.enum(['draft', 'needs_split', 'ready', 'approved']);
+export const TaskStatusSchema = z.enum([
+  'draft',
+  'needs_split',
+  'ready',
+  'approved',
+  'running',
+  'done',
+  'failed',
+  'stopped',
+]);
 export type TaskStatus = z.infer<typeof TaskStatusSchema>;
+
+export const RunStatusSchema = z.enum(['running', 'completed', 'failed', 'stopped', 'rolled_back']);
+export type RunStatus = z.infer<typeof RunStatusSchema>;
 
 /** Statuses a user may set by hand. `approved` is only reached through plan approval. */
 export const EditableTaskStatusSchema = z.enum(['draft', 'needs_split', 'ready']);
@@ -139,6 +151,21 @@ export const PlanContractSchema = z
     if (plan.tasks.some((t) => visit(t.id))) issue('Task dependencies contain a cycle');
   });
 export type PlanContract = z.infer<typeof PlanContractSchema>;
+
+/**
+ * Task execution result written by Coder to `.dalang/tasks/{id}/result.json`.
+ */
+export const TaskResultContractSchema = z.object({
+  task_id: z.string().min(1),
+  status: z.enum(['completed', 'blocked', 'failed']),
+  changed_files: z.array(z.string()).default([]),
+  summary: z.string().min(1),
+  notes: z.array(z.string()).default([]),
+  blockers: z.array(z.string()).default([]),
+  verify_command: z.string().optional(),
+  verify_exit_code: z.number().int().nullable().optional(),
+});
+export type TaskResultContract = z.infer<typeof TaskResultContractSchema>;
 
 /**
  * Split subtask response when Lead splits a task with `needs_split: true`.
@@ -343,4 +370,86 @@ export interface AgentProfileDTO {
   maxParallel: number;
   isDefault: boolean;
   createdAt: string;
+}
+
+export const StartExecutionInputSchema = z.object({
+  taskId: z.string().min(1).optional(),
+  allowUnconfined: z.boolean().default(false),
+  resumeSession: z.boolean().default(false),
+});
+export type StartExecutionInput = z.infer<typeof StartExecutionInputSchema>;
+
+export const AssignTaskProfileInputSchema = z.object({
+  profileOverride: z.string().min(1).nullable(),
+});
+export type AssignTaskProfileInput = z.infer<typeof AssignTaskProfileInputSchema>;
+
+export interface RoutingRuleDTO {
+  id: string;
+  sortOrder: number;
+  role: TaskRole;
+  complexity: TaskComplexity | null;
+  profileId: string;
+  profileName: string;
+  fallbackProfileId: string | null;
+  fallbackProfileName: string | null;
+}
+
+export interface TaskDispatchPreviewDTO {
+  taskId: string;
+  externalId: string;
+  title: string;
+  milestone: string;
+  role: PlanTaskRole;
+  complexity: TaskComplexity;
+  status: TaskStatus;
+  dependsOn: string[];
+  dependenciesSatisfied: boolean;
+  eligible: boolean;
+  blockedReason: string | null;
+  resolvedProfileId: string;
+  resolvedProfileName: string;
+  resolvedProvider: ProviderId;
+  resolvedModel: string;
+  fallbackProfileId: string | null;
+  fallbackProfileName: string | null;
+  selectionSource: 'override' | 'routing_rule' | 'default';
+}
+
+export interface TaskRunDTO {
+  id: string;
+  projectId: string;
+  taskId: string;
+  taskExternalId: string;
+  taskTitle: string;
+  profileId: string;
+  profileName: string;
+  provider: ProviderId;
+  model: string | null;
+  status: RunStatus;
+  cliSessionId: string | null;
+  attempt: number;
+  usedFallback: boolean;
+  startedAt: string;
+  finishedAt: string | null;
+  durationMs: number | null;
+  exitCode: number | null;
+  failureReason: string | null;
+  commitBefore: string | null;
+  commitAfter: string | null;
+  logPath: string;
+  resultPath: string | null;
+  result: TaskResultContract | null;
+  scopeWarnings: string[];
+}
+
+export interface ExecutionStateDTO {
+  projectId: string;
+  planStatus: 'none' | 'draft' | 'approved';
+  activeRun: TaskRunDTO | null;
+  queueRunning: boolean;
+  sandboxReady: boolean;
+  platform: string;
+  dispatchPreviews: TaskDispatchPreviewDTO[];
+  runs: TaskRunDTO[];
 }

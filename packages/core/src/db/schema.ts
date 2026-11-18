@@ -136,3 +136,31 @@ export const providerEvents = sqliteTable('provider_events', {
   detail: text('detail'),
   createdAt: text('created_at').notNull(),
 });
+
+export const runs = sqliteTable('runs', {
+  id: text('id').primaryKey(),
+  projectId: text('project_id')
+    .notNull()
+    .references(() => projects.id, { onDelete: 'cascade' }),
+  taskId: text('task_id')
+    .notNull()
+    .references(() => tasks.id, { onDelete: 'cascade' }),
+  profileId: text('profile_id')
+    .notNull()
+    .references(() => agentProfiles.id),
+  provider: text('provider').notNull(),
+  model: text('model'),
+  status: text('status').notNull().default('running'),
+  cliSessionId: text('cli_session_id'),
+  attempt: integer('attempt').notNull().default(1),
+  usedFallback: integer('used_fallback', { mode: 'boolean' }).notNull().default(false),
+  startedAt: text('started_at').notNull(),
+  finishedAt: text('finished_at'),
+  exitCode: integer('exit_code'),
+  failureReason: text('failure_reason'),
+  commitBefore: text('commit_before'),
+  commitAfter: text('commit_after'),
+  logPath: text('log_path').notNull(),
+  resultPath: text('result_path'),
+  scopeWarningsJson: text('scope_warnings_json').notNull().default('[]'),
+});

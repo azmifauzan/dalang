@@ -29,6 +29,14 @@ export function getProjectTmpDir(projectPath: string): string {
   return path.join(getProjectDalangDir(projectPath), 'tmp');
 }
 
+export function getProjectTasksDir(projectPath: string): string {
+  return path.join(getProjectDalangDir(projectPath), 'tasks');
+}
+
+export function getTaskArtifactDir(projectPath: string, taskExternalId: string): string {
+  return path.join(getProjectTasksDir(projectPath), taskExternalId);
+}
+
 export function ensureDir(dirPath: string): void {
   fs.mkdirSync(dirPath, { recursive: true });
 }
