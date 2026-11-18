@@ -2,13 +2,19 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
+## Unreleased
+
+Security
+- The git guard also refuses `hook.*`, `trace2.*`, and external diff or merge drivers in the repo config. None of them ran on git 2.53 in a test of the commands DALANG uses; this keeps a newer git from turning them into a way out.
+- Docs and the Providers page now say plainly that an agy run can read the whole desktop keyring.
+
 ## 0.2.1, 18 Nov
 
 A security release. Everyone on 0.2.0 should upgrade: the git guard shipped there could be bypassed.
 
 Security
 - The git guard introduced in 0.2.0 could be bypassed: a clean filter in `.git/config.worktree` (with `extensions.worktreeConfig`) or in an included file still ran on the host at `git add`, and a git error let the check pass. It now reads every config scope git uses and fails closed. Confirmed with a test before the fix.
-- agy no longer gets the real desktop session bus, which can start units outside the sandbox. It runs behind a filtered `xdg-dbus-proxy` that allows only the keyring (`org.freedesktop.secrets`), and `/run/user` is hidden for every provider.
+- agy no longer gets the real desktop session bus, which can start units outside the sandbox. It runs behind a filtered `xdg-dbus-proxy` that allows only the Secret Service (`org.freedesktop.secrets`), and `/run/user` is hidden for every provider. That service is the whole desktop keyring, so an agy run can still read every secret in it.
 - Deleting a task result no longer follows a planted folder link outside the project.
 
 ## 0.2.0 (Jalan), 18 Nov

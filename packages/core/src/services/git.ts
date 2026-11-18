@@ -11,7 +11,19 @@ const SAFE_GIT_CONFIG = ['core.hooksPath=/dev/null', 'core.fsmonitor=false', 'co
  * the repo config or a worktree config (and selected by a `.gitattributes` the agent also controls)
  * would run on the host at `git add`, so config that can execute commands is refused before any git operation.
  */
-const UNSAFE_REPO_CONFIG = [/^filter\./i, /^include(if\..+)?\.path$/i, /^core\.worktree$/i];
+// Denylist, not allowlist: real repos carry many harmless local keys (remotes, branches, ssh commands).
+// Checked on git 2.53 against the commands DALANG runs (status, add, commit, diff, reset, clean): only filters
+// execute. `hook.*` (config-based hooks), `trace2.*` (writes to a chosen path), and external diff or merge
+// drivers are refused too, so a newer git cannot turn them into a way out. Revisit when the git version changes.
+const UNSAFE_REPO_CONFIG = [
+  /^filter\./i,
+  /^include(if\..+)?\.path$/i,
+  /^core\.worktree$/i,
+  /^hook\./i,
+  /^trace2\./i,
+  /^diff\.external$/i,
+  /^(diff|merge)\..+\.(command|textconv|driver)$/i,
+];
 // Settings that make git read a config the plain repo config does not show.
 const UNSAFE_ANY_SCOPE = [/^extensions\.worktreeconfig$/i];
 

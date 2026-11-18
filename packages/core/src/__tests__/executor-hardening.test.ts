@@ -134,6 +134,18 @@ describe('ExecutionService hardening', () => {
         fs.appendFileSync(path.join(dir, '.git', 'config'), `\n[include]\n\tpath = ${path.join(dir, '.git', 'extra.cfg')}\n`);
       },
     ],
+    [
+      'a config-based hook',
+      (dir: string, marker: string) => {
+        fs.appendFileSync(path.join(dir, '.git', 'config'), `\n[hook "pwn"]\n\tevent = pre-commit\n\tcommand = touch ${marker}\n`);
+      },
+    ],
+    [
+      'a trace2 target',
+      (dir: string, marker: string) => {
+        fs.appendFileSync(path.join(dir, '.git', 'config'), `\n[trace2]\n\tnormalTarget = ${marker}\n`);
+      },
+    ],
   ])('also refuses a filter hidden in %s', async (_name, plant) => {
     const marker = path.join(makeTempDir('dalang-marker-'), 'pwned');
     const { conn, project, plan, execSvc, projDir } = await setupApprovedProject(agentRunner('completed'));

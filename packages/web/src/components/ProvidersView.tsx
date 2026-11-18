@@ -123,7 +123,7 @@ export function ProvidersView() {
                   )}
                   {p.id === 'antigravity' && p.sandboxReady && (
                     <p className="mt-3 text-xs" style={{ color: 'var(--text-secondary)' }}>
-                      agy signs in through a filtered desktop keyring proxy (needs xdg-dbus-proxy and a desktop session).
+                      agy signs in through the desktop keyring, so a sandboxed agy run can read every secret stored there (needs xdg-dbus-proxy and a desktop session).
                     </p>
                   )}
 
