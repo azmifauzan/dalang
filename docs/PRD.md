@@ -193,7 +193,7 @@ All orchestrator decisions come from JSON files the agent writes to `.dalang/`, 
 
 | Area | Requirement |
 | --- | --- |
-| Network access | The server binds only to `127.0.0.1`. Access from outside the machine is disabled by default. |
+| Network access | The server binds only to `127.0.0.1`. Access from outside the machine is disabled by default. Requests whose `Host` or `Origin` is not a loopback name are refused (DNS rebinding guard). |
 | Credentials | DALANG stores no API keys or tokens. Authentication relies entirely on the user's official CLI logins. |
 | Isolation | Agents may only write inside the project folder. Every CLI runs through a `bwrap` sandbox wrapper (project folder read-write, rest of the filesystem read-only, separate `/tmp`). P0 on Linux; macOS via `sandbox-exec` (P1). Docker container mode remains an option (P2). A restrictive prompt is an additional layer, not the only barrier. |
 | Reliability | Pipeline state is saved to SQLite on every step transition. After a crash or restart, the pipeline resumes from the last completed step. |
@@ -222,7 +222,7 @@ The browser talks only to the local server. The server runs the official CLIs, a
 | Language | TypeScript 7.0 end to end | Task and agent output schemas are written once and shared by the UI and the server |
 | Runtime | Node.js 26 LTS ("Lithium", 26.13) | Active LTS since 28 Oct 2026, supported until Apr 2029. Node 22 is already in maintenance (ends Apr 2027). Mature subprocess and streaming support. `node-pty` (1.1) is optional only (live terminal view), because all three CLIs run without a TTY |
 | Server | Fastify 5.12 + @fastify/websocket 11 | Lightweight, suits long-running processes and log streaming |
-| Frontend | React 19.3 + Vite 8.3 + shadcn/ui (CLI 4.23, Tailwind 4.3) + TanStack Query 5.108 | Chat, kanban, and diff viewer are quick to assemble. Vite 8 needs Node 20.19+ or 22.12+ |
+| Frontend | React 19.3 + Vite 8.3 + shadcn/ui (Base UI primitives, Tailwind 4.3) + TanStack Query 5.108 | Chat, kanban, and dialogs are quick to assemble. The shadcn components are copied into `packages/web/src/components/ui` and restyled to `docs/DESIGN.md` (its palette, 4/6/8px radii, 44px targets, no blur or entrance animation); no icon library or web font is added. Vite 8 needs Node 20.19+ or 22.12+ |
 | Database | SQLite via better-sqlite3 13 + Drizzle ORM 0.45 | A single file, no database server. Drizzle 1.0 is at release candidate (rc.5); stay on 0.45 until 1.0 is stable. Node's built-in `node:sqlite` works on 26 but has no stable Drizzle driver yet |
 | Validation | Zod 4.6 | Agent output is validated before it is used for decisions |
 | Queue | p-queue 10 (in-process) | Per-provider parallel limits without needing Redis |
@@ -249,17 +249,19 @@ Tested on Linux with Claude Code (logged in), Codex 0.169.0, and agy 1.5.10, all
 | Resume across turns | ✅ | ✅ | ✅ |
 | Output conforming to a JSON schema | ✅ | ✅ | ✅ |
 | Refuses writes outside the project folder | ✅ | ✅ (but `/tmp` is writable) | ❌ |
-| Refuses outside writes when wrapped in `bwrap` | not tested | not tested | ✅ |
+| Refuses outside writes when wrapped in `bwrap` (run through the DALANG adapters) | ✅ | ✅ | ✅ |
 | Usage/limits readable before a run | ✅ `claude -p "/usage"` (text: 5-hour session and weekly % + reset time) | ✅ JSON-RPC `account/rateLimits/read` to `codex app-server` over stdio (`usedPercent`, `windowDurationMins`, `resetsAt`, `rateLimitReachedType`, `planType`) | ✅ `agy -p="/usage"` (text table: remaining 5-hour and weekly % per model group + reset time) |
 | Usage/limits readable during a run | ✅ `rate_limit_event` in the stream | ⚠️ only in the session file `~/.codex/sessions/**/*.jsonl` | ❌ not in the stream |
 
 Implementation notes:
 
-- Tested `bwrap` command: `bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --bind $PROJECT $PROJECT --bind $HOME/.gemini $HOME/.gemini --chdir $PROJECT <cli> ...`. Writes outside are denied, writes inside the project still work. Reading other files stays open (e.g. `~/.ssh`); to close that, use an explicit list of binds.
+- Tested `bwrap` command: `bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --bind $PROJECT $PROJECT --bind $HOME/.gemini $HOME/.gemini --chdir $PROJECT <cli> ...`. Writes outside are denied, writes inside the project still work. Reading other files stays open (only the credential files and folders listed under Decisions are masked), and so does the network; closing those needs an explicit list of read-only binds and a filtering proxy, which is not done in v0.1.
 - Claude: `--bare` is not used because it skips the keychain login. Use `--setting-sources project --strict-mcp-config --disable-slash-commands` (context cache drops from about 121k to about 28k tokens).
 - The agy user settings (`~/.gemini/antigravity-cli/settings.json`) contain `allowNonWorkspaceAccess: true`; overriding it via `--settings` did not change the behavior.
-- The agy model list comes from `agy models` (usable for model suggestions in agent profiles).
-- Not yet tested: behavior when a limit is actually hit (error message and exit code in all three CLIs), agy interactive questions (`ask_question`) in headless mode, prompt-injection attacks on the restrictive prompt, and `bwrap` with Claude and Codex.
+- The agy model list comes from `agy models`, and the Codex list from `codex debug models` (JSON, `visibility: list`). Claude uses the aliases `sonnet`, `opus`, and `haiku`.
+- Codex's own sandbox cannot start inside `bwrap` ("No permissions to create a new namespace"), so a Codex run inside `bwrap` silently fails to write files. The adapter therefore sets `sandbox_mode="danger-full-access"` when `bwrap` is the boundary and `workspace-write` otherwise. `codex exec resume` has no `--sandbox` flag, so the mode is passed with `-c` on both paths.
+- The spawn environment keeps the user's `PATH` first, so CLI shebangs (`env node`) resolve to the Node the user installed. `bwrap` also runs with `--die-with-parent`, `--new-session`, `--unshare-pid`, and `--unshare-ipc`, hides `/run/user` and `/run/docker.sock`, and keeps the network open because the CLIs need it. agy is the exception for `/run/user`: it reads its login from the desktop keyring over the session bus, so hiding that folder breaks authentication, and a run can still reach the user session bus.
+- Not yet tested: behavior when a limit is actually hit (error message and exit code in all three CLIs), agy interactive questions (`ask_question`) in headless mode, prompt-injection attacks on the restrictive prompt, and macOS (no `bwrap`, so agent writes are not confined there).
 
 ## Data model
 
@@ -292,7 +294,21 @@ Each phase must be useful on its own before the next one starts.
 | v0.4 Paralel | Worktree per task, dependency graph, per-provider parallel limits, quota fallback, usage statistics | Two independent tasks run at the same time without conflict; a quota limit automatically reroutes to a backup profile |
 | v1.0 | Polish, Windows support, documentation, npm release | Used by the author to build 10 real projects |
 
-## Risks, mitigations, and open questions
+### v0.1 implementation notes
+
+Decisions made while building v0.1 (Rembuk):
+
+- Agent profiles are seeded and read-only. Creating and editing them, and the routing UI, stay in v0.3. The kanban still lets a task pick a seeded profile (F-10).
+- Plan task roles are `engineer` or `qa`, matching the routing rules. Milestones, task ids, and dependencies are validated (unknown references, duplicates, and cycles are sent back to the agent like any other contract error).
+- The Lead drafts a plan into `.dalang/tmp/` and DALANG writes `.dalang/plan.json` only after validation, so a failed run never overwrites the current plan. `.dalang/tmp/` is git-ignored.
+- One Lead turn runs per project at a time. A second request while a turn is running is refused.
+- A task's `needs_split` flag and its kanban column always agree. A plan cannot be approved while a task still needs a split, and an approved plan cannot be regenerated.
+- `PROJECT.md` is symlinked to `CLAUDE.md` and `AGENTS.md` only when those names are free. An existing regular file is never replaced.
+- The UI uses shadcn/ui components copied into `packages/web/src/components/ui` and restyled to `docs/DESIGN.md`.
+- "Enough, write the brief" (F-05) is available at any time, including before the first message.
+- The v0.1 completion criterion (a valid brief and plan from one goal, for 3 sample projects) is covered by an API test with scripted agents, plus a browser run of the whole flow. It has not yet been run with real models; do that before calling v0.1 done.
+
+## Risks, mitigations, and decisions
 
 | Risk | Impact | Mitigation |
 | --- | --- | --- |
@@ -301,15 +317,23 @@ Each phase must be useful on its own before the next one starts.
 | ~~`agy` produces no output without a TTY~~ | Not reproduced on agy 1.5.10 | Keep the idle timeout, and the per-adapter smoke test |
 | `agy` writes outside the project folder (tested, even with `--sandbox` and `--settings`) | Damage to files outside the repo that does not show in `git diff` | `bwrap` wrapper on all adapters (tested to hold), plus a restrictive prompt |
 | Agent changes files outside its scope | Damage to code or system | `files_allowed` checked against the diff after a run, checkpoint commits, `bwrap` sandbox, workspace-write permission mode. Note: Codex `workspace-write` can still write to `/tmp`. |
+| A run can modify the provider's own state folder (`~/.claude`, `~/.codex`, `~/.gemini`), including hooks and settings that later interactive sessions load | Persistent change to the user's own CLI setup | Open in v0.1: the folders must stay writable for token refresh and session resume. Claude runs ignore user-level settings (`--setting-sources project`). Planned for v0.2: give each run a scratch copy of the state folder and copy back only session files. |
 | Limit-reading formats differ per CLI and can change (`/usage` in Claude and agy is text, Codex goes through the experimental `app-server`) | Proactive quota reading (F-13) breaks when a CLI updates | One `getUsage()` adapter per provider that returns a uniform shape `{window, usedPercent, resetsAt}`, with a smoke test. If reading fails, treat usage as unknown and fall back to reactive detection from error text/exit code |
 | Quota limit runs out mid-pipeline | The pipeline stops | Detect limit messages, fall back to a backup profile, or pause and resume automatically |
 | Merge conflicts when tasks run in parallel | The merge fails | Parallel only for tasks whose files do not overlap; conflicts go to an integration task |
 | Context out of sync between agents | Inconsistent code style and conventions | One shared `PROJECT.md`, a brief per task, and the reviewer checks conventions |
 
-**Open questions**
+**Decisions** (made 18 Nov 2026; revisit if a reason appears)
 
-- [ ] Can the Lead edit `PROJECT.md` itself, or must changes go through user approval?
-- [ ] What is the default limit of review rounds before a task goes back to the user: 2 or 3?
-- [ ] Does testing need a separate QA agent, or is it enough for the reviewer to run the `verify` command?
-- [x] Is DALANG released as open source? Yes, under the MIT license (see `LICENSE`).
-- [ ] Format of notifications for human gates: browser notifications only, or also Telegram/WhatsApp?
+| Question | Decision | Why |
+| --- | --- | --- |
+| Can the Lead edit `PROJECT.md` itself? | No. The Lead writes proposed changes to `.dalang/PROJECT.proposed.md`, and the user approves a diff before it replaces `PROJECT.md`. | Every agent reads `PROJECT.md` as instructions, so an unreviewed edit would steer all later runs. |
+| Default review rounds before a task returns to the user | 2, configurable per profile up to 3. | Matches the success metric (pass within 2 rounds). A third round rarely fixes what two did not. |
+| Separate QA agent? | No. The reviewer runs the task's `verify` command; role `qa` routes to the reviewer profile. | One fewer role to configure, and cross-model review already gives a second opinion. |
+| Open source? | Yes, MIT. | Already in `LICENSE`. |
+| Gate notifications | Browser notifications only for v1. Telegram and WhatsApp are P2, after v1. | Local single-user tool; a chat integration would need credentials DALANG promises not to hold. |
+| Sandbox read access and network | Open in v0.1, except `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.docker`, `~/.kube`, `~/.config/gcloud`, `~/.git-credentials`, and `~/.netrc`, which are masked (`~/.npmrc` stays visible for private-registry installs). Revisit with explicit binds and a filtering proxy in v0.4. | CLIs need the network, and full read confinement breaks normal repos (global git config, toolchains). Masking credential folders closes the likeliest theft target at no cost. |
+| agy and the session bus | Keep agy allowed, show the exposure on the Providers page, and keep Claude Code as the default Lead. Do not use agy for roles that write, until a keyring-free login exists. | agy cannot sign in without the bus, and a run on the bus can act outside the sandbox. |
+| macOS and Windows | Agent runs start unconfined with a visible warning. `sandbox-exec` lands in v0.2 (P1), and v0.2 execution refuses to start on a platform without a sandbox unless the user opts in. | macOS is a P0 platform, so blocking it now would make the tool unusable there. Execution is where unconfined writes become real damage. |
+| UI components | shadcn/ui, copied into the repo and restyled to `docs/DESIGN.md`. | Matches the stack in this PRD. Owning the component code keeps the design direction intact. |
+

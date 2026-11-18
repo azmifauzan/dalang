@@ -2,7 +2,7 @@
 
 > One goal in, a running app out. A local web tool that orchestrates Claude Code, Codex, and Antigravity CLI as a small team.
 
-**Status: pre-alpha. This repository currently contains the product requirements document ([docs/PRD.md](docs/PRD.md)) only. No code has been released yet.**
+**Status: v0.1 (Rembuk) is implemented: projects, Discuss, Agree, List, and the provider status page. Nothing executes tasks yet; that starts in v0.2. See [docs/PRD.md](docs/PRD.md) for the full plan.**
 
 DALANG is named after the traditional Javanese puppeteer who directs the whole show. The name is also an acronym for the workflow:
 
@@ -34,9 +34,33 @@ Developers with several coding-agent subscriptions run them by hand, one after a
 - **Official CLIs only.** DALANG spawns the `claude`, `codex`, and `agy` binaries. It never calls model APIs directly and never reuses their OAuth tokens.
 - **Provider and model are separate settings.** Each agent profile sets provider, model, effort, role prompt, permission mode, timeouts, and parallelism. Routing rules map task role and complexity to a profile, with a fallback.
 - **Decisions come from files, not stdout.** Agents write JSON to `.dalang/`, validated with Zod. Invalid output is sent back for up to two retries.
-- **Sandboxed runs.** Each CLI runs inside a `bwrap` wrapper so it can only write inside the project folder.
+- **Sandboxed runs (Linux).** Each CLI runs inside a `bwrap` wrapper so it can only write inside the project folder, with credential folders such as `~/.ssh` hidden. macOS and Windows have no sandbox yet, so runs there are unconfined and the UI says so. The known gaps are listed in the PRD.
 
-Planned stack: TypeScript 7, Node.js 26 LTS, Fastify 5 + WebSocket, React 19 + Vite 8 + shadcn/ui, SQLite + Drizzle, Zod 4, simple-git. Planned install: `npx dalang`.
+Stack: TypeScript 7, Node.js 26 LTS, Fastify 5 + WebSocket, React 19 + Vite 8 + shadcn/ui on Tailwind 4, SQLite (better-sqlite3) + Drizzle, Zod 4, simple-git. The UI follows [docs/DESIGN.md](docs/DESIGN.md).
+
+## Repository layout
+
+| Package | Role |
+| --- | --- |
+| `packages/shared` | Zod schemas and DTO types shared by the server and the UI |
+| `packages/core` | SQLite schema, provider adapters (`claude`, `codex`, `agy`), sandbox wrapper, Lead services |
+| `packages/server` | Fastify API and WebSocket event stream, bound to loopback |
+| `packages/web` | React UI (shadcn/ui on Tailwind, styled by `docs/DESIGN.md`) |
+| `packages/cli` | The `dalang` command that starts the server and opens the browser |
+
+## Run it
+
+Requires Node.js 26, pnpm 12, and at least one logged-in CLI (`claude`, `codex`, or `agy`). On Linux, install `bubblewrap` so agent runs are confined to the project folder.
+
+```bash
+pnpm install
+pnpm build
+pnpm start        # serves http://127.0.0.1:4173 and opens the browser
+```
+
+`pnpm test` runs the unit and API tests, which use scripted agents and spend no quota.
+
+Planned install for releases: `npx dalang`.
 
 ## CLI validation (18 Nov 2026)
 
@@ -49,10 +73,10 @@ The core assumptions were tested on Linux with Claude Code, Codex 0.169.0, and A
 | Resume a session across turns | yes | yes | yes |
 | Output conforming to a JSON schema | yes | yes | yes |
 | Refuses writes outside the project | yes | yes (but `/tmp` is writable) | **no** |
-| Refuses outside writes when wrapped in `bwrap` | not tested | not tested | yes |
+| Refuses outside writes when wrapped in `bwrap` | yes | yes | yes |
 | Usage and limits readable before a run | `/usage` | `account/rateLimits/read` via `codex app-server` | `/usage` |
 
-Key findings: `agy` writes outside the workspace even with its sandbox flag, so every adapter is wrapped in `bwrap`. Codex hangs unless stdin is closed. `node-pty` is not required. See the PRD for the full list, including what is still untested (behavior when a limit is actually hit, prompt-injection attacks on the guard prompt).
+Key findings: `agy` writes outside the workspace even with its sandbox flag, so every adapter is wrapped in `bwrap`. Codex hangs unless stdin is closed, and its own sandbox cannot run inside `bwrap`, so DALANG lets `bwrap` be the boundary. `node-pty` is not required. See the PRD for the full list, including what is still untested (behavior when a limit is actually hit, prompt-injection attacks on the guard prompt).
 
 ## Roadmap
 
@@ -67,6 +91,7 @@ Key findings: `agy` writes outside the workspace even with its sandbox flag, so 
 ## Documentation
 
 - [Product requirements](docs/PRD.md)
+- [Design direction](docs/DESIGN.md)
 
 ## License
 
