@@ -104,7 +104,7 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     return reply.status(statusCode >= 400 ? statusCode : 400).send({ error: message });
   });
 
-  app.get('/api/health', async () => ({ ok: true, version: '0.2.0' }));
+  app.get('/api/health', async () => ({ ok: true, version: '0.2.1' }));
 
   // WebSocket live event stream
   app.get('/ws', { websocket: true }, (socket) => {

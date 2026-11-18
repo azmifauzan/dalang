@@ -222,7 +222,7 @@ describe('@dalang/server API (v0.1 Rembuk)', () => {
     try {
       const health = await app.inject({ method: 'GET', url: '/api/health' });
       expect(health.statusCode).toBe(200);
-      expect(health.json()).toEqual({ ok: true, version: '0.2.0' });
+      expect(health.json()).toEqual({ ok: true, version: '0.2.1' });
 
       const providersRes = await app.inject({ method: 'GET', url: '/api/providers/status' });
       expect(providersRes.statusCode).toBe(200);

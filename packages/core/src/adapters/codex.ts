@@ -145,7 +145,7 @@ export class CodexAdapter implements CliAdapter {
               jsonrpc: '2.0',
               id: 1,
               method: 'initialize',
-              params: { clientInfo: { name: 'dalang', version: '0.2.0' } },
+              params: { clientInfo: { name: 'dalang', version: '0.2.1' } },
             }) +
               '\n' +
               JSON.stringify({ jsonrpc: '2.0', method: 'initialized', params: {} }) +

@@ -2,7 +2,9 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
-## Unreleased (security fixes after 0.2.0)
+## 0.2.1, 18 Nov
+
+A security release. Everyone on 0.2.0 should upgrade: the git guard shipped there could be bypassed.
 
 Security
 - The git guard introduced in 0.2.0 could be bypassed: a clean filter in `.git/config.worktree` (with `extensions.worktreeConfig`) or in an included file still ran on the host at `git add`, and a git error let the check pass. It now reads every config scope git uses and fails closed. Confirmed with a test before the fix.
