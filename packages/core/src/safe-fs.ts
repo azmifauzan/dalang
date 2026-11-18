@@ -25,15 +25,39 @@ export function ensureProjectDir(projectPath: string, dir: string): void {
   if (!isInside(root, fs.realpathSync(dir))) throw refuse();
 }
 
+/** Where an open descriptor really points (Linux); null elsewhere, where the path checks still apply. */
+function descriptorPath(fd: number): string | null {
+  try {
+    return fs.readlinkSync(`/proc/self/fd/${fd}`);
+  } catch {
+    return null;
+  }
+}
+
 export function readArtifactFile(projectPath: string, target: string): string {
-  const stat = fs.lstatSync(target);
-  if (!stat.isFile()) {
-    throw new Error(`${path.relative(projectPath, target)} is not a regular file.`);
+  const rel = path.relative(projectPath, target);
+  const root = fs.realpathSync(projectPath);
+  if (!isInside(root, fs.realpathSync(path.dirname(target)))) {
+    throw new Error(`${rel} is outside the project.`);
   }
-  if (!isInside(fs.realpathSync(projectPath), fs.realpathSync(path.dirname(target)))) {
-    throw new Error(`${path.relative(projectPath, target)} is outside the project.`);
+
+  // One descriptor for check and read: O_NOFOLLOW refuses a link at the final component, and
+  // fstat/readlink on the descriptor cannot be raced the way a separate lstat and read can.
+  let fd: number;
+  try {
+    fd = fs.openSync(target, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ELOOP') throw new Error(`${rel} is not a regular file.`);
+    throw err;
   }
-  return fs.readFileSync(target, 'utf8');
+  try {
+    if (!fs.fstatSync(fd).isFile()) throw new Error(`${rel} is not a regular file.`);
+    const actual = descriptorPath(fd);
+    if (actual && !isInside(root, actual)) throw new Error(`${rel} is outside the project.`);
+    return fs.readFileSync(fd, 'utf8');
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 export function writeArtifactFile(
@@ -57,6 +81,20 @@ export function writeArtifactFile(
   }
   // Write beside the target and rename over it: rename replaces a planted link instead of following it.
   const temp = `${target}.${crypto.randomUUID()}.tmp`;
-  fs.writeFileSync(temp, content, { encoding: 'utf8', flag: 'wx' });
+  const fd = fs.openSync(
+    temp,
+    fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
+    0o644,
+  );
+  try {
+    fs.writeFileSync(fd, content, 'utf8');
+  } finally {
+    fs.closeSync(fd);
+  }
+  // Re-check the folder right before the rename so a swap after the first check is caught.
+  if (!isInside(fs.realpathSync(projectPath), fs.realpathSync(path.dirname(target)))) {
+    fs.rmSync(temp, { force: true });
+    throw new Error(`${path.relative(projectPath, target)} is outside the project.`);
+  }
   fs.renameSync(temp, target);
 }
