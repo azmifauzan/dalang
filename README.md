@@ -71,7 +71,7 @@ The core assumptions were tested on Linux with Claude Code, Codex 0.169.0, and A
 | Headless run with JSON output | yes | yes | yes |
 | Write files into `.dalang/` | yes | yes | yes |
 | Resume a session across turns | yes | yes | yes |
-| Output conforming to a JSON schema | yes | yes | yes |
+| Output conforming to a simple JSON schema (not used by DALANG, see PRD) | yes | yes | yes |
 | Refuses writes outside the project | yes | yes (but `/tmp` is writable) | **no** |
 | Refuses outside writes when wrapped in `bwrap` | yes | yes | yes |
 | Usage and limits readable before a run | `/usage` | `account/rateLimits/read` via `codex app-server` | `/usage` |

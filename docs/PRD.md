@@ -138,6 +138,8 @@ routing:
 | Codex | `thread_id` in the `thread.started` event | `codex exec resume <id> --json` | `--output-schema file.json -o out.json` |
 | Antigravity | `conversation_id` in the `result` event | `--conversation <id>` | `--json-schema file.json` → `result.structured_output` |
 
+DALANG does not pass these schema flags. They constrain the final chat message, not the file the agent writes, and real contracts break them: Claude rejects Zod's draft 2020-12 `$schema`, and Codex's strict mode requires every property to be listed as required, which fails any optional or defaulted field. The contract is enforced by Zod on the written file, with up to two retries.
+
 Every adapter must close stdin (`/dev/null`). Without that, Codex waits for input and hangs. Parsers ignore unknown events.
 
 Design rule: use the strongest model for the Lead and the reviewer, and a lighter model for small coding tasks. The reviewer should preferably use a different provider from the coder on the same task (cross-model review).
@@ -247,7 +249,7 @@ Tested on Linux with Claude Code (logged in), Codex 0.169.0, and agy 1.5.10, all
 | Headless with JSON return | ✅ | ✅ | ✅ (±3–17 s/turn) |
 | Write files to `.dalang/` | ✅ | ✅ | ✅ |
 | Resume across turns | ✅ | ✅ | ✅ |
-| Output conforming to a JSON schema | ✅ | ✅ | ✅ |
+| Output conforming to a JSON schema (simple all-required schema; not used by DALANG) | ✅ | ✅ | ✅ |
 | Refuses writes outside the project folder | ✅ | ✅ (but `/tmp` is writable) | ❌ |
 | Refuses outside writes when wrapped in `bwrap` (run through the DALANG adapters) | ✅ | ✅ | ✅ |
 | Usage/limits readable before a run | ✅ `claude -p "/usage"` (text: 5-hour session and weekly % + reset time) | ✅ JSON-RPC `account/rateLimits/read` to `codex app-server` over stdio (`usedPercent`, `windowDurationMins`, `resetsAt`, `rateLimitReachedType`, `planType`) | ✅ `agy -p="/usage"` (text table: remaining 5-hour and weekly % per model group + reset time) |
@@ -304,9 +306,18 @@ Decisions made while building v0.1 (Rembuk):
 - One Lead turn runs per project at a time. A second request while a turn is running is refused.
 - A task's `needs_split` flag and its kanban column always agree. A plan cannot be approved while a task still needs a split, and an approved plan cannot be regenerated.
 - `PROJECT.md` is symlinked to `CLAUDE.md` and `AGENTS.md` only when those names are free. An existing regular file is never replaced.
+- DALANG runs outside the sandbox, so every read or write of a file the agent can reach (`.dalang/` artifacts, `PROJECT.md`, logs) refuses symlinks and folders that resolve outside the project, writes through a temp file and rename, and never echoes parser errors back into an agent prompt. Task ids are limited to letters, digits, `-`, and `_` because they become file names.
 - The UI uses shadcn/ui components copied into `packages/web/src/components/ui` and restyled to `docs/DESIGN.md`.
 - "Enough, write the brief" (F-05) is available at any time, including before the first message.
-- The v0.1 completion criterion (a valid brief and plan from one goal, for 3 sample projects) is covered by an API test with scripted agents, plus a browser run of the whole flow. It has not yet been run with real models; do that before calling v0.1 done.
+- The v0.1 completion criterion (a valid brief and plan from one goal, for 3 sample projects) was met on 18 Nov 2026 with real models, through the HTTP API and the real sandbox: one project per Lead provider, one run each, a Discuss round, a second round with scripted answers, then brief, approval, and plan.
+
+  | Project | Lead | Time to approved plan input | Result |
+  | --- | --- | --- | --- |
+  | Barcode attendance app with WhatsApp alerts | Claude Code | 117 s | 4 milestones, 14 tasks, 18 dependencies |
+  | JSON to PDF invoice CLI | Codex | 361 s | 4 milestones, 10 tasks, 13 dependencies |
+  | Local bookmark manager | Antigravity | 136 s | 4 milestones, 5 tasks, 4 dependencies |
+
+  Every brief and plan passed the Zod contract on the first attempt, every task had its own verify command, and the dependency graphs were acyclic. This is one run per provider, so it shows the flow works, not how often it works. The success metric of 15 minutes from goal to plan was met (all three under 6.5 minutes, including scripted answers). The first real run found two bugs that scripted agents could not: Claude rejected the draft 2020-12 `$schema` and Codex rejected schemas with optional fields. Both came from passing the CLIs' own schema flags, which constrain the final chat message rather than the file, so DALANG no longer passes them and relies on its own Zod validation.
 
 ## Risks, mitigations, and decisions
 
