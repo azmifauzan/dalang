@@ -153,6 +153,23 @@ describe('Provider adapters & bwrap wrapper', () => {
       permissionMode: 'read-only',
     });
     expect(calls[4].args.join(' ')).toContain('--mode plan');
+    if (process.platform === 'linux') {
+      expect(calls[4].args.join(' ')).toContain(`--ro-bind ${projectDir} ${projectDir}`);
+    }
+
+    await codex.runTurn({
+      projectPath: projectDir,
+      prompt: 'review',
+      permissionMode: 'read-only',
+      outputFilePath: path.join(projectDir, '.dalang', 'tmp', 'ignored.txt'),
+    });
+    if (process.platform === 'linux') {
+      expect(calls[5].args.join(' ')).toContain(`--ro-bind ${projectDir} ${projectDir}`);
+      expect(calls[5].args.join(' ')).toContain('sandbox_mode="danger-full-access"');
+    } else {
+      expect(calls[5].args.join(' ')).toContain('sandbox_mode="read-only"');
+    }
+    expect(calls[5].args).not.toContain('-o');
   });
 });
 

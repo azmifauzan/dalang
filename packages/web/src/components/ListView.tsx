@@ -26,7 +26,16 @@ const COLUMNS: Array<{ id: TaskStatus; title: string; note: string }> = [
   { id: 'approved', title: 'Approved', note: 'Ready for Assign & Navigate' },
 ];
 
-const EXECUTION_STATUSES = new Set<TaskStatus>(['approved', 'running', 'done', 'failed', 'stopped']);
+const EXECUTION_STATUSES = new Set<TaskStatus>([
+  'approved',
+  'running',
+  'reviewing',
+  'awaiting_merge',
+  'review_failed',
+  'done',
+  'failed',
+  'stopped',
+]);
 
 function linesToArray(text: string): string[] {
   return text

@@ -2,8 +2,8 @@ import type { ProviderId, ProviderStatus } from '@dalang/shared';
 import { AntigravityAdapter, KEYRING_OFF_MESSAGE } from './antigravity.js';
 import { ClaudeCodeAdapter } from './claude.js';
 import { CodexAdapter } from './codex.js';
-import { findBwrap, NodeCliRunner } from './sandbox.js';
-import type { CliAdapter, CliRunner } from './types.js';
+import { findBwrap, NodeCliRunner, wrapWithBwrap } from './sandbox.js';
+import type { CliAdapter, CliRunner, RunCommandResult } from './types.js';
 
 export interface ProviderPolicy {
   /** True when the user allowed sandboxed Antigravity runs to read the desktop keyring. */
@@ -52,5 +52,34 @@ export class ProviderRegistry {
   async checkAllStatuses(): Promise<ProviderStatus[]> {
     const list = Array.from(this.adapters.values());
     return Promise.all(list.map((adapter) => adapter.checkStatus()));
+  }
+
+  /** Run a project verify or integration command inside bwrap when available, without provider state dirs. */
+  async runShellCommand(
+    projectPath: string,
+    command: string,
+    options: {
+      timeoutMs?: number;
+      idleTimeoutMs?: number;
+      signal?: AbortSignal;
+      onLogLine?: (line: string) => void;
+    } = {},
+  ): Promise<RunCommandResult> {
+    const invocation = await wrapWithBwrap(
+      this.runner,
+      null,
+      projectPath,
+      '/bin/sh',
+      ['-c', command],
+      { bindProviderDirs: false },
+    );
+    return this.runner.run(invocation.command, invocation.args, {
+      cwd: projectPath,
+      timeoutMs: options.timeoutMs ?? 300_000,
+      idleTimeoutMs: options.idleTimeoutMs ?? 120_000,
+      signal: options.signal,
+      onStdoutLine: options.onLogLine,
+      onStderrLine: (line) => options.onLogLine?.(`[stderr] ${line}`),
+    });
   }
 }

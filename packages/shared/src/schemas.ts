@@ -18,6 +18,9 @@ export const TaskStatusSchema = z.enum([
   'ready',
   'approved',
   'running',
+  'reviewing',
+  'awaiting_merge',
+  'review_failed',
   'done',
   'failed',
   'stopped',
@@ -26,6 +29,9 @@ export type TaskStatus = z.infer<typeof TaskStatusSchema>;
 
 export const RunStatusSchema = z.enum(['running', 'completed', 'failed', 'stopped', 'rolled_back']);
 export type RunStatus = z.infer<typeof RunStatusSchema>;
+
+export const RunKindSchema = z.enum(['execute', 'fix', 'review']);
+export type RunKind = z.infer<typeof RunKindSchema>;
 
 /** Statuses a user may set by hand. `approved` is only reached through plan approval. */
 export const EditableTaskStatusSchema = z.enum(['draft', 'needs_split', 'ready']);
@@ -168,6 +174,28 @@ export const TaskResultContractSchema = z.object({
 export type TaskResultContract = z.infer<typeof TaskResultContractSchema>;
 
 /**
+ * Task review written by Reviewer to `.dalang/tasks/{id}/review.json`.
+ */
+export const ReviewFindingSeveritySchema = z.enum(['critical', 'major', 'minor', 'info']);
+export type ReviewFindingSeverity = z.infer<typeof ReviewFindingSeveritySchema>;
+
+export const ReviewFindingSchema = z.object({
+  severity: ReviewFindingSeveritySchema.default('major'),
+  file: z.string().default(''),
+  note: z.string().min(1),
+});
+export type ReviewFinding = z.infer<typeof ReviewFindingSchema>;
+
+export const ReviewContractSchema = z.object({
+  task_id: z.string().min(1),
+  status: z.enum(['pass', 'fail']),
+  verify_exit_code: z.number().int(),
+  summary: z.string().optional(),
+  findings: z.array(ReviewFindingSchema).default([]),
+});
+export type ReviewContract = z.infer<typeof ReviewContractSchema>;
+
+/**
  * Split subtask response when Lead splits a task with `needs_split: true`.
  */
 export const TaskSplitOutputSchema = z.object({
@@ -249,6 +277,22 @@ export const BriefReviseInputSchema = z.object({
 });
 export type BriefReviseInput = z.infer<typeof BriefReviseInputSchema>;
 
+const TaskBaseFieldsSchema = z.object({
+  title: z.string().min(1),
+  milestone: z.string().min(1),
+  role: PlanTaskRoleSchema,
+  complexity: TaskComplexitySchema,
+  dependsOn: z.array(z.string()),
+  goal: z.string().min(1),
+  filesAllowed: z.array(z.string()),
+  filesReference: z.array(z.string()),
+  acceptanceCriteria: z.array(z.string()).min(1),
+  verify: z.string().min(1),
+  needsSplit: z.boolean(),
+  status: EditableTaskStatusSchema,
+  profileOverride: z.string().nullable(),
+});
+
 export const CreateTaskInputSchema = z.object({
   title: z.string().min(1),
   milestone: z.string().min(1),
@@ -266,7 +310,8 @@ export const CreateTaskInputSchema = z.object({
 });
 export type CreateTaskInput = z.infer<typeof CreateTaskInputSchema>;
 
-export const UpdateTaskInputSchema = CreateTaskInputSchema.partial();
+// Keep omitted PATCH fields undefined instead of re-applying Create defaults.
+export const UpdateTaskInputSchema = TaskBaseFieldsSchema.partial();
 export type UpdateTaskInput = z.infer<typeof UpdateTaskInputSchema>;
 
 export const ReorderTasksInputSchema = z.object({
@@ -287,6 +332,7 @@ export interface ProjectSummary {
   mainBranch: string;
   leadProvider: ProviderId;
   leadModel: string | null;
+  integrationCommand: string | null;
   createdAt: string;
   updatedAt: string;
   hasProjectMd: boolean;
@@ -339,6 +385,10 @@ export interface TaskDTO {
   splitDepth: number;
   parentTaskId: string | null;
   profileOverride: string | null;
+  reviewRounds: number;
+  branchName: string | null;
+  mergeCommitSha: string | null;
+  rejectionNote: string | null;
   dependsOn: string[];
   createdAt: string;
   updatedAt: string;
@@ -357,6 +407,9 @@ export interface PlanDTO {
   approvedAt: string | null;
 }
 
+export const PermissionModeSchema = z.enum(['workspace-write', 'read-only', 'accept-edits']);
+export type PermissionMode = z.infer<typeof PermissionModeSchema>;
+
 export interface AgentProfileDTO {
   id: string;
   name: string;
@@ -364,13 +417,72 @@ export interface AgentProfileDTO {
   model: string;
   effort: EffortLevel;
   rolePrompt: string;
-  permissionMode: 'workspace-write' | 'read-only' | 'accept-edits';
+  permissionMode: PermissionMode;
   timeoutMs: number;
   idleTimeoutMs: number;
   maxParallel: number;
+  maxReviewRounds: number;
   isDefault: boolean;
   createdAt: string;
 }
+
+const ProfileBaseFieldsSchema = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(1)
+    .max(64)
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, 'Profile name must use letters, digits, ".", "-" or "_"'),
+  provider: ProviderIdSchema,
+  model: z.string().trim().max(120),
+  effort: EffortLevelSchema,
+  rolePrompt: z.string().max(4000),
+  permissionMode: PermissionModeSchema,
+  timeoutMs: z.number().int().min(5000).max(7_200_000),
+  idleTimeoutMs: z.number().int().min(5000).max(3_600_000),
+  maxParallel: z.number().int().min(1).max(16),
+  maxReviewRounds: z.number().int().min(1).max(3),
+});
+
+export const CreateProfileInputSchema = z.object({
+  name: ProfileBaseFieldsSchema.shape.name,
+  provider: ProviderIdSchema,
+  model: ProfileBaseFieldsSchema.shape.model.default(''),
+  effort: EffortLevelSchema.default('medium'),
+  rolePrompt: ProfileBaseFieldsSchema.shape.rolePrompt.default(''),
+  permissionMode: PermissionModeSchema.default('workspace-write'),
+  timeoutMs: ProfileBaseFieldsSchema.shape.timeoutMs.default(1_800_000),
+  idleTimeoutMs: ProfileBaseFieldsSchema.shape.idleTimeoutMs.default(180_000),
+  maxParallel: ProfileBaseFieldsSchema.shape.maxParallel.default(1),
+  maxReviewRounds: ProfileBaseFieldsSchema.shape.maxReviewRounds.default(2),
+});
+export type CreateProfileInput = z.infer<typeof CreateProfileInputSchema>;
+
+export const UpdateProfileInputSchema = ProfileBaseFieldsSchema.partial();
+export type UpdateProfileInput = z.infer<typeof UpdateProfileInputSchema>;
+
+const RoutingRuleBaseFieldsSchema = z.object({
+  role: TaskRoleSchema,
+  complexity: TaskComplexitySchema.nullable(),
+  profileId: z.string().min(1),
+  fallbackProfileId: z.string().min(1).nullable(),
+});
+
+export const CreateRoutingRuleInputSchema = z.object({
+  role: TaskRoleSchema,
+  complexity: TaskComplexitySchema.nullable().default(null),
+  profileId: z.string().min(1),
+  fallbackProfileId: z.string().min(1).nullable().default(null),
+});
+export type CreateRoutingRuleInput = z.infer<typeof CreateRoutingRuleInputSchema>;
+
+export const UpdateRoutingRuleInputSchema = RoutingRuleBaseFieldsSchema.partial();
+export type UpdateRoutingRuleInput = z.infer<typeof UpdateRoutingRuleInputSchema>;
+
+export const ReorderRoutingRulesInputSchema = z.object({
+  ruleIds: z.array(z.string().min(1)).min(1),
+});
+export type ReorderRoutingRulesInput = z.infer<typeof ReorderRoutingRulesInputSchema>;
 
 export const StartExecutionInputSchema = z.object({
   taskId: z.string().min(1).optional(),
@@ -383,6 +495,24 @@ export const AssignTaskProfileInputSchema = z.object({
   profileOverride: z.string().min(1).nullable(),
 });
 export type AssignTaskProfileInput = z.infer<typeof AssignTaskProfileInputSchema>;
+
+export const RejectTaskInputSchema = z.object({
+  note: z.string().trim().max(2000).default(''),
+  requeue: z.boolean().default(false),
+});
+export type RejectTaskInput = z.infer<typeof RejectTaskInputSchema>;
+
+export const ApproveMergeInputSchema = z.object({
+  runIntegration: z.boolean().default(true),
+  allowFailedReview: z.boolean().default(false),
+});
+export type ApproveMergeInput = z.infer<typeof ApproveMergeInputSchema>;
+
+export const RunIntegrationInputSchema = z.object({
+  command: z.string().trim().min(1).max(500).optional(),
+  allowUnconfined: z.boolean().default(false),
+});
+export type RunIntegrationInput = z.infer<typeof RunIntegrationInputSchema>;
 
 export const UpdateSettingsInputSchema = z.object({
   antigravityKeyringAccess: z.boolean().optional(),
@@ -438,6 +568,8 @@ export interface TaskRunDTO {
   profileName: string;
   provider: ProviderId;
   model: string | null;
+  kind: RunKind;
+  branchName: string | null;
   status: RunStatus;
   cliSessionId: string | null;
   attempt: number;
@@ -453,6 +585,88 @@ export interface TaskRunDTO {
   resultPath: string | null;
   result: TaskResultContract | null;
   scopeWarnings: string[];
+}
+
+export interface TaskReviewDTO {
+  id: string;
+  projectId: string;
+  taskId: string;
+  taskExternalId: string;
+  taskTitle: string;
+  runId: string;
+  round: number;
+  status: 'pass' | 'fail';
+  humanDecision: 'pending' | 'approved' | 'rejected';
+  humanNote: string | null;
+  reviewerProfileId: string;
+  reviewerProfileName: string;
+  reviewerProvider: ProviderId;
+  reviewerModel: string | null;
+  verifyCommand: string;
+  verifyExitCode: number;
+  verifyOutput: string;
+  filePath: string;
+  commitSha: string | null;
+  contract: ReviewContract;
+  scopeWarnings: string[];
+  createdAt: string;
+  decidedAt: string | null;
+}
+
+export interface TaskDiffFileDTO {
+  path: string;
+  status: 'added' | 'modified' | 'deleted' | 'renamed';
+  additions: number;
+  deletions: number;
+  patch: string;
+}
+
+export interface TaskDiffDTO {
+  taskId: string;
+  externalId: string;
+  branchName: string | null;
+  baseCommitSha: string | null;
+  headCommitSha: string | null;
+  files: TaskDiffFileDTO[];
+  rawDiff: string;
+  totalAdditions: number;
+  totalDeletions: number;
+  truncated: boolean;
+}
+
+export interface IntegrationRunDTO {
+  id: string;
+  projectId: string;
+  taskId: string | null;
+  taskExternalId: string | null;
+  mergeCommitSha: string | null;
+  command: string;
+  status: 'passed' | 'failed' | 'skipped';
+  exitCode: number | null;
+  output: string;
+  startedAt: string;
+  finishedAt: string;
+}
+
+export interface GuardTaskEntryDTO {
+  task: TaskDTO;
+  latestRun: TaskRunDTO | null;
+  reviews: TaskReviewDTO[];
+  latestReview: TaskReviewDTO | null;
+  diffAvailable: boolean;
+  canApproveMerge: boolean;
+  canReject: boolean;
+}
+
+export interface GuardStateDTO {
+  projectId: string;
+  mainBranch: string;
+  integrationCommand: string | null;
+  detectedIntegrationCommand: string | null;
+  sandboxReady: boolean;
+  platform: string;
+  tasks: GuardTaskEntryDTO[];
+  integrationRuns: IntegrationRunDTO[];
 }
 
 export interface ExecutionStateDTO {

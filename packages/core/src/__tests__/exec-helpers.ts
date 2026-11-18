@@ -147,3 +147,42 @@ export function handleLeadCalls(cwd: string, args: string[], opts: RunCommandOpt
   return null;
 }
 
+export function handleVerifyAndReviewCalls(
+  cmd: string,
+  args: string[],
+  opts: RunCommandOptions,
+  reviewStatus: 'pass' | 'fail' = 'pass',
+): RunCommandResult | null {
+  const joined = `${cmd} ${args.join(' ')}`;
+  if (args.includes('/bin/sh') && args.includes('-c')) {
+    opts.onStdoutLine?.('Tests passed');
+    return { exitCode: 0, stdout: 'Tests passed\n', stderr: '', timedOut: false, idleTimedOut: false };
+  }
+
+  const reviewMatch = joined.match(/code review round \d+ of \d+ for task ([A-Za-z0-9_-]+)/i);
+  if (reviewMatch) {
+    const extId = reviewMatch[1];
+    const payload = JSON.stringify({
+      task_id: extId,
+      status: reviewStatus,
+      verify_exit_code: 0,
+      summary: reviewStatus === 'pass' ? `Verified ${extId}` : `Issues found in ${extId}`,
+      findings:
+        reviewStatus === 'pass'
+          ? []
+          : [{ severity: 'critical', file: 'src/store.ts', note: 'Missing edge case handling' }],
+    });
+    const isCodex = joined.includes('codex');
+    const isAgy = joined.includes('agy');
+    const line = isCodex
+      ? JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: payload } })
+      : isAgy
+        ? JSON.stringify({ type: 'result', conversation_id: 'rev-agy-1', response: payload })
+        : JSON.stringify({ type: 'result', session_id: 'rev-claude-1', result: payload });
+    opts.onStdoutLine?.(line);
+    return { exitCode: 0, stdout: `${line}\n`, stderr: '', timedOut: false, idleTimedOut: false };
+  }
+
+  return null;
+}
+

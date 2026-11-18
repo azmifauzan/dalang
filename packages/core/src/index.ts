@@ -14,4 +14,5 @@ export * from './services/settings.js';
 export * from './services/contract.js';
 export * from './services/lead.js';
 export * from './services/git.js';
+export * from './services/review.js';
 export * from './services/executor.js';

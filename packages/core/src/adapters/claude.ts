@@ -201,6 +201,7 @@ export class ClaudeCodeAdapter implements CliAdapter {
       options.projectPath,
       binaryPath,
       args,
+      { readOnly: options.permissionMode === 'read-only' },
     );
 
     const logger = createTurnLogger(options.logFilePath);

@@ -224,13 +224,14 @@ export class CodexAdapter implements CliAdapter {
       : ['exec', '--json', '--skip-git-repo-check'];
 
     // Codex's own sandbox cannot nest inside bwrap ("No permissions to create a new namespace"),
-    // so when bwrap is the boundary Codex runs unsandboxed inside it.
-    const sandboxMode =
-      options.permissionMode === 'read-only'
+    // so when bwrap is the boundary Codex runs unsandboxed inside it (with bwrap enforcing ro/rw).
+    const bwrapAvailable = Boolean(await findBwrap(this.runner));
+    const isReadOnly = options.permissionMode === 'read-only';
+    const sandboxMode = bwrapAvailable
+      ? 'danger-full-access'
+      : isReadOnly
         ? 'read-only'
-        : (await findBwrap(this.runner))
-          ? 'danger-full-access'
-          : 'workspace-write';
+        : 'workspace-write';
     args.push('-c', `sandbox_mode="${sandboxMode}"`, '-c', 'approval_policy="never"');
     if (options.model) {
       args.push('-m', options.model);
@@ -238,7 +239,7 @@ export class CodexAdapter implements CliAdapter {
     if (options.effort) {
       args.push('-c', `model_reasoning_effort="${options.effort}"`);
     }
-    if (options.outputFilePath) {
+    if (options.outputFilePath && !isReadOnly) {
       args.push('-o', options.outputFilePath);
     }
     args.push(options.prompt);
@@ -249,6 +250,7 @@ export class CodexAdapter implements CliAdapter {
       options.projectPath,
       binaryPath,
       args,
+      { readOnly: isReadOnly },
     );
 
     const logger = createTurnLogger(options.logFilePath);

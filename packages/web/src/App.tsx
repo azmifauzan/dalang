@@ -4,6 +4,7 @@ import type { ProjectSummary } from '@dalang/shared';
 import { AgreeView } from './components/AgreeView.js';
 import { AssignView } from './components/AssignView.js';
 import { DiscussView } from './components/DiscussView.js';
+import { GuardView } from './components/GuardView.js';
 import { ListView } from './components/ListView.js';
 import { NavigateView } from './components/NavigateView.js';
 import { ProjectsView } from './components/ProjectsView.js';
@@ -15,7 +16,7 @@ import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { NativeSelect } from '@/components/ui/native-select';
 
-type RouteView = 'projects' | 'discuss' | 'agree' | 'list' | 'assign' | 'navigate' | 'providers';
+type RouteView = 'projects' | 'discuss' | 'agree' | 'list' | 'assign' | 'navigate' | 'guard' | 'providers';
 
 const STAGE_ITEMS: Array<{
   id: 'discuss' | 'agree' | 'list' | 'assign' | 'navigate' | 'guard';
@@ -100,6 +101,7 @@ export function App() {
           } else if (msg.type === 'plan.updated' && msg.projectId) {
             qc.invalidateQueries({ queryKey: ['plan', msg.projectId] });
             qc.invalidateQueries({ queryKey: ['execution', msg.projectId] });
+            qc.invalidateQueries({ queryKey: ['guard', msg.projectId] });
             qc.invalidateQueries({ queryKey: ['projects'] });
           } else if (msg.type === 'run.started' && msg.projectId && msg.runId) {
             setRunLogsByRunId((prev) => ({ ...prev, [msg.runId!]: [] }));
@@ -112,9 +114,19 @@ export function App() {
           } else if (msg.type === 'run.finished' && msg.projectId) {
             qc.invalidateQueries({ queryKey: ['execution', msg.projectId] });
             qc.invalidateQueries({ queryKey: ['plan', msg.projectId] });
+            qc.invalidateQueries({ queryKey: ['guard', msg.projectId] });
             if (msg.runId) {
               qc.invalidateQueries({ queryKey: ['run-log', msg.projectId, msg.runId] });
             }
+          } else if (
+            (msg.type === 'review.finished' || msg.type === 'integration.finished') &&
+            msg.projectId
+          ) {
+            qc.invalidateQueries({ queryKey: ['guard', msg.projectId] });
+            qc.invalidateQueries({ queryKey: ['execution', msg.projectId] });
+            qc.invalidateQueries({ queryKey: ['plan', msg.projectId] });
+            qc.invalidateQueries({ queryKey: ['task-diff', msg.projectId] });
+            qc.invalidateQueries({ queryKey: ['projects'] });
           }
         } catch {
           // ignore malformed event
@@ -221,7 +233,7 @@ export function App() {
                 />
               </svg>
               <span className="text-base font-bold tracking-tight">DALANG</span>
-              <Badge>v0.2</Badge>
+              <Badge>v0.3</Badge>
             </button>
 
             {activeProject && (
@@ -355,7 +367,10 @@ export function App() {
               className="mx-auto flex max-w-7xl flex-wrap items-center gap-2 px-4 py-2"
             >
               {STAGE_ITEMS.map((stage) => {
-                const isLive = stage.availableIn === 'v0.1' || stage.availableIn === 'v0.2';
+                const isLive =
+                  stage.availableIn === 'v0.1' ||
+                  stage.availableIn === 'v0.2' ||
+                  stage.availableIn === 'v0.3';
                 const isActive = view === stage.id;
                 return (
                   <Button
@@ -406,7 +421,8 @@ export function App() {
           view === 'agree' ||
           view === 'list' ||
           view === 'assign' ||
-          view === 'navigate') &&
+          view === 'navigate' ||
+          view === 'guard') &&
           !activeProject && (
             <EmptyPanel
               title="Select or create a project first"
@@ -462,6 +478,15 @@ export function App() {
             liveLogsByRunId={runLogsByRunId}
             onGoToList={() => setView('list')}
             onGoToAssign={() => setView('assign')}
+            onGoToGuard={() => setView('guard')}
+          />
+        )}
+
+        {view === 'guard' && activeProject && (
+          <GuardView
+            key={activeProject.id}
+            project={activeProject}
+            onGoToNavigate={() => setView('navigate')}
           />
         )}
       </main>

@@ -8,7 +8,13 @@ import type { CliRunner, RunCommandOptions, RunCommandResult } from '../adapters
 import { agentProfiles, routingRules as routingRulesTable } from '../db/schema.js';
 import { ProfileService } from '../services/profiles.js';
 import { SettingsService } from '../services/settings.js';
-import { cleanupTempDirs, handleLeadCalls, makeTempDir, setupApprovedProject } from './exec-helpers.js';
+import {
+  cleanupTempDirs,
+  handleLeadCalls,
+  handleVerifyAndReviewCalls,
+  makeTempDir,
+  setupApprovedProject,
+} from './exec-helpers.js';
 
 afterEach(cleanupTempDirs);
 
@@ -23,6 +29,9 @@ function agentRunner(outcome: Outcome, seen: string[] = []): CliRunner {
     async run(cmd, args, opts: RunCommandOptions): Promise<RunCommandResult> {
       const lead = handleLeadCalls(opts.cwd, args, opts);
       if (lead) return lead;
+      const review = handleVerifyAndReviewCalls(cmd, args, opts, 'pass');
+      if (review) return review;
+
       const joined = `${cmd} ${args.join(' ')}`;
       seen.push(joined);
       const extId = joined.match(/\.dalang\/tasks\/([A-Za-z0-9_-]+)\/result\.json/)?.[1] ?? 'T-001';
@@ -77,13 +86,19 @@ describe('ExecutionService hardening', () => {
     }
   });
 
-  it('runs a task on a read-only profile with write access, because it must write result.json', async () => {
-    const modes: Array<AdapterTurnOptions['permissionMode']> = [];
+  it('runs a coder task on a read-only profile with write access, while reviewer turns honor read-only', async () => {
+    const coderModes: Array<AdapterTurnOptions['permissionMode']> = [];
+    const reviewerModes: Array<AdapterTurnOptions['permissionMode']> = [];
     const runner = agentRunner('completed');
     const original = runner.run.bind(runner);
     runner.run = async (cmd, args, opts) => {
-      // Claude's headless flag for read-only is `plan`; workspace-write must never be downgraded to it.
-      modes.push(args.includes('plan') ? 'read-only' : 'workspace-write');
+      const joined = `${cmd} ${args.join(' ')}`;
+      if (joined.includes('code review round')) {
+        reviewerModes.push(args.includes('plan') || args.includes('--ro-bind') ? 'read-only' : 'workspace-write');
+      } else if (joined.includes('/result.json')) {
+        // Claude's headless flag for read-only is `plan`; coder turns must never be downgraded to it.
+        coderModes.push(args.includes('plan') ? 'read-only' : 'workspace-write');
+      }
       return original(cmd, args, opts);
     };
     const { conn, project, plan, execSvc } = await setupApprovedProject(runner);
@@ -95,8 +110,9 @@ describe('ExecutionService hardening', () => {
 
       await execSvc.startExecution(project.id, { taskId: plan.tasks[0].id, allowUnconfined: true });
       await execSvc.waitForProjectExecution(project.id);
-      expect((await execSvc.getExecutionState(project.id)).runs[0].status).toBe('completed');
-      expect(modes.filter((m) => m === 'read-only')).toEqual([]);
+      expect((await execSvc.getExecutionState(project.id)).dispatchPreviews[0].status).toBe('awaiting_merge');
+      expect(coderModes).toEqual(['workspace-write']);
+      expect(reviewerModes).toEqual(['read-only']);
     } finally {
       conn.close();
     }
@@ -168,7 +184,7 @@ describe('ExecutionService hardening', () => {
     try {
       await execSvc.startExecution(project.id, { taskId: plan.tasks[0].id, allowUnconfined: true });
       await execSvc.waitForProjectExecution(project.id);
-      const run = (await execSvc.getExecutionState(project.id)).runs[0];
+      const run = (await execSvc.getExecutionState(project.id)).runs.find((r) => r.kind === 'execute')!;
 
       fs.writeFileSync(path.join(projDir, 'mine.txt'), 'my uncommitted work');
       await expect(execSvc.rollbackRun(project.id, run.id)).rejects.toThrow(/Uncommitted changes/);
@@ -228,7 +244,7 @@ describe('Antigravity keyring opt-in in routing', () => {
 
       await execSvc.startExecution(project.id, { taskId: plan.tasks[0].id });
       await execSvc.waitForProjectExecution(project.id);
-      const run = (await execSvc.getExecutionState(project.id)).runs[0];
+      const run = (await execSvc.getExecutionState(project.id)).runs.find((r) => r.kind === 'execute')!;
       expect(run).toMatchObject({ status: 'completed', provider: 'claude-code' });
 
       new SettingsService(conn.db).update({ antigravityKeyringAccess: true });

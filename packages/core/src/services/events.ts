@@ -24,6 +24,19 @@ export type DalangEvent =
       runId: string;
       status: RunStatus;
       error?: string;
+    }
+  | {
+      type: 'review.finished';
+      projectId: string;
+      taskId: string;
+      round: number;
+      status: 'pass' | 'fail';
+    }
+  | {
+      type: 'integration.finished';
+      projectId: string;
+      taskId: string | null;
+      status: 'passed' | 'failed' | 'skipped';
     };
 
 export class DalangEventBus extends EventEmitter {

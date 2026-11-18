@@ -209,7 +209,7 @@ export class AntigravityAdapter implements CliAdapter {
       options.projectPath,
       binaryPath,
       args,
-      { dbusSocket: dbusProxy?.socketPath },
+      { dbusSocket: dbusProxy?.socketPath, readOnly: options.permissionMode === 'read-only' },
     );
 
     const logger = createTurnLogger(options.logFilePath);

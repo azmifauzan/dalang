@@ -21,10 +21,10 @@ function statusColors(status: string): { color: string; borderColor: string } {
   if (status === 'done' || status === 'completed') {
     return { color: 'var(--pass)', borderColor: 'var(--pass)' };
   }
-  if (status === 'failed') {
+  if (status === 'failed' || status === 'review_failed') {
     return { color: 'var(--error)', borderColor: 'var(--error)' };
   }
-  if (status === 'running') {
+  if (status === 'running' || status === 'reviewing' || status === 'awaiting_merge') {
     return { color: 'var(--accent)', borderColor: 'var(--accent)' };
   }
   return { color: 'var(--text-secondary)', borderColor: 'var(--border-subtle)' };
@@ -35,11 +35,13 @@ export function NavigateView({
   liveLogsByRunId,
   onGoToList,
   onGoToAssign,
+  onGoToGuard,
 }: {
   project: ProjectSummary;
   liveLogsByRunId: Record<string, string[]>;
   onGoToList: () => void;
   onGoToAssign: () => void;
+  onGoToGuard?: () => void;
 }) {
   const qc = useQueryClient();
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
@@ -177,6 +179,11 @@ export function NavigateView({
           <Button type="button" variant="outline" onClick={onGoToAssign}>
             Back to Assign
           </Button>
+          {onGoToGuard && (
+            <Button type="button" variant="outline" onClick={onGoToGuard}>
+              Open Guard
+            </Button>
+          )}
           {execution?.activeRun ? (
             <Button
               type="button"
@@ -303,7 +310,9 @@ export function NavigateView({
                     !isRunningThis &&
                     !blockedBySandbox &&
                     task.dependenciesSatisfied &&
-                    task.status !== 'running';
+                    task.status !== 'running' &&
+                    task.status !== 'reviewing' &&
+                    task.status !== 'awaiting_merge';
                   const canResume =
                     canRunFresh &&
                     Boolean(resumableRun) &&
@@ -380,11 +389,21 @@ export function NavigateView({
                               }
                             >
                               {task.status === 'failed' ||
+                              task.status === 'review_failed' ||
                               task.status === 'stopped' ||
                               task.status === 'done'
                                 ? 'Retry'
                                 : 'Run task'}
                             </Button>
+                            {onGoToGuard &&
+                              (task.status === 'awaiting_merge' ||
+                                task.status === 'review_failed' ||
+                                task.status === 'reviewing' ||
+                                task.status === 'done') && (
+                                <Button type="button" variant="outline" onClick={onGoToGuard}>
+                                  Open Guard
+                                </Button>
+                              )}
                             {canResume && (
                               <Button
                                 type="button"
@@ -464,6 +483,7 @@ export function NavigateView({
                         [{inspectedRun.taskExternalId}]
                       </span>
                       <h3 className="text-sm font-semibold">{inspectedRun.taskTitle}</h3>
+                      <Badge>{inspectedRun.kind}</Badge>
                       <Badge style={statusColors(inspectedRun.status)}>{inspectedRun.status}</Badge>
                       {inspectedRun.usedFallback && <Badge>Fallback</Badge>}
                     </div>
@@ -642,7 +662,7 @@ export function NavigateView({
                       >
                         <span>
                           <span className="font-mono-token font-bold">[{r.taskExternalId}]</span>{' '}
-                          {r.profileName} ({r.provider}) · #{r.attempt}
+                          {r.profileName} ({r.provider}) · {r.kind} · #{r.attempt}
                           {r.usedFallback ? ' [fallback]' : ''}
                         </span>
                         <span className="flex items-center gap-2">

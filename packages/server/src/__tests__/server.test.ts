@@ -87,12 +87,42 @@ function createMultiProjectFakeRunner(projectSpecs: Record<string, { title: stri
         taskTitle: 'Build core feature',
       };
       const promptArg = args.find((a) => a.includes('.dalang/')) ?? args.join(' ');
+      const joined = `${cmd} ${args.join(' ')}`;
 
       const emit = (sid: string, text: string) => {
         const line = JSON.stringify({ type: 'result', session_id: sid, result: text });
         opts.onStdoutLine?.(line);
         return { exitCode: 0, stdout: `${line}\n`, stderr: '', timedOut: false, idleTimedOut: false };
       };
+
+      if ((cmd === '/bin/sh' || args.includes('/bin/sh')) && args.includes('-c')) {
+        const shellCmd = args[args.indexOf('-c') + 1] ?? '';
+        if (shellCmd.includes('fail-verify')) {
+          return { exitCode: 1, stdout: '', stderr: 'verify failed', timedOut: false, idleTimedOut: false };
+        }
+        opts.onStdoutLine?.('Tests passed');
+        return { exitCode: 0, stdout: 'Tests passed\n', stderr: '', timedOut: false, idleTimedOut: false };
+      }
+
+      const reviewMatch = joined.match(/code review round (\d+) of \d+ for task ([A-Za-z0-9_-]+)/i);
+      if (reviewMatch) {
+        const roundNum = Number(reviewMatch[1]);
+        const extId = reviewMatch[2];
+        const passOnRound = roundNum >= 1;
+        const payload = JSON.stringify({
+          task_id: extId,
+          status: passOnRound ? 'pass' : 'fail',
+          verify_exit_code: 0,
+          summary: `Review round ${roundNum} ok`,
+          findings: [],
+        });
+        const isCodex = joined.includes('codex');
+        const line = isCodex
+          ? JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: payload } })
+          : JSON.stringify({ type: 'result', session_id: `rev-${extId}`, result: payload });
+        opts.onStdoutLine?.(line);
+        return { exitCode: 0, stdout: `${line}\n`, stderr: '', timedOut: false, idleTimedOut: false };
+      }
 
       const roundMatch = promptArg.match(/\.dalang\/discuss\/round-(\d+)\.json/);
       if (roundMatch) {
@@ -222,7 +252,7 @@ describe('@dalang/server API (v0.1 Rembuk)', () => {
     try {
       const health = await app.inject({ method: 'GET', url: '/api/health' });
       expect(health.statusCode).toBe(200);
-      expect(health.json()).toEqual({ ok: true, version: '0.2.1' });
+      expect(health.json()).toEqual({ ok: true, version: '0.3.0' });
 
       const providersRes = await app.inject({ method: 'GET', url: '/api/providers/status' });
       expect(providersRes.statusCode).toBe(200);
@@ -345,17 +375,38 @@ describe('@dalang/server API (v0.1 Rembuk)', () => {
       expect(startRes.statusCode).toBe(202);
       const runId = startRes.json().run.id as string;
 
-      // Poll until run finishes
-      let execState: { activeRun: unknown; runs: Array<{ id: string; status: string }>; dispatchPreviews: Array<{ status: string }> } | null = null;
-      for (let i = 0; i < 40; i++) {
+      // Poll until coding + review finishes (task enters awaiting_merge in Guard)
+      let execState: { activeRun: unknown; runs: Array<{ id: string; kind: string; status: string }>; dispatchPreviews: Array<{ status: string }> } | null = null;
+      for (let i = 0; i < 60; i++) {
         const res = await app.inject({ method: 'GET', url: `/api/projects/${projectId}/execution` });
         execState = res.json().execution;
-        if (!execState?.activeRun && execState?.runs[0]?.status === 'completed') break;
+        if (!execState?.activeRun && execState?.dispatchPreviews[0]?.status === 'awaiting_merge') break;
         await new Promise((r) => setTimeout(r, 25));
       }
 
-      expect(execState?.runs[0].status).toBe('completed');
-      expect(execState?.dispatchPreviews[0].status).toBe('done');
+      expect(execState?.dispatchPreviews[0].status).toBe('awaiting_merge');
+      const coderRunId = execState!.runs.find((r) => r.kind === 'execute')!.id;
+      expect(fs.existsSync(path.join(projDir, 'src', 'index.ts'))).toBe(false);
+
+      const guardRes = await app.inject({ method: 'GET', url: `/api/projects/${projectId}/guard` });
+      expect(guardRes.statusCode).toBe(200);
+      expect(guardRes.json().guard.tasks).toHaveLength(1);
+      expect(guardRes.json().guard.tasks[0].latestReview.status).toBe('pass');
+
+      const diffRes = await app.inject({
+        method: 'GET',
+        url: `/api/projects/${projectId}/tasks/${taskId}/diff`,
+      });
+      expect(diffRes.statusCode).toBe(200);
+      expect(diffRes.json().diff.files.some((f: { path: string }) => f.path === 'src/index.ts')).toBe(true);
+
+      const mergeRes = await app.inject({
+        method: 'POST',
+        url: `/api/projects/${projectId}/tasks/${taskId}/approve-merge`,
+        payload: { runIntegration: true },
+      });
+      expect(mergeRes.statusCode).toBe(200);
+      expect(mergeRes.json().task.status).toBe('done');
       expect(fs.existsSync(path.join(projDir, 'src', 'index.ts'))).toBe(true);
 
       const logRes = await app.inject({
@@ -367,11 +418,174 @@ describe('@dalang/server API (v0.1 Rembuk)', () => {
 
       const rollbackRes = await app.inject({
         method: 'POST',
-        url: `/api/projects/${projectId}/runs/${runId}/rollback`,
+        url: `/api/projects/${projectId}/runs/${coderRunId}/rollback`,
       });
       expect(rollbackRes.statusCode).toBe(200);
       expect(rollbackRes.json().run.status).toBe('rolled_back');
       expect(fs.existsSync(path.join(projDir, 'src', 'index.ts'))).toBe(false);
+    } finally {
+      await close();
+    }
+  });
+
+  it('supports v0.3 profiles/routing CRUD and runs 5 test projects end-to-end through Guard', async () => {
+    const dbDir = makeTempDir('dalang-srv-v3-db-');
+    const projectsRoot = makeTempDir('dalang-srv-v3-projs-');
+    const fixTracker = new Set<string>();
+
+    const baseRunner = createMultiProjectFakeRunner({});
+    const runner: CliRunner = {
+      which: baseRunner.which,
+      async run(cmd, args, opts) {
+        const joined = `${cmd} ${args.join(' ')}`;
+        // Project 2 fails review round 1, passes after fix round 2.
+        if (opts.cwd.endsWith('proj-2') && joined.includes('code review round 1')) {
+          const payload = JSON.stringify({
+            task_id: 'T-001',
+            status: 'fail',
+            verify_exit_code: 0,
+            summary: 'Missing input validation',
+            findings: [{ severity: 'major', file: 'src/index.ts', note: 'Validate non-empty input' }],
+          });
+          const isCodex = joined.includes('codex');
+          const line = isCodex
+            ? JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: payload } })
+            : JSON.stringify({ type: 'result', session_id: 'rev-fail-1', result: payload });
+          opts.onStdoutLine?.(line);
+          return { exitCode: 0, stdout: `${line}\n`, stderr: '', timedOut: false, idleTimedOut: false };
+        }
+        if (joined.includes('Review round 1 FAILED')) {
+          fixTracker.add(opts.cwd);
+        }
+        return baseRunner.run(cmd, args, opts);
+      },
+    };
+
+    const { app, close } = await createDalangServer({
+      dbPath: path.join(dbDir, 'dalang.db'),
+      runner,
+    });
+
+    try {
+      // Profiles & Routing CRUD
+      const createProf = await app.inject({
+        method: 'POST',
+        url: '/api/profiles',
+        payload: {
+          name: 'qa-claude',
+          provider: 'claude-code',
+          model: 'sonnet',
+          effort: 'high',
+          permissionMode: 'read-only',
+          maxReviewRounds: 2,
+        },
+      });
+      expect(createProf.statusCode).toBe(201);
+      const profId = createProf.json().profile.id as string;
+
+      const patchProf = await app.inject({
+        method: 'PATCH',
+        url: `/api/profiles/${profId}`,
+        payload: { model: 'opus', maxReviewRounds: 3 },
+      });
+      expect(patchProf.statusCode).toBe(200);
+      expect(patchProf.json().profile.maxReviewRounds).toBe(3);
+
+      const createRule = await app.inject({
+        method: 'POST',
+        url: '/api/routing',
+        payload: { role: 'reviewer', complexity: 'high', profileId: profId, fallbackProfileId: 'profile-lead' },
+      });
+      expect(createRule.statusCode).toBe(201);
+      const ruleId = createRule.json().rule.id as string;
+
+      const reorderRes = await app.inject({
+        method: 'POST',
+        url: '/api/routing/reorder',
+        payload: { ruleIds: [ruleId] },
+      });
+      expect(reorderRes.statusCode).toBe(200);
+      expect(reorderRes.json().rules[0].id).toBe(ruleId);
+
+      // Run 5 projects through Discuss -> Agree -> List -> Assign -> Navigate -> Review -> Guard Merge
+      let passedWithin2Rounds = 0;
+      for (let idx = 1; idx <= 5; idx++) {
+        const projPath = path.join(projectsRoot, `proj-${idx}`);
+        const cRes = await app.inject({
+          method: 'POST',
+          url: '/api/projects',
+          payload: { mode: 'create', name: `Sample ${idx}`, path: projPath },
+        });
+        const pid = cRes.json().project.id as string;
+
+        await app.inject({ method: 'POST', url: `/api/projects/${pid}/discuss/finish` });
+        await app.inject({ method: 'POST', url: `/api/projects/${pid}/briefs/1/approve` });
+        const pRes = await app.inject({ method: 'POST', url: `/api/projects/${pid}/plan/generate` });
+        const tid = pRes.json().plan.tasks[0].id as string;
+        await app.inject({ method: 'POST', url: `/api/projects/${pid}/plan/approve` });
+
+        // Add package.json test script on main so F-20 post-merge integration executes.
+        await app.inject({
+          method: 'PATCH',
+          url: `/api/projects/${pid}/settings`,
+          payload: { integrationCommand: 'node -e "process.exit(0)"' },
+        });
+
+        await app.inject({
+          method: 'POST',
+          url: `/api/projects/${pid}/execution/start`,
+          payload: { allowUnconfined: true },
+        });
+
+        for (let step = 0; step < 80; step++) {
+          const ex = await app.inject({ method: 'GET', url: `/api/projects/${pid}/execution` });
+          if (!ex.json().execution.activeRun) break;
+          await new Promise((r) => setTimeout(r, 25));
+        }
+
+        const guard = await app.inject({ method: 'GET', url: `/api/projects/${pid}/guard` });
+        const entry = guard.json().guard.tasks[0];
+        if (entry.task.status === 'awaiting_merge' && entry.task.reviewRounds <= 2) {
+          passedWithin2Rounds += 1;
+        }
+
+        if (idx === 5) {
+          // Verify Reject endpoint on project 5
+          const rej = await app.inject({
+            method: 'POST',
+            url: `/api/projects/${pid}/tasks/${tid}/reject`,
+            payload: { note: 'Needs stricter types', requeue: true },
+          });
+          expect(rej.statusCode).toBe(200);
+          expect(rej.json().task.status).toBe('approved');
+          expect(rej.json().task.rejectionNote).toBe('Needs stricter types');
+        } else {
+          const merged = await app.inject({
+            method: 'POST',
+            url: `/api/projects/${pid}/tasks/${tid}/approve-merge`,
+            payload: { runIntegration: true },
+          });
+          expect(merged.statusCode).toBe(200);
+          expect(merged.json().task.status).toBe('done');
+          expect(merged.json().integrationRun.status).toBe('passed');
+        }
+      }
+
+      expect(passedWithin2Rounds).toBe(5);
+      expect(fixTracker.size).toBe(1);
+
+      // Cleanup routing rule; deleting an in-use profile is rejected while unused profiles can be deleted
+      expect((await app.inject({ method: 'DELETE', url: `/api/routing/${ruleId}` })).statusCode).toBe(200);
+      expect((await app.inject({ method: 'DELETE', url: `/api/profiles/${profId}` })).statusCode).toBe(400);
+
+      const unusedProf = await app.inject({
+        method: 'POST',
+        url: '/api/profiles',
+        payload: { name: 'temp-unused', provider: 'codex', permissionMode: 'read-only' },
+      });
+      expect(unusedProf.statusCode).toBe(201);
+      const unusedId = unusedProf.json().profile.id as string;
+      expect((await app.inject({ method: 'DELETE', url: `/api/profiles/${unusedId}` })).statusCode).toBe(200);
     } finally {
       await close();
     }

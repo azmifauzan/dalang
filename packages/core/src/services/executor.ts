@@ -4,35 +4,74 @@ import path from 'node:path';
 import { and, desc, eq, gte, inArray, ne, or } from 'drizzle-orm';
 import { z } from 'zod';
 import {
+  ReviewContractSchema,
   TaskResultContractSchema,
   type AgentProfileDTO,
+  type ApproveMergeInput,
   type ExecutionStateDTO,
+  type GuardStateDTO,
+  type GuardTaskEntryDTO,
+  type IntegrationRunDTO,
   type PlanDTO,
   type ProviderId,
+  type RejectTaskInput,
+  type ReviewContract,
+  type RunKind,
   type RunStatus,
   type StartExecutionInput,
+  type TaskDiffDTO,
   type TaskDispatchPreviewDTO,
   type TaskDTO,
   type TaskResultContract,
+  type TaskReviewDTO,
   type TaskRunDTO,
   type TaskStatus,
 } from '@dalang/shared';
 import { createTurnLogger } from '../adapters/logger.js';
 import type { ProviderRegistry } from '../adapters/registry.js';
 import type { DalangDb } from '../db/client.js';
-import { agentProfiles, projects, providerEvents, runs, tasks } from '../db/schema.js';
+import {
+  agentProfiles,
+  integrationRuns,
+  projects,
+  providerEvents,
+  reviews,
+  runs,
+  tasks,
+} from '../db/schema.js';
 import { getProjectLogsDir, getTaskArtifactDir } from '../paths.js';
-import { ensureProjectDir, readArtifactFile, removeArtifactFile } from '../safe-fs.js';
+import {
+  ensureProjectDir,
+  readArtifactFile,
+  removeArtifactFile,
+  writeArtifactFile,
+} from '../safe-fs.js';
 import { formatZodError } from './contract.js';
 import type { DalangEventBus } from './events.js';
 import {
+  branchExists,
+  checkoutBranch,
+  checkoutTaskBranch,
   createGitCheckpoint,
-  getChangedFilesSinceCommit,
+  deleteTaskBranch,
+  ensureMainBaseline,
+  getChangedFilesBetween,
+  getHeadCommit,
   getRepoState,
+  getTaskDiff,
+  mergeTaskBranchToMain,
   rollbackGitToCheckpoint,
 } from './git.js';
 import type { LeadService } from './lead.js';
 import { ProfileService } from './profiles.js';
+import { detectIntegrationCommand } from './project.js';
+import {
+  buildFixPrompt,
+  buildReviewPrompt,
+  readArtifactWithGitFallback,
+  tailOutput,
+  validateReviewTurnOutput,
+} from './review.js';
 
 interface ActiveProjectExecution {
   runId: string;
@@ -121,8 +160,8 @@ export function classifyProviderFailure(
 }
 
 /**
- * Every run must write its `result.json`, so a `read-only` profile (the seeded reviewer) cannot run a
- * task as-is. The review step that can honor read-only arrives with the v0.3 reviewer.
+ * Coder turns must write source files and `result.json`, so `read-only` is upgraded there;
+ * review turns preserve the profile's `permissionMode` directly.
  */
 function writePermission(profile: AgentProfileDTO): 'workspace-write' | 'accept-edits' {
   return profile.permissionMode === 'read-only' ? 'workspace-write' : profile.permissionMode;
@@ -144,7 +183,7 @@ export class ExecutionService {
   }
 
   /**
-   * Reconcile any runs/tasks left in `running` state from an unexpected process exit/restart.
+   * Reconcile any runs/tasks left in `running` or `reviewing` state from an unexpected exit/restart.
    */
   private reconcileInterruptedRuns(): void {
     const staleRuns = this.db.select().from(runs).where(eq(runs.status, 'running')).all();
@@ -163,7 +202,7 @@ export class ExecutionService {
     this.db
       .update(tasks)
       .set({ status: 'stopped', updatedAt: now })
-      .where(eq(tasks.status, 'running'))
+      .where(inArray(tasks.status, ['running', 'reviewing']))
       .run();
   }
 
@@ -201,8 +240,8 @@ export class ExecutionService {
     if (!plan) throw new Error('No plan exists for this project.');
     const target = plan.tasks.find((t) => t.id === taskId || t.externalId === taskId);
     if (!target) throw new Error(`Task not found: ${taskId}`);
-    if (target.status === 'running') {
-      throw new Error(`Cannot reassign ${target.externalId} while it is running.`);
+    if (target.status === 'running' || target.status === 'reviewing') {
+      throw new Error(`Cannot reassign ${target.externalId} while it is ${target.status}.`);
     }
 
     if (profileOverride !== null) {
@@ -242,8 +281,10 @@ export class ExecutionService {
     const taskById = new Map((plan?.tasks ?? []).map((t) => [t.id, t]));
     const profileById = new Map(this.profiles.listProfiles().map((p) => [p.id, p]));
 
-    const runDtos = runRows.map((row) =>
-      this.toRunDTO(project.path, row, taskById.get(row.taskId), profileById.get(row.profileId)),
+    const runDtos = await Promise.all(
+      runRows.map((row) =>
+        this.toRunDTO(project.path, row, taskById.get(row.taskId), profileById.get(row.profileId)),
+      ),
     );
 
     const activeExec = this.activeProjects.get(projectId);
@@ -265,10 +306,6 @@ export class ExecutionService {
     };
   }
 
-  /**
-   * Routing plus the keyring opt-in: a task routed to Antigravity runs on its backup profile while that
-   * opt-in is off, and is blocked with a reason when there is no usable backup.
-   */
   private routeTask(
     task: Pick<TaskDTO, 'role' | 'complexity' | 'profileOverride'>,
     sandboxReady: boolean,
@@ -286,7 +323,7 @@ export class ExecutionService {
         ...routing,
         primary: backup,
         fallback: null,
-        note: `${routing.primary.name} routes to Antigravity, which is off. Running on ${backup.name} (${backup.provider}) instead. Turn Antigravity on in Providers to use it.`,
+        note: `${routing.primary.name} routes to Antigravity, which is off. Running on ${backup.name} (${backup.provider}) instead. Enable keyring access in the Antigravity profile editor to use it.`,
         blocked: null,
       };
     }
@@ -305,8 +342,14 @@ export class ExecutionService {
         blockedReason = 'Plan is not approved yet';
       } else if (task.status === 'done') {
         blockedReason = null;
+      } else if (task.status === 'awaiting_merge') {
+        blockedReason = 'Passed review; awaiting merge approval in Guard';
+      } else if (task.status === 'review_failed') {
+        blockedReason = 'Review failed after max rounds; inspect in Guard or Retry';
       } else if (task.status === 'running') {
         blockedReason = 'Currently running';
+      } else if (task.status === 'reviewing') {
+        blockedReason = 'Currently in review';
       } else if (task.status === 'failed' || task.status === 'stopped') {
         blockedReason = `Task is ${task.status}; use Retry or Resume`;
       } else if (!dependenciesSatisfied) {
@@ -355,7 +398,7 @@ export class ExecutionService {
       return Promise.reject(new Error('An execution run is already in progress for this project.'));
     }
 
-    // Reserve the slot before the first await, so two quick requests cannot both start a run.
+    // Reserve the slot before the first await so two quick requests cannot both start a run.
     const reservation: ActiveProjectExecution = {
       runId: '',
       taskId: '',
@@ -366,7 +409,7 @@ export class ExecutionService {
     };
     this.activeProjects.set(projectId, reservation);
 
-    return this.startExecutionReserved(projectId, input).catch((err) => {
+    return this.startExecutionReserved(projectId, input, reservation).catch((err) => {
       if (this.activeProjects.get(projectId) === reservation) this.activeProjects.delete(projectId);
       throw err;
     });
@@ -375,6 +418,7 @@ export class ExecutionService {
   private async startExecutionReserved(
     projectId: string,
     input: Partial<StartExecutionInput>,
+    reservation: ActiveProjectExecution,
   ): Promise<{ started: boolean; run: TaskRunDTO | null; queueMode: boolean }> {
     const allowUnconfined = Boolean(input.allowUnconfined);
     const resumeSession = Boolean(input.resumeSession);
@@ -394,15 +438,15 @@ export class ExecutionService {
     if (input.taskId) {
       const target = plan.tasks.find((t) => t.id === input.taskId || t.externalId === input.taskId);
       if (!target) throw new Error(`Task not found: ${input.taskId}`);
-      if (target.status === 'running') {
-        throw new Error(`Task ${target.externalId} is already running.`);
+      if (target.status === 'running' || target.status === 'reviewing') {
+        throw new Error(`Task ${target.externalId} is currently ${target.status}.`);
       }
 
       const statusByExt = new Map(plan.tasks.map((t) => [t.externalId, t.status]));
       const unmet = target.dependsOn.filter((d) => statusByExt.get(d) !== 'done');
       if (unmet.length > 0) {
         throw new Error(
-          `Cannot run ${target.externalId}: waiting for dependencies ${unmet.join(', ')} to finish.`,
+          `Cannot run ${target.externalId}: waiting for dependencies ${unmet.join(', ')} to finish and merge.`,
         );
       }
 
@@ -412,7 +456,7 @@ export class ExecutionService {
         const prevRuns = this.db
           .select()
           .from(runs)
-          .where(eq(runs.taskId, target.id))
+          .where(and(eq(runs.taskId, target.id), ne(runs.kind, 'review')))
           .orderBy(desc(runs.startedAt), desc(runs.attempt))
           .all();
         const sameProviderRun = prevRuns.find(
@@ -430,14 +474,13 @@ export class ExecutionService {
         resumeSessionId = sameProviderRun.cliSessionId!;
       }
 
-      const launched = await this.launchSingleTask(projectId, target, {
+      const launched = await this.launchSingleTask(projectId, target, reservation, {
         queueMode: false,
         resumeSessionId,
       });
       return { started: true, run: launched.initialRun, queueMode: false };
     }
 
-    // Sequential queue mode: pick first eligible approved task
     const previews = this.buildDispatchPreviews(plan, sandboxReady);
     const firstEligible = previews.find((p) => p.eligible);
     if (!firstEligible) {
@@ -445,13 +488,21 @@ export class ExecutionService {
       if (allDone) {
         throw new Error('All tasks in this plan are already done.');
       }
+      const awaitingMergeCount = plan.tasks.filter(
+        (t) => t.status === 'awaiting_merge' || t.status === 'review_failed',
+      ).length;
+      if (awaitingMergeCount > 0) {
+        throw new Error(
+          `${awaitingMergeCount} task(s) are waiting in Guard for merge approval before dependent tasks can start.`,
+        );
+      }
       throw new Error(
         'No eligible approved tasks to dispatch. Check blocked dependencies or retry failed/stopped tasks.',
       );
     }
 
     const firstTask = plan.tasks.find((t) => t.id === firstEligible.taskId)!;
-    const launched = await this.launchQueue(projectId, firstTask);
+    const launched = await this.launchQueue(projectId, firstTask, reservation);
     return { started: true, run: launched, queueMode: true };
   }
 
@@ -478,24 +529,24 @@ export class ExecutionService {
     await Promise.all(projectIds.map((pid) => this.stopExecution(pid)));
   }
 
-  private async launchQueue(projectId: string, firstTask: TaskDTO): Promise<TaskRunDTO> {
+  private async launchQueue(
+    projectId: string,
+    firstTask: TaskDTO,
+    reservation: ActiveProjectExecution,
+  ): Promise<TaskRunDTO> {
     const controller = new AbortController();
+    reservation.controller = controller;
+    reservation.queueMode = true;
+    const execHandle = reservation;
+
     const { runId, initialRun, executeFn } = await this.prepareTaskExecution(
       projectId,
       firstTask,
-      controller,
+      execHandle,
       null,
     );
-
-    const execHandle: ActiveProjectExecution = {
-      runId,
-      taskId: firstTask.id,
-      queueMode: true,
-      queueCancelled: false,
-      controller,
-      promise: Promise.resolve(),
-    };
-    this.activeProjects.set(projectId, execHandle);
+    execHandle.runId = runId;
+    execHandle.taskId = firstTask.id;
 
     execHandle.promise = (async () => {
       try {
@@ -516,7 +567,7 @@ export class ExecutionService {
 
           const nextCtrl = new AbortController();
           execHandle.controller = nextCtrl;
-          const nextPrep = await this.prepareTaskExecution(projectId, nextTask, nextCtrl, null);
+          const nextPrep = await this.prepareTaskExecution(projectId, nextTask, execHandle, null);
           execHandle.runId = nextPrep.runId;
           execHandle.taskId = nextTask.id;
 
@@ -547,25 +598,22 @@ export class ExecutionService {
   private async launchSingleTask(
     projectId: string,
     task: TaskDTO,
+    reservation: ActiveProjectExecution,
     opts: { queueMode: boolean; resumeSessionId: string | null },
   ): Promise<{ initialRun: TaskRunDTO }> {
     const controller = new AbortController();
+    reservation.controller = controller;
+    reservation.queueMode = opts.queueMode;
+    const execHandle = reservation;
+
     const { runId, initialRun, executeFn } = await this.prepareTaskExecution(
       projectId,
       task,
-      controller,
+      execHandle,
       opts.resumeSessionId,
     );
-
-    const execHandle: ActiveProjectExecution = {
-      runId,
-      taskId: task.id,
-      queueMode: opts.queueMode,
-      queueCancelled: false,
-      controller,
-      promise: Promise.resolve(),
-    };
-    this.activeProjects.set(projectId, execHandle);
+    execHandle.runId = runId;
+    execHandle.taskId = task.id;
 
     execHandle.promise = (async () => {
       try {
@@ -605,10 +653,65 @@ export class ExecutionService {
     );
   }
 
+  private insertRunRecord(input: {
+    id: string;
+    projectId: string;
+    taskId: string;
+    profileId: string;
+    provider: ProviderId;
+    model: string | null;
+    kind: RunKind;
+    branchName: string;
+    cliSessionId: string | null;
+    attempt: number;
+    usedFallback: boolean;
+    commitBefore: string;
+    logPath: string;
+  }): typeof runs.$inferSelect {
+    const now = new Date().toISOString();
+    this.db
+      .insert(runs)
+      .values({
+        id: input.id,
+        projectId: input.projectId,
+        taskId: input.taskId,
+        profileId: input.profileId,
+        provider: input.provider,
+        model: input.model,
+        kind: input.kind,
+        branchName: input.branchName,
+        status: 'running',
+        cliSessionId: input.cliSessionId,
+        attempt: input.attempt,
+        usedFallback: input.usedFallback,
+        startedAt: now,
+        finishedAt: null,
+        exitCode: null,
+        failureReason: null,
+        commitBefore: input.commitBefore,
+        commitAfter: null,
+        logPath: input.logPath,
+        resultPath: null,
+        scopeWarningsJson: '[]',
+      })
+      .run();
+    return this.db.select().from(runs).where(eq(runs.id, input.id)).get()!;
+  }
+
+  private nextAttemptForTask(taskId: string): number {
+    return (
+      this.db
+        .select()
+        .from(runs)
+        .where(eq(runs.taskId, taskId))
+        .all().length + 1
+    );
+  }
+
   private async prepareTaskExecution(
     projectId: string,
     task: TaskDTO,
-    controller: AbortController,
+    execHandle: ActiveProjectExecution,
     resumeSessionId: string | null,
   ): Promise<{
     runId: string;
@@ -621,6 +724,11 @@ export class ExecutionService {
     if (routing.blocked) throw new Error(routing.blocked);
     const selected = this.selectProfileRespectingLimit(routing.primary, routing.fallback);
 
+    const { baseMainSha } = await ensureMainBaseline(project.path, project.mainBranch);
+    const branchName = `dalang/${task.externalId}`;
+    const resetToBase = !resumeSessionId || !(await branchExists(project.path, branchName));
+    await checkoutTaskBranch(project.path, branchName, project.mainBranch, resetToBase);
+
     const logsDir = getProjectLogsDir(project.path);
     const taskArtDir = getTaskArtifactDir(project.path, task.externalId);
     ensureProjectDir(project.path, logsDir);
@@ -628,54 +736,47 @@ export class ExecutionService {
 
     const relResultPath = path.join('.dalang', 'tasks', task.externalId, 'result.json');
     const absResultPath = path.join(project.path, relResultPath);
-    // Clear stale result.json before checkpointing so only an output written by this run counts.
+    const relReviewPath = path.join('.dalang', 'tasks', task.externalId, 'review.json');
+    const absReviewPath = path.join(project.path, relReviewPath);
+
+    // Clear stale outputs before checkpointing so only files written in this execution count.
     removeArtifactFile(project.path, absResultPath);
+    if (!resumeSessionId) {
+      removeArtifactFile(project.path, absReviewPath);
+    }
 
-    const checkpointBefore = await createGitCheckpoint(
-      project.path,
-      `dalang: checkpoint before ${task.externalId}`,
-    );
-
-    const existingAttempts = this.db
-      .select()
-      .from(runs)
-      .where(eq(runs.taskId, task.id))
-      .all().length;
-
+    const priorRejectionNote = task.rejectionNote ?? null;
     const runId = crypto.randomUUID();
-    const attempt = existingAttempts + 1;
+    const attempt = this.nextAttemptForTask(task.id);
     const relLogPath = path.join('.dalang', 'logs', `run-${task.externalId}-${Date.now()}.log`);
     const absLogPath = path.join(project.path, relLogPath);
 
+    const row = this.insertRunRecord({
+      id: runId,
+      projectId,
+      taskId: task.id,
+      profileId: selected.chosen.id,
+      provider: selected.chosen.provider,
+      model: selected.chosen.model || null,
+      kind: 'execute',
+      branchName,
+      cliSessionId: resumeSessionId,
+      attempt,
+      usedFallback: selected.usedFallback,
+      commitBefore: baseMainSha,
+      logPath: relLogPath,
+    });
+
     const now = new Date().toISOString();
     this.db
-      .insert(runs)
-      .values({
-        id: runId,
-        projectId,
-        taskId: task.id,
-        profileId: selected.chosen.id,
-        provider: selected.chosen.provider,
-        model: selected.chosen.model || null,
-        status: 'running',
-        cliSessionId: resumeSessionId,
-        attempt,
-        usedFallback: selected.usedFallback,
-        startedAt: now,
-        finishedAt: null,
-        exitCode: null,
-        failureReason: null,
-        commitBefore: checkpointBefore.commitSha,
-        commitAfter: null,
-        logPath: relLogPath,
-        resultPath: null,
-        scopeWarningsJson: '[]',
-      })
-      .run();
-
-    this.db
       .update(tasks)
-      .set({ status: 'running', updatedAt: now })
+      .set({
+        status: 'running',
+        branchName,
+        mergeCommitSha: null,
+        ...(resumeSessionId ? {} : { reviewRounds: 0, rejectionNote: null }),
+        updatedAt: now,
+      })
       .where(eq(tasks.id, task.id))
       .run();
 
@@ -689,27 +790,31 @@ export class ExecutionService {
     });
     this.events?.emitEvent({ type: 'plan.updated', projectId });
 
-    const row = this.db.select().from(runs).where(eq(runs.id, runId)).get()!;
-    const initialRun = this.toRunDTO(project.path, row, task, selected.chosen);
+    const initialRun = await this.toRunDTO(project.path, row, task, selected.chosen);
 
     const executeFn = async (): Promise<RunStatus> => {
       return this.executePreparedRun({
         projectId,
         projectPath: project.path,
+        mainBranch: project.mainBranch,
+        branchName,
+        baseMainSha,
         task,
+        priorRejectionNote,
+        execHandle,
         initialRunId: runId,
         initialProfile: selected.chosen,
         fallbackProfile: selected.fallback,
         sandboxReady,
         routeNote: routing.note,
         attempt,
-        commitBefore: checkpointBefore.commitSha,
         absLogPath,
         relLogPath,
         absResultPath,
         relResultPath,
+        absReviewPath,
+        relReviewPath,
         resumeSessionId,
-        controller,
       });
     };
 
@@ -719,30 +824,121 @@ export class ExecutionService {
   private async executePreparedRun(ctx: {
     projectId: string;
     projectPath: string;
+    mainBranch: string;
+    branchName: string;
+    baseMainSha: string;
     task: TaskDTO;
+    priorRejectionNote: string | null;
+    execHandle: ActiveProjectExecution;
     initialRunId: string;
     initialProfile: AgentProfileDTO;
     fallbackProfile: AgentProfileDTO | null;
     sandboxReady: boolean;
     routeNote: string | null;
     attempt: number;
-    commitBefore: string;
     absLogPath: string;
     relLogPath: string;
     absResultPath: string;
     relResultPath: string;
+    absReviewPath: string;
+    relReviewPath: string;
     resumeSessionId: string | null;
-    controller: AbortController;
   }): Promise<RunStatus> {
+    const coderOutcome = await this.runCoderPhaseWithFallback({
+      projectId: ctx.projectId,
+      projectPath: ctx.projectPath,
+      branchName: ctx.branchName,
+      baseMainSha: ctx.baseMainSha,
+      task: ctx.task,
+      execHandle: ctx.execHandle,
+      initialRunId: ctx.initialRunId,
+      initialProfile: ctx.initialProfile,
+      fallbackProfile: ctx.fallbackProfile,
+      sandboxReady: ctx.sandboxReady,
+      routeNote: ctx.routeNote,
+      absLogPath: ctx.absLogPath,
+      absResultPath: ctx.absResultPath,
+      relResultPath: ctx.relResultPath,
+      sessionToResume: ctx.resumeSessionId,
+      kind: 'execute',
+      prompt: ctx.resumeSessionId
+        ? this.buildResumePrompt(ctx.task, ctx.relResultPath, ctx.priorRejectionNote)
+        : this.buildTaskPrompt(ctx.task, ctx.initialProfile, ctx.relResultPath, ctx.priorRejectionNote),
+      buildPromptForProfile: (prof) =>
+        this.buildTaskPrompt(ctx.task, prof, ctx.relResultPath, ctx.priorRejectionNote),
+    });
+
+    if (coderOutcome.status !== 'completed') {
+      await checkoutBranch(ctx.projectPath, ctx.mainBranch).catch(() => undefined);
+      return coderOutcome.status;
+    }
+
+    // Enter v0.3 Kawal review + fix loop on the task branch before exposing the diff in Guard.
+    const finalStatus = await this.runReviewAndFixLoop({
+      projectId: ctx.projectId,
+      projectPath: ctx.projectPath,
+      mainBranch: ctx.mainBranch,
+      branchName: ctx.branchName,
+      baseMainSha: ctx.baseMainSha,
+      task: ctx.task,
+      execHandle: ctx.execHandle,
+      sandboxReady: ctx.sandboxReady,
+      coderProfile: coderOutcome.profile,
+      coderFallback: coderOutcome.fallback,
+      coderSessionId: coderOutcome.sessionId,
+      coderResult: coderOutcome.result,
+      scopeWarnings: coderOutcome.scopeWarnings,
+      absResultPath: ctx.absResultPath,
+      relResultPath: ctx.relResultPath,
+      absReviewPath: ctx.absReviewPath,
+      relReviewPath: ctx.relReviewPath,
+    });
+
+    await checkoutBranch(ctx.projectPath, ctx.mainBranch).catch(() => undefined);
+    return finalStatus;
+  }
+
+  private async runCoderPhaseWithFallback(opts: {
+    projectId: string;
+    projectPath: string;
+    branchName: string;
+    baseMainSha: string;
+    task: TaskDTO;
+    execHandle: ActiveProjectExecution;
+    initialRunId: string;
+    initialProfile: AgentProfileDTO;
+    fallbackProfile: AgentProfileDTO | null;
+    sandboxReady: boolean;
+    routeNote: string | null;
+    absLogPath: string;
+    absResultPath: string;
+    relResultPath: string;
+    sessionToResume: string | null;
+    kind: 'execute' | 'fix';
+    prompt: string;
+    buildPromptForProfile: (profile: AgentProfileDTO) => string;
+  }): Promise<{
+    status: RunStatus;
+    profile: AgentProfileDTO;
+    fallback: AgentProfileDTO | null;
+    sessionId: string | null;
+    commitAfter: string;
+    result: TaskResultContract | null;
+    scopeWarnings: string[];
+  }> {
     const runAttempt = async (
       runId: string,
       profile: AgentProfileDTO,
       logFileAbs: string,
       sessionToResume: string | null,
+      promptText: string,
     ): Promise<{
       status: RunStatus;
       canFallback: boolean;
-      failureEventType?: 'rate_limit' | 'login_expired' | 'timeout' | 'error';
+      sessionId: string | null;
+      commitAfter: string;
+      result: TaskResultContract | null;
+      scopeWarnings: string[];
       failureReason?: string;
     }> => {
       const adapter = this.registry.getAdapter(profile.provider);
@@ -758,8 +954,8 @@ export class ExecutionService {
         this.appendDalangLog(logFileAbs, line);
         this.events?.emitEvent({
           type: 'run.log',
-          projectId: ctx.projectId,
-          taskId: ctx.task.id,
+          projectId: opts.projectId,
+          taskId: opts.task.id,
           runId,
           line,
         });
@@ -767,17 +963,25 @@ export class ExecutionService {
       const emitAdapterLine = (line: string) => {
         this.events?.emitEvent({
           type: 'run.log',
-          projectId: ctx.projectId,
-          taskId: ctx.task.id,
+          projectId: opts.projectId,
+          taskId: opts.task.id,
           runId,
           line,
         });
       };
-      const markRunStopped = async (): Promise<{ status: RunStatus; canFallback: false }> => {
+
+      const markRunStopped = async (): Promise<{
+        status: RunStatus;
+        canFallback: false;
+        sessionId: string | null;
+        commitAfter: string;
+        result: null;
+        scopeWarnings: string[];
+      }> => {
         const checkpointAfter = await createGitCheckpoint(
-          ctx.projectPath,
-          `dalang: checkpoint stopped ${ctx.task.externalId}`,
-        ).catch(() => ({ commitSha: ctx.commitBefore }));
+          opts.projectPath,
+          `dalang: checkpoint stopped ${opts.task.externalId}`,
+        ).catch(() => ({ commitSha: opts.baseMainSha }));
         const finishedAt = new Date().toISOString();
         this.db
           .update(runs)
@@ -793,41 +997,43 @@ export class ExecutionService {
         this.db
           .update(tasks)
           .set({ status: 'stopped', updatedAt: finishedAt })
-          .where(eq(tasks.id, ctx.task.id))
+          .where(eq(tasks.id, opts.task.id))
           .run();
         this.events?.emitEvent({
           type: 'run.finished',
-          projectId: ctx.projectId,
-          taskId: ctx.task.id,
+          projectId: opts.projectId,
+          taskId: opts.task.id,
           runId,
           status: 'stopped',
           error: 'Stopped by user',
         });
-        this.events?.emitEvent({ type: 'plan.updated', projectId: ctx.projectId });
-        return { status: 'stopped', canFallback: false };
+        this.events?.emitEvent({ type: 'plan.updated', projectId: opts.projectId });
+        return {
+          status: 'stopped',
+          canFallback: false,
+          sessionId: capturedSessionId,
+          commitAfter: checkpointAfter.commitSha,
+          result: null,
+          scopeWarnings: [],
+        };
       };
 
       try {
         emitDalangLine(
-          `[dalang] Starting ${ctx.task.externalId} (${ctx.task.title}) with profile "${profile.name}" (${profile.provider}${profile.model ? `/${profile.model}` : ''})`,
+          `[dalang] Starting ${opts.kind} for ${opts.task.externalId} (${opts.task.title}) on ${opts.branchName} with profile "${profile.name}" (${profile.provider}${profile.model ? `/${profile.model}` : ''})`,
         );
-
-        if (ctx.routeNote) emitDalangLine(`[dalang] ${ctx.routeNote}`);
-
-        const prompt = sessionToResume
-          ? this.buildResumePrompt(ctx.task, ctx.relResultPath)
-          : this.buildTaskPrompt(ctx.task, profile, ctx.relResultPath);
+        if (opts.routeNote) emitDalangLine(`[dalang] ${opts.routeNote}`);
 
         const turn = await adapter.runTurn({
-          projectPath: ctx.projectPath,
-          prompt,
+          projectPath: opts.projectPath,
+          prompt: promptText,
           sessionId: sessionToResume,
           model: profile.model || null,
           effort: profile.effort,
           permissionMode: writePermission(profile),
           timeoutMs: profile.timeoutMs,
           idleTimeoutMs: profile.idleTimeoutMs,
-          signal: ctx.controller.signal,
+          signal: opts.execHandle.controller.signal,
           logFilePath: logFileAbs,
           onLogLine: emitAdapterLine,
         });
@@ -836,9 +1042,9 @@ export class ExecutionService {
         exitCode = turn.exitCode;
         stdout = turn.stdout;
         stderr = turn.stderr;
-        aborted = Boolean(turn.aborted) || ctx.controller.signal.aborted;
+        aborted = Boolean(turn.aborted) || opts.execHandle.controller.signal.aborted;
       } catch (err) {
-        aborted = ctx.controller.signal.aborted;
+        aborted = opts.execHandle.controller.signal.aborted;
         thrownError = err instanceof Error ? err.message : String(err);
         emitDalangLine(`[dalang:error] ${thrownError}`);
       } finally {
@@ -853,9 +1059,7 @@ export class ExecutionService {
           .run();
       }
 
-      if (aborted) {
-        return markRunStopped();
-      }
+      if (aborted) return markRunStopped();
 
       if (thrownError || (exitCode !== null && exitCode !== 0)) {
         const classified = classifyProviderFailure(exitCode, stdout, stderr, thrownError);
@@ -871,9 +1075,9 @@ export class ExecutionService {
           .run();
 
         const checkpointAfter = await createGitCheckpoint(
-          ctx.projectPath,
-          `dalang: checkpoint failed ${ctx.task.externalId}`,
-        ).catch(() => ({ commitSha: ctx.commitBefore }));
+          opts.projectPath,
+          `dalang: checkpoint failed ${opts.task.externalId}`,
+        ).catch(() => ({ commitSha: opts.baseMainSha }));
         const finishedAt = new Date().toISOString();
         this.db
           .update(runs)
@@ -889,47 +1093,49 @@ export class ExecutionService {
         this.db
           .update(tasks)
           .set({ status: 'failed', updatedAt: finishedAt })
-          .where(eq(tasks.id, ctx.task.id))
+          .where(eq(tasks.id, opts.task.id))
           .run();
         this.events?.emitEvent({
           type: 'run.finished',
-          projectId: ctx.projectId,
-          taskId: ctx.task.id,
+          projectId: opts.projectId,
+          taskId: opts.task.id,
           runId,
           status: 'failed',
           error: classified.reason,
         });
-        this.events?.emitEvent({ type: 'plan.updated', projectId: ctx.projectId });
+        this.events?.emitEvent({ type: 'plan.updated', projectId: opts.projectId });
 
         return {
           status: 'failed',
           canFallback: true,
-          failureEventType: classified.eventType,
+          sessionId: capturedSessionId,
+          commitAfter: checkpointAfter.commitSha,
+          result: null,
+          scopeWarnings: [],
           failureReason: classified.reason,
         };
       }
 
-      // Validate .dalang/tasks/{id}/result.json (repair once if missing/invalid and not aborted)
       let validation = this.validateResultFile(
-        ctx.projectPath,
-        ctx.absResultPath,
-        ctx.task.externalId,
+        opts.projectPath,
+        opts.absResultPath,
+        opts.task.externalId,
       );
-      if (!validation.ok && !ctx.controller.signal.aborted) {
+      if (!validation.ok && !opts.execHandle.controller.signal.aborted) {
         emitDalangLine(`[dalang] ${validation.error}; requesting structured result.json repair...`);
         const jsonSchema = z.toJSONSchema(TaskResultContractSchema);
         const repairPrompt = [
           `Your task work finished, but the required contract file failed validation:`,
           validation.error,
           ``,
-          `Please write a valid JSON file directly to "${ctx.relResultPath}" matching this JSON Schema:`,
+          `Please write a valid JSON file directly to "${opts.relResultPath}" matching this JSON Schema:`,
           JSON.stringify(jsonSchema, null, 2),
         ].join('\n');
 
         this.incrementProviderCount(profile.provider);
         try {
           const repairTurn = await adapter.runTurn({
-            projectPath: ctx.projectPath,
+            projectPath: opts.projectPath,
             prompt: repairPrompt,
             sessionId: capturedSessionId,
             model: profile.model || null,
@@ -937,7 +1143,7 @@ export class ExecutionService {
             permissionMode: writePermission(profile),
             timeoutMs: Math.min(profile.timeoutMs, 180_000),
             idleTimeoutMs: profile.idleTimeoutMs,
-            signal: ctx.controller.signal,
+            signal: opts.execHandle.controller.signal,
             logFilePath: logFileAbs,
             onLogLine: emitAdapterLine,
           });
@@ -949,31 +1155,31 @@ export class ExecutionService {
               .where(eq(runs.id, runId))
               .run();
           }
-          if (repairTurn.aborted || ctx.controller.signal.aborted) {
-            aborted = true;
-          }
+          if (repairTurn.aborted || opts.execHandle.controller.signal.aborted) aborted = true;
         } catch (err) {
-          aborted = ctx.controller.signal.aborted;
+          aborted = opts.execHandle.controller.signal.aborted;
           emitDalangLine(
             `[dalang:error] Repair turn failed: ${err instanceof Error ? err.message : String(err)}`,
           );
         } finally {
           this.decrementProviderCount(profile.provider);
         }
-        if (aborted) {
-          return markRunStopped();
-        }
+        if (aborted) return markRunStopped();
         validation = this.validateResultFile(
-          ctx.projectPath,
-          ctx.absResultPath,
-          ctx.task.externalId,
+          opts.projectPath,
+          opts.absResultPath,
+          opts.task.externalId,
         );
       }
 
       let scopeWarnings: string[];
       try {
-        const changedFiles = await getChangedFilesSinceCommit(ctx.projectPath, ctx.commitBefore);
-        scopeWarnings = findScopeViolations(changedFiles, ctx.task.filesAllowed);
+        const changedFiles = await getChangedFilesBetween(
+          opts.projectPath,
+          opts.baseMainSha,
+          null,
+        );
+        scopeWarnings = findScopeViolations(changedFiles, opts.task.filesAllowed);
       } catch (err) {
         scopeWarnings = [
           `Could not verify files_allowed: ${err instanceof Error ? err.message : String(err)}`,
@@ -985,9 +1191,9 @@ export class ExecutionService {
 
       if (!validation.ok) {
         const checkpointAfter = await createGitCheckpoint(
-          ctx.projectPath,
-          `dalang: checkpoint invalid-result ${ctx.task.externalId}`,
-        ).catch(() => ({ commitSha: ctx.commitBefore }));
+          opts.projectPath,
+          `dalang: checkpoint invalid-result ${opts.task.externalId}`,
+        ).catch(() => ({ commitSha: opts.baseMainSha }));
         const finishedAt = new Date().toISOString();
         this.db
           .update(runs)
@@ -1004,22 +1210,24 @@ export class ExecutionService {
         this.db
           .update(tasks)
           .set({ status: 'failed', updatedAt: finishedAt })
-          .where(eq(tasks.id, ctx.task.id))
+          .where(eq(tasks.id, opts.task.id))
           .run();
         this.events?.emitEvent({
           type: 'run.finished',
-          projectId: ctx.projectId,
-          taskId: ctx.task.id,
+          projectId: opts.projectId,
+          taskId: opts.task.id,
           runId,
           status: 'failed',
           error: validation.error,
         });
-        this.events?.emitEvent({ type: 'plan.updated', projectId: ctx.projectId });
-        // The agent ran but did not deliver a valid result: another provider would only repeat the cost.
+        this.events?.emitEvent({ type: 'plan.updated', projectId: opts.projectId });
         return {
           status: 'failed',
           canFallback: false,
-          failureEventType: 'error',
+          sessionId: capturedSessionId,
+          commitAfter: checkpointAfter.commitSha,
+          result: null,
+          scopeWarnings,
           failureReason: validation.error,
         };
       }
@@ -1027,14 +1235,13 @@ export class ExecutionService {
       const resultData = validation.data;
       const succeeded = resultData.status === 'completed';
       const finalRunStatus: RunStatus = succeeded ? 'completed' : 'failed';
-      const finalTaskStatus: TaskStatus = succeeded ? 'done' : 'failed';
       const failureReason = succeeded
         ? null
         : resultData.blockers.join('; ') || `Task reported status "${resultData.status}"`;
 
       const checkpointAfter = await createGitCheckpoint(
-        ctx.projectPath,
-        `dalang: ${ctx.task.externalId} (${finalTaskStatus})`,
+        opts.projectPath,
+        `dalang: ${opts.task.externalId} (${opts.kind} ${succeeded ? 'completed' : 'failed'})`,
       );
       const finishedAt = new Date().toISOString();
 
@@ -1046,115 +1253,890 @@ export class ExecutionService {
           exitCode,
           failureReason,
           commitAfter: checkpointAfter.commitSha,
-          resultPath: ctx.relResultPath,
+          resultPath: opts.relResultPath,
           scopeWarningsJson: JSON.stringify(scopeWarnings),
         })
         .where(eq(runs.id, runId))
         .run();
 
-      this.db
-        .update(tasks)
-        .set({ status: finalTaskStatus, updatedAt: finishedAt })
-        .where(eq(tasks.id, ctx.task.id))
-        .run();
+      if (!succeeded) {
+        this.db
+          .update(tasks)
+          .set({ status: 'failed', updatedAt: finishedAt })
+          .where(eq(tasks.id, opts.task.id))
+          .run();
+      }
 
       emitDalangLine(
-        `[dalang] Finished ${ctx.task.externalId} -> ${finalTaskStatus} (checkpoint ${checkpointAfter.commitSha.slice(0, 7)})`,
+        `[dalang] Finished ${opts.kind} for ${opts.task.externalId} -> ${finalRunStatus} (checkpoint ${checkpointAfter.commitSha.slice(0, 7)})`,
       );
       this.events?.emitEvent({
         type: 'run.finished',
-        projectId: ctx.projectId,
-        taskId: ctx.task.id,
+        projectId: opts.projectId,
+        taskId: opts.task.id,
         runId,
         status: finalRunStatus,
         ...(failureReason ? { error: failureReason } : {}),
       });
-      this.events?.emitEvent({ type: 'plan.updated', projectId: ctx.projectId });
-      // A task the agent reports as blocked or failed is a real outcome, not a provider failure, so no fallback.
-      return { status: finalRunStatus, canFallback: false, failureReason: failureReason ?? undefined };
+      this.events?.emitEvent({ type: 'plan.updated', projectId: opts.projectId });
+
+      return {
+        status: finalRunStatus,
+        canFallback: false,
+        sessionId: capturedSessionId,
+        commitAfter: checkpointAfter.commitSha,
+        result: resultData,
+        scopeWarnings,
+        failureReason: failureReason ?? undefined,
+      };
     };
 
     const primaryOutcome = await runAttempt(
-      ctx.initialRunId,
-      ctx.initialProfile,
-      ctx.absLogPath,
-      ctx.resumeSessionId,
+      opts.initialRunId,
+      opts.initialProfile,
+      opts.absLogPath,
+      opts.sessionToResume,
+      opts.prompt,
     );
 
     if (
       primaryOutcome.status === 'failed' &&
       primaryOutcome.canFallback &&
-      ctx.fallbackProfile &&
-      !ctx.controller.signal.aborted &&
-      !this.registry.providerBlockedReason(ctx.fallbackProfile.provider, ctx.sandboxReady) &&
-      this.getProviderActiveCount(ctx.fallbackProfile.provider) < ctx.fallbackProfile.maxParallel
+      opts.fallbackProfile &&
+      !opts.execHandle.controller.signal.aborted &&
+      !this.registry.providerBlockedReason(opts.fallbackProfile.provider, opts.sandboxReady) &&
+      this.getProviderActiveCount(opts.fallbackProfile.provider) < opts.fallbackProfile.maxParallel
     ) {
-      // Create a fresh run row using the fallback profile (F-13)
       const fbRunId = crypto.randomUUID();
       const fbRelLog = path.join(
         '.dalang',
         'logs',
-        `run-${ctx.task.externalId}-fb-${Date.now()}.log`,
+        `run-${opts.task.externalId}-fb-${Date.now()}.log`,
       );
-      const fbAbsLog = path.join(ctx.projectPath, fbRelLog);
-      removeArtifactFile(ctx.projectPath, ctx.absResultPath);
+      const fbAbsLog = path.join(opts.projectPath, fbRelLog);
+      removeArtifactFile(opts.projectPath, opts.absResultPath);
 
-      const fbNow = new Date().toISOString();
+      this.insertRunRecord({
+        id: fbRunId,
+        projectId: opts.projectId,
+        taskId: opts.task.id,
+        profileId: opts.fallbackProfile.id,
+        provider: opts.fallbackProfile.provider,
+        model: opts.fallbackProfile.model || null,
+        kind: opts.kind,
+        branchName: opts.branchName,
+        cliSessionId: null,
+        attempt: this.nextAttemptForTask(opts.task.id),
+        usedFallback: true,
+        commitBefore: opts.baseMainSha,
+        logPath: fbRelLog,
+      });
+
       this.db
-        .insert(runs)
+        .update(tasks)
+        .set({ status: 'running', updatedAt: new Date().toISOString() })
+        .where(eq(tasks.id, opts.task.id))
+        .run();
+
+      opts.execHandle.runId = fbRunId;
+      this.events?.emitEvent({
+        type: 'run.started',
+        projectId: opts.projectId,
+        taskId: opts.task.id,
+        runId: fbRunId,
+        profileName: opts.fallbackProfile.name,
+        provider: opts.fallbackProfile.provider,
+      });
+      const fallbackBanner = `[dalang] Fallback triggered after ${opts.initialProfile.name} failed (${primaryOutcome.failureReason ?? 'error'}). Switching to "${opts.fallbackProfile.name}" (${opts.fallbackProfile.provider}).`;
+      this.appendDalangLog(fbAbsLog, fallbackBanner);
+      this.events?.emitEvent({
+        type: 'run.log',
+        projectId: opts.projectId,
+        taskId: opts.task.id,
+        runId: fbRunId,
+        line: fallbackBanner,
+      });
+      this.events?.emitEvent({ type: 'plan.updated', projectId: opts.projectId });
+
+      const fbOutcome = await runAttempt(
+        fbRunId,
+        opts.fallbackProfile,
+        fbAbsLog,
+        null,
+        opts.buildPromptForProfile(opts.fallbackProfile),
+      );
+      return {
+        status: fbOutcome.status,
+        profile: opts.fallbackProfile,
+        fallback: null,
+        sessionId: fbOutcome.sessionId,
+        commitAfter: fbOutcome.commitAfter,
+        result: fbOutcome.result,
+        scopeWarnings: fbOutcome.scopeWarnings,
+      };
+    }
+
+    return {
+      status: primaryOutcome.status,
+      profile: opts.initialProfile,
+      fallback: opts.fallbackProfile,
+      sessionId: primaryOutcome.sessionId,
+      commitAfter: primaryOutcome.commitAfter,
+      result: primaryOutcome.result,
+      scopeWarnings: primaryOutcome.scopeWarnings,
+    };
+  }
+
+  private async runReviewAndFixLoop(ctx: {
+    projectId: string;
+    projectPath: string;
+    mainBranch: string;
+    branchName: string;
+    baseMainSha: string;
+    task: TaskDTO;
+    execHandle: ActiveProjectExecution;
+    sandboxReady: boolean;
+    coderProfile: AgentProfileDTO;
+    coderFallback: AgentProfileDTO | null;
+    coderSessionId: string | null;
+    coderResult: TaskResultContract | null;
+    scopeWarnings: string[];
+    absResultPath: string;
+    relResultPath: string;
+    absReviewPath: string;
+    relReviewPath: string;
+  }): Promise<RunStatus> {
+    let activeCoderProfile = ctx.coderProfile;
+    let activeCoderFallback = ctx.coderFallback;
+    let activeCoderSessionId = ctx.coderSessionId;
+    let activeCoderResult = ctx.coderResult;
+    let activeScopeWarnings = ctx.scopeWarnings;
+
+    const initialReviewer = this.profiles.resolveReviewerProfile({
+      coderProvider: activeCoderProfile.provider,
+      sandboxReady: ctx.sandboxReady,
+      registry: this.registry,
+    });
+    if (initialReviewer.blocked) {
+      const now = new Date().toISOString();
+      this.db
+        .update(tasks)
+        .set({
+          status: 'review_failed',
+          rejectionNote: initialReviewer.blocked,
+          updatedAt: now,
+        })
+        .where(eq(tasks.id, ctx.task.id))
+        .run();
+      this.events?.emitEvent({ type: 'plan.updated', projectId: ctx.projectId });
+      return 'failed';
+    }
+
+    const maxRounds = Math.min(3, Math.max(1, initialReviewer.primary.maxReviewRounds || 2));
+
+    for (let round = 1; round <= maxRounds; round++) {
+      if (ctx.execHandle.controller.signal.aborted) {
+        return 'stopped';
+      }
+
+      const reviewerRouting = this.profiles.resolveReviewerProfile({
+        coderProvider: activeCoderProfile.provider,
+        sandboxReady: ctx.sandboxReady,
+        registry: this.registry,
+      });
+      if (reviewerRouting.blocked) {
+        this.db
+          .update(tasks)
+          .set({
+            status: 'review_failed',
+            rejectionNote: reviewerRouting.blocked,
+            updatedAt: new Date().toISOString(),
+          })
+          .where(eq(tasks.id, ctx.task.id))
+          .run();
+        this.events?.emitEvent({ type: 'plan.updated', projectId: ctx.projectId });
+        return 'failed';
+      }
+
+      this.db
+        .update(tasks)
+        .set({ status: 'reviewing', updatedAt: new Date().toISOString() })
+        .where(eq(tasks.id, ctx.task.id))
+        .run();
+      this.events?.emitEvent({ type: 'plan.updated', projectId: ctx.projectId });
+
+      const currentHead = (await getHeadCommit(ctx.projectPath)) ?? ctx.baseMainSha;
+      const changedFiles = await getChangedFilesBetween(
+        ctx.projectPath,
+        ctx.baseMainSha,
+        currentHead,
+      ).catch(() => [] as string[]);
+      activeScopeWarnings = findScopeViolations(changedFiles, ctx.task.filesAllowed);
+      const diffData = await getTaskDiff(
+        ctx.projectPath,
+        ctx.task.id,
+        ctx.task.externalId,
+        ctx.branchName,
+        ctx.baseMainSha,
+        currentHead,
+      ).catch(() => null);
+
+      const reviewOutcome = await this.executeSingleReviewRound({
+        projectId: ctx.projectId,
+        projectPath: ctx.projectPath,
+        branchName: ctx.branchName,
+        baseMainSha: ctx.baseMainSha,
+        currentHead,
+        task: ctx.task,
+        round,
+        maxRounds,
+        execHandle: ctx.execHandle,
+        sandboxReady: ctx.sandboxReady,
+        primaryReviewer: reviewerRouting.primary,
+        fallbackReviewer: reviewerRouting.fallback,
+        routeNote: reviewerRouting.note,
+        changedFiles,
+        scopeWarnings: activeScopeWarnings,
+        rawDiff: diffData?.rawDiff ?? '',
+        coderResult: activeCoderResult,
+        absReviewPath: ctx.absReviewPath,
+        relReviewPath: ctx.relReviewPath,
+      });
+
+      if (reviewOutcome.status === 'stopped') {
+        return 'stopped';
+      }
+      if (reviewOutcome.status === 'failed' || !reviewOutcome.contract) {
+        this.db
+          .update(tasks)
+          .set({
+            status: 'review_failed',
+            rejectionNote: reviewOutcome.error ?? 'Reviewer failed to produce a valid review.',
+            updatedAt: new Date().toISOString(),
+          })
+          .where(eq(tasks.id, ctx.task.id))
+          .run();
+        this.events?.emitEvent({ type: 'plan.updated', projectId: ctx.projectId });
+        return 'failed';
+      }
+
+      const reviewData = reviewOutcome.contract;
+      if (reviewData.status === 'pass') {
+        this.db
+          .update(tasks)
+          .set({
+            status: 'awaiting_merge',
+            reviewRounds: round,
+            rejectionNote: null,
+            updatedAt: new Date().toISOString(),
+          })
+          .where(eq(tasks.id, ctx.task.id))
+          .run();
+        this.events?.emitEvent({ type: 'plan.updated', projectId: ctx.projectId });
+        return 'completed';
+      }
+
+      if (round >= maxRounds) {
+        this.db
+          .update(tasks)
+          .set({
+            status: 'review_failed',
+            reviewRounds: round,
+            rejectionNote:
+              reviewData.findings[0]?.note ??
+              `Review failed after ${round} round(s).`,
+            updatedAt: new Date().toISOString(),
+          })
+          .where(eq(tasks.id, ctx.task.id))
+          .run();
+        this.events?.emitEvent({ type: 'plan.updated', projectId: ctx.projectId });
+        return 'failed';
+      }
+
+      // Send review findings back to the coder for an automatic fix round (F-18).
+      removeArtifactFile(ctx.projectPath, ctx.absResultPath);
+      const fixRunId = crypto.randomUUID();
+      const fixRelLog = path.join(
+        '.dalang',
+        'logs',
+        `fix-${ctx.task.externalId}-r${round}-${Date.now()}.log`,
+      );
+      const fixAbsLog = path.join(ctx.projectPath, fixRelLog);
+
+      this.insertRunRecord({
+        id: fixRunId,
+        projectId: ctx.projectId,
+        taskId: ctx.task.id,
+        profileId: activeCoderProfile.id,
+        provider: activeCoderProfile.provider,
+        model: activeCoderProfile.model || null,
+        kind: 'fix',
+        branchName: ctx.branchName,
+        cliSessionId: activeCoderSessionId,
+        attempt: this.nextAttemptForTask(ctx.task.id),
+        usedFallback: false,
+        commitBefore: ctx.baseMainSha,
+        logPath: fixRelLog,
+      });
+
+      this.db
+        .update(tasks)
+        .set({ status: 'running', updatedAt: new Date().toISOString() })
+        .where(eq(tasks.id, ctx.task.id))
+        .run();
+
+      ctx.execHandle.runId = fixRunId;
+      this.events?.emitEvent({
+        type: 'run.started',
+        projectId: ctx.projectId,
+        taskId: ctx.task.id,
+        runId: fixRunId,
+        profileName: activeCoderProfile.name,
+        provider: activeCoderProfile.provider,
+      });
+      this.events?.emitEvent({ type: 'plan.updated', projectId: ctx.projectId });
+
+      const fixOutcome = await this.runCoderPhaseWithFallback({
+        projectId: ctx.projectId,
+        projectPath: ctx.projectPath,
+        branchName: ctx.branchName,
+        baseMainSha: ctx.baseMainSha,
+        task: ctx.task,
+        execHandle: ctx.execHandle,
+        initialRunId: fixRunId,
+        initialProfile: activeCoderProfile,
+        fallbackProfile: activeCoderFallback,
+        sandboxReady: ctx.sandboxReady,
+        routeNote: `Fix round ${round} addressing ${reviewData.findings.length} review finding(s).`,
+        absLogPath: fixAbsLog,
+        absResultPath: ctx.absResultPath,
+        relResultPath: ctx.relResultPath,
+        sessionToResume: activeCoderSessionId,
+        kind: 'fix',
+        prompt: buildFixPrompt({
+          task: ctx.task,
+          profile: activeCoderProfile,
+          relResultPath: ctx.relResultPath,
+          round,
+          review: reviewData,
+          verifyOutput: reviewOutcome.verifyOutput,
+          scopeWarnings: activeScopeWarnings,
+        }),
+        buildPromptForProfile: (prof) =>
+          buildFixPrompt({
+            task: ctx.task,
+            profile: prof,
+            relResultPath: ctx.relResultPath,
+            round,
+            review: reviewData,
+            verifyOutput: reviewOutcome.verifyOutput,
+            scopeWarnings: activeScopeWarnings,
+          }),
+      });
+
+      if (fixOutcome.status !== 'completed') {
+        return fixOutcome.status;
+      }
+
+      activeCoderProfile = fixOutcome.profile;
+      activeCoderFallback = fixOutcome.fallback;
+      activeCoderSessionId = fixOutcome.sessionId;
+      activeCoderResult = fixOutcome.result;
+      activeScopeWarnings = fixOutcome.scopeWarnings;
+    }
+
+    return 'failed';
+  }
+
+  private async executeSingleReviewRound(opts: {
+    projectId: string;
+    projectPath: string;
+    branchName: string;
+    baseMainSha: string;
+    currentHead: string;
+    task: TaskDTO;
+    round: number;
+    maxRounds: number;
+    execHandle: ActiveProjectExecution;
+    sandboxReady: boolean;
+    primaryReviewer: AgentProfileDTO;
+    fallbackReviewer: AgentProfileDTO | null;
+    routeNote: string | null;
+    changedFiles: string[];
+    scopeWarnings: string[];
+    rawDiff: string;
+    coderResult: TaskResultContract | null;
+    absReviewPath: string;
+    relReviewPath: string;
+  }): Promise<{
+    status: 'completed' | 'failed' | 'stopped';
+    contract?: ReviewContract;
+    verifyOutput: string;
+    error?: string;
+  }> {
+    const runAttempt = async (
+      reviewerProfile: AgentProfileDTO,
+      usedFallback: boolean,
+      verifyInfo?: { exitCode: number; output: string },
+    ): Promise<{
+      status: 'completed' | 'failed' | 'stopped';
+      canFallback: boolean;
+      contract?: ReviewContract;
+      verifyExitCode: number;
+      verifyOutput: string;
+      error?: string;
+    }> => {
+      const reviewRunId = crypto.randomUUID();
+      const relLogPath = path.join(
+        '.dalang',
+        'logs',
+        `review-${opts.task.externalId}-r${opts.round}-${Date.now()}.log`,
+      );
+      const absLogPath = path.join(opts.projectPath, relLogPath);
+      removeArtifactFile(opts.projectPath, opts.absReviewPath);
+
+      this.insertRunRecord({
+        id: reviewRunId,
+        projectId: opts.projectId,
+        taskId: opts.task.id,
+        profileId: reviewerProfile.id,
+        provider: reviewerProfile.provider,
+        model: reviewerProfile.model || null,
+        kind: 'review',
+        branchName: opts.branchName,
+        cliSessionId: null,
+        attempt: this.nextAttemptForTask(opts.task.id),
+        usedFallback,
+        commitBefore: opts.currentHead,
+        logPath: relLogPath,
+      });
+
+      opts.execHandle.runId = reviewRunId;
+      this.events?.emitEvent({
+        type: 'run.started',
+        projectId: opts.projectId,
+        taskId: opts.task.id,
+        runId: reviewRunId,
+        profileName: reviewerProfile.name,
+        provider: reviewerProfile.provider,
+      });
+
+      const emitDalangLine = (line: string) => {
+        this.appendDalangLog(absLogPath, line);
+        this.events?.emitEvent({
+          type: 'run.log',
+          projectId: opts.projectId,
+          taskId: opts.task.id,
+          runId: reviewRunId,
+          line,
+        });
+      };
+      const emitAdapterLine = (line: string) => {
+        this.events?.emitEvent({
+          type: 'run.log',
+          projectId: opts.projectId,
+          taskId: opts.task.id,
+          runId: reviewRunId,
+          line,
+        });
+      };
+
+      emitDalangLine(
+        `[dalang] Starting review round ${opts.round}/${opts.maxRounds} for ${opts.task.externalId} with profile "${reviewerProfile.name}" (${reviewerProfile.provider}, mode=${reviewerProfile.permissionMode})`,
+      );
+      if (opts.routeNote) emitDalangLine(`[dalang] ${opts.routeNote}`);
+
+      let verifyExitCode = verifyInfo?.exitCode ?? 0;
+      let verifyOutput = verifyInfo?.output ?? '';
+
+      if (!verifyInfo) {
+        emitDalangLine(`[dalang] Running verify command: ${opts.task.verify}`);
+        try {
+          const verifyRes = await this.registry.runShellCommand(opts.projectPath, opts.task.verify, {
+            timeoutMs: Math.min(reviewerProfile.timeoutMs, 300_000),
+            idleTimeoutMs: reviewerProfile.idleTimeoutMs,
+            signal: opts.execHandle.controller.signal,
+            onLogLine: emitDalangLine,
+          });
+          if (verifyRes.aborted || opts.execHandle.controller.signal.aborted) {
+            const finishedAt = new Date().toISOString();
+            this.db
+              .update(runs)
+              .set({ status: 'stopped', finishedAt, failureReason: 'Stopped by user' })
+              .where(eq(runs.id, reviewRunId))
+              .run();
+            this.db
+              .update(tasks)
+              .set({ status: 'stopped', updatedAt: finishedAt })
+              .where(eq(tasks.id, opts.task.id))
+              .run();
+            this.events?.emitEvent({
+              type: 'run.finished',
+              projectId: opts.projectId,
+              taskId: opts.task.id,
+              runId: reviewRunId,
+              status: 'stopped',
+              error: 'Stopped by user',
+            });
+            return {
+              status: 'stopped',
+              canFallback: false,
+              verifyExitCode: 1,
+              verifyOutput: '',
+            };
+          }
+          verifyExitCode =
+            verifyRes.timedOut || verifyRes.idleTimedOut
+              ? 124
+              : (verifyRes.exitCode ?? 1);
+          const combinedVerify = [verifyRes.stdout, verifyRes.stderr].filter(Boolean).join('\n');
+          verifyOutput = tailOutput(
+            verifyRes.timedOut || verifyRes.idleTimedOut
+              ? `${combinedVerify}\n[dalang] Verify command timed out.`
+              : combinedVerify,
+          );
+          emitDalangLine(`[dalang] Verify command exited with code ${verifyExitCode}`);
+        } catch (err) {
+          if (opts.execHandle.controller.signal.aborted) {
+            const finishedAt = new Date().toISOString();
+            this.db
+              .update(runs)
+              .set({ status: 'stopped', finishedAt, failureReason: 'Stopped by user' })
+              .where(eq(runs.id, reviewRunId))
+              .run();
+            this.db
+              .update(tasks)
+              .set({ status: 'stopped', updatedAt: finishedAt })
+              .where(eq(tasks.id, opts.task.id))
+              .run();
+            return { status: 'stopped', canFallback: false, verifyExitCode: 1, verifyOutput: '' };
+          }
+          verifyExitCode = 1;
+          verifyOutput = err instanceof Error ? err.message : String(err);
+          emitDalangLine(`[dalang:error] Verify execution failed: ${verifyOutput}`);
+        }
+      }
+
+      const adapter = this.registry.getAdapter(reviewerProfile.provider);
+      const isReadOnly = reviewerProfile.permissionMode === 'read-only';
+      const initialPrompt = buildReviewPrompt({
+        task: opts.task,
+        profile: reviewerProfile,
+        relReviewPath: opts.relReviewPath,
+        round: opts.round,
+        maxRounds: opts.maxRounds,
+        verifyExitCode,
+        verifyOutput,
+        changedFiles: opts.changedFiles,
+        scopeWarnings: opts.scopeWarnings,
+        rawDiff: opts.rawDiff,
+        coderResult: opts.coderResult,
+      });
+
+      let currentSessionId: string | null = null;
+      let currentPrompt = initialPrompt;
+      let exitCode: number | null = null;
+      let stdout = '';
+      let stderr = '';
+      let aborted = false;
+      let thrownError: string | undefined;
+      let validatedContract: ReviewContract | null = null;
+      let lastValidationError = 'Review output missing';
+
+      for (let retry = 0; retry <= 2; retry++) {
+        this.incrementProviderCount(reviewerProfile.provider);
+        try {
+          const turn = await adapter.runTurn({
+            projectPath: opts.projectPath,
+            prompt: currentPrompt,
+            sessionId: currentSessionId,
+            model: reviewerProfile.model || null,
+            effort: reviewerProfile.effort,
+            permissionMode: reviewerProfile.permissionMode,
+            timeoutMs: reviewerProfile.timeoutMs,
+            idleTimeoutMs: reviewerProfile.idleTimeoutMs,
+            signal: opts.execHandle.controller.signal,
+            logFilePath: absLogPath,
+            onLogLine: emitAdapterLine,
+          });
+          currentSessionId = turn.sessionId ?? currentSessionId;
+          if (currentSessionId) {
+            this.db
+              .update(runs)
+              .set({ cliSessionId: currentSessionId })
+              .where(eq(runs.id, reviewRunId))
+              .run();
+          }
+          exitCode = turn.exitCode;
+          stdout = turn.stdout;
+          stderr = turn.stderr;
+          aborted = Boolean(turn.aborted) || opts.execHandle.controller.signal.aborted;
+
+          if (aborted) break;
+          if (exitCode !== null && exitCode !== 0) break;
+
+          const checked = validateReviewTurnOutput({
+            projectPath: opts.projectPath,
+            absReviewPath: opts.absReviewPath,
+            expectedTaskId: opts.task.externalId,
+            verifyExitCode,
+            allowStdoutFallback: isReadOnly,
+            turn,
+          });
+          if (checked.ok) {
+            validatedContract = checked.data;
+            break;
+          }
+          lastValidationError = checked.error;
+          if (retry < 2) {
+            emitDalangLine(`[dalang] ${lastValidationError}; requesting review repair...`);
+            const jsonSchema = z.toJSONSchema(ReviewContractSchema);
+            currentPrompt = [
+              `Your previous review output failed validation:`,
+              lastValidationError,
+              ``,
+              isReadOnly
+                ? `Output ONLY a valid JSON object in your response matching:`
+                : `Write a valid JSON file directly to "${opts.relReviewPath}" matching:`,
+              JSON.stringify(jsonSchema, null, 2),
+            ].join('\n');
+          }
+        } catch (err) {
+          aborted = opts.execHandle.controller.signal.aborted;
+          thrownError = err instanceof Error ? err.message : String(err);
+          emitDalangLine(`[dalang:error] ${thrownError}`);
+          break;
+        } finally {
+          this.decrementProviderCount(reviewerProfile.provider);
+        }
+      }
+
+      if (aborted) {
+        const finishedAt = new Date().toISOString();
+        this.db
+          .update(runs)
+          .set({ status: 'stopped', finishedAt, exitCode, failureReason: 'Stopped by user' })
+          .where(eq(runs.id, reviewRunId))
+          .run();
+        this.db
+          .update(tasks)
+          .set({ status: 'stopped', updatedAt: finishedAt })
+          .where(eq(tasks.id, opts.task.id))
+          .run();
+        this.events?.emitEvent({
+          type: 'run.finished',
+          projectId: opts.projectId,
+          taskId: opts.task.id,
+          runId: reviewRunId,
+          status: 'stopped',
+          error: 'Stopped by user',
+        });
+        return {
+          status: 'stopped',
+          canFallback: false,
+          verifyExitCode,
+          verifyOutput,
+        };
+      }
+
+      if (thrownError || (exitCode !== null && exitCode !== 0)) {
+        const classified = classifyProviderFailure(exitCode, stdout, stderr, thrownError);
+        this.db
+          .insert(providerEvents)
+          .values({
+            id: crypto.randomUUID(),
+            provider: reviewerProfile.provider,
+            type: classified.eventType,
+            detail: classified.reason.slice(0, 300),
+            createdAt: new Date().toISOString(),
+          })
+          .run();
+        const finishedAt = new Date().toISOString();
+        this.db
+          .update(runs)
+          .set({
+            status: 'failed',
+            finishedAt,
+            exitCode,
+            failureReason: classified.reason,
+          })
+          .where(eq(runs.id, reviewRunId))
+          .run();
+        this.events?.emitEvent({
+          type: 'run.finished',
+          projectId: opts.projectId,
+          taskId: opts.task.id,
+          runId: reviewRunId,
+          status: 'failed',
+          error: classified.reason,
+        });
+        return {
+          status: 'failed',
+          canFallback: true,
+          verifyExitCode,
+          verifyOutput,
+          error: classified.reason,
+        };
+      }
+
+      if (!validatedContract) {
+        const finishedAt = new Date().toISOString();
+        this.db
+          .update(runs)
+          .set({
+            status: 'failed',
+            finishedAt,
+            exitCode,
+            failureReason: lastValidationError,
+          })
+          .where(eq(runs.id, reviewRunId))
+          .run();
+        this.events?.emitEvent({
+          type: 'run.finished',
+          projectId: opts.projectId,
+          taskId: opts.task.id,
+          runId: reviewRunId,
+          status: 'failed',
+          error: lastValidationError,
+        });
+        return {
+          status: 'failed',
+          canFallback: false,
+          verifyExitCode,
+          verifyOutput,
+          error: lastValidationError,
+        };
+      }
+
+      // A scope violation fails the review whatever the reviewer said.
+      if (opts.scopeWarnings.length > 0 && validatedContract.status === 'pass') {
+        validatedContract = {
+          ...validatedContract,
+          status: 'fail',
+          findings: [
+            ...validatedContract.findings,
+            ...opts.scopeWarnings.map((note) => ({ severity: 'major' as const, file: '', note })),
+          ],
+        };
+      }
+      const finalContract: ReviewContract = validatedContract;
+
+      // Persist both canonical review.json and per-round archive on the host safely.
+      const serialized = JSON.stringify(validatedContract, null, 2);
+      const relRoundReviewPath = path.join(
+        '.dalang',
+        'tasks',
+        opts.task.externalId,
+        `review-round-${opts.round}.json`,
+      );
+      const absRoundReviewPath = path.join(opts.projectPath, relRoundReviewPath);
+      writeArtifactFile(opts.projectPath, opts.absReviewPath, serialized, 'replace');
+      writeArtifactFile(opts.projectPath, absRoundReviewPath, serialized, 'replace');
+
+      const checkpointAfter = await createGitCheckpoint(
+        opts.projectPath,
+        `dalang: ${opts.task.externalId} review round ${opts.round} (${finalContract.status})`,
+      );
+      const finishedAt = new Date().toISOString();
+
+      this.db
+        .update(runs)
+        .set({
+          status: 'completed',
+          finishedAt,
+          exitCode,
+          commitAfter: checkpointAfter.commitSha,
+          resultPath: relRoundReviewPath,
+          scopeWarningsJson: JSON.stringify(opts.scopeWarnings),
+        })
+        .where(eq(runs.id, reviewRunId))
+        .run();
+
+      this.db
+        .insert(reviews)
         .values({
-          id: fbRunId,
-          projectId: ctx.projectId,
-          taskId: ctx.task.id,
-          profileId: ctx.fallbackProfile.id,
-          provider: ctx.fallbackProfile.provider,
-          model: ctx.fallbackProfile.model || null,
-          status: 'running',
-          cliSessionId: null,
-          attempt: ctx.attempt + 1,
-          usedFallback: true,
-          startedAt: fbNow,
-          finishedAt: null,
-          exitCode: null,
-          failureReason: null,
-          commitBefore: ctx.commitBefore,
-          commitAfter: null,
-          logPath: fbRelLog,
-          resultPath: null,
-          scopeWarningsJson: '[]',
+          id: crypto.randomUUID(),
+          projectId: opts.projectId,
+          taskId: opts.task.id,
+          runId: reviewRunId,
+          round: opts.round,
+          status: finalContract.status,
+          humanDecision: 'pending',
+          humanNote: null,
+          reviewerProfileId: reviewerProfile.id,
+          reviewerProvider: reviewerProfile.provider,
+          reviewerModel: reviewerProfile.model || null,
+          verifyCommand: opts.task.verify,
+          verifyExitCode,
+          verifyOutput,
+          filePath: relRoundReviewPath,
+          commitSha: checkpointAfter.commitSha,
+          scopeWarningsJson: JSON.stringify(opts.scopeWarnings),
+          createdAt: finishedAt,
+          decidedAt: null,
         })
         .run();
 
       this.db
         .update(tasks)
-        .set({ status: 'running', updatedAt: fbNow })
-        .where(eq(tasks.id, ctx.task.id))
+        .set({ reviewRounds: opts.round, updatedAt: finishedAt })
+        .where(eq(tasks.id, opts.task.id))
         .run();
 
+      emitDalangLine(
+        `[dalang] Review round ${opts.round} -> ${finalContract.status.toUpperCase()} (${finalContract.findings.length} findings)`,
+      );
       this.events?.emitEvent({
-        type: 'run.started',
-        projectId: ctx.projectId,
-        taskId: ctx.task.id,
-        runId: fbRunId,
-        profileName: ctx.fallbackProfile.name,
-        provider: ctx.fallbackProfile.provider,
+        type: 'run.finished',
+        projectId: opts.projectId,
+        taskId: opts.task.id,
+        runId: reviewRunId,
+        status: 'completed',
       });
-      const fallbackBanner = `[dalang] Fallback triggered after ${ctx.initialProfile.name} failed (${primaryOutcome.failureReason ?? 'error'}). Switching to "${ctx.fallbackProfile.name}" (${ctx.fallbackProfile.provider}).`;
-      this.appendDalangLog(fbAbsLog, fallbackBanner);
       this.events?.emitEvent({
-        type: 'run.log',
-        projectId: ctx.projectId,
-        taskId: ctx.task.id,
-        runId: fbRunId,
-        line: fallbackBanner,
+        type: 'review.finished',
+        projectId: opts.projectId,
+        taskId: opts.task.id,
+        round: opts.round,
+        status: finalContract.status,
       });
-      this.events?.emitEvent({ type: 'plan.updated', projectId: ctx.projectId });
 
-      const fbOutcome = await runAttempt(fbRunId, ctx.fallbackProfile, fbAbsLog, null);
-      return fbOutcome.status;
+      return {
+        status: 'completed',
+        canFallback: false,
+        contract: finalContract,
+        verifyExitCode,
+        verifyOutput,
+      };
+    };
+
+    const primaryOutcome = await runAttempt(opts.primaryReviewer, false);
+    if (
+      primaryOutcome.status === 'failed' &&
+      primaryOutcome.canFallback &&
+      opts.fallbackReviewer &&
+      !opts.execHandle.controller.signal.aborted &&
+      !this.registry.providerBlockedReason(opts.fallbackReviewer.provider, opts.sandboxReady) &&
+      this.getProviderActiveCount(opts.fallbackReviewer.provider) < opts.fallbackReviewer.maxParallel
+    ) {
+      const fbOutcome = await runAttempt(opts.fallbackReviewer, true, {
+        exitCode: primaryOutcome.verifyExitCode,
+        output: primaryOutcome.verifyOutput,
+      });
+      return {
+        status: fbOutcome.status,
+        contract: fbOutcome.contract,
+        verifyOutput: fbOutcome.verifyOutput,
+        error: fbOutcome.error,
+      };
     }
 
-    return primaryOutcome.status;
+    return {
+      status: primaryOutcome.status,
+      contract: primaryOutcome.contract,
+      verifyOutput: primaryOutcome.verifyOutput,
+      error: primaryOutcome.error,
+    };
   }
 
   private validateResultFile(
@@ -1195,11 +2177,13 @@ export class ExecutionService {
     task: TaskDTO,
     profile: AgentProfileDTO,
     relResultPath: string,
+    rejectionNote?: string | null,
   ): string {
     const jsonSchema = z.toJSONSchema(TaskResultContractSchema);
     return [
       `You are executing task ${task.externalId}: "${task.title}" (milestone ${task.milestone}) for a project managed by DALANG.`,
       profile.rolePrompt ? `Role instructions: ${profile.rolePrompt}` : '',
+      rejectionNote ? `Previous Guard rejection feedback (must be addressed):\n${rejectionNote}` : '',
       ``,
       `Read PROJECT.md first for project stack and conventions.`,
       ``,
@@ -1227,26 +2211,468 @@ export class ExecutionService {
       .join('\n');
   }
 
-  private buildResumePrompt(task: TaskDTO, relResultPath: string): string {
+  private buildResumePrompt(
+    task: TaskDTO,
+    relResultPath: string,
+    rejectionNote?: string | null,
+  ): string {
     return [
       `Resume work on task ${task.externalId}: "${task.title}".`,
+      rejectionNote ? `Previous Guard rejection feedback:\n${rejectionNote}` : '',
       `Verify command to run before finishing: ${task.verify}`,
       `When finished, write the updated result JSON to "${relResultPath}" with task_id "${task.externalId}".`,
-    ].join('\n');
+    ]
+      .filter(Boolean)
+      .join('\n');
   }
 
-  getRunLog(projectId: string, runId: string): { runId: string; logPath: string; content: string } {
+  async getRunLog(
+    projectId: string,
+    runId: string,
+  ): Promise<{ runId: string; logPath: string; content: string }> {
     const project = this.getProjectRow(projectId);
     const row = this.db.select().from(runs).where(eq(runs.id, runId)).get();
     if (!row || row.projectId !== projectId) {
       throw new Error(`Run not found: ${runId}`);
     }
-    const absLog = path.join(project.path, row.logPath);
-    if (!fs.existsSync(absLog)) {
-      return { runId: row.id, logPath: row.logPath, content: '' };
+    const content = await readArtifactWithGitFallback(project.path, row.logPath, row.commitAfter);
+    return { runId: row.id, logPath: row.logPath, content: content ?? '' };
+  }
+
+  async getGuardState(projectId: string): Promise<GuardStateDTO> {
+    const project = this.getProjectRow(projectId);
+    const plan = this.leadService.getPlan(projectId);
+    const sandboxReady = await this.registry.isSandboxReady();
+    const detectedIntegrationCommand = detectIntegrationCommand(project.path);
+
+    const runRows = this.db
+      .select()
+      .from(runs)
+      .where(eq(runs.projectId, projectId))
+      .orderBy(desc(runs.startedAt), desc(runs.attempt))
+      .all();
+    const reviewRows = this.db
+      .select()
+      .from(reviews)
+      .where(eq(reviews.projectId, projectId))
+      .orderBy(desc(reviews.createdAt), desc(reviews.round))
+      .all();
+    const integrationRows = this.db
+      .select()
+      .from(integrationRuns)
+      .where(eq(integrationRuns.projectId, projectId))
+      .orderBy(desc(integrationRuns.startedAt))
+      .all();
+
+    const taskById = new Map((plan?.tasks ?? []).map((t) => [t.id, t]));
+    const profileById = new Map(this.profiles.listProfiles().map((p) => [p.id, p]));
+
+    const runsByTask = new Map<string, TaskRunDTO[]>();
+    for (const r of runRows) {
+      const dto = await this.toRunDTO(
+        project.path,
+        r,
+        taskById.get(r.taskId),
+        profileById.get(r.profileId),
+      );
+      const list = runsByTask.get(r.taskId) ?? [];
+      list.push(dto);
+      runsByTask.set(r.taskId, list);
     }
-    const content = readArtifactFile(project.path, absLog);
-    return { runId: row.id, logPath: row.logPath, content };
+
+    const reviewsByTask = new Map<string, TaskReviewDTO[]>();
+    for (const rev of reviewRows) {
+      const dto = await this.toReviewDTO(
+        project.path,
+        rev,
+        taskById.get(rev.taskId),
+        profileById.get(rev.reviewerProfileId),
+      );
+      if (!dto) continue;
+      const list = reviewsByTask.get(rev.taskId) ?? [];
+      list.push(dto);
+      reviewsByTask.set(rev.taskId, list);
+    }
+
+    const guardTasks: GuardTaskEntryDTO[] = [];
+    for (const task of plan?.tasks ?? []) {
+      const taskReviews = reviewsByTask.get(task.id) ?? [];
+      const inGuard =
+        task.status === 'awaiting_merge' ||
+        task.status === 'review_failed' ||
+        task.status === 'reviewing' ||
+        task.status === 'done' ||
+        taskReviews.length > 0;
+      if (!inGuard) continue;
+
+      const taskRuns = runsByTask.get(task.id) ?? [];
+      const latestRun = taskRuns[0] ?? null;
+      const latestReview = taskReviews[0] ?? null;
+      const diffAvailable = Boolean(
+        task.branchName || task.mergeCommitSha || (latestRun?.commitBefore && latestRun?.commitAfter),
+      );
+      guardTasks.push({
+        task,
+        latestRun,
+        reviews: taskReviews,
+        latestReview,
+        diffAvailable,
+        canApproveMerge: task.status === 'awaiting_merge' || task.status === 'review_failed',
+        canReject: task.status === 'awaiting_merge' || task.status === 'review_failed',
+      });
+    }
+
+    return {
+      projectId,
+      mainBranch: project.mainBranch,
+      integrationCommand: project.integrationCommand ?? null,
+      detectedIntegrationCommand,
+      sandboxReady,
+      platform: process.platform,
+      tasks: guardTasks,
+      integrationRuns: integrationRows.map((row) => ({
+        id: row.id,
+        projectId: row.projectId,
+        taskId: row.taskId ?? null,
+        taskExternalId: row.taskId ? (taskById.get(row.taskId)?.externalId ?? null) : null,
+        mergeCommitSha: row.mergeCommitSha ?? null,
+        command: row.command,
+        status: row.status as 'passed' | 'failed' | 'skipped',
+        exitCode: row.exitCode ?? null,
+        output: row.output,
+        startedAt: row.startedAt,
+        finishedAt: row.finishedAt,
+      })),
+    };
+  }
+
+  async getTaskDiffForTask(projectId: string, taskId: string): Promise<TaskDiffDTO> {
+    const project = this.getProjectRow(projectId);
+    const plan = this.leadService.getPlan(projectId);
+    if (!plan) throw new Error('No plan exists for this project.');
+    const task = plan.tasks.find((t) => t.id === taskId || t.externalId === taskId);
+    if (!task) throw new Error(`Task not found: ${taskId}`);
+
+    const taskRuns = this.db
+      .select()
+      .from(runs)
+      .where(eq(runs.taskId, task.id))
+      .orderBy(desc(runs.startedAt), desc(runs.attempt))
+      .all();
+    const latestRun = taskRuns[0];
+    const earliestCoderRun = [...taskRuns].reverse().find((r) => r.status !== 'rolled_back');
+
+    if (task.mergeCommitSha) {
+      return getTaskDiff(
+        project.path,
+        task.id,
+        task.externalId,
+        task.branchName,
+        `${task.mergeCommitSha}^1`,
+        task.mergeCommitSha,
+      );
+    }
+
+    if (task.branchName && (await branchExists(project.path, task.branchName))) {
+      const baseRef = earliestCoderRun?.commitBefore ?? project.mainBranch;
+      return getTaskDiff(
+        project.path,
+        task.id,
+        task.externalId,
+        task.branchName,
+        baseRef,
+        task.branchName,
+      );
+    }
+
+    if (earliestCoderRun?.commitBefore && latestRun?.commitAfter) {
+      return getTaskDiff(
+        project.path,
+        task.id,
+        task.externalId,
+        task.branchName,
+        earliestCoderRun.commitBefore,
+        latestRun.commitAfter,
+      );
+    }
+
+    return {
+      taskId: task.id,
+      externalId: task.externalId,
+      branchName: task.branchName,
+      baseCommitSha: null,
+      headCommitSha: null,
+      files: [],
+      rawDiff: '',
+      totalAdditions: 0,
+      totalDeletions: 0,
+      truncated: false,
+    };
+  }
+
+  async approveMergeTask(
+    projectId: string,
+    taskId: string,
+    input: Partial<ApproveMergeInput> = {},
+  ): Promise<{ task: TaskDTO; mergeCommitSha: string; integrationRun: IntegrationRunDTO | null }> {
+    const project = this.getProjectRow(projectId);
+    if (this.activeProjects.has(projectId)) {
+      throw new Error('Wait for the active run to finish before merging a task.');
+    }
+
+    const plan = this.leadService.getPlan(projectId);
+    if (!plan) throw new Error('No plan exists for this project.');
+    const task = plan.tasks.find((t) => t.id === taskId || t.externalId === taskId);
+    if (!task) throw new Error(`Task not found: ${taskId}`);
+    if (task.status === 'done') {
+      throw new Error(`Task ${task.externalId} has already been merged.`);
+    }
+    if (task.status !== 'awaiting_merge' && !(task.status === 'review_failed' && input.allowFailedReview)) {
+      if (task.status === 'review_failed') {
+        throw new Error(
+          `Task ${task.externalId} failed review. Confirm override (allowFailedReview) or reject it back to the coder.`,
+        );
+      }
+      throw new Error(`Task ${task.externalId} is "${task.status}" and is not ready for merge.`);
+    }
+
+    const branchName = task.branchName ?? `dalang/${task.externalId}`;
+    const { mergeCommitSha } = await mergeTaskBranchToMain(
+      project.path,
+      project.mainBranch,
+      branchName,
+      `dalang: merge ${task.externalId} (${task.title})`,
+    );
+
+    const now = new Date().toISOString();
+    this.db
+      .update(reviews)
+      .set({ humanDecision: 'approved', decidedAt: now })
+      .where(and(eq(reviews.taskId, task.id), eq(reviews.humanDecision, 'pending')))
+      .run();
+
+    this.db
+      .update(tasks)
+      .set({
+        status: 'done',
+        mergeCommitSha,
+        rejectionNote: null,
+        updatedAt: now,
+      })
+      .where(eq(tasks.id, task.id))
+      .run();
+
+    this.events?.emitEvent({ type: 'plan.updated', projectId });
+
+    let integrationRun: IntegrationRunDTO | null = null;
+    if (input.runIntegration !== false) {
+      integrationRun = await this.runIntegrationTests(projectId, {
+        taskId: task.id,
+        mergeCommitSha,
+        fromMerge: true,
+      });
+    }
+
+    const updatedTask = this.leadService.getPlan(projectId)!.tasks.find((t) => t.id === task.id)!;
+    return { task: updatedTask, mergeCommitSha, integrationRun };
+  }
+
+  async rejectTask(
+    projectId: string,
+    taskId: string,
+    input: Partial<RejectTaskInput> = {},
+  ): Promise<TaskDTO> {
+    const project = this.getProjectRow(projectId);
+    if (this.activeProjects.has(projectId)) {
+      throw new Error('Wait for the active run to finish before rejecting a task.');
+    }
+
+    const plan = this.leadService.getPlan(projectId);
+    if (!plan) throw new Error('No plan exists for this project.');
+    const task = plan.tasks.find((t) => t.id === taskId || t.externalId === taskId);
+    if (!task) throw new Error(`Task not found: ${taskId}`);
+    if (task.status !== 'awaiting_merge' && task.status !== 'review_failed') {
+      throw new Error(`Task ${task.externalId} is "${task.status}" and cannot be rejected in Guard.`);
+    }
+
+    // Preserve task logs on disk before deleting the unmerged task branch.
+    const taskRuns = this.db
+      .select()
+      .from(runs)
+      .where(eq(runs.taskId, task.id))
+      .all();
+    for (const r of taskRuns) {
+      const content = await readArtifactWithGitFallback(project.path, r.logPath, r.commitAfter);
+      if (content !== null) {
+        const abs = path.join(project.path, r.logPath);
+        if (!fs.existsSync(abs)) {
+          writeArtifactFile(project.path, abs, content, 'refuse');
+        }
+      }
+    }
+
+    const branchName = task.branchName ?? `dalang/${task.externalId}`;
+    await deleteTaskBranch(project.path, project.mainBranch, branchName);
+
+    const now = new Date().toISOString();
+    const note = input.note?.trim() || 'Rejected in Guard';
+    this.db
+      .update(reviews)
+      .set({
+        humanDecision: 'rejected',
+        humanNote: note,
+        decidedAt: now,
+      })
+      .where(and(eq(reviews.taskId, task.id), eq(reviews.humanDecision, 'pending')))
+      .run();
+
+    this.db
+      .update(tasks)
+      .set({
+        status: input.requeue ? 'approved' : 'failed',
+        branchName: null,
+        rejectionNote: note,
+        updatedAt: now,
+      })
+      .where(eq(tasks.id, task.id))
+      .run();
+
+    this.events?.emitEvent({ type: 'plan.updated', projectId });
+    return this.leadService.getPlan(projectId)!.tasks.find((t) => t.id === task.id)!;
+  }
+
+  async runIntegrationTests(
+    projectId: string,
+    opts: {
+      command?: string;
+      taskId?: string;
+      mergeCommitSha?: string;
+      allowUnconfined?: boolean;
+      fromMerge?: boolean;
+    } = {},
+  ): Promise<IntegrationRunDTO> {
+    const project = this.getProjectRow(projectId);
+    if (this.activeProjects.has(projectId)) {
+      throw new Error('Wait for the active run to finish before running integration tests.');
+    }
+
+    const command =
+      opts.command?.trim() ||
+      project.integrationCommand?.trim() ||
+      detectIntegrationCommand(project.path);
+
+    const startedAt = new Date().toISOString();
+    const id = crypto.randomUUID();
+    const plan = this.leadService.getPlan(projectId);
+    const taskExtId = opts.taskId
+      ? (plan?.tasks.find((t) => t.id === opts.taskId)?.externalId ?? null)
+      : null;
+
+    if (!command) {
+      const finishedAt = new Date().toISOString();
+      const row = {
+        id,
+        projectId,
+        taskId: opts.taskId ?? null,
+        mergeCommitSha: opts.mergeCommitSha ?? null,
+        command: '(none configured)',
+        status: 'skipped' as const,
+        exitCode: null,
+        output: 'No project test command detected or configured. Set an integration command in Guard to enable automated post-merge runs.',
+        startedAt,
+        finishedAt,
+      };
+      this.db.insert(integrationRuns).values(row).run();
+      this.events?.emitEvent({
+        type: 'integration.finished',
+        projectId,
+        taskId: opts.taskId ?? null,
+        status: 'skipped',
+      });
+      return { ...row, taskExternalId: taskExtId };
+    }
+
+    const sandboxReady = await this.registry.isSandboxReady();
+    if (!sandboxReady && !opts.allowUnconfined) {
+      if (opts.fromMerge) {
+        const finishedAt = new Date().toISOString();
+        const row = {
+          id,
+          projectId,
+          taskId: opts.taskId ?? null,
+          mergeCommitSha: opts.mergeCommitSha ?? null,
+          command,
+          status: 'skipped' as const,
+          exitCode: null,
+          output: `Bubblewrap sandbox unavailable on ${process.platform}; confirm unconfined execution in Guard to run "${command}".`,
+          startedAt,
+          finishedAt,
+        };
+        this.db.insert(integrationRuns).values(row).run();
+        this.events?.emitEvent({
+          type: 'integration.finished',
+          projectId,
+          taskId: opts.taskId ?? null,
+          status: 'skipped',
+        });
+        return { ...row, taskExternalId: taskExtId };
+      }
+      throw new Error(
+        `Bubblewrap sandbox is unavailable on ${process.platform}. Confirm unconfined execution to run the integration test suite.`,
+      );
+    }
+
+    await checkoutBranch(project.path, project.mainBranch);
+    const res = await this.registry.runShellCommand(project.path, command, {
+      timeoutMs: 300_000,
+      idleTimeoutMs: 120_000,
+    });
+    const finishedAt = new Date().toISOString();
+    const timedOut = res.timedOut || res.idleTimedOut;
+    const exitCode = timedOut ? 124 : (res.exitCode ?? 1);
+    const status: 'passed' | 'failed' = exitCode === 0 ? 'passed' : 'failed';
+    const combinedOutput = [res.stdout, res.stderr].filter(Boolean).join('\n');
+    const output = tailOutput(
+      timedOut ? `${combinedOutput}\n[dalang] Integration suite timed out.` : combinedOutput,
+      12_000,
+    );
+
+    this.db
+      .insert(integrationRuns)
+      .values({
+        id,
+        projectId,
+        taskId: opts.taskId ?? null,
+        mergeCommitSha: opts.mergeCommitSha ?? null,
+        command,
+        status,
+        exitCode,
+        output,
+        startedAt,
+        finishedAt,
+      })
+      .run();
+
+    this.events?.emitEvent({
+      type: 'integration.finished',
+      projectId,
+      taskId: opts.taskId ?? null,
+      status,
+    });
+
+    return {
+      id,
+      projectId,
+      taskId: opts.taskId ?? null,
+      taskExternalId: taskExtId,
+      mergeCommitSha: opts.mergeCommitSha ?? null,
+      command,
+      status,
+      exitCode,
+      output,
+      startedAt,
+      finishedAt,
+    };
   }
 
   async rollbackRun(projectId: string, runId: string): Promise<TaskRunDTO> {
@@ -1269,30 +2695,88 @@ export class ExecutionService {
       throw new Error('This run does not have a pre-run checkpoint commit.');
     }
 
+    const plan = this.leadService.getPlan(projectId);
+    const targetTask = plan?.tasks.find((t) => t.id === row.taskId);
+
     // `git reset --hard` is destructive: only run it when the repo still ends where DALANG left it.
     const state = await getRepoState(project.path);
-    const lastKnown = this.db
-      .select()
-      .from(runs)
-      .where(and(eq(runs.projectId, projectId), ne(runs.status, 'rolled_back'), ne(runs.status, 'running')))
-      .orderBy(desc(runs.startedAt), desc(runs.attempt))
-      .all()
-      .find((r) => r.commitAfter);
-    if (lastKnown?.commitAfter && state.head !== lastKnown.commitAfter) {
-      throw new Error(
-        'The repository has commits that DALANG did not create after the last run. Roll back manually with git.',
-      );
-    }
     if (state.dirtyFiles.length > 0) {
       throw new Error(
         `Uncommitted changes would be lost (${state.dirtyFiles.slice(0, 3).join(', ')}). Commit or stash them first.`,
       );
     }
 
-    await rollbackGitToCheckpoint(project.path, row.commitBefore);
+    const taskBranch = targetTask?.branchName ?? row.branchName;
+    const isUnmergedBranchRun =
+      Boolean(taskBranch) &&
+      !targetTask?.mergeCommitSha &&
+      (await branchExists(project.path, taskBranch!));
+
+    if (isUnmergedBranchRun && taskBranch) {
+      // Check that mainBranch hasn't received unknown external commits since `row.commitBefore`.
+      const mainHead = state.head;
+      const lastMergedOrMain = this.db
+        .select()
+        .from(runs)
+        .where(and(eq(runs.projectId, projectId), ne(runs.status, 'rolled_back'), ne(runs.status, 'running')))
+        .orderBy(desc(runs.startedAt), desc(runs.attempt))
+        .all()
+        .find((r) => r.commitBefore);
+      const knownMainCommits = new Set<string>(
+        [
+          ...this.db
+            .select()
+            .from(runs)
+            .where(and(eq(runs.projectId, projectId), eq(runs.kind, 'execute')))
+            .all()
+            .map((r) => r.commitBefore),
+          lastMergedOrMain?.commitBefore,
+          ...(plan?.tasks.map((t) => t.mergeCommitSha) ?? []),
+        ].filter((c): c is string => Boolean(c)),
+      );
+      if (mainHead && knownMainCommits.size > 0 && !knownMainCommits.has(mainHead)) {
+        throw new Error(
+          'The repository has commits that DALANG did not create after the last run. Roll back manually with git.',
+        );
+      }
+
+      // Preserve logs for this task on disk before deleting the unmerged branch.
+      const taskRuns = this.db.select().from(runs).where(eq(runs.taskId, row.taskId)).all();
+      for (const tr of taskRuns) {
+        const logText = await readArtifactWithGitFallback(project.path, tr.logPath, tr.commitAfter);
+        if (logText !== null) {
+          const abs = path.join(project.path, tr.logPath);
+          if (!fs.existsSync(abs)) {
+            writeArtifactFile(project.path, abs, logText, 'refuse');
+          }
+        }
+      }
+      await deleteTaskBranch(project.path, project.mainBranch, taskBranch);
+    } else {
+      const lastKnown = this.db
+        .select()
+        .from(runs)
+        .where(and(eq(runs.projectId, projectId), ne(runs.status, 'rolled_back'), ne(runs.status, 'running')))
+        .orderBy(desc(runs.startedAt), desc(runs.attempt))
+        .all()
+        .find((r) => r.commitAfter);
+      const knownTips = new Set<string>(
+        [
+          lastKnown?.commitAfter,
+          ...(plan?.tasks.map((t) => t.mergeCommitSha) ?? []),
+        ].filter((c): c is string => Boolean(c)),
+      );
+      if (knownTips.size > 0 && state.head && !knownTips.has(state.head)) {
+        throw new Error(
+          'The repository has commits that DALANG did not create after the last run. Roll back manually with git.',
+        );
+      }
+
+      await checkoutBranch(project.path, project.mainBranch);
+      await rollbackGitToCheckpoint(project.path, row.commitBefore);
+    }
 
     const now = new Date().toISOString();
-    // Mark this run and any subsequent project runs whose commits were discarded by the reset.
     const projectRuns = this.db
       .select()
       .from(runs)
@@ -1300,7 +2784,7 @@ export class ExecutionService {
         and(
           eq(runs.projectId, projectId),
           or(
-            gte(runs.startedAt, row.startedAt),
+            isUnmergedBranchRun ? eq(runs.taskId, row.taskId) : gte(runs.startedAt, row.startedAt),
             eq(runs.id, row.id),
           ),
         ),
@@ -1311,7 +2795,13 @@ export class ExecutionService {
     const affectedTaskIds = new Set<string>([row.taskId]);
     for (const r of projectRuns) {
       if (r.status === 'rolled_back') continue;
-      if (r.startedAt > row.startedAt || (r.startedAt === row.startedAt && r.attempt >= row.attempt) || r.id === row.id) {
+      if (isUnmergedBranchRun) {
+        if (r.taskId === row.taskId) rolledBackRunIds.push(r.id);
+      } else if (
+        r.startedAt > row.startedAt ||
+        (r.startedAt === row.startedAt && r.attempt >= row.attempt) ||
+        r.id === row.id
+      ) {
         rolledBackRunIds.push(r.id);
         affectedTaskIds.add(r.taskId);
       }
@@ -1328,11 +2818,24 @@ export class ExecutionService {
     if (affectedTaskIds.size > 0) {
       this.db
         .update(tasks)
-        .set({ status: 'approved', updatedAt: now })
+        .set({
+          status: 'approved',
+          branchName: null,
+          mergeCommitSha: null,
+          reviewRounds: 0,
+          rejectionNote: null,
+          updatedAt: now,
+        })
         .where(
           and(
             inArray(tasks.id, [...affectedTaskIds]),
-            inArray(tasks.status, ['done', 'failed', 'stopped']),
+            inArray(tasks.status, [
+              'done',
+              'failed',
+              'stopped',
+              'awaiting_merge',
+              'review_failed',
+            ]),
           ),
         )
         .run();
@@ -1341,48 +2844,34 @@ export class ExecutionService {
     this.events?.emitEvent({ type: 'plan.updated', projectId });
 
     const updatedRow = this.db.select().from(runs).where(eq(runs.id, row.id)).get()!;
-    const plan = this.leadService.getPlan(projectId);
-    const task = plan?.tasks.find((t) => t.id === row.taskId);
+    const latestPlan = this.leadService.getPlan(projectId);
+    const task = latestPlan?.tasks.find((t) => t.id === row.taskId);
     const profile = this.db
       .select()
       .from(agentProfiles)
       .where(eq(agentProfiles.id, row.profileId))
       .get();
+
     return this.toRunDTO(
       project.path,
       updatedRow,
       task,
-      profile
-        ? {
-            id: profile.id,
-            name: profile.name,
-            provider: profile.provider as ProviderId,
-            model: profile.model,
-            effort: profile.effort as 'low' | 'medium' | 'high',
-            rolePrompt: profile.rolePrompt,
-            permissionMode: profile.permissionMode as 'workspace-write' | 'read-only' | 'accept-edits',
-            timeoutMs: profile.timeoutMs,
-            idleTimeoutMs: profile.idleTimeoutMs,
-            maxParallel: profile.maxParallel,
-            isDefault: Boolean(profile.isDefault),
-            createdAt: profile.createdAt,
-          }
-        : undefined,
+      profile ? this.profiles.getProfile(profile.id) : undefined,
     );
   }
 
-  private toRunDTO(
+  private async toRunDTO(
     projectPath: string,
     row: typeof runs.$inferSelect,
     task?: TaskDTO,
     profile?: AgentProfileDTO,
-  ): TaskRunDTO {
+  ): Promise<TaskRunDTO> {
     let result: TaskResultContract | null = null;
-    if (row.resultPath) {
-      const absResult = path.join(projectPath, row.resultPath);
-      if (fs.existsSync(absResult)) {
+    if (row.resultPath && row.kind !== 'review') {
+      const raw = await readArtifactWithGitFallback(projectPath, row.resultPath, row.commitAfter);
+      if (raw) {
         try {
-          const parsed = JSON.parse(readArtifactFile(projectPath, absResult)) as unknown;
+          const parsed = JSON.parse(raw) as unknown;
           const checked = TaskResultContractSchema.safeParse(parsed);
           if (checked.success) result = checked.data;
         } catch {
@@ -1413,6 +2902,8 @@ export class ExecutionService {
       profileName: profile?.name ?? row.profileId,
       provider: row.provider as ProviderId,
       model: row.model,
+      kind: (row.kind as RunKind) ?? 'execute',
+      branchName: row.branchName ?? null,
       status: row.status as RunStatus,
       cliSessionId: row.cliSessionId,
       attempt: row.attempt,
@@ -1428,6 +2919,62 @@ export class ExecutionService {
       resultPath: row.resultPath,
       result,
       scopeWarnings,
+    };
+  }
+
+  private async toReviewDTO(
+    projectPath: string,
+    row: typeof reviews.$inferSelect,
+    task?: TaskDTO,
+    profile?: AgentProfileDTO,
+  ): Promise<TaskReviewDTO | null> {
+    let contract: ReviewContract = {
+      task_id: task?.externalId ?? row.taskId,
+      status: row.status as 'pass' | 'fail',
+      verify_exit_code: row.verifyExitCode,
+      findings: [],
+    };
+    const raw = await readArtifactWithGitFallback(projectPath, row.filePath, row.commitSha);
+    if (raw) {
+      try {
+        const parsed = ReviewContractSchema.safeParse(JSON.parse(raw));
+        if (parsed.success) contract = parsed.data;
+      } catch {
+        // Use summary fields stored in SQLite if artifact file cannot be parsed.
+      }
+    }
+
+    let scopeWarnings: string[] = [];
+    try {
+      scopeWarnings = JSON.parse(row.scopeWarningsJson) as string[];
+    } catch {
+      scopeWarnings = [];
+    }
+
+    return {
+      id: row.id,
+      projectId: row.projectId,
+      taskId: row.taskId,
+      taskExternalId: task?.externalId ?? row.taskId,
+      taskTitle: task?.title ?? 'Task',
+      runId: row.runId,
+      round: row.round,
+      status: row.status as 'pass' | 'fail',
+      humanDecision: row.humanDecision as 'pending' | 'approved' | 'rejected',
+      humanNote: row.humanNote ?? null,
+      reviewerProfileId: row.reviewerProfileId,
+      reviewerProfileName: profile?.name ?? row.reviewerProfileId,
+      reviewerProvider: row.reviewerProvider as ProviderId,
+      reviewerModel: row.reviewerModel ?? null,
+      verifyCommand: row.verifyCommand,
+      verifyExitCode: row.verifyExitCode,
+      verifyOutput: row.verifyOutput,
+      filePath: row.filePath,
+      commitSha: row.commitSha ?? null,
+      contract,
+      scopeWarnings,
+      createdAt: row.createdAt,
+      decidedAt: row.decidedAt ?? null,
     };
   }
 }

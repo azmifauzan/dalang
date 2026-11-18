@@ -122,6 +122,35 @@ export function ensureProjectScaffold(
   };
 }
 
+/** Detect a whole-repo test command from project manifests, or null when none is configured. */
+export function detectIntegrationCommand(projectPath: string): string | null {
+  const pkgPath = path.join(projectPath, 'package.json');
+  if (fs.existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(readArtifactFile(projectPath, pkgPath)) as {
+        scripts?: Record<string, string>;
+      };
+      const testScript = pkg.scripts?.test?.trim();
+      if (testScript && !/no test specified/i.test(testScript)) {
+        if (fs.existsSync(path.join(projectPath, 'pnpm-lock.yaml'))) return 'pnpm test';
+        if (fs.existsSync(path.join(projectPath, 'yarn.lock'))) return 'yarn test';
+        return 'npm test';
+      }
+    } catch {
+      // Ignore unreadable or invalid package.json.
+    }
+  }
+  if (
+    fs.existsSync(path.join(projectPath, 'pytest.ini')) ||
+    fs.existsSync(path.join(projectPath, 'pyproject.toml'))
+  ) {
+    return 'pytest';
+  }
+  if (fs.existsSync(path.join(projectPath, 'go.mod'))) return 'go test ./...';
+  if (fs.existsSync(path.join(projectPath, 'Cargo.toml'))) return 'cargo test';
+  return null;
+}
+
 export class ProjectService {
   constructor(private readonly db: DalangDb) {}
 
@@ -244,13 +273,23 @@ export class ProjectService {
     this.db.delete(projects).where(eq(projects.id, row.id)).run();
   }
 
-  updateSettings(id: string, settings: { leadProvider?: ProviderId; leadModel?: string | null }): ProjectSummary {
+  updateSettings(
+    id: string,
+    settings: {
+      leadProvider?: ProviderId;
+      leadModel?: string | null;
+      integrationCommand?: string | null;
+    },
+  ): ProjectSummary {
     this.getProjectRow(id);
     this.db
       .update(projects)
       .set({
         ...(settings.leadProvider ? { leadProvider: settings.leadProvider } : {}),
         ...(settings.leadModel !== undefined ? { leadModel: settings.leadModel || null } : {}),
+        ...(settings.integrationCommand !== undefined
+          ? { integrationCommand: settings.integrationCommand?.trim() || null }
+          : {}),
         updatedAt: new Date().toISOString(),
       })
       .where(eq(projects.id, id))
@@ -322,6 +361,7 @@ export class ProjectService {
       mainBranch: row.mainBranch,
       leadProvider: row.leadProvider as ProviderId,
       leadModel: row.leadModel,
+      integrationCommand: row.integrationCommand ?? null,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       hasProjectMd,

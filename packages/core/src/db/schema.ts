@@ -7,6 +7,7 @@ export const projects = sqliteTable('projects', {
   mainBranch: text('main_branch').notNull().default('main'),
   leadProvider: text('lead_provider').notNull().default('claude-code'),
   leadModel: text('lead_model'),
+  integrationCommand: text('integration_command'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });
@@ -84,6 +85,9 @@ export const tasks = sqliteTable('tasks', {
   parentTaskId: text('parent_task_id'),
   profileOverride: text('profile_override'),
   reviewRounds: integer('review_rounds').notNull().default(0),
+  branchName: text('branch_name'),
+  mergeCommitSha: text('merge_commit_sha'),
+  rejectionNote: text('rejection_note'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });
@@ -112,6 +116,7 @@ export const agentProfiles = sqliteTable('agent_profiles', {
   timeoutMs: integer('timeout_ms').notNull().default(1800000),
   idleTimeoutMs: integer('idle_timeout_ms').notNull().default(180000),
   maxParallel: integer('max_parallel').notNull().default(1),
+  maxReviewRounds: integer('max_review_rounds').notNull().default(2),
   isDefault: integer('is_default', { mode: 'boolean' }).notNull().default(false),
   createdAt: text('created_at').notNull(),
 });
@@ -150,6 +155,8 @@ export const runs = sqliteTable('runs', {
     .references(() => agentProfiles.id),
   provider: text('provider').notNull(),
   model: text('model'),
+  kind: text('kind').notNull().default('execute'),
+  branchName: text('branch_name'),
   status: text('status').notNull().default('running'),
   cliSessionId: text('cli_session_id'),
   attempt: integer('attempt').notNull().default(1),
@@ -163,6 +170,49 @@ export const runs = sqliteTable('runs', {
   logPath: text('log_path').notNull(),
   resultPath: text('result_path'),
   scopeWarningsJson: text('scope_warnings_json').notNull().default('[]'),
+});
+
+export const reviews = sqliteTable('reviews', {
+  id: text('id').primaryKey(),
+  projectId: text('project_id')
+    .notNull()
+    .references(() => projects.id, { onDelete: 'cascade' }),
+  taskId: text('task_id')
+    .notNull()
+    .references(() => tasks.id, { onDelete: 'cascade' }),
+  runId: text('run_id')
+    .notNull()
+    .references(() => runs.id, { onDelete: 'cascade' }),
+  round: integer('round').notNull(),
+  status: text('status').notNull(),
+  humanDecision: text('human_decision').notNull().default('pending'),
+  humanNote: text('human_note'),
+  reviewerProfileId: text('reviewer_profile_id').notNull(),
+  reviewerProvider: text('reviewer_provider').notNull(),
+  reviewerModel: text('reviewer_model'),
+  verifyCommand: text('verify_command').notNull(),
+  verifyExitCode: integer('verify_exit_code').notNull(),
+  verifyOutput: text('verify_output').notNull().default(''),
+  filePath: text('file_path').notNull(),
+  commitSha: text('commit_sha'),
+  scopeWarningsJson: text('scope_warnings_json').notNull().default('[]'),
+  createdAt: text('created_at').notNull(),
+  decidedAt: text('decided_at'),
+});
+
+export const integrationRuns = sqliteTable('integration_runs', {
+  id: text('id').primaryKey(),
+  projectId: text('project_id')
+    .notNull()
+    .references(() => projects.id, { onDelete: 'cascade' }),
+  taskId: text('task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  mergeCommitSha: text('merge_commit_sha'),
+  command: text('command').notNull(),
+  status: text('status').notNull(),
+  exitCode: integer('exit_code'),
+  output: text('output').notNull().default(''),
+  startedAt: text('started_at').notNull(),
+  finishedAt: text('finished_at').notNull(),
 });
 
 export const settings = sqliteTable('settings', {

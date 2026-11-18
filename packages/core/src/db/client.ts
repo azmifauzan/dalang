@@ -13,7 +13,7 @@ export interface DbConnection {
   close: () => void;
 }
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 const BOOTSTRAP_SQL = `
 PRAGMA journal_mode = WAL;
@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS projects (
   main_branch TEXT NOT NULL DEFAULT 'main',
   lead_provider TEXT NOT NULL DEFAULT 'claude-code',
   lead_model TEXT,
+  integration_command TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -91,6 +92,9 @@ CREATE TABLE IF NOT EXISTS tasks (
   parent_task_id TEXT,
   profile_override TEXT,
   review_rounds INTEGER NOT NULL DEFAULT 0,
+  branch_name TEXT,
+  merge_commit_sha TEXT,
+  rejection_note TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -112,6 +116,7 @@ CREATE TABLE IF NOT EXISTS agent_profiles (
   timeout_ms INTEGER NOT NULL DEFAULT 1800000,
   idle_timeout_ms INTEGER NOT NULL DEFAULT 180000,
   max_parallel INTEGER NOT NULL DEFAULT 1,
+  max_review_rounds INTEGER NOT NULL DEFAULT 2,
   is_default INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
@@ -145,6 +150,8 @@ CREATE TABLE IF NOT EXISTS runs (
   profile_id TEXT NOT NULL REFERENCES agent_profiles(id),
   provider TEXT NOT NULL,
   model TEXT,
+  kind TEXT NOT NULL DEFAULT 'execute',
+  branch_name TEXT,
   status TEXT NOT NULL DEFAULT 'running',
   cli_session_id TEXT,
   attempt INTEGER NOT NULL DEFAULT 1,
@@ -158,6 +165,41 @@ CREATE TABLE IF NOT EXISTS runs (
   log_path TEXT NOT NULL,
   result_path TEXT,
   scope_warnings_json TEXT NOT NULL DEFAULT '[]'
+);
+
+CREATE TABLE IF NOT EXISTS reviews (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+  round INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  human_decision TEXT NOT NULL DEFAULT 'pending',
+  human_note TEXT,
+  reviewer_profile_id TEXT NOT NULL,
+  reviewer_provider TEXT NOT NULL,
+  reviewer_model TEXT,
+  verify_command TEXT NOT NULL,
+  verify_exit_code INTEGER NOT NULL,
+  verify_output TEXT NOT NULL DEFAULT '',
+  file_path TEXT NOT NULL,
+  commit_sha TEXT,
+  scope_warnings_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL,
+  decided_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS integration_runs (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+  merge_commit_sha TEXT,
+  command TEXT NOT NULL,
+  status TEXT NOT NULL,
+  exit_code INTEGER,
+  output TEXT NOT NULL DEFAULT '',
+  started_at TEXT NOT NULL,
+  finished_at TEXT NOT NULL
 );
 `;
 
@@ -178,6 +220,7 @@ function seedDefaults(db: DalangDb): void {
       timeoutMs: 1800000,
       idleTimeoutMs: 180000,
       maxParallel: 1,
+      maxReviewRounds: 2,
       isDefault: true,
       createdAt: now,
     },
@@ -192,6 +235,7 @@ function seedDefaults(db: DalangDb): void {
       timeoutMs: 1800000,
       idleTimeoutMs: 180000,
       maxParallel: 2,
+      maxReviewRounds: 2,
       isDefault: true,
       createdAt: now,
     },
@@ -206,6 +250,7 @@ function seedDefaults(db: DalangDb): void {
       timeoutMs: 1800000,
       idleTimeoutMs: 180000,
       maxParallel: 1,
+      maxReviewRounds: 2,
       isDefault: true,
       createdAt: now,
     },
@@ -220,6 +265,7 @@ function seedDefaults(db: DalangDb): void {
       timeoutMs: 1200000,
       idleTimeoutMs: 180000,
       maxParallel: 1,
+      maxReviewRounds: 2,
       isDefault: true,
       createdAt: now,
     },
@@ -269,8 +315,58 @@ function seedDefaults(db: DalangDb): void {
         profileId: 'profile-reviewer',
         fallbackProfileId: 'profile-lead',
       },
+      {
+        id: crypto.randomUUID(),
+        sortOrder: 6,
+        role: 'reviewer',
+        complexity: null,
+        profileId: 'profile-reviewer',
+        fallbackProfileId: 'profile-lead',
+      },
     ])
     .run();
+}
+
+function addColumnIfMissing(
+  sqlite: Database.Database,
+  table: string,
+  column: string,
+  definition: string,
+): void {
+  const cols = sqlite.pragma(`table_info(${table})`) as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === column)) {
+    sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+
+function migrateToV4(sqlite: Database.Database, db: DalangDb): void {
+  addColumnIfMissing(sqlite, 'projects', 'integration_command', 'TEXT');
+  addColumnIfMissing(sqlite, 'tasks', 'branch_name', 'TEXT');
+  addColumnIfMissing(sqlite, 'tasks', 'merge_commit_sha', 'TEXT');
+  addColumnIfMissing(sqlite, 'tasks', 'rejection_note', 'TEXT');
+  addColumnIfMissing(sqlite, 'agent_profiles', 'max_review_rounds', 'INTEGER NOT NULL DEFAULT 2');
+  addColumnIfMissing(sqlite, 'runs', 'kind', "TEXT NOT NULL DEFAULT 'execute'");
+  addColumnIfMissing(sqlite, 'runs', 'branch_name', 'TEXT');
+
+  const existingRules = db.select().from(schema.routingRules).all();
+  if (!existingRules.some((r) => r.role === 'reviewer')) {
+    const profiles = db.select().from(schema.agentProfiles).all();
+    const reviewer = profiles.find((p) => p.id === 'profile-reviewer') ?? profiles[0];
+    const lead = profiles.find((p) => p.id === 'profile-lead');
+    if (reviewer) {
+      const nextOrder = existingRules.reduce((max, r) => Math.max(max, r.sortOrder), 0) + 1;
+      db.insert(schema.routingRules)
+        .values({
+          id: crypto.randomUUID(),
+          sortOrder: nextOrder,
+          role: 'reviewer',
+          complexity: null,
+          profileId: reviewer.id,
+          fallbackProfileId: lead && lead.id !== reviewer.id ? lead.id : null,
+        })
+        .run();
+    }
+  }
 }
 
 function migrateV1ToV2(db: DalangDb): void {
@@ -314,6 +410,9 @@ export function openDatabase(dbFilePath: string = getDbPath()): DbConnection {
   seedDefaults(db);
   if (storedVersion > 0 && storedVersion < 2) {
     migrateV1ToV2(db);
+  }
+  if (storedVersion > 0 && storedVersion < 4) {
+    migrateToV4(sqlite, db);
   }
   sqlite.pragma(`user_version = ${SCHEMA_VERSION}`);
 

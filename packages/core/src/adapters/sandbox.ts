@@ -243,11 +243,11 @@ export async function startDbusProxy(runner: CliRunner): Promise<DbusProxy | nul
 
 export async function wrapWithBwrap(
   runner: CliRunner,
-  provider: ProviderId,
+  provider: ProviderId | null,
   projectPath: string,
   command: string,
   args: string[],
-  options: { dbusSocket?: string } = {},
+  options: { dbusSocket?: string; readOnly?: boolean; bindProviderDirs?: boolean } = {},
 ): Promise<BwrapInvocation> {
   const bwrapPath = await findBwrap(runner);
   if (!bwrapPath) {
@@ -255,6 +255,7 @@ export async function wrapWithBwrap(
   }
 
   const home = os.homedir();
+  const projectBindFlag = options.readOnly ? '--ro-bind' : '--bind';
   const bwrapArgs: string[] = [
     '--die-with-parent',
     '--new-session',
@@ -269,7 +270,7 @@ export async function wrapWithBwrap(
     '/proc',
     '--tmpfs',
     '/tmp',
-    '--bind',
+    projectBindFlag,
     projectPath,
     projectPath,
   ];
@@ -297,16 +298,18 @@ export async function wrapWithBwrap(
     if (fs.existsSync(abs)) bwrapArgs.push('--ro-bind', '/dev/null', abs);
   }
 
-  for (const rel of PROVIDER_STATE_DIRS[provider]) {
-    const abs = path.join(home, rel);
-    if (fs.existsSync(abs)) {
-      bwrapArgs.push('--bind', abs, abs);
+  if (provider && options.bindProviderDirs !== false) {
+    for (const rel of PROVIDER_STATE_DIRS[provider]) {
+      const abs = path.join(home, rel);
+      if (fs.existsSync(abs)) {
+        bwrapArgs.push('--bind', abs, abs);
+      }
     }
   }
 
   // Prevent sandboxed agents from writing executable hooks into `.git/hooks`.
   const gitHooksDir = path.join(projectPath, '.git', 'hooks');
-  if (fs.existsSync(gitHooksDir)) {
+  if (!options.readOnly && fs.existsSync(gitHooksDir)) {
     bwrapArgs.push('--ro-bind', gitHooksDir, gitHooksDir);
   }
 

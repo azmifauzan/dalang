@@ -1,19 +1,24 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
-import type { CliRunner, RunCommandOptions, RunCommandResult } from '../adapters/types.js';
+import type { CliRunner, RunCommandResult } from '../adapters/types.js';
 import { providerEvents, runs, tasks } from '../db/schema.js';
 import { ProviderRegistry } from '../adapters/registry.js';
 import type { DalangEvent } from '../services/events.js';
 import { ExecutionService } from '../services/executor.js';
-import { cleanupTempDirs, handleLeadCalls, makeTempDir, setupApprovedProject } from './exec-helpers.js';
+import {
+  cleanupTempDirs,
+  handleLeadCalls,
+  handleVerifyAndReviewCalls,
+  makeTempDir,
+  setupApprovedProject,
+} from './exec-helpers.js';
 
 afterEach(cleanupTempDirs);
 
-describe('ExecutionService (v0.2 Jalan)', () => {
-  it('runs sequential tasks in dependency order, creates git checkpoints, streams logs, and detects scope warnings', async () => {
+describe('ExecutionService (v0.2 Jalan + v0.3 Kawal)', () => {
+  it('runs tasks in dependency order through review, Guard merge, checkpoints, logs, and scope warnings', async () => {
     const executionOrder: string[] = [];
 
     const runner: CliRunner = {
@@ -24,6 +29,9 @@ describe('ExecutionService (v0.2 Jalan)', () => {
         const cwd = opts.cwd;
         const leadRes = handleLeadCalls(cwd, args, opts);
         if (leadRes) return leadRes;
+
+        const reviewRes = handleVerifyAndReviewCalls(cmd, args, opts, 'pass');
+        if (reviewRes) return reviewRes;
 
         const promptArg = args.find((a) => a.includes('.dalang/tasks/')) ?? args.join(' ');
         const taskMatch = promptArg.match(/\.dalang\/tasks\/([A-Za-z0-9_-]+)\/result\.json/);
@@ -38,7 +46,7 @@ describe('ExecutionService (v0.2 Jalan)', () => {
             fs.writeFileSync(path.join(cwd, 'src', 'model.ts'), 'export interface Item { id: string; }\n');
           } else {
             fs.writeFileSync(path.join(cwd, 'src', 'routes.ts'), 'export const routes = [];\n');
-            // Intentionally touch a file outside files_allowed (`src/**`) to verify scopeWarnings
+            // Intentionally touch a file outside files_allowed (`src/**`) to verify scopeWarnings.
             fs.writeFileSync(path.join(cwd, 'UNEXPECTED.txt'), 'out of scope\n');
           }
 
@@ -68,7 +76,7 @@ describe('ExecutionService (v0.2 Jalan)', () => {
       },
     };
 
-    const { conn, events, project, execSvc, projDir } = await setupApprovedProject(runner, [
+    const { conn, events, project, plan, execSvc, projDir } = await setupApprovedProject(runner, [
       { id: 'T-001', title: 'Item model', complexity: 'low', depends_on: [], files_allowed: ['src/**'] },
       { id: 'T-002', title: 'Item routes', complexity: 'low', depends_on: ['T-001'], files_allowed: ['src/**'] },
     ]);
@@ -82,14 +90,27 @@ describe('ExecutionService (v0.2 Jalan)', () => {
       expect(started.queueMode).toBe(true);
       await execSvc.waitForProjectExecution(project.id);
 
-      expect(executionOrder).toEqual(['T-001', 'T-002']);
+      // T-001 finishes coding + review and waits in Guard before T-002 can unlock.
+      expect(executionOrder).toEqual(['T-001']);
+      let state = await execSvc.getExecutionState(project.id);
+      expect(state.dispatchPreviews[0].status).toBe('awaiting_merge');
+      expect(state.dispatchPreviews[1].eligible).toBe(false);
+      // Main branch remains clean until Gate 2 merge approval.
+      expect(fs.existsSync(path.join(projDir, 'src', 'model.ts'))).toBe(false);
 
-      const state = await execSvc.getExecutionState(project.id);
+      await execSvc.approveMergeTask(project.id, plan.tasks[0].id);
+      expect(fs.existsSync(path.join(projDir, 'src', 'model.ts'))).toBe(true);
+
+      await execSvc.startExecution(project.id, { allowUnconfined: true });
+      await execSvc.waitForProjectExecution(project.id);
+      // The stray file fails both review rounds, so T-002 coded twice and stops in Guard.
+      expect(executionOrder).toEqual(['T-001', 'T-002', 'T-002']);
+
+      state = await execSvc.getExecutionState(project.id);
       expect(state.activeRun).toBeNull();
-      expect(state.dispatchPreviews.every((d) => d.status === 'done')).toBe(true);
-      expect(state.runs).toHaveLength(2);
+      expect(state.dispatchPreviews[1].status).toBe('review_failed');
 
-      const t2Run = state.runs.find((r) => r.taskExternalId === 'T-002')!;
+      const t2Run = state.runs.find((r) => r.taskExternalId === 'T-002' && r.kind === 'execute')!;
       expect(t2Run.status).toBe('completed');
       expect(t2Run.commitBefore).toBeTruthy();
       expect(t2Run.commitAfter).toBeTruthy();
@@ -97,12 +118,18 @@ describe('ExecutionService (v0.2 Jalan)', () => {
       expect(t2Run.scopeWarnings).toEqual(['Modified outside files_allowed: UNEXPECTED.txt']);
       expect(t2Run.result?.summary).toBe('Finished T-002');
 
-      const logRes = execSvc.getRunLog(project.id, t2Run.id);
+      const logRes = await execSvc.getRunLog(project.id, t2Run.id);
       expect(logRes.content).toContain('Executed T-002');
+
+      await expect(execSvc.approveMergeTask(project.id, plan.tasks[1].id)).rejects.toThrow(/failed review/);
+      await execSvc.approveMergeTask(project.id, plan.tasks[1].id, { allowFailedReview: true });
+      state = await execSvc.getExecutionState(project.id);
+      expect(state.dispatchPreviews.every((d) => d.status === 'done')).toBe(true);
+
       expect(capturedEvents.some((e) => e.type === 'run.started')).toBe(true);
       expect(capturedEvents.some((e) => e.type === 'run.log')).toBe(true);
       expect(capturedEvents.some((e) => e.type === 'run.finished')).toBe(true);
-      expect(fs.existsSync(path.join(projDir, 'src', 'model.ts'))).toBe(true);
+      expect(capturedEvents.some((e) => e.type === 'review.finished')).toBe(true);
     } finally {
       conn.close();
     }
@@ -119,6 +146,9 @@ describe('ExecutionService (v0.2 Jalan)', () => {
         const cwd = opts.cwd;
         const leadRes = handleLeadCalls(cwd, args, opts);
         if (leadRes) return leadRes;
+
+        const reviewRes = handleVerifyAndReviewCalls(cmd, args, opts, 'pass');
+        if (reviewRes) return reviewRes;
 
         const joined = `${cmd} ${args.join(' ')}`;
         const isCodex = joined.includes('codex');
@@ -164,9 +194,10 @@ describe('ExecutionService (v0.2 Jalan)', () => {
       expect(providersUsed).toEqual(['codex', 'claude']);
 
       const state = await execSvc.getExecutionState(project.id);
-      expect(state.runs).toHaveLength(2);
-      const fbRun = state.runs[0];
-      const primaryRun = state.runs[1];
+      const coderRuns = state.runs.filter((r) => r.kind === 'execute');
+      expect(coderRuns).toHaveLength(2);
+      const fbRun = coderRuns[0];
+      const primaryRun = coderRuns[1];
       expect(primaryRun.status).toBe('failed');
       expect(primaryRun.failureReason).toMatch(/rate limit/i);
       expect(fbRun.status).toBe('completed');
@@ -197,11 +228,13 @@ describe('ExecutionService (v0.2 Jalan)', () => {
         const leadRes = handleLeadCalls(cwd, args, opts);
         if (leadRes) return leadRes;
 
+        const reviewRes = handleVerifyAndReviewCalls(cmd, args, opts, 'pass');
+        if (reviewRes) return reviewRes;
+
         runCall++;
         const joined = `${cmd} ${args.join(' ')}`;
 
         if (runCall === 1) {
-          // Simulate a running CLI turn that emits a thread_id and waits to be aborted
           const tLine = JSON.stringify({ type: 'thread.started', thread_id: 'codex-resume-99' });
           opts.onStdoutLine?.(tLine);
           fs.mkdirSync(path.join(cwd, 'src'), { recursive: true });
@@ -260,7 +293,6 @@ describe('ExecutionService (v0.2 Jalan)', () => {
       expect(state.runs[0].cliSessionId).toBe('codex-resume-99');
       expect(state.dispatchPreviews[0].status).toBe('stopped');
 
-      // Resume using captured CLI session id
       await execSvc.startExecution(project.id, {
         taskId,
         allowUnconfined: true,
@@ -270,21 +302,23 @@ describe('ExecutionService (v0.2 Jalan)', () => {
 
       expect(resumeReceivedSession).toBe('codex-resume-99');
       state = await execSvc.getExecutionState(project.id);
-      const completedRun = state.runs[0];
-      expect(completedRun.status).toBe('completed');
+      const completedCoderRun = state.runs.find((r) => r.kind === 'execute' && r.status === 'completed')!;
+      expect(state.dispatchPreviews[0].status).toBe('awaiting_merge');
+
+      // Merge first, then test checkpoint rollback across merged main commits.
+      await execSvc.approveMergeTask(project.id, taskId);
       expect(fs.existsSync(path.join(projDir, 'src', 'store.ts'))).toBe(true);
 
-      // Rollback to pre-run checkpoint of the completed run (which was before store.ts)
-      const rolled = await execSvc.rollbackRun(project.id, completedRun.id);
+      const rolled = await execSvc.rollbackRun(project.id, completedCoderRun.id);
       expect(rolled.status).toBe('rolled_back');
       expect(fs.existsSync(path.join(projDir, 'src', 'store.ts'))).toBe(false);
-      // .dalang logs remain preserved for inspection
-      expect(fs.existsSync(path.join(projDir, completedRun.logPath))).toBe(true);
+      // .dalang logs remain preserved for inspection.
+      expect(fs.existsSync(path.join(projDir, completedCoderRun.logPath))).toBe(true);
 
-      // Re-rolling back an already rolled-back run is rejected
-      await expect(execSvc.rollbackRun(project.id, completedRun.id)).rejects.toThrow(/already been rolled back/i);
+      await expect(execSvc.rollbackRun(project.id, completedCoderRun.id)).rejects.toThrow(
+        /already been rolled back/i,
+      );
 
-      // Switching profile provider refuses resuming old provider session
       execSvc.assignTaskProfile(project.id, taskId, 'profile-coder-heavy');
       await expect(
         execSvc.startExecution(project.id, { taskId, allowUnconfined: true, resumeSession: true }),
@@ -299,10 +333,13 @@ describe('ExecutionService (v0.2 Jalan)', () => {
       async which(bin) {
         return `/usr/bin/${bin}`;
       },
-      async run(_cmd, args, opts): Promise<RunCommandResult> {
+      async run(cmd, args, opts): Promise<RunCommandResult> {
         const cwd = opts.cwd;
         const leadRes = handleLeadCalls(cwd, args, opts);
         if (leadRes) return leadRes;
+
+        const reviewRes = handleVerifyAndReviewCalls(cmd, args, opts, 'pass');
+        if (reviewRes) return reviewRes;
 
         const promptArg = args.find((a) => a.includes('.dalang/tasks/')) ?? args.join(' ');
         const taskMatch = promptArg.match(/\.dalang\/tasks\/([A-Za-z0-9_-]+)\/result\.json/);
@@ -335,7 +372,6 @@ describe('ExecutionService (v0.2 Jalan)', () => {
     ]);
 
     try {
-      // Plant a malicious pre-commit hook inside `.git/hooks/`
       const hookMarker = path.join(projDir, 'HOOK_EXECUTED');
       const hooksDir = path.join(projDir, '.git', 'hooks');
       fs.mkdirSync(hooksDir, { recursive: true });
@@ -347,22 +383,23 @@ describe('ExecutionService (v0.2 Jalan)', () => {
 
       await execSvc.startExecution(project.id, { allowUnconfined: true });
       await execSvc.waitForProjectExecution(project.id);
+      await execSvc.approveMergeTask(project.id, plan.tasks[0].id);
 
-      // Hook must never run during checkpoint commits
+      await execSvc.startExecution(project.id, { allowUnconfined: true });
+      await execSvc.waitForProjectExecution(project.id);
+      await execSvc.approveMergeTask(project.id, plan.tasks[1].id);
+
       expect(fs.existsSync(hookMarker)).toBe(false);
 
       const stateAfterBoth = await execSvc.getExecutionState(project.id);
-      expect(stateAfterBoth.runs).toHaveLength(2);
-      const t1Run = stateAfterBoth.runs.find((r) => r.taskExternalId === 'T-001')!;
+      const t1Run = stateAfterBoth.runs.find((r) => r.taskExternalId === 'T-001' && r.kind === 'execute')!;
 
-      // Rolling back T-001 resets HEAD to before T-001 and cascades rolled_back to T-002
       await execSvc.rollbackRun(project.id, t1Run.id);
       const stateAfterRollback = await execSvc.getExecutionState(project.id);
       expect(stateAfterRollback.runs.every((r) => r.status === 'rolled_back')).toBe(true);
       expect(stateAfterRollback.dispatchPreviews.every((d) => d.status === 'approved')).toBe(true);
       expect(fs.existsSync(path.join(projDir, 'src', 'T-002.ts'))).toBe(false);
 
-      // Simulate an interrupted `running` row left in SQLite across a server restart
       const now = new Date().toISOString();
       conn.db
         .insert(runs)
@@ -373,6 +410,8 @@ describe('ExecutionService (v0.2 Jalan)', () => {
           profileId: 'profile-coder-small',
           provider: 'codex',
           model: null,
+          kind: 'review',
+          branchName: 'dalang/T-001',
           status: 'running',
           cliSessionId: null,
           attempt: 99,
@@ -390,7 +429,7 @@ describe('ExecutionService (v0.2 Jalan)', () => {
         .run();
       conn.db
         .update(tasks)
-        .set({ status: 'running', updatedAt: now })
+        .set({ status: 'reviewing', updatedAt: now })
         .where(eq(tasks.id, plan.tasks[0].id))
         .run();
 

@@ -5,15 +5,23 @@ import fastifyWebsocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
+  ApproveMergeInputSchema,
   AssignTaskProfileInputSchema,
   BriefContentSchema,
   BriefReviseInputSchema,
   CreateOrOpenProjectInputSchema,
+  CreateProfileInputSchema,
+  CreateRoutingRuleInputSchema,
   CreateTaskInputSchema,
   DiscussMessageInputSchema,
   ProviderIdSchema,
+  RejectTaskInputSchema,
+  ReorderRoutingRulesInputSchema,
   ReorderTasksInputSchema,
+  RunIntegrationInputSchema,
   StartExecutionInputSchema,
+  UpdateProfileInputSchema,
+  UpdateRoutingRuleInputSchema,
   UpdateSettingsInputSchema,
   UpdateTaskInputSchema,
   type ProviderStatus,
@@ -109,7 +117,7 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     return reply.status(statusCode >= 400 ? statusCode : 400).send({ error: message });
   });
 
-  app.get('/api/health', async () => ({ ok: true, version: '0.2.1' }));
+  app.get('/api/health', async () => ({ ok: true, version: '0.3.0' }));
 
   // WebSocket live event stream
   app.get('/ws', { websocket: true }, (socket) => {
@@ -147,6 +155,7 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
       .object({
         leadProvider: ProviderIdSchema.optional(),
         leadModel: z.string().nullable().optional(),
+        integrationCommand: z.string().trim().nullable().optional(),
       })
       .parse(req.body);
     return { project: projectService.updateSettings(req.params.id, body) };
@@ -307,6 +316,41 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     },
   );
 
+  // Guard (v0.3 Kawal: F-18, F-19, F-20)
+  app.get<{ Params: { id: string } }>('/api/projects/:id/guard', async (req) => {
+    return { guard: await executionService.getGuardState(req.params.id) };
+  });
+
+  app.get<{ Params: { id: string; taskId: string } }>(
+    '/api/projects/:id/tasks/:taskId/diff',
+    async (req) => {
+      return { diff: await executionService.getTaskDiffForTask(req.params.id, req.params.taskId) };
+    },
+  );
+
+  app.post<{ Params: { id: string; taskId: string } }>(
+    '/api/projects/:id/tasks/:taskId/approve-merge',
+    async (req) => {
+      const body = ApproveMergeInputSchema.parse(req.body ?? {});
+      return executionService.approveMergeTask(req.params.id, req.params.taskId, body);
+    },
+  );
+
+  app.post<{ Params: { id: string; taskId: string } }>(
+    '/api/projects/:id/tasks/:taskId/reject',
+    async (req) => {
+      const body = RejectTaskInputSchema.parse(req.body ?? {});
+      return { task: await executionService.rejectTask(req.params.id, req.params.taskId, body) };
+    },
+  );
+
+  app.post<{ Params: { id: string } }>('/api/projects/:id/integration/run', async (req) => {
+    const body = RunIntegrationInputSchema.parse(req.body ?? {});
+    return {
+      integrationRun: await executionService.runIntegrationTests(req.params.id, body),
+    };
+  });
+
   app.get('/api/settings', async () => ({ settings: settingsService.getAll() }));
 
   app.patch('/api/settings', async (req) => {
@@ -314,7 +358,7 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     return { settings: settingsService.update(body) };
   });
 
-  // Providers & Profiles (F-22, F-10, F-11 support)
+  // Providers, Profiles & Routing (F-21, F-22, F-10, F-11)
   app.get('/api/providers/status', async () => {
     return { providers: await getProviderStatuses(false) };
   });
@@ -327,8 +371,45 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     return { profiles: profileService.listProfiles() };
   });
 
+  app.post('/api/profiles', async (req, reply) => {
+    const body = CreateProfileInputSchema.parse(req.body);
+    const profile = profileService.createProfile(body);
+    return reply.status(201).send({ profile });
+  });
+
+  app.patch<{ Params: { id: string } }>('/api/profiles/:id', async (req) => {
+    const body = UpdateProfileInputSchema.parse(req.body ?? {});
+    return { profile: profileService.updateProfile(req.params.id, body) };
+  });
+
+  app.delete<{ Params: { id: string } }>('/api/profiles/:id', async (req) => {
+    profileService.deleteProfile(req.params.id);
+    return { ok: true };
+  });
+
   app.get('/api/routing', async () => {
     return { rules: profileService.listRoutingRules() };
+  });
+
+  app.post('/api/routing', async (req, reply) => {
+    const body = CreateRoutingRuleInputSchema.parse(req.body);
+    const rule = profileService.createRoutingRule(body);
+    return reply.status(201).send({ rule });
+  });
+
+  app.patch<{ Params: { id: string } }>('/api/routing/:id', async (req) => {
+    const body = UpdateRoutingRuleInputSchema.parse(req.body ?? {});
+    return { rule: profileService.updateRoutingRule(req.params.id, body) };
+  });
+
+  app.delete<{ Params: { id: string } }>('/api/routing/:id', async (req) => {
+    profileService.deleteRoutingRule(req.params.id);
+    return { ok: true };
+  });
+
+  app.post('/api/routing/reorder', async (req) => {
+    const body = ReorderRoutingRulesInputSchema.parse(req.body);
+    return { rules: profileService.reorderRoutingRules(body.ruleIds) };
   });
 
   // Static web assets (when built)

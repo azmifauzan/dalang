@@ -1,23 +1,33 @@
 import type {
   AgentProfileDTO,
+  ApproveMergeInput,
   BriefContent,
   BriefDTO,
   CreateOrOpenProjectInput,
+  CreateProfileInput,
+  CreateRoutingRuleInput,
   CreateTaskInput,
   DiscussMessageDTO,
   DiscussMessageInput,
   DiscussRound,
   ExecutionStateDTO,
+  GuardStateDTO,
+  IntegrationRunDTO,
   PlanDTO,
   ProjectSummary,
   ProviderId,
   ProviderStatus,
+  RejectTaskInput,
   ReorderTasksInput,
   RoutingRuleDTO,
+  RunIntegrationInput,
   SettingsDTO,
   StartExecutionInput,
+  TaskDiffDTO,
   TaskDTO,
   TaskRunDTO,
+  UpdateProfileInput,
+  UpdateRoutingRuleInput,
   UpdateTaskInput,
 } from '@dalang/shared';
 
@@ -50,7 +60,11 @@ export const api = {
     request<{ ok: boolean }>(`/api/projects/${id}`, { method: 'DELETE' }),
   updateProjectSettings: (
     id: string,
-    body: { leadProvider?: ProviderId; leadModel?: string | null },
+    body: {
+      leadProvider?: ProviderId;
+      leadModel?: string | null;
+      integrationCommand?: string | null;
+    },
   ) =>
     request<{ project: ProjectSummary }>(`/api/projects/${id}/settings`, {
       method: 'PATCH',
@@ -179,7 +193,31 @@ export const api = {
       method: 'POST',
     }),
 
-  // Providers & Profiles
+  // Guard (v0.3 Kawal)
+  getGuardState: (id: string) =>
+    request<{ guard: GuardStateDTO }>(`/api/projects/${id}/guard`),
+  getTaskDiff: (id: string, taskId: string) =>
+    request<{ diff: TaskDiffDTO }>(`/api/projects/${id}/tasks/${taskId}/diff`),
+  approveMergeTask: (id: string, taskId: string, body: Partial<ApproveMergeInput> = {}) =>
+    request<{ task: TaskDTO; mergeCommitSha: string; integrationRun: IntegrationRunDTO | null }>(
+      `/api/projects/${id}/tasks/${taskId}/approve-merge`,
+      {
+        method: 'POST',
+        body: JSON.stringify(body),
+      },
+    ),
+  rejectTask: (id: string, taskId: string, body: Partial<RejectTaskInput> = {}) =>
+    request<{ task: TaskDTO }>(`/api/projects/${id}/tasks/${taskId}/reject`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  runIntegration: (id: string, body: Partial<RunIntegrationInput> = {}) =>
+    request<{ integrationRun: IntegrationRunDTO }>(`/api/projects/${id}/integration/run`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  // Providers, Profiles & Routing
   getProvidersStatus: () => request<{ providers: ProviderStatus[] }>('/api/providers/status'),
   refreshProvidersStatus: () =>
     request<{ providers: ProviderStatus[] }>('/api/providers/refresh', { method: 'POST' }),
@@ -190,4 +228,33 @@ export const api = {
       body: JSON.stringify(body),
     }),
   listProfiles: () => request<{ profiles: AgentProfileDTO[] }>('/api/profiles'),
+  createProfile: (body: CreateProfileInput) =>
+    request<{ profile: AgentProfileDTO }>('/api/profiles', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updateProfile: (profileId: string, body: UpdateProfileInput) =>
+    request<{ profile: AgentProfileDTO }>(`/api/profiles/${profileId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  deleteProfile: (profileId: string) =>
+    request<{ ok: boolean }>(`/api/profiles/${profileId}`, { method: 'DELETE' }),
+  createRoutingRule: (body: CreateRoutingRuleInput) =>
+    request<{ rule: RoutingRuleDTO }>('/api/routing', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updateRoutingRule: (ruleId: string, body: UpdateRoutingRuleInput) =>
+    request<{ rule: RoutingRuleDTO }>(`/api/routing/${ruleId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  deleteRoutingRule: (ruleId: string) =>
+    request<{ ok: boolean }>(`/api/routing/${ruleId}`, { method: 'DELETE' }),
+  reorderRoutingRules: (ruleIds: string[]) =>
+    request<{ rules: RoutingRuleDTO[] }>('/api/routing/reorder', {
+      method: 'POST',
+      body: JSON.stringify({ ruleIds }),
+    }),
 };
