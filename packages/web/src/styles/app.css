@@ -1,0 +1,91 @@
+@import "tailwindcss";
+
+@custom-variant dark (html[data-theme='dark'] &);
+
+:root,
+html[data-theme="light"] {
+  --bg-canvas: #f7f4ee;
+  --bg-surface: #fffdf9;
+  --bg-well: #efeae0;
+  --border-subtle: #dfd8cc;
+  --border-control: #8a8175;
+  --text-primary: #1c1917;
+  --text-secondary: #57534e;
+  --accent: #9a3412;
+  --accent-hover: #7c2d12;
+  --accent-ink: #ffffff;
+  --accent-tint: #fdeee6;
+  --pass: #166534;
+  --pass-tint: #dcfce7;
+  --error: #991b1b;
+  --error-tint: #fee2e2;
+  --focus-ring: #9a3412;
+  color-scheme: light;
+}
+
+html[data-theme="dark"] {
+  --bg-canvas: #161412;
+  --bg-surface: #201d1a;
+  --bg-well: #292521;
+  --border-subtle: #3a342e;
+  --border-control: #7a7268;
+  --text-primary: #efece6;
+  --text-secondary: #b5aea4;
+  --accent: #e07a38;
+  --accent-hover: #f08c4b;
+  --accent-ink: #161412;
+  --accent-tint: #3b2416;
+  --pass: #4ade80;
+  --pass-tint: #143321;
+  --error: #fca5a5;
+  --error-tint: #3b1919;
+  --focus-ring: #f08c4b;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg-canvas);
+  color: var(--text-primary);
+  font-family: "IBM Plex Sans", "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+code,
+pre,
+.font-mono-token {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+/* R-32: High-contrast visible focus indicator on every interactive control */
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* shadcn/ui tokens resolve to the DESIGN.md palette, so both themes follow data-theme. */
+@theme inline {
+  --color-background: var(--bg-canvas);
+  --color-foreground: var(--text-primary);
+  --color-card: var(--bg-surface);
+  --color-card-foreground: var(--text-primary);
+  --color-popover: var(--bg-surface);
+  --color-popover-foreground: var(--text-primary);
+  --color-primary: var(--accent);
+  --color-primary-foreground: var(--accent-ink);
+  --color-secondary: var(--bg-well);
+  --color-secondary-foreground: var(--text-primary);
+  --color-muted: var(--bg-well);
+  --color-muted-foreground: var(--text-secondary);
+  --color-destructive: var(--error);
+  --color-border: var(--border-subtle);
+  --color-input: var(--border-control);
+  --color-ring: var(--focus-ring);
+}

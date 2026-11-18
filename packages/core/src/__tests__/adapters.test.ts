@@ -1,0 +1,141 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import { AntigravityAdapter, parseAgyModelsOutput, parseAgyUsageJson } from '../adapters/antigravity.js';
+import { ClaudeCodeAdapter, parseClaudeUsageText } from '../adapters/claude.js';
+import { CodexAdapter, parseCodexRateLimits } from '../adapters/codex.js';
+import { wrapWithBwrap } from '../adapters/sandbox.js';
+import type { CliRunner, RunCommandOptions, RunCommandResult } from '../adapters/types.js';
+
+const tempDirs: string[] = [];
+function makeTempDir(prefix: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  tempDirs.push(dir);
+  return dir;
+}
+
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+describe('Provider adapters & bwrap wrapper', () => {
+  it('parses agy usage JSON, codex rateLimits, and claude usage text', () => {
+    const agyRaw = JSON.stringify({
+      status: 'SUCCESS',
+      command: {
+        name: 'usage',
+        data: {
+          groups: [
+            {
+              name: 'Gemini Models',
+              buckets: [
+                {
+                  id: 'gemini-5h',
+                  name: 'Five Hour Limit Remaining',
+                  window: '5h',
+                  remaining_fraction: 0.73,
+                  reset_time: '2026-11-18T06:15:41Z',
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+    const agyParsed = parseAgyUsageJson(agyRaw);
+    expect(agyParsed.ok).toBe(true);
+    expect(agyParsed.windows[0]).toMatchObject({
+      window: '5h',
+      remainingPercent: 73,
+      usedPercent: 27,
+      resetsAt: '2026-11-18T06:15:41Z',
+    });
+
+    expect(parseAgyModelsOutput('Fetching available models...\ngemini-4-hydrogen-high\tGemini 4\n')).toEqual([
+      'gemini-4-hydrogen-high',
+    ]);
+
+    const codexWindows = parseCodexRateLimits({
+      rateLimits: {
+        primary: { usedPercent: 18, windowDurationMins: 300, resetsAt: 1795000000 },
+        secondary: { usedPercent: 42, windowDurationMins: 10080, resetsAt: 1795500000 },
+      },
+    });
+    expect(codexWindows).toHaveLength(2);
+    expect(codexWindows[0]).toMatchObject({ window: '5h', usedPercent: 18, remainingPercent: 82 });
+    expect(codexWindows[1]).toMatchObject({ window: 'weekly', usedPercent: 42, remainingPercent: 58 });
+
+    const claudeWindows = parseClaudeUsageText('Current session (5h): 24% used, resets in 2h\nWeekly: 60% remaining');
+    expect(claudeWindows).toHaveLength(2);
+    expect(claudeWindows[0]).toMatchObject({ window: '5h', usedPercent: 24, remainingPercent: 76 });
+    expect(claudeWindows[1]).toMatchObject({ window: 'weekly', usedPercent: 40, remainingPercent: 60 });
+  });
+
+  it('wraps commands with bwrap when available and parses stream output across all 3 adapters', async () => {
+    const projectDir = makeTempDir('dalang-adp-');
+    const calls: Array<{ command: string; args: string[]; opts: RunCommandOptions }> = [];
+
+    const fakeRunner: CliRunner = {
+      async which(bin) {
+        return `/usr/bin/${bin}`;
+      },
+      async run(command, args, opts): Promise<RunCommandResult> {
+        calls.push({ command, args, opts });
+        const innerArgs = args.join(' ');
+        if (innerArgs.includes('claude')) {
+          const line1 = JSON.stringify({ type: 'system', session_id: 'claude-sess-1' });
+          const line2 = JSON.stringify({ type: 'result', session_id: 'claude-sess-1', result: 'ok-claude' });
+          opts.onStdoutLine?.(line1);
+          opts.onStdoutLine?.(line2);
+          return { exitCode: 0, stdout: `${line1}\n${line2}\n`, stderr: '', timedOut: false, idleTimedOut: false };
+        }
+        if (innerArgs.includes('codex')) {
+          const line1 = JSON.stringify({ type: 'thread.started', thread_id: 'codex-thread-9' });
+          const line2 = JSON.stringify({
+            type: 'item.completed',
+            item: { type: 'agent_message', text: 'ok-codex' },
+          });
+          opts.onStdoutLine?.(line1);
+          opts.onStdoutLine?.(line2);
+          return { exitCode: 0, stdout: `${line1}\n${line2}\n`, stderr: '', timedOut: false, idleTimedOut: false };
+        }
+        const agyLine = JSON.stringify({
+          type: 'result',
+          conversation_id: 'agy-conv-7',
+          response: 'ok-agy',
+        });
+        opts.onStdoutLine?.(agyLine);
+        return { exitCode: 0, stdout: `${agyLine}\n`, stderr: '', timedOut: false, idleTimedOut: false };
+      },
+    };
+
+    const wrapped = await wrapWithBwrap(fakeRunner, 'antigravity', projectDir, '/usr/bin/agy', ['-p=hi']);
+    if (process.platform === 'linux') {
+      expect(wrapped.sandboxed).toBe(true);
+      expect(wrapped.command).toBe('/usr/bin/bwrap');
+      expect(wrapped.args).toContain('--tmpfs');
+      expect(wrapped.args).toContain(projectDir);
+    }
+
+    const claude = new ClaudeCodeAdapter(fakeRunner);
+    const r1 = await claude.runTurn({ projectPath: projectDir, prompt: 'hello', sessionId: 'prev-c' });
+    expect(r1.sessionId).toBe('claude-sess-1');
+    expect(r1.text).toBe('ok-claude');
+    expect(calls[0].args.join(' ')).toContain('--resume prev-c');
+
+    const codex = new CodexAdapter(fakeRunner);
+    const r2 = await codex.runTurn({ projectPath: projectDir, prompt: 'hello' });
+    expect(r2.sessionId).toBe('codex-thread-9');
+    expect(r2.text).toBe('ok-codex');
+
+    const agy = new AntigravityAdapter(fakeRunner);
+    const r3 = await agy.runTurn({ projectPath: projectDir, prompt: 'hello', sessionId: 'prev-a' });
+    expect(r3.sessionId).toBe('agy-conv-7');
+    expect(r3.text).toBe('ok-agy');
+    expect(calls[2].args.join(' ')).toContain('--conversation prev-a');
+    expect(calls[2].args.join(' ')).toContain('-p=hello');
+  });
+});

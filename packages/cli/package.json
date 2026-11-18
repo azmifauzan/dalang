@@ -1,0 +1,22 @@
+{
+  "name": "dalang",
+  "version": "0.1.0",
+  "description": "DALANG - Local orchestrator for Claude Code, Codex, and Antigravity CLI",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "dalang": "./bin/dalang.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node ./bin/dalang.js"
+  },
+  "dependencies": {
+    "@dalang/core": "workspace:*",
+    "@dalang/server": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0"
+  }
+}

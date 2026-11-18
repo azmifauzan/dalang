@@ -1,0 +1,246 @@
+import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import type { ProviderId } from '@dalang/shared';
+import type { CliRunner, RunCommandOptions, RunCommandResult } from './types.js';
+
+export function buildPathEnv(extraEnv?: Record<string, string | undefined>): NodeJS.ProcessEnv {
+  const home = os.homedir();
+  const existingPath = process.env.PATH ?? '';
+  const extraPaths = [
+    path.join(home, '.local/bin'),
+    path.join(home, '.npm-global/bin'),
+    '/usr/local/bin',
+    '/usr/bin',
+    '/bin',
+  ];
+  // The user's PATH wins so CLI shebangs (`env node`) resolve to the Node they installed.
+  const mergedPath = [...new Set([...existingPath.split(':').filter(Boolean), ...extraPaths])].join(':');
+  return {
+    ...process.env,
+    ...extraEnv,
+    PATH: mergedPath,
+  };
+}
+
+export class NodeCliRunner implements CliRunner {
+  async which(binary: string): Promise<string | null> {
+    const env = buildPathEnv();
+    const pathEntries = (env.PATH ?? '').split(':').filter(Boolean);
+    for (const dir of pathEntries) {
+      const candidate = path.join(dir, binary);
+      try {
+        fs.accessSync(candidate, fs.constants.X_OK);
+        return candidate;
+      } catch {
+        // continue
+      }
+    }
+    return null;
+  }
+
+  run(command: string, args: string[], options: RunCommandOptions): Promise<RunCommandResult> {
+    return new Promise((resolve, reject) => {
+      const useStdinPipe = options.stdinData !== undefined || Boolean(options.interactiveStdin);
+      const child = spawn(command, args, {
+        cwd: options.cwd,
+        env: buildPathEnv(options.env),
+        stdio: [useStdinPipe ? 'pipe' : 'ignore', 'pipe', 'pipe'],
+      });
+
+      let stdout = '';
+      let stderr = '';
+      let stdoutRemainder = '';
+      let stderrRemainder = '';
+      let timedOut = false;
+      let idleTimedOut = false;
+      let settled = false;
+
+      const totalMs = options.timeoutMs ?? 600_000;
+      const idleMs = options.idleTimeoutMs ?? 180_000;
+
+      let idleTimer: NodeJS.Timeout | null = null;
+      const resetIdle = () => {
+        if (idleTimer) clearTimeout(idleTimer);
+        if (idleMs > 0) {
+          idleTimer = setTimeout(() => {
+            idleTimedOut = true;
+            child.kill('SIGTERM');
+            setTimeout(() => child.kill('SIGKILL'), 2000).unref();
+          }, idleMs);
+        }
+      };
+
+      const totalTimer =
+        totalMs > 0
+          ? setTimeout(() => {
+              timedOut = true;
+              child.kill('SIGTERM');
+              setTimeout(() => child.kill('SIGKILL'), 2000).unref();
+            }, totalMs)
+          : null;
+
+      resetIdle();
+
+      const flushLines = (chunk: string, isStderr: boolean) => {
+        if (isStderr) {
+          stderrRemainder += chunk;
+          const parts = stderrRemainder.split(/\r?\n/);
+          stderrRemainder = parts.pop() ?? '';
+          for (const line of parts) options.onStderrLine?.(line);
+        } else {
+          stdoutRemainder += chunk;
+          const parts = stdoutRemainder.split(/\r?\n/);
+          stdoutRemainder = parts.pop() ?? '';
+          for (const line of parts) options.onStdoutLine?.(line);
+        }
+      };
+
+      child.stdout?.on('data', (buf: Buffer) => {
+        resetIdle();
+        const text = buf.toString('utf8');
+        stdout += text;
+        flushLines(text, false);
+      });
+
+      child.stderr?.on('data', (buf: Buffer) => {
+        resetIdle();
+        const text = buf.toString('utf8');
+        stderr += text;
+        flushLines(text, true);
+      });
+
+      child.on('error', (err) => {
+        if (settled) return;
+        settled = true;
+        if (totalTimer) clearTimeout(totalTimer);
+        if (idleTimer) clearTimeout(idleTimer);
+        reject(err);
+      });
+
+      child.on('close', (exitCode) => {
+        if (settled) return;
+        settled = true;
+        if (totalTimer) clearTimeout(totalTimer);
+        if (idleTimer) clearTimeout(idleTimer);
+        if (stdoutRemainder) options.onStdoutLine?.(stdoutRemainder);
+        if (stderrRemainder) options.onStderrLine?.(stderrRemainder);
+        resolve({
+          exitCode,
+          stdout,
+          stderr,
+          timedOut,
+          idleTimedOut,
+        });
+      });
+
+      if (options.onSpawn && child.stdin) {
+        options.onSpawn({
+          writeStdin: (data: string) => {
+            if (!child.stdin?.writableEnded) {
+              child.stdin?.write(data);
+            }
+          },
+          endStdin: () => {
+            if (!child.stdin?.writableEnded) {
+              child.stdin?.end();
+            }
+          },
+          kill: () => {
+            if (!settled) child.kill('SIGTERM');
+          },
+        });
+      }
+
+      if (options.stdinData !== undefined && child.stdin) {
+        child.stdin.write(options.stdinData);
+        child.stdin.end();
+      }
+    });
+  }
+}
+
+export interface BwrapInvocation {
+  command: string;
+  args: string[];
+  sandboxed: boolean;
+}
+
+const PROVIDER_STATE_DIRS: Record<ProviderId, string[]> = {
+  'claude-code': ['.claude', '.claude.json'],
+  codex: ['.codex'],
+  antigravity: ['.gemini'],
+};
+
+export async function findBwrap(runner: CliRunner): Promise<string | null> {
+  if (process.platform !== 'linux') return null;
+  return runner.which('bwrap');
+}
+
+export async function wrapWithBwrap(
+  runner: CliRunner,
+  provider: ProviderId,
+  projectPath: string,
+  command: string,
+  args: string[],
+): Promise<BwrapInvocation> {
+  const bwrapPath = await findBwrap(runner);
+  if (!bwrapPath) {
+    return { command, args, sandboxed: false };
+  }
+
+  const home = os.homedir();
+  const bwrapArgs: string[] = [
+    '--die-with-parent',
+    '--new-session',
+    '--unshare-pid',
+    '--unshare-ipc',
+    '--ro-bind',
+    '/',
+    '/',
+    '--dev',
+    '/dev',
+    '--proc',
+    '/proc',
+    '--tmpfs',
+    '/tmp',
+    '--bind',
+    projectPath,
+    projectPath,
+  ];
+
+  // Keep user-session and container sockets out of reach (a socket there lets a run act outside the sandbox).
+  // agy reads its login from the desktop keyring over the session bus, so it keeps /run/user.
+  if (provider !== 'antigravity' && fs.existsSync('/run/user')) bwrapArgs.push('--tmpfs', '/run/user');
+  const dockerSock = '/run/docker.sock'; // /var/run is a symlink to /run on Linux
+  if (fs.existsSync(dockerSock)) bwrapArgs.push('--ro-bind', '/dev/null', dockerSock);
+
+  // Credentials no agent run needs; DALANG itself does the git pushing and signing.
+  // ~/.npmrc stays visible on purpose: private-registry installs need its token.
+  for (const rel of ['.ssh', '.gnupg', '.aws', '.docker', '.kube', '.config/gcloud']) {
+    const abs = path.join(home, rel);
+    if (fs.existsSync(abs) && !projectPath.startsWith(abs + path.sep)) {
+      bwrapArgs.push('--tmpfs', abs);
+    }
+  }
+  for (const rel of ['.git-credentials', '.netrc']) {
+    const abs = path.join(home, rel);
+    if (fs.existsSync(abs)) bwrapArgs.push('--ro-bind', '/dev/null', abs);
+  }
+
+  for (const rel of PROVIDER_STATE_DIRS[provider]) {
+    const abs = path.join(home, rel);
+    if (fs.existsSync(abs)) {
+      bwrapArgs.push('--bind', abs, abs);
+    }
+  }
+
+  bwrapArgs.push('--chdir', projectPath, '--', command, ...args);
+
+  return {
+    command: bwrapPath,
+    args: bwrapArgs,
+    sandboxed: true,
+  };
+}
