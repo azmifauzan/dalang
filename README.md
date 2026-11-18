@@ -36,7 +36,7 @@ Developers with several coding-agent subscriptions run them by hand, one after a
 - **Decisions come from files, not stdout.** Agents write JSON to `.dalang/`, validated with Zod. Invalid output is sent back for up to two retries.
 - **Sandboxed runs.** Each CLI runs inside a `bwrap` wrapper so it can only write inside the project folder.
 
-Planned stack: TypeScript, Node.js 22, Fastify + WebSocket, React + Vite + shadcn/ui, SQLite + Drizzle, Zod, simple-git. Planned install: `npx dalang`.
+Planned stack: TypeScript 7, Node.js 26 LTS, Fastify 5 + WebSocket, React 19 + Vite 8 + shadcn/ui, SQLite + Drizzle, Zod 4, simple-git. Planned install: `npx dalang`.
 
 ## CLI validation (18 Nov 2026)
 

@@ -217,17 +217,26 @@ One server process serves all projects. Each run is wrapped in a sandbox bound t
 
 The browser talks only to the local server. The server runs the official CLIs, and the CLIs are what write to the workspace. The stack choice follows the tool's core needs: subprocesses, streaming, and JSON validation.
 
-| Layer | Choice | Reason |
+| Layer | Choice (latest stable, 18 Nov 2026) | Reason |
 | --- | --- | --- |
-| Language | TypeScript end to end | Task and agent output schemas are written once and shared by the UI and the server |
-| Runtime | Node.js 22 LTS | Mature subprocess and streaming support. `node-pty` is optional only (live terminal view), because all three CLIs run without a TTY |
-| Server | Fastify + WebSocket | Lightweight, suits long-running processes and log streaming |
-| Frontend | React + Vite + shadcn/ui + TanStack Query | Chat, kanban, and diff viewer are quick to assemble |
-| Database | SQLite + Drizzle ORM | A single file, no database server |
-| Validation | Zod | Agent output is validated before it is used for decisions |
-| Queue | p-queue (in-process) | Per-provider parallel limits without needing Redis |
-| Git | simple-git + `git worktree` | Checkpoint commits and per-task isolation |
-| Distribution | pnpm monorepo, released to npm | `npx dalang` starts the server and opens the browser |
+| Language | TypeScript 7.0 end to end | Task and agent output schemas are written once and shared by the UI and the server |
+| Runtime | Node.js 26 LTS ("Lithium", 26.13) | Active LTS since 28 Oct 2026, supported until Apr 2029. Node 22 is already in maintenance (ends Apr 2027). Mature subprocess and streaming support. `node-pty` (1.1) is optional only (live terminal view), because all three CLIs run without a TTY |
+| Server | Fastify 5.12 + @fastify/websocket 11 | Lightweight, suits long-running processes and log streaming |
+| Frontend | React 19.3 + Vite 8.3 + shadcn/ui (CLI 4.23, Tailwind 4.3) + TanStack Query 5.108 | Chat, kanban, and diff viewer are quick to assemble. Vite 8 needs Node 20.19+ or 22.12+ |
+| Database | SQLite via better-sqlite3 13 + Drizzle ORM 0.45 | A single file, no database server. Drizzle 1.0 is at release candidate (rc.5); stay on 0.45 until 1.0 is stable. Node's built-in `node:sqlite` works on 26 but has no stable Drizzle driver yet |
+| Validation | Zod 4.6 | Agent output is validated before it is used for decisions |
+| Queue | p-queue 10 (in-process) | Per-provider parallel limits without needing Redis |
+| Git | simple-git 4.1 + `git worktree` | Checkpoint commits and per-task isolation |
+| Distribution | pnpm 12 monorepo, released to npm | `npx dalang` starts the server and opens the browser |
+
+Versions are the latest stable releases found on the npm registry and nodejs.org on 18 Nov 2026. The lockfile pins them at implementation time.
+
+Verified on Node 26.13.1 (Linux x64, clean install): better-sqlite3 13.2 (in-memory insert and select), node-pty 1.1 (spawned a process and read its output), Fastify 5.12 with @fastify/websocket 11 (served a request on `127.0.0.1`), and Zod 4.6 (validated a schema). Drizzle 1.0 rc.5 with the built-in `node:sqlite` driver also worked (insert and select). Not verified: macOS and Windows builds, and the Vite 8 + React 19 + shadcn/ui front end (versions only checked against the registry; `@vitejs/plugin-react` 6.3 requires Vite 8).
+
+Two findings that affect installation:
+
+- npm now blocks dependency install scripts until they are approved (`npm install-scripts approve`). better-sqlite3 and node-pty both declare install scripts, so `npx dalang` must either ship an `allowScripts` approval or avoid native modules. better-sqlite3 13 bundles prebuilt binaries for Linux, macOS, and Windows, so no compiler should be needed once approved. `node-pty` stays optional.
+- Open decision: Drizzle 0.45 (stable) with better-sqlite3 needs that native module, while Drizzle 1.0 (rc.5, not stable yet) works with the built-in `node:sqlite` and removes the native dependency. The PRD picks stable now and revisits when Drizzle 1.0 is released.
 
 ## CLI validation results (Nov 18, 2026)
 
