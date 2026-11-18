@@ -384,6 +384,16 @@ export const AssignTaskProfileInputSchema = z.object({
 });
 export type AssignTaskProfileInput = z.infer<typeof AssignTaskProfileInputSchema>;
 
+export const UpdateSettingsInputSchema = z.object({
+  antigravityKeyringAccess: z.boolean().optional(),
+});
+export type UpdateSettingsInput = z.infer<typeof UpdateSettingsInputSchema>;
+
+export interface SettingsDTO {
+  /** Lets sandboxed Antigravity runs read the whole desktop keyring. Off by default. */
+  antigravityKeyringAccess: boolean;
+}
+
 export interface RoutingRuleDTO {
   id: string;
   sortOrder: number;
@@ -414,6 +424,8 @@ export interface TaskDispatchPreviewDTO {
   fallbackProfileId: string | null;
   fallbackProfileName: string | null;
   selectionSource: 'override' | 'routing_rule' | 'default';
+  /** Set when the routed profile cannot run as configured and another one is used instead. */
+  selectionNote: string | null;
 }
 
 export interface TaskRunDTO {

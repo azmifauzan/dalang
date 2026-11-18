@@ -65,12 +65,20 @@ export function parseAgyUsageJson(raw: string): { ok: boolean; windows: UsageWin
   }
 }
 
+export const KEYRING_OFF_MESSAGE =
+  'Antigravity signs in through the desktop keyring, so a sandboxed run can read every secret stored there. It is off by default: enable "Allow Antigravity to read the desktop keyring" on the Providers page to use it.';
+
 export class AntigravityAdapter implements CliAdapter {
   readonly id = 'antigravity' as const;
   readonly displayName = 'Antigravity CLI';
   readonly binary = 'agy';
 
-  constructor(private readonly runner: CliRunner) {}
+  constructor(
+    private readonly runner: CliRunner,
+    private readonly policy: { antigravityKeyringAccess: () => boolean } = {
+      antigravityKeyringAccess: () => false,
+    },
+  ) {}
 
   async checkStatus(): Promise<ProviderStatus> {
     const checkedAt = new Date().toISOString();
@@ -186,6 +194,9 @@ export class AntigravityAdapter implements CliAdapter {
     }
     args.push(`-p=${options.prompt}`);
 
+    if (bwrapAvailable && !this.policy.antigravityKeyringAccess()) {
+      throw new Error(KEYRING_OFF_MESSAGE);
+    }
     const dbusProxy = bwrapAvailable ? await startDbusProxy(this.runner) : null;
     if (bwrapAvailable && !dbusProxy) {
       throw new Error(

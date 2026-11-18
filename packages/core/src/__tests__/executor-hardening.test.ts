@@ -5,8 +5,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import type { AdapterTurnOptions } from '../adapters/types.js';
 import type { CliRunner, RunCommandOptions, RunCommandResult } from '../adapters/types.js';
-import { agentProfiles } from '../db/schema.js';
+import { agentProfiles, routingRules as routingRulesTable } from '../db/schema.js';
 import { ProfileService } from '../services/profiles.js';
+import { SettingsService } from '../services/settings.js';
 import { cleanupTempDirs, handleLeadCalls, makeTempDir, setupApprovedProject } from './exec-helpers.js';
 
 afterEach(cleanupTempDirs);
@@ -210,3 +211,53 @@ describe('routing and scaffold', () => {
     }
   });
 });
+
+describe('Antigravity keyring opt-in in routing', () => {
+  it('routes a task meant for Antigravity to its backup profile while the opt-in is off, and back when it is on', async () => {
+    if (process.platform !== 'linux') return;
+    const seen: string[] = [];
+    const { conn, project, plan, execSvc } = await setupApprovedProject(agentRunner('completed', seen));
+    try {
+      const reviewer = new ProfileService(conn.db).listProfiles().find((p) => p.name === 'reviewer')!;
+      execSvc.assignTaskProfile(project.id, plan.tasks[0].id, reviewer.id);
+
+      expect(new SettingsService(conn.db).antigravityKeyringAccess()).toBe(false);
+      const off = (await execSvc.getExecutionState(project.id)).dispatchPreviews[0];
+      expect(off).toMatchObject({ resolvedProvider: 'claude-code', resolvedProfileName: 'coder-heavy', eligible: true });
+      expect(off.selectionNote).toMatch(/Antigravity, which is off/);
+
+      await execSvc.startExecution(project.id, { taskId: plan.tasks[0].id });
+      await execSvc.waitForProjectExecution(project.id);
+      const run = (await execSvc.getExecutionState(project.id)).runs[0];
+      expect(run).toMatchObject({ status: 'completed', provider: 'claude-code' });
+
+      new SettingsService(conn.db).update({ antigravityKeyringAccess: true });
+      const on = (await execSvc.getExecutionState(project.id)).dispatchPreviews[0];
+      expect(on).toMatchObject({ resolvedProvider: 'antigravity', selectionNote: null });
+    } finally {
+      conn.close();
+    }
+  });
+
+  it('blocks a task with a clear reason when it routes to Antigravity and has no usable backup', async () => {
+    if (process.platform !== 'linux') return;
+    const { conn, project, plan, execSvc } = await setupApprovedProject(agentRunner('completed'));
+    try {
+      const profiles = new ProfileService(conn.db).listProfiles();
+      const agy = profiles.find((p) => p.provider === 'antigravity')!;
+      // No usable backup: no rule fallback, and the default backup (lead) also uses Antigravity.
+      conn.db.update(routingRulesTable).set({ fallbackProfileId: null }).run();
+      conn.db.update(agentProfiles).set({ provider: 'antigravity' }).where(eq(agentProfiles.name, 'lead')).run();
+      execSvc.assignTaskProfile(project.id, plan.tasks[0].id, agy.id);
+      const preview = (await execSvc.getExecutionState(project.id)).dispatchPreviews[0];
+      expect(preview.eligible).toBe(false);
+      expect(preview.blockedReason).toMatch(/Allow Antigravity to read the desktop keyring/);
+      await expect(
+        execSvc.startExecution(project.id, { taskId: plan.tasks[0].id }),
+      ).rejects.toThrow(/desktop keyring/);
+    } finally {
+      conn.close();
+    }
+  });
+});
+

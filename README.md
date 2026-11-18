@@ -100,7 +100,7 @@ Run on 18 Nov 2026 on Linux, through the HTTP API and the real sandbox, one run 
 ## Known limits
 
 - **Linux only for confinement.** `bwrap` keeps agents inside the project folder and hides credential folders. macOS and Windows have no sandbox yet, so execution there needs an explicit opt-in.
-- **agy can read your desktop keyring.** It signs in through the Secret Service, and the filtered bus it gets (`xdg-dbus-proxy`, needed along with a desktop session) allows that whole service, so an agy run can read every secret stored there. Claude Code and Codex runs cannot. If your keyring holds secrets you would not give an agent, do not route tasks to agy. Provider state folders (`~/.claude`, `~/.codex`, `~/.gemini`) stay writable for token refresh, which is listed in the PRD risks.
+- **agy can read your desktop keyring.** It signs in through the Secret Service, and the filtered bus it gets (`xdg-dbus-proxy`, needed along with a desktop session) allows that whole service, so an agy run can read every secret stored there. Claude Code and Codex runs cannot. This is **off by default**: until you tick "Allow Antigravity to read the desktop keyring" on the Providers page, a task routed to agy runs on its backup profile instead, and agy cannot be a Lead inside the sandbox. Provider state folders (`~/.claude`, `~/.codex`, `~/.gemini`) stay writable for token refresh, which is listed in the PRD risks.
 - **No reviewer yet.** A task is "done" when the agent reports it and its result file is valid. The reviewer, diff view, and merge gate are v0.3.
 - **Scope is a warning.** Edits outside a task's `files_allowed` are recorded on the run, not blocked.
 - **One task at a time.** Parallel runs and worktrees are v0.4.

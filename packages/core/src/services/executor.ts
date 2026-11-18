@@ -231,7 +231,7 @@ export class ExecutionService {
     const plan = this.leadService.getPlan(projectId);
     const sandboxReady = await this.registry.isSandboxReady();
 
-    const dispatchPreviews = plan ? this.buildDispatchPreviews(plan) : [];
+    const dispatchPreviews = plan ? this.buildDispatchPreviews(plan, sandboxReady) : [];
     const runRows = this.db
       .select()
       .from(runs)
@@ -265,16 +265,40 @@ export class ExecutionService {
     };
   }
 
-  private buildDispatchPreviews(plan: PlanDTO): TaskDispatchPreviewDTO[] {
+  /**
+   * Routing plus the keyring opt-in: a task routed to Antigravity runs on its backup profile while that
+   * opt-in is off, and is blocked with a reason when there is no usable backup.
+   */
+  private routeTask(
+    task: Pick<TaskDTO, 'role' | 'complexity' | 'profileOverride'>,
+    sandboxReady: boolean,
+  ): ReturnType<ProfileService['resolveProfileForTask']> & { note: string | null; blocked: string | null } {
+    const routing = this.profiles.resolveProfileForTask({
+      role: task.role,
+      complexity: task.complexity,
+      profileOverride: task.profileOverride,
+    });
+    const reason = this.registry.providerBlockedReason(routing.primary.provider, sandboxReady);
+    if (!reason) return { ...routing, note: null, blocked: null };
+    const backup = routing.fallback;
+    if (backup && !this.registry.providerBlockedReason(backup.provider, sandboxReady)) {
+      return {
+        ...routing,
+        primary: backup,
+        fallback: null,
+        note: `${routing.primary.name} routes to Antigravity, which is off. Running on ${backup.name} (${backup.provider}) instead. Turn Antigravity on in Providers to use it.`,
+        blocked: null,
+      };
+    }
+    return { ...routing, note: null, blocked: reason };
+  }
+
+  private buildDispatchPreviews(plan: PlanDTO, sandboxReady: boolean): TaskDispatchPreviewDTO[] {
     const statusByExternal = new Map(plan.tasks.map((t) => [t.externalId, t.status]));
     return plan.tasks.map((task) => {
       const pendingDeps = task.dependsOn.filter((dep) => statusByExternal.get(dep) !== 'done');
       const dependenciesSatisfied = pendingDeps.length === 0;
-      const routing = this.profiles.resolveProfileForTask({
-        role: task.role,
-        complexity: task.complexity,
-        profileOverride: task.profileOverride,
-      });
+      const routing = this.routeTask(task, sandboxReady);
 
       let blockedReason: string | null = null;
       if (plan.status !== 'approved') {
@@ -290,7 +314,13 @@ export class ExecutionService {
       }
 
       const eligible =
-        plan.status === 'approved' && task.status === 'approved' && dependenciesSatisfied;
+        plan.status === 'approved' &&
+        task.status === 'approved' &&
+        dependenciesSatisfied &&
+        routing.blocked === null;
+      if (!eligible && blockedReason === null && routing.blocked && task.status !== 'done') {
+        blockedReason = routing.blocked;
+      }
 
       return {
         taskId: task.id,
@@ -311,6 +341,7 @@ export class ExecutionService {
         fallbackProfileId: routing.fallback?.id ?? null,
         fallbackProfileName: routing.fallback?.name ?? null,
         selectionSource: routing.source,
+        selectionNote: routing.note,
       };
     });
   }
@@ -377,11 +408,7 @@ export class ExecutionService {
 
       let resumeSessionId: string | null = null;
       if (resumeSession) {
-        const routing = this.profiles.resolveProfileForTask({
-          role: target.role,
-          complexity: target.complexity,
-          profileOverride: target.profileOverride,
-        });
+        const routing = this.routeTask(target, sandboxReady);
         const prevRuns = this.db
           .select()
           .from(runs)
@@ -411,7 +438,7 @@ export class ExecutionService {
     }
 
     // Sequential queue mode: pick first eligible approved task
-    const previews = this.buildDispatchPreviews(plan);
+    const previews = this.buildDispatchPreviews(plan, sandboxReady);
     const firstEligible = previews.find((p) => p.eligible);
     if (!firstEligible) {
       const allDone = plan.tasks.every((t) => t.status === 'done');
@@ -480,7 +507,8 @@ export class ExecutionService {
         while (!execHandle.queueCancelled) {
           const latestPlan = this.leadService.getPlan(projectId);
           if (!latestPlan) break;
-          const nextPreview = this.buildDispatchPreviews(latestPlan).find((p) => p.eligible);
+          const sandboxNow = await this.registry.isSandboxReady();
+          const nextPreview = this.buildDispatchPreviews(latestPlan, sandboxNow).find((p) => p.eligible);
           if (!nextPreview) break;
 
           const nextTask = latestPlan.tasks.find((t) => t.id === nextPreview.taskId);
@@ -588,11 +616,9 @@ export class ExecutionService {
     executeFn: () => Promise<RunStatus>;
   }> {
     const project = this.getProjectRow(projectId);
-    const routing = this.profiles.resolveProfileForTask({
-      role: task.role,
-      complexity: task.complexity,
-      profileOverride: task.profileOverride,
-    });
+    const sandboxReady = await this.registry.isSandboxReady();
+    const routing = this.routeTask(task, sandboxReady);
+    if (routing.blocked) throw new Error(routing.blocked);
     const selected = this.selectProfileRespectingLimit(routing.primary, routing.fallback);
 
     const logsDir = getProjectLogsDir(project.path);
@@ -674,6 +700,8 @@ export class ExecutionService {
         initialRunId: runId,
         initialProfile: selected.chosen,
         fallbackProfile: selected.fallback,
+        sandboxReady,
+        routeNote: routing.note,
         attempt,
         commitBefore: checkpointBefore.commitSha,
         absLogPath,
@@ -695,6 +723,8 @@ export class ExecutionService {
     initialRunId: string;
     initialProfile: AgentProfileDTO;
     fallbackProfile: AgentProfileDTO | null;
+    sandboxReady: boolean;
+    routeNote: string | null;
     attempt: number;
     commitBefore: string;
     absLogPath: string;
@@ -781,6 +811,8 @@ export class ExecutionService {
         emitDalangLine(
           `[dalang] Starting ${ctx.task.externalId} (${ctx.task.title}) with profile "${profile.name}" (${profile.provider}${profile.model ? `/${profile.model}` : ''})`,
         );
+
+        if (ctx.routeNote) emitDalangLine(`[dalang] ${ctx.routeNote}`);
 
         const prompt = sessionToResume
           ? this.buildResumePrompt(ctx.task, ctx.relResultPath)
@@ -1054,6 +1086,7 @@ export class ExecutionService {
       primaryOutcome.canFallback &&
       ctx.fallbackProfile &&
       !ctx.controller.signal.aborted &&
+      !this.registry.providerBlockedReason(ctx.fallbackProfile.provider, ctx.sandboxReady) &&
       this.getProviderActiveCount(ctx.fallbackProfile.provider) < ctx.fallbackProfile.maxParallel
     ) {
       // Create a fresh run row using the fallback profile (F-13)

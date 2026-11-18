@@ -14,6 +14,7 @@ import {
   ProviderIdSchema,
   ReorderTasksInputSchema,
   StartExecutionInputSchema,
+  UpdateSettingsInputSchema,
   UpdateTaskInputSchema,
   type ProviderStatus,
 } from '@dalang/shared';
@@ -25,6 +26,7 @@ import {
   ProfileService,
   ProjectService,
   ProviderRegistry,
+  SettingsService,
   openDatabase,
   type CliRunner,
 } from '@dalang/core';
@@ -44,7 +46,10 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
 }> {
   const conn = openDatabase(options.dbPath);
   const runner = options.runner ?? new NodeCliRunner();
-  const registry = new ProviderRegistry(runner);
+  const settingsService = new SettingsService(conn.db);
+  const registry = new ProviderRegistry(runner, {
+    antigravityKeyringAccess: () => settingsService.antigravityKeyringAccess(),
+  });
   const events = new DalangEventBus();
 
   const projectService = new ProjectService(conn.db);
@@ -301,6 +306,13 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
       return { run: await executionService.rollbackRun(req.params.id, req.params.runId) };
     },
   );
+
+  app.get('/api/settings', async () => ({ settings: settingsService.getAll() }));
+
+  app.patch('/api/settings', async (req) => {
+    const body = UpdateSettingsInputSchema.parse(req.body ?? {});
+    return { settings: settingsService.update(body) };
+  });
 
   // Providers & Profiles (F-22, F-10, F-11 support)
   app.get('/api/providers/status', async () => {

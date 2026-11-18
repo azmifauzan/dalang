@@ -13,7 +13,7 @@ export interface DbConnection {
   close: () => void;
 }
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 const BOOTSTRAP_SQL = `
 PRAGMA journal_mode = WAL;
@@ -131,6 +131,11 @@ CREATE TABLE IF NOT EXISTS provider_events (
   type TEXT NOT NULL,
   detail TEXT,
   created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS runs (

@@ -8,6 +8,7 @@ import { DalangEventBus, type DalangEvent } from '../services/events.js';
 import { ExecutionService } from '../services/executor.js';
 import { LeadService } from '../services/lead.js';
 import { ProjectService } from '../services/project.js';
+import { SettingsService } from '../services/settings.js';
 
 const tempDirs: string[] = [];
 export function makeTempDir(prefix: string): string {
@@ -36,7 +37,10 @@ export async function setupApprovedProject(
   const projDir = path.join(makeTempDir('dalang-exec-proj-'), 'crud-app');
   const conn = openDatabase(path.join(dbDir, 'dalang.db'));
   const events = new DalangEventBus();
-  const registry = new ProviderRegistry(runner);
+  const settingsSvc = new SettingsService(conn.db);
+  const registry = new ProviderRegistry(runner, {
+    antigravityKeyringAccess: () => settingsSvc.antigravityKeyringAccess(),
+  });
   const projectSvc = new ProjectService(conn.db);
   const leadSvc = new LeadService(conn.db, registry, events);
   const execSvc = new ExecutionService(conn.db, registry, leadSvc, events);

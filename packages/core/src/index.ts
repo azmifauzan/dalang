@@ -10,6 +10,7 @@ export * from './adapters/registry.js';
 export * from './services/events.js';
 export * from './services/project.js';
 export * from './services/profiles.js';
+export * from './services/settings.js';
 export * from './services/contract.js';
 export * from './services/lead.js';
 export * from './services/git.js';

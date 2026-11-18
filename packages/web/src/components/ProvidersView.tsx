@@ -3,6 +3,7 @@ import { api } from '../lib/api.js';
 import { EmptyPanel, ErrorPanel, LoadingPanel } from './StateViews.js';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Label } from '@/components/ui/label';
 
 export function ProvidersView() {
   const qc = useQueryClient();
@@ -23,6 +24,20 @@ export function ProvidersView() {
     },
   });
 
+  const settingsQuery = useQuery({
+    queryKey: ['settings'],
+    queryFn: () => api.getSettings(),
+  });
+
+  const settingsMutation = useMutation({
+    mutationFn: (antigravityKeyringAccess: boolean) => api.updateSettings({ antigravityKeyringAccess }),
+    onSuccess: (data) => {
+      qc.setQueryData(['settings'], data);
+      qc.invalidateQueries({ queryKey: ['execution'] });
+    },
+  });
+
+  const keyringAccess = settingsQuery.data?.settings.antigravityKeyringAccess ?? false;
   const providers = providersQuery.data?.providers ?? [];
   const profiles = profilesQuery.data?.profiles ?? [];
 
@@ -123,7 +138,27 @@ export function ProvidersView() {
                   )}
                   {p.id === 'antigravity' && p.sandboxReady && (
                     <p className="mt-3 text-xs" style={{ color: 'var(--text-secondary)' }}>
-                      agy signs in through the desktop keyring, so a sandboxed agy run can read every secret stored there (needs xdg-dbus-proxy and a desktop session).
+                      agy signs in through the desktop keyring, so a sandboxed agy run can read every secret stored there (needs xdg-dbus-proxy and a desktop session). It is off by default.
+                    </p>
+                  )}
+                  {p.id === 'antigravity' && p.sandboxReady && (
+                    <div className="mt-3 flex min-h-11 items-start gap-2">
+                      <input
+                        id="agy-keyring-access"
+                        type="checkbox"
+                        className="mt-1 size-4"
+                        checked={keyringAccess}
+                        disabled={settingsQuery.isLoading || settingsMutation.isPending}
+                        onChange={(e) => settingsMutation.mutate(e.target.checked)}
+                      />
+                      <Label htmlFor="agy-keyring-access" className="text-xs leading-snug font-normal">
+                        Allow Antigravity to read the desktop keyring
+                      </Label>
+                    </div>
+                  )}
+                  {settingsMutation.isError && p.id === 'antigravity' && (
+                    <p role="alert" className="mt-1 text-xs" style={{ color: 'var(--error)' }}>
+                      {settingsMutation.error.message}
                     </p>
                   )}
 

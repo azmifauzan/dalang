@@ -131,7 +131,7 @@ describe('Provider adapters & bwrap wrapper', () => {
     expect(r2.sessionId).toBe('codex-thread-9');
     expect(r2.text).toBe('ok-codex');
 
-    const agy = new AntigravityAdapter(fakeRunner);
+    const agy = new AntigravityAdapter(fakeRunner, { antigravityKeyringAccess: () => true });
     const r3 = await agy.runTurn({ projectPath: projectDir, prompt: 'hello', sessionId: 'prev-a' });
     expect(r3.sessionId).toBe('agy-conv-7');
     expect(r3.text).toBe('ok-agy');
@@ -180,6 +180,27 @@ describe('bwrap session bus', () => {
       expect(noBus.args.join(' ')).toContain('--tmpfs /run/user');
       expect(noBus.args.join(' ')).not.toContain('/bus');
     }
+  });
+});
+
+describe('Antigravity keyring opt-in', () => {
+  it('refuses a sandboxed run until the keyring opt-in is on, without spawning anything', async () => {
+    if (process.platform !== 'linux') return;
+    let spawned = 0;
+    const runner: CliRunner = {
+      async which(bin) {
+        return `/usr/bin/${bin}`;
+      },
+      async run(): Promise<RunCommandResult> {
+        spawned += 1;
+        return { exitCode: 0, stdout: '', stderr: '', timedOut: false, idleTimedOut: false };
+      },
+    };
+    const agy = new AntigravityAdapter(runner);
+    await expect(agy.runTurn({ projectPath: makeTempDir('dalang-agy-off-'), prompt: 'x' })).rejects.toThrow(
+      /Allow Antigravity to read the desktop keyring/,
+    );
+    expect(spawned).toBe(0);
   });
 });
 

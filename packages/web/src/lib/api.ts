@@ -14,6 +14,7 @@ import type {
   ProviderStatus,
   ReorderTasksInput,
   RoutingRuleDTO,
+  SettingsDTO,
   StartExecutionInput,
   TaskDTO,
   TaskRunDTO,
@@ -182,5 +183,11 @@ export const api = {
   getProvidersStatus: () => request<{ providers: ProviderStatus[] }>('/api/providers/status'),
   refreshProvidersStatus: () =>
     request<{ providers: ProviderStatus[] }>('/api/providers/refresh', { method: 'POST' }),
+  getSettings: () => request<{ settings: SettingsDTO }>('/api/settings'),
+  updateSettings: (body: Partial<SettingsDTO>) =>
+    request<{ settings: SettingsDTO }>('/api/settings', {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
   listProfiles: () => request<{ profiles: AgentProfileDTO[] }>('/api/profiles'),
 };

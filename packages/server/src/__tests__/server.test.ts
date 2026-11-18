@@ -404,4 +404,27 @@ describe('@dalang/server API (v0.1 Rembuk)', () => {
       await close();
     }
   });
+
+  it('keeps the Antigravity keyring opt-in off by default and stores a change', async () => {
+    const dbDir = makeTempDir('dalang-db-');
+    const { app, close } = await createDalangServer({ dbPath: path.join(dbDir, 'dalang.db') });
+    try {
+      const before = await app.inject({ method: 'GET', url: '/api/settings' });
+      expect(before.json()).toEqual({ settings: { antigravityKeyringAccess: false } });
+
+      const patched = await app.inject({
+        method: 'PATCH',
+        url: '/api/settings',
+        payload: { antigravityKeyringAccess: true },
+      });
+      expect(patched.json()).toEqual({ settings: { antigravityKeyringAccess: true } });
+      expect((await app.inject({ method: 'GET', url: '/api/settings' })).json().settings.antigravityKeyringAccess).toBe(true);
+
+      const bad = await app.inject({ method: 'PATCH', url: '/api/settings', payload: { antigravityKeyringAccess: 'yes' } });
+      expect(bad.statusCode).toBe(400);
+    } finally {
+      await close();
+    }
+  });
 });
+

@@ -164,3 +164,8 @@ export const runs = sqliteTable('runs', {
   resultPath: text('result_path'),
   scopeWarningsJson: text('scope_warnings_json').notNull().default('[]'),
 });
+
+export const settings = sqliteTable('settings', {
+  key: text('key').primaryKey(),
+  value: text('value').notNull(),
+});

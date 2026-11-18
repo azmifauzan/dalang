@@ -330,6 +330,11 @@ export function AssignView({
                             >
                               via {item.selectionSource.replace('_', ' ')}
                             </p>
+                            {item.selectionNote && (
+                              <p className="mt-1 text-xs" style={{ color: 'var(--text-secondary)' }}>
+                                {item.selectionNote}
+                              </p>
+                            )}
                           </td>
                           <td
                             className="py-3 text-xs whitespace-nowrap"

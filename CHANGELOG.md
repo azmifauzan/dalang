@@ -7,6 +7,7 @@ Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 Security
 - The git guard also refuses `hook.*`, `trace2.*`, and external diff or merge drivers in the repo config. None of them ran on git 2.53 in a test of the commands DALANG uses; this keeps a newer git from turning them into a way out.
 - Docs and the Providers page now say plainly that an agy run can read the whole desktop keyring.
+- **Antigravity in the sandbox is now opt-in and off by default.** Tick "Allow Antigravity to read the desktop keyring" on the Providers page to use it. While it is off, a task routed to agy runs on its backup profile (with a note in Assign and in the run log), a task with no usable backup is blocked with a reason, and agy cannot be a Lead. The setting is stored in a new `settings` table (database schema v3).
 
 ## 0.2.1, 18 Nov
 
