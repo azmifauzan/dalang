@@ -43,6 +43,7 @@ Core palette stays within 2 semantic cores + 1 accent + warm neutrals:
 - **Architectural Radii**: `4px` for inputs/badges/stamps, `6px` for buttons and cards, `8px` for dialog sheets. No universal pill shapes.
 
 ## Identity Motif & Stage Navigation
+- **Gunungan Wayang (Kayon) Mark**: Symmetrical pointed mountain/leaf silhouette housing the central Pohon Hayat (tree of life), twin sulur branches, and base Gapura (threshold gate) in sienna terracotta / warm copper (`--accent` over `--accent-tint`), anchoring the DALANG puppeteer identity in the workspace header and browser favicon.
 - **D-A-L-A-N-G 6-Stage Rail**: `Discuss · Agree · List · Assign · Navigate · Guard`. Stages in v0.1 (`Discuss`, `Agree`, `List`) navigate directly; v0.2+ stages (`Assign`, `Navigate`, `Guard`) are honestly labeled `v0.2+` and disabled rather than faking functionality.
 - **Monospace Stamp Tags**: Rectangular crisp-bordered markers (`[T-007]`, `[v1 · DRAFT]`, `[ROUND 2]`) with no glowing dots or buzzword pills.
 

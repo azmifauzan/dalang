@@ -161,16 +161,45 @@ export function App() {
               className="flex min-h-[44px] items-center gap-2 rounded px-2 text-left"
             >
               <svg
-                width="22"
-                height="22"
+                width="24"
+                height="24"
                 viewBox="0 0 24 24"
                 fill="none"
                 aria-hidden="true"
                 style={{ color: 'var(--accent)' }}
               >
-                <rect x="3" y="3" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="2" />
-                <rect x="14" y="3" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="2" />
-                <rect x="3" y="14" width="18" height="7" rx="1.5" stroke="currentColor" strokeWidth="2" />
+                <path
+                  d="M12 2C14.2 5.4 19.2 9.4 19.2 14C19.2 16.4 17.6 18.2 15.6 19H8.4C6.4 18.2 4.8 16.4 4.8 14C4.8 9.4 9.8 5.4 12 2Z"
+                  fill="var(--accent-tint)"
+                  stroke="currentColor"
+                  strokeWidth="1.75"
+                  strokeLinejoin="round"
+                />
+                <path
+                  d="M9.5 19V16.2L12 14.6L14.5 16.2V19"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+                <path
+                  d="M12 5.5V14.6"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                />
+                <path
+                  d="M12 9.5C10.4 9.5 9.3 8.5 8.8 7.3M12 9.5C13.6 9.5 14.7 8.5 15.2 7.3M12 12.8C9.8 12.8 8.3 11.6 7.6 10.2M12 12.8C14.2 12.8 15.7 11.6 16.4 10.2"
+                  stroke="currentColor"
+                  strokeWidth="1.4"
+                  strokeLinecap="round"
+                />
+                <path
+                  d="M6.5 19H17.5M8.5 21.2H15.5M12 19V22.2"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  strokeLinecap="round"
+                />
               </svg>
               <span className="text-base font-bold tracking-tight">DALANG</span>
               <Badge>v0.1</Badge>
