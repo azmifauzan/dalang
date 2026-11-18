@@ -288,13 +288,13 @@ SQLite stores state and indexes, while the full content of artifacts (brief, pla
 
 Each phase must be useful on its own before the next one starts.
 
-| Phase | Scope | Done when |
-| --- | --- | --- |
-| v0.1 Rembuk | Project, Lead chat (Discuss), brief (Agree), plan generation and kanban (List), provider status page. No execution yet. | One goal yields a valid brief and plan that pass the schema, for 3 sample projects |
-| v0.2 Jalan | Sequential execution, one task at a time, adapters for all three CLIs, live logs, checkpoint commits, stop/retry | A small CRUD application is finished end to end without opening a CLI manually |
-| v0.3 Kawal | Reviewer and fix loop, diff view, approve merge, integration tests, agent profiles and routing in the UI | ≥ 70% of tasks pass review within at most 2 rounds across 5 test projects |
-| v0.4 Paralel | Worktree per task, dependency graph, per-provider parallel limits, quota fallback, usage statistics | Two independent tasks run at the same time without conflict; a quota limit automatically reroutes to a backup profile |
-| v1.0 | Polish, Windows support, documentation, npm release | Used by the author to build 10 real projects |
+| Phase | Scope | Done when | Status |
+| --- | --- | --- | --- |
+| v0.1 Rembuk | Project, Lead chat (Discuss), brief (Agree), plan generation and kanban (List), provider status page. No execution yet. | One goal yields a valid brief and plan that pass the schema, for 3 sample projects | Met on 18 Nov 2026 (3 of 3 projects, real models) |
+| v0.2 Jalan | Sequential execution, one task at a time, adapters for all three CLIs, live logs, checkpoint commits, stop/retry | A small CRUD application is finished end to end without opening a CLI manually | Met on 18 Nov 2026 (Notes API, 6 tasks, real models) |
+| v0.3 Kawal | Reviewer and fix loop, diff view, approve merge, integration tests, agent profiles and routing in the UI | ≥ 70% of tasks pass review within at most 2 rounds across 5 test projects | Planned |
+| v0.4 Paralel | Worktree per task, dependency graph, per-provider parallel limits, quota fallback, usage statistics | Two independent tasks run at the same time without conflict; a quota limit automatically reroutes to a backup profile | Planned |
+| v1.0 | Polish, Windows support, documentation, npm release | Used by the author to build 10 real projects | Planned |
 
 ### v0.1 implementation notes
 
@@ -318,6 +318,24 @@ Decisions made while building v0.1 (Rembuk):
   | Local bookmark manager | Antigravity | 136 s | 4 milestones, 5 tasks, 4 dependencies |
 
   Every brief and plan passed the Zod contract on the first attempt, every task had its own verify command, and the dependency graphs were acyclic. This is one run per provider, so it shows the flow works, not how often it works. The success metric of 15 minutes from goal to plan was met (all three under 6.5 minutes, including scripted answers). The first real run found two bugs that scripted agents could not: Claude rejected the draft 2020-12 `$schema` and Codex rejected schemas with optional fields. Both came from passing the CLIs' own schema flags, which constrain the final chat message rather than the file, so DALANG no longer passes them and relies on its own Zod validation.
+
+### v0.2 implementation notes
+
+Decisions made while building v0.2 (Jalan):
+
+- Execution runs one task per project at a time, in dependency order. Starting a run reserves the project before any await, so two quick requests cannot both start.
+- Every run must write `.dalang/tasks/{id}/result.json` (the `task_result` contract), validated with Zod, with one repair turn when it is missing or invalid. A task the agent reports as `blocked` or `failed` is a real outcome: the task is marked failed and no other provider is tried.
+- Fallback to the backup profile and the per-profile parallel limit were pulled forward from v0.4. Fallback fires only on provider-level failures (rate limit, expired login, timeout, or a CLI error), never on an agent-reported failure or an invalid result.
+- Routing uses the first matching rule in order; a rule with no complexity matches any complexity.
+- A `read-only` profile still runs with write access, because the run has to write `result.json`. A reviewer that honors `read-only` arrives with v0.3.
+- Checkpoints commit everything before and after each run (`git add -A`). A new project gets a root `.gitignore` (dependencies, `.env`, build output) so a checkpoint never commits them.
+- DALANG runs git outside the sandbox on a repo the agent can edit. A clean filter in `.git/config` would run on the host at `git add` (confirmed by a test), so DALANG refuses to run git when the repo-local config defines `filter.*`, `include.path`, or `core.worktree`, or when `.git` is not a plain folder. Hooks are disabled (`core.hooksPath=/dev/null`, `--no-verify`) and `.git/hooks` is read-only inside the sandbox.
+- Rollback runs `git reset --hard` and is refused when the repo has commits after the last run that DALANG did not create, or uncommitted changes outside `.dalang/`. Runs after the rolled-back one are marked rolled back too.
+- Without `bwrap`, execution needs an explicit opt-in per request. `sandbox-exec` for macOS is not built yet.
+- `files_allowed` violations are recorded as warnings on the run. Enforcing them belongs to the v0.3 reviewer.
+- Live logs show the CLI's raw event lines (JSON for Claude, Codex, and agy). `node-pty` is not used.
+- Verified with real models on 18 Nov 2026 through the HTTP API and the real sandbox: a Lead plan for a tiny Node module (greeter function plus a `node:test` file), trimmed to 3 tasks, then executed in order on three providers (T-001 Codex 45 s, T-002 Claude Code 9 s, T-003 Antigravity 36 s). All three runs completed on the first attempt with no fallback and no scope warnings, each wrote a valid `result.json`, the repo ended with a before checkpoint and one commit per task, a clean working tree, and `node --test` passing 2 of 2.
+  The v0.2 criterion was then run at the intended size: a Notes REST API (Node.js, `node:http`, in memory, with tests and a README) planned by the Lead as 6 tasks and executed through default routing without opening a CLI by hand. Result: all 6 tasks done in about 9.5 minutes including planning, 27 of 27 tests passing, and a live check of every endpoint (201, 200, 400 for a missing title and for invalid JSON, 404 for an unknown or deleted note). Task T-006 ran on Codex, which hung for 3 minutes on "Selected model is at capacity", hit the idle timeout, and was completed by the backup profile on Claude Code: fallback was exercised by a real provider outage, not a script. One run per scenario, so this shows the flow works, not how often. The v0.2 criterion is met.
 
 ## Risks, mitigations, and decisions
 
@@ -345,6 +363,6 @@ Decisions made while building v0.1 (Rembuk):
 | Gate notifications | Browser notifications only for v1. Telegram and WhatsApp are P2, after v1. | Local single-user tool; a chat integration would need credentials DALANG promises not to hold. |
 | Sandbox read access and network | Open in v0.1, except `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.docker`, `~/.kube`, `~/.config/gcloud`, `~/.git-credentials`, and `~/.netrc`, which are masked (`~/.npmrc` stays visible for private-registry installs). Revisit with explicit binds and a filtering proxy in v0.4. | CLIs need the network, and full read confinement breaks normal repos (global git config, toolchains). Masking credential folders closes the likeliest theft target at no cost. |
 | agy and the session bus | Keep agy allowed, show the exposure on the Providers page, and keep Claude Code as the default Lead. Do not use agy for roles that write, until a keyring-free login exists. | agy cannot sign in without the bus, and a run on the bus can act outside the sandbox. |
-| macOS and Windows | Agent runs start unconfined with a visible warning. `sandbox-exec` lands in v0.2 (P1), and v0.2 execution refuses to start on a platform without a sandbox unless the user opts in. | macOS is a P0 platform, so blocking it now would make the tool unusable there. Execution is where unconfined writes become real damage. |
+| macOS and Windows | Execution refuses to start on a platform without a sandbox unless the user opts in for that request, and the UI shows a warning. `sandbox-exec` (P1) is not built yet. | macOS is a P0 platform, so blocking it now would make the tool unusable there. Execution is where unconfined writes become real damage. |
 | UI components | shadcn/ui, copied into the repo and restyled to `docs/DESIGN.md`. | Matches the stack in this PRD. Owning the component code keeps the design direction intact. |
 
