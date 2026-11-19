@@ -2,6 +2,11 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
+## Unreleased
+
+- **Claude model list:** read from one `initialize` request on the CLI's stream-json control protocol, the same list as its `/model` picker, with no API call. It replaces one `/model` call plus one process per alias, and now includes models the alias list missed (Fable). Found by reading how T3 Code builds its model picker.
+- **Roadmap:** v1.0 is dropped for now. The PRD plans v0.5 to v0.8 after research on T3 Code.
+
 ## 0.4.0 (Paralel), 19 Nov
 
 Paralel milestone. Verified with scripted tests and one real Claude Code run (two independent tasks ran at the same time and merged cleanly); the quota reroute is scripted-only.

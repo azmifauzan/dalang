@@ -38,18 +38,28 @@ export function parseClaudeUsageText(text: string): UsageWindow[] {
   return windows;
 }
 
-// `claude -p "/model"` prints the aliases the CLI accepts, and the `system init` event names the model each
-// one resolves to before any API call. Asking the CLI keeps the list correct when models change.
+// The stream-json control protocol's `initialize` request returns the models this CLI offers (the same list as
+// its /model picker) without any API call. Asking the CLI keeps the list correct when models change.
+const CLAUDE_INITIALIZE = `${JSON.stringify({ type: 'control_request', request_id: 'dalang-init', request: { subtype: 'initialize' } })}\n`;
 
-/** Parse "Available: sonnet, opus, ..., or a full model ID." from the /model reply. */
-export function parseClaudeModelAliases(text: string): string[] {
-  const m = text.match(/Available:\s*([^\n]+)/i);
-  if (!m) return [];
-  return m[1]
-    .replace(/\.\s*$/, '')
-    .split(',')
-    .map((x) => x.trim().replace(/^or\s+/i, ''))
-    .filter((x) => /^[a-z0-9][a-z0-9.\-[\]]*$/i.test(x));
+/** Model ids from the `initialize` control response: the resolved id of each entry, then any other value it accepts. */
+export function parseClaudeInitializeModels(stdout: string): string[] {
+  for (const line of stdout.split(/\r?\n/)) {
+    if (!line.includes('control_response')) continue;
+    try {
+      const ev = JSON.parse(line) as { response?: { response?: { models?: unknown } } };
+      const models = ev.response?.response?.models;
+      if (!Array.isArray(models)) continue;
+      const entries = models.filter(
+        (m): m is { value: string; resolvedModel?: string } => typeof m?.value === 'string' && m.value !== 'default',
+      );
+      const resolved = entries.map((m) => (typeof m.resolvedModel === 'string' && m.resolvedModel) || m.value);
+      return [...new Set([...resolved, ...entries.map((m) => m.value)])];
+    } catch {
+      // Not JSON, keep reading.
+    }
+  }
+  return [];
 }
 
 export class ClaudeCodeAdapter implements CliAdapter {
@@ -59,41 +69,15 @@ export class ClaudeCodeAdapter implements CliAdapter {
 
   constructor(private readonly runner: CliRunner) {}
 
-  private async resolveAlias(binaryPath: string, alias: string): Promise<string | null> {
-    let resolved: string | null = null;
-    let kill: (() => void) | null = null;
-    await this.runner
-      .run(binaryPath, ['-p', 'x', '--bare', '--no-session-persistence', '--model', alias, '--output-format', 'stream-json', '--verbose'], {
-        cwd: os.tmpdir(),
-        timeoutMs: 30_000,
-        onSpawn: (controls) => {
-          kill = controls.kill;
-        },
-        onStdoutLine: (line) => {
-          if (resolved || !line.includes('"init"')) return;
-          try {
-            const ev = JSON.parse(line) as { type?: string; subtype?: string; model?: unknown };
-            if (ev.type === 'system' && ev.subtype === 'init' && typeof ev.model === 'string') {
-              resolved = ev.model;
-              kill?.();
-            }
-          } catch {
-            // Not JSON, keep reading.
-          }
-        },
-      })
-      .catch(() => null);
-    return resolved;
-  }
-
   private async discoverModels(binaryPath: string): Promise<string[]> {
     const reply = await this.runner
-      .run(binaryPath, ['-p', '/model', '--bare'], { cwd: os.tmpdir(), timeoutMs: 15_000 })
+      .run(
+        binaryPath,
+        ['-p', '--bare', '--no-session-persistence', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose'],
+        { cwd: os.tmpdir(), timeoutMs: 15_000, stdinData: CLAUDE_INITIALIZE },
+      )
       .catch(() => null);
-    const aliases = reply ? parseClaudeModelAliases(reply.stdout) : [];
-    const resolved = await Promise.all(aliases.map((a) => this.resolveAlias(binaryPath, a)));
-    const aliasesThatWork = aliases.filter((_, i) => resolved[i] !== null);
-    return [...new Set([...resolved.filter((m): m is string => m !== null), ...aliasesThatWork])];
+    return reply ? parseClaudeInitializeModels(reply.stdout) : [];
   }
 
   async checkStatus(): Promise<ProviderStatus> {

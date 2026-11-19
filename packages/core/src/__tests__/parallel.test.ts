@@ -487,8 +487,14 @@ describe('Phase 0.4 parallel execution, worktrees, provider pool, quota fallback
 });
 
 describe('Claude model discovery', () => {
-  it('reads the aliases from /model, lists the ids they resolve to, and drops aliases that fail', async () => {
-    const resolvedBy: Record<string, string> = { opus: 'claude-opus-9', sonnet: 'claude-sonnet-9' };
+  it('lists the models from the initialize control response, versioned ids first, without "default"', async () => {
+    const models = [
+      { value: 'default', resolvedModel: 'claude-opus-9' },
+      { value: 'opus', resolvedModel: 'claude-opus-9' },
+      { value: 'claude-big-9[1m]', resolvedModel: 'claude-big-9' },
+      { value: 'sonnet', resolvedModel: 'claude-sonnet-9' },
+    ];
+    let sent = '';
     const runner: CliRunner = {
       async which(b) {
         return `/usr/bin/${b}`;
@@ -497,19 +503,16 @@ describe('Claude model discovery', () => {
         const base = { exitCode: 0, stderr: '', timedOut: false, idleTimedOut: false };
         if (args[0] === '--version') return { ...base, stdout: '1.0.0' };
         if (args[0] === 'auth') return { ...base, stdout: JSON.stringify({ loggedIn: true }) };
-        if (args[1] === '/model') {
-          return { ...base, stdout: 'Current model: x\nUsage: /model <name>. Available: opus, sonnet, haiku, default, or a full model ID.' };
-        }
-        const model = args[args.indexOf('--model') + 1];
-        if (args[0] === '-p' && resolvedBy[model]) {
-          opts.onSpawn?.({ writeStdin() {}, endStdin() {}, kill() {} });
-          opts.onStdoutLine?.(JSON.stringify({ type: 'system', subtype: 'init', model: resolvedBy[model] }));
-          return { ...base, stdout: '' };
+        if (args.includes('--input-format')) {
+          sent = opts.stdinData ?? '';
+          const reply = { type: 'control_response', response: { subtype: 'success', request_id: 'dalang-init', response: { models } } };
+          return { ...base, stdout: `${JSON.stringify(reply)}\n` };
         }
         return { ...base, exitCode: 1, stdout: '' };
       },
     };
     const status = await new ClaudeCodeAdapter(runner).checkStatus();
-    expect(status.models).toEqual(['claude-opus-9', 'claude-sonnet-9', 'opus', 'sonnet']);
+    expect(JSON.parse(sent).request.subtype).toBe('initialize');
+    expect(status.models).toEqual(['claude-opus-9', 'claude-big-9', 'claude-sonnet-9', 'opus', 'claude-big-9[1m]', 'sonnet']);
   });
 });

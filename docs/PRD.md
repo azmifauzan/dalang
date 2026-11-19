@@ -294,7 +294,12 @@ Each phase must be useful on its own before the next one starts.
 | v0.2 Jalan | Sequential execution, one task at a time, adapters for all three CLIs, live logs, checkpoint commits, stop/retry | A small CRUD application is finished end to end without opening a CLI manually | Met on 18 Nov 2026 (Notes API, 6 tasks, real models) |
 | v0.3 Kawal | Reviewer and fix loop, diff view, approve merge, integration tests, agent profiles and routing in the UI | ≥ 70% of tasks pass review within at most 2 rounds across 5 test projects | Met on 19 Nov 2026 (5 real-model projects, 15 of 15 tasks passed review, 13 on round 1 and 2 on round 2) |
 | v0.4 Paralel | Worktree per task, dependency graph, per-provider parallel limits, quota fallback, usage statistics | Two independent tasks run at the same time without conflict; a quota limit automatically reroutes to a backup profile | Parallel half met on 19 Nov 2026 (one real-model run, 2 independent tasks ran at the same time and merged cleanly); quota reroute verified with scripted tests only |
-| v1.0 | Polish, Windows support, documentation, npm release | Used by the author to build 10 real projects | Planned |
+| v0.5 | Polish and distribution: npm package with `npx dalang` and `dalang doctor`, several accounts per provider, token and cost statistics, replay tests, macOS sandbox, push and pull request after merge, documentation | `npx dalang` starts on a clean Linux and macOS machine, and replay scenarios cover quota reroute, review fix round, and parallel merge | Planned |
+| v0.6 | Agent delegation: a running agent splits its own task into subtasks on other profiles through a DALANG MCP server | One task is split by its agent into at least two subtasks on two providers, and all of them pass review and merge | Planned |
+| v0.7 | Session protocols (Claude Agent SDK, `codex app-server`, ACP), steering a running task, context handoff on fallback, native Windows | A fallback mid-task continues from the handoff instead of starting over, on all three providers | Planned |
+| v0.8 | Scheduled and webhook-triggered runs, outside agents over MCP | A scheduled run and a run started from a terminal agent both finish without opening the UI | Planned |
+
+See [Roadmap after v0.4](#roadmap-after-v04) for the detail and the research behind it.
 
 ### v0.1 implementation notes
 
@@ -368,6 +373,70 @@ Decisions made while building v0.3 (Kawal):
 - Quota fallback is proactive (a cached usage reading shows 0% remaining, or a recent rate-limit or login event puts the provider in cooldown) and reactive (provider failure mid-run). A cached exhausted reading expires at its reset time, or after 15 minutes when no reset time is known, so a provider is not skipped forever.
 - Usage statistics (F-24) count runs, durations, and limit events per provider and per project. Events carry no project id, so the per-project filter applies to runs only.
 - Trial on 19 Nov 2026, real Claude Code, through the HTTP API: a plan of two independent tasks (`upper.js`, `rev.js`) ran at the same time (two tasks active together), both passed review on round 1, both merged with `--no-ff`, the worktrees were removed, main stayed clean, and the 6 tests in the result passed. This is one run. The quota reroute with a real provider limit was not triggered; it is covered by scripted tests only.
+
+## Roadmap after v0.4
+
+### Research: T3 Code (19 Nov 2026)
+
+[T3 Code](https://github.com/pingdotgg/t3code) (MIT, about 65k stars) is the closest open project: one local server that drives Claude Code, Codex, Antigravity and about eight other agent CLIs from a desktop, web, or phone client. Its docs (`docs/user`, `docs/internals`, `docs/orchestration-v2`) were read for this comparison (user guides, the orchestration-v2 design, provider and testing notes). What it does that DALANG does not yet do:
+
+| Area | T3 Code | DALANG today |
+| --- | --- | --- |
+| Driving the agent | Long-lived sessions: Claude Agent SDK, `codex app-server` (JSON-RPC), ACP for other agents. Each adapter reports capabilities (resume, steer, fork, subagents, rollback); missing ones fall back by policy, not by provider-name checks | One process per turn (`claude -p`, `codex exec`, `agy`), output parsed from event lines |
+| Subtasks | An agent calls `delegate_task` on T3's own MCP server (`127.0.0.1:<port>/mcp`, bearer token scoped to one provider session, expires when idle or when the session ends). The child runs on any provider and model, in the parent checkout or its own worktree, gets only the task prompt (no parent history), and its result returns to the parent. `task_status`, `task_cancel`, `wait` and `async` modes. Stopping a parent stops its children. Native subagents (Claude Task, Antigravity batches, Cursor) are shown read-only | Only the Lead splits work, at plan time. A running coder cannot split its task |
+| Switching provider | A portable handoff: a budgeted selection of the conversation (default 16k tokens, first request plus recent turns plus command results, never an agent-written summary), with a tool to read what was left out | Fallback restarts the task from its brief |
+| Accounts | Several instances of one provider, each with its own `CLAUDE_CONFIG_DIR` or `CODEX_HOME`, so a second account can take over | One account per provider |
+| Usage | Tokens, cache hits, and estimated cost per model, read from each CLI's local history | Runs, durations, and limit events |
+| Checkpoints | Hidden git refs, no commits on the user's branch | Commits before and after each run |
+| Model list | Claude: a bundled model manifest (refreshed from their repo) merged with the models Claude Code reports through the Agent SDK, each with its effort levels. Codex: `model/list` on `codex app-server`. Antigravity: the models its ACP session advertises, with thinking levels per model | Since 19 Nov 2026, Claude's list comes from the same source (the `initialize` control request, one process, no API call). Codex uses `codex debug models`, agy uses `agy models`. Per-model effort levels (including `max`) are not used yet |
+| Health checks | Must not start hooks, MCP servers, or a login as a side effect | Model discovery runs Claude with `--bare`, which is meant to skip hooks and MCP; not yet verified |
+| Tests | Replay transcripts replace only the provider process; orchestrator, adapter, normalizer, and database run for real. Browser scenarios on a real server with a replay agent, free and repeatable | Unit tests with fake runners; real-model trials by hand |
+| Distribution | `npx t3@latest`, install script, `t3 doctor`, `t3 update`, `t3 service install`, desktop and phone apps | Run from source |
+| Git hosting | Push, open a pull request, watch checks | Local merge only |
+| Other | Scheduled and webhook runs, outside agents over MCP with read-only to full-access levels, remote access, phone app, per-project provider switch | None of these |
+
+What DALANG has that T3 Code does not: a brief agreed before any code, a plan with milestones and dependencies, routing by role and complexity, a reviewer on a different provider with a fix loop, `files_allowed` enforced on the diff, and a merge gate. T3 Code is a control plane for chat threads; DALANG stays a pipeline from goal to merged code. The items below borrow T3 Code's mechanisms where they make that pipeline stronger.
+
+### v0.5: polish and distribution
+
+- **npm package.** Publish `dalang`; `npx dalang` starts the server and opens the browser. `dalang doctor` checks Node, git, `bwrap` (or `sandbox-exec`), each CLI's install and login, and the data directory, and prints a fix for each failure.
+- **Several accounts per provider.** A profile gets an optional config directory, passed as `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, or the agy profile directory, and mounted writable in the sandbox. A fallback profile can then be the same provider on a second account. Usage readings and cooldowns are kept per account, not per provider.
+- **Token and cost statistics.** Read token counts from the events DALANG already captures (Claude's `result` event carries usage and cost; Codex and agy are read where their events carry token counts; to be checked per CLI) and show tokens per model, cache hits, and estimated cost next to the existing run statistics. The estimate is labelled as API-equivalent, not the subscription bill.
+- **Replay tests.** Record real CLI event streams and the files a run wrote into transcripts, and add a replay runner that replaces only the process. Scenarios: quota reroute to a backup profile (the open half of the v0.4 criterion), a failed review followed by a fix round, and two parallel tasks merging. Add one browser scenario on a real server with the replay runner.
+- **Side-effect-free health checks.** Verify that `--bare` stops hooks and MCP servers during Claude model discovery, cache the result until "Refresh CLI status", and document the same rule for every adapter.
+- **Model details from the CLIs.** The model list becomes a list of objects instead of plain ids, still read from the CLIs at startup and on Refresh CLI status, with nothing hardcoded:
+  - Claude's `initialize` reply gives, per model, the accepted value, the resolved versioned id, a display name, a description (with price), `supportedEffortLevels`, and flags for fast mode and thinking. Variants such as `claude-fable-5-2[1m]` (1M context) are shown as an option of their model, not as a separate model.
+  - Codex's `debug models` gives a display name, a description, `default_reasoning_level`, and `supported_reasoning_levels` per model.
+  - Antigravity's `agy models` gives a display name per id; the level stays in the id, as since v0.4.
+  - The profile editor shows display names, offers only the effort levels the chosen model has (including `max`, which DALANG does not accept yet), and preselects the model's default level. A saved model the CLI no longer lists is shown as unavailable, not silently dropped.
+- **Checkpoints.** Evaluate hidden refs (`refs/dalang/...`) in place of checkpoint commits on the user's branch, keeping rollback working. Open question: whether reviewers and the merge still need the commits.
+- **Push and pull request.** Optional per project: after the merge gate, push the branch and open a pull request with `gh`, using the task brief and review as its body.
+- **macOS sandbox** with `sandbox-exec`, held to the same tests as `bwrap`. Windows runs through WSL in v0.5 and is documented as such.
+- **Documentation:** install, providers, sandbox, and a troubleshooting page.
+
+### v0.6: agent delegation
+
+- DALANG serves an MCP endpoint on loopback. Each run gets a bearer token scoped to that run, which expires when the run ends; the token never enters logs.
+- Tools: `delegate_task` (prompt, optional profile or provider and model, `files_allowed` that must be a subset of the parent's), `task_status`, `task_cancel`, with `wait` and `async` modes.
+- A subtask is a real DALANG task: its own worktree from the parent branch, the same verify and review, and a result merged back into the parent branch, not into main. The parent's own review sees the combined diff.
+- Limits: depth 1 (a subtask cannot delegate), a cap on subtasks per task, subtasks count against the provider limiter, and stopping the parent stops its subtasks.
+- Native subagents (Claude's Task tool, Antigravity batches) are shown read-only in the run log.
+
+### v0.7: session protocols and handoff
+
+- Adapters move to the session protocols (Claude Agent SDK, `codex app-server`, ACP where agy supports it) behind a capability shape, keeping the one-shot CLI path as a fallback for any capability a provider lacks.
+- Steer a running task with a message, and interrupt without losing the session.
+- Context handoff on fallback: the next provider gets the brief plus a budgeted selection of the previous run (its requests, command results, and partial diff) instead of starting over.
+- Native Windows execution, with a sandbox that meets the same tests.
+
+### v0.8: automation
+
+- Scheduled and webhook-triggered runs (for example a nightly dependency update task), with signature checks on webhooks.
+- Outside agents over MCP: Claude Code or Codex in a terminal can read projects and start tasks, at read-only or full-access level, loopback only.
+
+### Not planned
+
+Remote access, relays, and phone apps. They conflict with DALANG's loopback-only security model (Host and Origin checks, no auth layer). Revisit only with a real authentication design.
 
 ## Risks, mitigations, and decisions
 

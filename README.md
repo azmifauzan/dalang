@@ -113,7 +113,10 @@ Run on 18 Nov 2026 on Linux, through the HTTP API and the real sandbox, one run 
 | v0.2 Jalan | Routing and dispatch, sequential execution, live logs, git checkpoints, stop, retry, resume, rollback | Released |
 | v0.3 Kawal | Reviewer and fix loop, diff view, approve merge, post-merge integration, profiles and routing in UI | Released |
 | v0.4 Paralel | Worktree per task, dependency graph, per-provider limits, quota fallback, usage stats | Implemented (one real two-task parallel run; quota reroute scripted only) |
-| v1.0 | Polish, Windows support, docs, npm release | Planned |
+| v0.5 | `npx dalang` and `dalang doctor`, several accounts per provider, token and cost statistics, replay tests, macOS sandbox, push and pull request | Planned |
+| v0.6 | Agent delegation: a running agent splits its task into subtasks on other profiles over MCP | Planned |
+| v0.7 | Session protocols, steering, context handoff on fallback, native Windows | Planned |
+| v0.8 | Scheduled and webhook runs, outside agents over MCP | Planned |
 
 ## Documentation
 
