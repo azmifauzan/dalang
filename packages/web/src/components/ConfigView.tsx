@@ -1313,6 +1313,7 @@ export function ConfigView({
             <ul className="flex flex-wrap gap-3 text-sm">
               {[
                 { label: t('config.about.docInstall'), href: 'https://github.com/azmifauzan/dalang/blob/main/docs/INSTALL.md' },
+                { label: t('config.about.docUsage'), href: 'https://github.com/azmifauzan/dalang/blob/main/docs/USAGE.md' },
                 { label: t('config.about.docProviders'), href: 'https://github.com/azmifauzan/dalang/blob/main/docs/PROVIDERS.md' },
                 { label: t('config.about.docSandbox'), href: 'https://github.com/azmifauzan/dalang/blob/main/docs/SANDBOX.md' },
                 { label: t('config.about.docTroubleshooting'), href: 'https://github.com/azmifauzan/dalang/blob/main/docs/TROUBLESHOOTING.md' },

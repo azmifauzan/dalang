@@ -10,6 +10,16 @@ It verifies Node.js, git, sandbox confinement, the data directory, `gh`, and eve
 
 ## Common issues
 
+### Browser did not open or the port is busy
+
+Open the URL printed in the terminal, normally `http://127.0.0.1:4173`. If startup reports `EADDRINUSE`, use another loopback port:
+
+```bash
+npx dalang-cli --port 4180 --no-open
+```
+
+Then open `http://127.0.0.1:4180`.
+
 ### "Bubblewrap sandbox is unavailable" or "Sandbox confinement is unavailable"
 
 - **Linux**: install `bubblewrap` (`sudo apt install bubblewrap` or `sudo dnf install bubblewrap`), then verify with `which bwrap` and `npx dalang-cli doctor`.

@@ -1,68 +1,44 @@
-# Providers, Models, and Multi-Account Setup
+# Providers, models, and accounts
 
-DALANG never calls model APIs directly and never reads or copies CLI OAuth tokens. It spawns the official `claude`, `codex`, and `agy` binaries headless and parses their structured output.
+Dalang runs the official coding-agent CLIs with the accounts you sign into on your machine. Each provider’s plan and usage limits still apply.
 
-## Supported providers
+## Install and sign in
 
-| Provider | Binary | Login command | Model discovery | Quota check |
-| --- | --- | --- | --- | --- |
-| Claude Code | `claude` | `claude auth login` | `initialize` control request over stream-json (`--bare`) | `claude -p /usage` |
-| Codex CLI | `codex` | `codex login` | `codex debug models` | `codex app-server` (`account/rateLimits/read`) |
-| Antigravity CLI | `agy` | `agy` (interactive sign-in) | `agy models` | `agy -p=/usage --output-format json` |
+| Provider | Install | Sign in |
+| --- | --- | --- |
+| Claude Code | [Claude Code setup](https://code.claude.com/docs/en/setup) | `claude auth login` |
+| Codex CLI | [Codex CLI setup](https://developers.openai.com/codex/cli) | `codex login` |
+| Antigravity CLI | [Antigravity CLI setup](https://antigravity.google/docs/cli/overview) | Run `agy` and follow the interactive sign-in. |
 
-## Side-effect-free health checks
+Use the same terminal environment where you will start Dalang. Run `npx dalang-cli doctor` after signing in, or open **Config → Agents → Refresh CLI status** if Dalang is already running. If using WSL 2, install and sign in inside WSL.
 
-All provider status probes follow one strict rule: checking CLI health must never run user/project hooks, start MCP servers, mutate workspaces, or incur a model API call.
+### Antigravity CLI on Linux
 
-- **Claude Code**: model discovery runs from `os.tmpdir()` with `--bare --no-session-persistence`, which skips hooks, plugins, and MCP servers and sends a single `initialize` control message (verified by automated test).
-- **Codex CLI**: probes run `--version`, `login status`, `debug models`, and a read-only `app-server` JSON-RPC query from `os.tmpdir()`.
-- **Antigravity CLI**: probes run `--version`, `models`, and `-p=/usage --output-format json` from `os.tmpdir()`.
-- Results are cached in the server until you click **Refresh CLI status** in Config → Agents.
+The Linux sandbox needs `xdg-dbus-proxy` and an active desktop session to connect Antigravity to the Secret Service. Install the package with `sudo apt install xdg-dbus-proxy` or `sudo dnf install xdg-dbus-proxy`. In **Config → Security**, enable **Allow Antigravity to read the desktop keyring** only if you want to grant this access. The service exposes the full desktop keyring. With access disabled, tasks can route to their configured fallback. [Antigravity keyring details](SANDBOX.md#antigravity-keyring-exposure-opt-in)
 
-## Model details and reasoning effort
+## Choose a model and route tasks
 
-Nothing is hardcoded. On startup and on **Refresh CLI status**, DALANG reads rich model metadata directly from each CLI:
+1. In **Config → Team**, edit a profile or create one. Choose the provider and a model from that CLI. Set reasoning effort if the model supports it.
+2. Keep the default parallel limits initially or adjust **Max parallel tasks** to fit the account. The profile also controls role instructions, permissions, and timeouts.
+3. In **Config → Task routing**, match a task role and complexity to a primary profile. Put specific rules above broader rules because Dalang uses the first match. A task can also name a profile override in **Plan**.
+4. Set a fallback provider, model, and effort on the profile or the routing rule. For example, match low-complexity engineering tasks to a Codex profile, high-complexity engineering tasks to a Claude Code profile, and set a backup for either rule if you have another signed-in account.
 
-- **Claude Code**: display name, description, `supportedEffortLevels` (including `max`), fast mode and thinking flags. Context variants such as `claude-fable-5-2[1m]` attach as an option ("Use 1M context") on their base model instead of duplicating the model dropdown.
-- **Codex CLI**: display name, description, `default_reasoning_level`, and `supported_reasoning_levels` (including `max`).
-- **Antigravity CLI**: display name and per-model effort levels extracted from the model ids (`gemini-4-neon-high` -> base `gemini-4-neon`, effort `high`). Models without effort levels disable the effort selector.
+Model and effort options come from the CLI. If a saved model is marked **(unavailable)**, refresh status and choose a model the CLI still reports. Some models offer a context variant, such as **Use 1M context**, on the same profile.
 
-In the profile editor:
+## Use separate accounts
 
-- Selecting a model preselects its CLI-reported default effort level and restricts the effort dropdown to levels that model actually supports.
-- If a saved profile references a model the CLI no longer returns, the editor keeps the saved value and marks it `(unavailable)` instead of silently dropping it.
-
-## Multiple accounts per provider
-
-Each agent profile has an optional **Account config directory** (`configDir`). When set, DALANG:
-
-1. Passes the provider's config environment variable for that run and for usage/status checks:
-   - **Claude Code**: `CLAUDE_CONFIG_DIR=<configDir>`
-   - **Codex CLI**: `CODEX_HOME=<configDir>`
-   - **Antigravity CLI**: `AGY_CONFIG_DIR=<configDir>` (and `XDG_CONFIG_HOME=<configDir>`)
-2. Mounts `<configDir>` writable inside the sandbox (`bwrap` or `sandbox-exec`).
-3. Tracks parallel slots (`maxParallel`), cached quota readings, and rate-limit cooldowns **per account** (`<provider>:<configDir>`), not globally per provider.
-
-Because the directory is writable inside the sandbox, DALANG refuses a `configDir` that is `/`, your home directory or a parent of it, a credential folder the sandbox hides (`~/.ssh`, `~/.aws`, and so on) or a folder containing one, or a git checkout. Use a dedicated folder such as `~/.claude-work`.
-
-This lets you set a fallback on the same provider backed by a second subscription account (the fallback's account directory). To sign in a second account before configuring it in DALANG:
+Create a profile per account and give it a dedicated **Account config directory**. Sign in using that same directory before you select the profile in Dalang.
 
 ```bash
-# Example: second Claude Code account
-CLAUDE_CONFIG_DIR=~/.claude-work claude auth login
-
-# Example: second Codex account
-CODEX_HOME=~/.codex-work codex login
+CLAUDE_CONFIG_DIR="$HOME/.claude-work" claude auth login
+CODEX_HOME="$HOME/.codex-work" codex login
+AGY_CONFIG_DIR="$HOME/.agy-work" XDG_CONFIG_HOME="$HOME/.agy-work" agy
 ```
 
-Then enter `~/.claude-work` or `~/.codex-work` in the profile's **Account config directory** field and select that profile as the fallback of your primary profile (or in a routing rule).
+Run the line for your provider. Enter the corresponding directory in the profile. If you want to use this account as a fallback, select the directory on the fallback target for that provider.
 
-## Token counts and API-equivalent cost
+Dalang keeps quota readings, cooldowns, and parallel slots separate for each provider and account directory. The sandbox lets the CLI write to its config directory to maintain login state. Use a dedicated folder because Dalang rejects broad or sensitive directories, including the home directory, credential folders, and Git checkouts. [Sandbox and permissions](SANDBOX.md)
 
-DALANG extracts token usage from the stream events it already captures during runs:
+## Understand token and cost figures
 
-- **Claude Code**: reads `usage` (`input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`), `modelUsage`, and `total_cost_usd` from the `result` event.
-- **Codex CLI**: reads `usage` (`input_tokens`, `cached_input_tokens`, `output_tokens`) from `turn.completed` events.
-- **Antigravity CLI**: reads token counts when present in `result` / `usage` / `stats` stream events.
-
-When a CLI does not emit a dollar amount, DALANG computes an **API-equivalent estimate** from token counts and reference model rates. Every cost figure in the UI is labeled as an API-equivalent estimate, not your subscription bill.
+Open **Statistics** to compare providers and projects by run time, failures, fallbacks, and captured tokens. The CLI may omit some usage fields. Dalang shows costs on an API-equivalent basis using reported amounts or reference model rates. Check your provider account for actual subscription charges.

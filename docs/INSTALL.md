@@ -1,101 +1,107 @@
-# Installing DALANG
+# Install Dalang
 
-DALANG runs locally on your machine, binds only to `127.0.0.1`, and uses the official CLI binaries you already log in to (`claude`, `codex`, `agy`).
+Dalang runs a local web app on your machine. Set up Node.js, Git, and one coding-agent CLI before starting it.
 
 ## Requirements
 
-- **Node.js 24 or newer** (Node.js 26 LTS recommended; the packed install was checked on 24 and 26)
-- **Git** (`git --version`)
-- **At least one logged-in agent CLI**:
-  - Claude Code (`claude auth login`)
-  - Codex CLI (`codex login`)
-  - Antigravity CLI (`agy`)
-- **Platform sandbox** (strongly recommended):
-  - **Linux**: `bubblewrap` (`bwrap`), plus `xdg-dbus-proxy` if you enable Antigravity in the sandbox
-  - **macOS**: built-in `/usr/bin/sandbox-exec`
-  - **Windows**: run inside **WSL 2 (Ubuntu)** with `bubblewrap` installed (native Windows execution is planned for v0.9)
-- **Optional**: GitHub CLI (`gh`) logged in via `gh auth login` if you want DALANG to open pull requests after Gate 2 merges.
+- [Node.js](https://nodejs.org/en/download) **24 or newer**, with npm. Check with `node --version` and `npm --version`.
+- **Git** in your terminal’s PATH. Check with `git --version`.
+- At least one installed and signed-in **Claude Code**, **Codex CLI**, or **Antigravity CLI**. [Provider setup](PROVIDERS.md)
+- The platform sandbox below. For GitHub pull requests, also install [GitHub CLI](https://cli.github.com/) and run `gh auth login`.
 
-## Quick start (`npx dalang-cli`)
+### Linux
 
-Check your machine first:
+On Debian or Ubuntu, install Git and bubblewrap with APT.
 
 ```bash
-npx dalang-cli doctor
+sudo apt update
+sudo apt install git bubblewrap
 ```
 
-`dalang doctor` checks Node.js, git, the platform sandbox, the writable data directory (`~/.dalang`), `gh`, and every installed CLI's version and login status, printing a concrete fix for any failure.
-
-Start the local server and open the browser UI:
+On Fedora, use DNF.
 
 ```bash
-npx dalang-cli
+sudo dnf install git bubblewrap
 ```
 
-Useful flags:
-
-```bash
-npx dalang-cli --port 4173       # Custom loopback port (or set DALANG_PORT)
-npx dalang-cli --no-open         # Start the server without opening a browser tab
-npx dalang-cli doctor --json     # Machine-readable diagnostics
-npx dalang-cli --version         # Print version
-```
-
-> **Note on native install scripts (`better-sqlite3`):** newer versions of npm require approving dependency install scripts on first install. `better-sqlite3` bundles prebuilt binaries for Linux, macOS, and Windows so no C++ compiler is needed once approved.
-
-## Platform setup
-
-### Linux (Debian / Ubuntu / Fedora)
-
-```bash
-# Debian / Ubuntu
-sudo apt update && sudo apt install -y git bubblewrap xdg-dbus-proxy
-
-# Fedora
-sudo dnf install -y git bubblewrap xdg-dbus-proxy
-```
+Antigravity in the Linux sandbox also needs `xdg-dbus-proxy`, an active desktop session, and explicit permission to read the keyring. [Antigravity setup](PROVIDERS.md#antigravity-cli-on-linux)
 
 ### macOS
 
-Git ships with Xcode Command Line Tools (`xcode-select --install`) and `/usr/bin/sandbox-exec` is built into macOS. Install Node.js 26 LTS via Homebrew (`brew install node@26`) or `nvm`.
+Run `xcode-select --install` if Git is missing, then install a supported Node.js version. Dalang uses the built-in `/usr/bin/sandbox-exec`.
 
-### Windows (via WSL 2)
+### Windows with WSL 2
 
-Native Windows sandboxing is not built in v0.5. Run DALANG inside WSL 2:
+1. In PowerShell, run `wsl --install -d Ubuntu` and finish Ubuntu’s setup.
+2. In the Ubuntu shell, install Node.js 24+, Git, and `bubblewrap` as described above. Install and sign in to your agent CLI in that shell too.
+3. Run Dalang in Ubuntu. If a tab does not open, visit `http://127.0.0.1:4173` in your Windows browser.
 
-1. Install WSL 2 with Ubuntu (`wsl --install -d Ubuntu`).
-2. Inside the Ubuntu shell, install Node.js 26 LTS, `git`, and `bubblewrap`:
-   ```bash
-   sudo apt update && sudo apt install -y git bubblewrap
-   ```
-3. Install and log in to your agent CLIs inside WSL, then run `npx dalang-cli doctor` and `npx dalang-cli`.
-4. Open `http://127.0.0.1:4173` from your Windows browser (WSL forwards loopback ports automatically).
+## Start Dalang
 
-## Updating
-
-Stop the server first (Ctrl+C) and wait for running tasks to finish. Then, depending on how you run DALANG:
+Run directly with npm.
 
 ```bash
-npx dalang-cli@latest              # npx: @latest skips a cached older copy
-npm install -g dalang-cli@latest   # global install, then check with: dalang --version
-git pull && pnpm install && pnpm build   # from source
+npx dalang-cli doctor
+npx dalang-cli
 ```
 
-Your data in `~/.dalang/` and `<repo>/.dalang/` is kept. The database schema is upgraded when the server starts (v6 to v7 is covered by a test). It cannot be downgraded: an older DALANG refuses to start on a newer database. DALANG does not check for new versions itself; watch the [releases page](https://github.com/azmifauzan/dalang/releases) or run `npm view dalang-cli version`.
+For a global installation, install the package first.
 
-## Running from source
+```bash
+npm install -g dalang-cli
+dalang doctor
+dalang
+```
+
+`doctor` checks Node.js, Git, the sandbox, the data directory, GitHub CLI, and provider login status. Fix any issues affecting the features you plan to use. [Troubleshooting](TROUBLESHOOTING.md)
+
+Open the URL printed in the terminal, normally `http://127.0.0.1:4173`. Keep the terminal running while you use the app. Once open, follow [the first-project guide](USAGE.md).
+
+| Command | When to use it |
+| --- | --- |
+| `npx dalang-cli --version` | Check the installed version |
+| `npx dalang-cli --no-open` | Start without opening a browser tab |
+| `npx dalang-cli --port 4180` | Use another loopback port if 4173 is busy |
+| `npx dalang-cli doctor --json` | Get machine-readable diagnostics |
+
+Use `dalang` in place of `npx dalang-cli` after a global install. You can also set `DALANG_PORT` to choose a default port.
+
+## Update Dalang
+
+Let active tasks finish or stop them from **Work**, then stop the server with Ctrl+C. Use the command that matches your installation.
+
+```bash
+npx dalang-cli@latest
+npm install -g dalang-cli@latest
+```
+
+With a global installation, start the updated app with `dalang`. Dalang keeps your projects and data and may upgrade its database on startup. Older versions can refuse to open an upgraded database.
+
+Use **Config → About → Check now** to check for a release. Dalang can also notify you about updates when version checks are enabled in **Config → General**. [Release notes](https://github.com/azmifauzan/dalang/releases)
+
+## Data and uninstall
+
+| Location | Contents |
+| --- | --- |
+| `~/.dalang/` | Local database, app state, and isolated task worktrees. Set `DALANG_HOME` to use another directory. |
+| `<repo>/.dalang/` | Project briefs, plans, task results, reviews, and logs. |
+| Project Git repository | Dalang task branches, checkpoint refs, and approved merges. |
+
+Stop Dalang before copying its data directory for a backup. Keep the project repository, including its Git history, and any uncommitted work you need from task worktrees.
+
+To uninstall the global command, run `npm uninstall -g dalang-cli`. Your local data and project artifacts remain available after uninstalling.
+
+## Build from source
+
+Install pnpm before cloning and building Dalang. [pnpm installation](https://pnpm.io/installation)
 
 ```bash
 git clone https://github.com/azmifauzan/dalang.git
 cd dalang
 pnpm install
 pnpm build
+pnpm --filter dalang-cli doctor
 pnpm start
 ```
 
-## Data locations
-
-| Path | Contents |
-| --- | --- |
-| `~/.dalang/` (override with `DALANG_HOME`) | Global SQLite database (`dalang.db`) and isolated task worktrees (`worktrees/`) |
-| `<repo>/.dalang/` | Per-project brief, plan, discuss rounds, task results, reviews, and run logs |
+To update a source checkout, run `git pull`, `pnpm install`, and `pnpm build`, then restart. `pnpm test` runs the project’s checks without using model quota.

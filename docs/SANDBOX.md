@@ -33,7 +33,7 @@ On macOS (`darwin`), DALANG wraps runs in `/usr/bin/sandbox-exec` with a dynamic
 
 ### Windows (WSL 2)
 
-Native Windows has no sandbox in v0.5. Run DALANG inside WSL 2 with `bubblewrap` installed so Linux confinement applies. Starting runs on a host with no sandbox requires an explicit unconfined opt-in per request.
+Run DALANG inside WSL 2 with `bubblewrap` installed so Linux confinement applies. Starting runs on a host with no sandbox requires an explicit unconfined opt-in per request. [Windows setup](INSTALL.md#windows-with-wsl-2)
 
 ## Antigravity keyring exposure (opt-in)
 
@@ -42,7 +42,7 @@ On Linux, `agy` authenticates through the desktop Secret Service (`org.freedeskt
 That service exposes the entire desktop keyring, so a sandboxed `agy` run can read any secret stored in your keyring. For that reason:
 
 - **Antigravity in the Linux sandbox is off by default.**
-- Tasks routed to `agy` fall back to their fallback CLI until you explicitly tick **"Allow Antigravity to read the desktop keyring"** in an Antigravity profile.
+- Tasks routed to `agy` can use their configured fallback until you enable **Allow Antigravity to read the desktop keyring** in **Config → Security**.
 - Without `xdg-dbus-proxy` or an active desktop session bus, sandboxed `agy` runs are refused.
 
 ## Git config guard and hidden checkpoints

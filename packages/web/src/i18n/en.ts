@@ -648,6 +648,7 @@ export const en = {
   'config.about.artLicence': 'Wayang kulit silhouettes (Semar TMnr 8-251, Bima TMnr 8-265, Kresna TMnr 8-239, Arjuna TMnr 8-307, Gatotkaca TMnr 8-273) and Gunungan (TMnr 8-225): derived from Tropenmuseum / Wereldmuseum photographs on Wikimedia Commons, licensed under CC BY-SA 3.0.',
   'config.about.docsTitle': 'Documentation',
   'config.about.docInstall': 'Installation guide',
+  'config.about.docUsage': 'User guide',
   'config.about.docProviders': 'Provider & CLI setup',
   'config.about.docSandbox': 'Sandbox & security model',
   'config.about.docTroubleshooting': 'Troubleshooting',

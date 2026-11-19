@@ -650,6 +650,7 @@ export const id: Record<TranslationKey, string> = {
   'config.about.artLicence': 'Siluet wayang kulit (Semar TMnr 8-251, Bima TMnr 8-265, Kresna TMnr 8-239, Arjuna TMnr 8-307, Gatotkaca TMnr 8-273) dan Gunungan (TMnr 8-225): turunan foto koleksi Tropenmuseum / Wereldmuseum di Wikimedia Commons, berlisensi CC BY-SA 3.0.',
   'config.about.docsTitle': 'Dokumentasi',
   'config.about.docInstall': 'Panduan instalasi',
+  'config.about.docUsage': 'Panduan penggunaan',
   'config.about.docProviders': 'Pengaturan provider & CLI',
   'config.about.docSandbox': 'Model sandbox & keamanan',
   'config.about.docTroubleshooting': 'Pemecahan masalah',
