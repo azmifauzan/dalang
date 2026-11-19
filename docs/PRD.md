@@ -295,9 +295,10 @@ Each phase must be useful on its own before the next one starts.
 | v0.3 Kawal | Reviewer and fix loop, diff view, approve merge, integration tests, agent profiles and routing in the UI | ≥ 70% of tasks pass review within at most 2 rounds across 5 test projects | Met on 19 Nov 2026 (5 real-model projects, 15 of 15 tasks passed review, 13 on round 1 and 2 on round 2) |
 | v0.4 Paralel | Worktree per task, dependency graph, per-provider parallel limits, quota fallback, usage statistics | Two independent tasks run at the same time without conflict; a quota limit automatically reroutes to a backup profile | Parallel half met on 19 Nov 2026 (one real-model run, 2 independent tasks ran at the same time and merged cleanly); quota reroute verified with scripted tests only |
 | v0.5 | Polish and distribution: npm package with `npx dalang` and `dalang doctor`, several accounts per provider, token and cost statistics, replay tests, macOS sandbox, push and pull request after merge, documentation | `npx dalang` starts on a clean Linux and macOS machine, and replay scenarios cover quota reroute, review fix round, and parallel merge | Planned |
-| v0.6 | Agent delegation: a running agent splits its own task into subtasks on other profiles through a DALANG MCP server | One task is split by its agent into at least two subtasks on two providers, and all of them pass review and merge | Planned |
-| v0.7 | Session protocols (Claude Agent SDK, `codex app-server`, ACP), steering a running task, context handoff on fallback, native Windows | A fallback mid-task continues from the handoff instead of starting over, on all three providers | Planned |
-| v0.8 | Scheduled and webhook-triggered runs, outside agents over MCP | A scheduled run and a run started from a terminal agent both finish without opening the UI | Planned |
+| v0.6 | UI revamp: first-run wizard, five-step guided project flow, wayang stage with activity feed during work, Config page with sidebar tabs, theme toggle, Indonesian and English (UI and agent output), redrawn gunungan logo | A new user reaches the Discuss step of a first project through the wizard without reading docs, and no action of the v0.5 UI is lost | Planned |
+| v0.7 | Agent delegation: a running agent splits its own task into subtasks on other profiles through a DALANG MCP server | One task is split by its agent into at least two subtasks on two providers, and all of them pass review and merge | Planned |
+| v0.8 | Session protocols (Claude Agent SDK, `codex app-server`, ACP), steering a running task, context handoff on fallback, native Windows | A fallback mid-task continues from the handoff instead of starting over, on all three providers | Planned |
+| v0.9 | Scheduled and webhook-triggered runs, outside agents over MCP | A scheduled run and a run started from a terminal agent both finish without opening the UI | Planned |
 
 See [Roadmap after v0.4](#roadmap-after-v04) for the detail and the research behind it.
 
@@ -414,7 +415,156 @@ What DALANG has that T3 Code does not: a brief agreed before any code, a plan wi
 - **macOS sandbox** with `sandbox-exec`, held to the same tests as `bwrap`. Windows runs through WSL in v0.5 and is documented as such.
 - **Documentation:** install, providers, sandbox, and a troubleshooting page.
 
-### v0.6: agent delegation
+### v0.6: UI revamp
+
+Agreed in a design discussion on 19 Nov 2026 (mockups were throwaway and are not kept).
+
+#### Intent
+
+The current UI confuses people new to DALANG. It shows six tabs named after internal stage names (Discuss, Agree, List, Assign, Navigate, Guard), a Providers page that mixes CLI status, profiles, routing, and statistics, and no guidance about what to do next. The revamp makes the first visit simple and fully guided, makes the running pipeline feel like a team at work, and adds Indonesian next to English.
+
+**Target user:** someone who already uses Claude Code, Codex, or Antigravity from the terminal but does not yet know how DALANG works. They do not need to be taught what an agent CLI is; they need to learn DALANG's flow (goal, brief, plan, work, review and merge) and where they must decide.
+
+#### Goals
+
+- A first-run wizard that gets a new user from an empty install to the Discuss step of a first project.
+- Every project screen states the next action in plain words.
+- During execution, an animated wayang stage shows which agent does what, backed by a factual activity feed.
+- Settings move to a Config page with tabs in the sidebar.
+- UI in Indonesian and English; the Lead and reviewer write in the chosen language.
+- A light/dark toggle instead of the "Dark mode" button.
+- A gunungan logo that looks like a real kayon.
+
+#### Non-goals
+
+- No change to the pipeline itself (routing, review loop, merge gate, sandbox). Logic in `packages/core` stays; the UI talks to the same API.
+- No languages beyond `id` and `en` in v0.6.
+- No mobile app, no remote access.
+- No new state management or animation library.
+
+#### Anti-goals (a failure even if it works)
+
+- Any loss of what the current UI can do: every action available today (answer the Lead, approve brief and plan, edit tasks, start, stop, retry, rollback, review diff, approve or reject merge, integration command, profile and routing editing, statistics) must still be reachable.
+- Animation that hides facts. The stage is decoration on top of the feed and kanban; status must never be readable only from the animation.
+- Animation that costs a busy machine: it must stop when the tab is hidden or the OS asks for reduced motion.
+- Mixed languages on one screen (an untranslated string in the `id` UI).
+
+#### Approaches considered
+
+| Approach | Trade-off | Decision |
+| --- | --- | --- |
+| A. Incremental: wrap the current views in a new shell, translate gradually | Lowest risk, but keeps today's confusing content inside each tab | Rejected |
+| B. Rewrite `packages/web` | Most consistent, but rewrites about 7,200 tested lines (Guard, diff, kanban, profile editor) and risks regressions in working flows | Rejected |
+| C. Hybrid: new shell, new pages for wizard, Config, and the stage; existing views moved into steps, tidied, and moved to the translation dictionary | Keeps tested logic, changes the layout and flow fully | **Chosen** |
+
+#### Decisions (made with the user)
+
+##### Layout
+
+- Left sidebar (after T3 Code): "+ New project", the project list, then Statistics and Config, and at the bottom the language switch (`ID | EN`) and the theme toggle (sun/moon switch).
+- Inside a project, a five-step stepper at the top replaces the six tabs:
+
+  | Step | Replaces |
+  | --- | --- |
+  | 1 Discuss (Diskusi) | Discuss |
+  | 2 Brief | Agree |
+  | 3 Plan (Rencana) | List |
+  | 4 Work (Pengerjaan) | Assign + Navigate |
+  | 5 Review and merge | Guard |
+
+  Done steps show a check, the current step is highlighted, later steps are visible but not active. The D-A-L-A-N-G letters may stay as a small label; they are not the navigation.
+- Under the stepper, a "Next step" card always says what to do now in one sentence, with one primary button.
+
+##### First-run wizard
+
+Shown when there is no project yet. Four screens with a progress bar, Back, Next, and "Skip wizard". It can be reopened from Config → About.
+
+1. **How DALANG works:** a short animation with the wayang cast: you give a goal, the Lead plans, agents work, you approve at two gates (brief and merge).
+2. **Agents:** detected CLIs with version, login, model count, and sandbox state. Anything not ready shows the exact fix command to copy (for example `claude auth login`). Antigravity's keyring permission is asked here with its risk explained. At least one ready agent is required to continue.
+3. **Team:** a recommended setup from the ready agents (Lead, Coder, Reviewer on a different provider, fallback). One click accepts it; details can be changed later in Config.
+4. **First project:** pick a folder (new or an existing repo), write the goal in one sentence, and land in step 1 Discuss.
+
+##### Work stage (step 4)
+
+- A wayang stage (kelir lit by a blencong lamp, banana-trunk base) above the kanban, with the activity feed below it.
+- Characters by role: **Semar** = Lead, **Bima** = Coder, **Arjuna** = Reviewer, **Gatotkaca** = fallback. The provider shows as the colour of the character's label (Claude orange, Codex green, agy blue). Several coders in parallel appear as several Bima figures.
+- Active agents move (body sway, arms worked from shoulder and elbow like a dalang playing them); waiting agents are dimmed (for example "quota, resumes 14:05"). Clicking a figure opens that task's log.
+- Feed lines are factual and come from run events: "Bima (Codex) is writing `src/routes.ts`", "Arjuna (Claude) ran `npm test`: 12/12 passed", "T-001 passed review round 1, waiting for merge approval".
+- Style: shadow (dark silhouettes on the lit screen). The coloured (sungging) version of the same figures is used in the wizard and on Config → Team cards.
+
+##### Wayang and gunungan artwork
+
+- Source: photographs of real wayang kulit (Tropenmuseum collection on Wikimedia Commons, CC BY-SA 3.0) for Semar, Bima, Arjuna, and Gatotkaca, and a CC0 kayon photograph for the gunungan.
+- Method: cut each figure out of its photo, split it at the real joints (wayang kulit arms are separate pieces pinned at shoulder and elbow), and trace each piece to SVG. Pivot points sit on the pins.
+- The derived artwork stays CC BY-SA 3.0 with attribution in `packages/web/src/assets/wayang/CREDITS.md` and in Config → About. The code stays MIT.
+- Gunungan: a detailed version (tree of life, gate, guardians) for the wizard and About, and a simplified silhouette for the sidebar logo and favicon (fine carving is invisible at 16 to 24 px).
+
+##### Config page
+
+Opening Config swaps the sidebar for Config tabs with "← Back".
+
+| Tab | Content |
+| --- | --- |
+| General | Language, theme (light, dark, follow system), reopen the wizard |
+| Agents | CLI status, login, version, models, quota, cooldown, extra accounts (v0.5) |
+| Team | Agent profiles as wayang cards: character by role, provider, model, effort, fallback |
+| Task routing | Routing rules shown as sentences ("Complex engineer tasks → Bima (Codex), fallback Gatotkaca (Claude)") with the editor behind them |
+| Security | Sandbox state, agy keyring permission, running without a sandbox, with the risk of each |
+| About | Version, licence, wayang artwork credits, documentation links |
+
+Statistics move to their own sidebar entry.
+
+##### Theme
+
+- A toggle switch replaces the "Dark mode" button. Default follows the system (`prefers-color-scheme`); a manual choice is remembered.
+
+##### Languages
+
+- UI strings in `id` and `en`. Default from the browser language (`id*` → Indonesian, anything else → English); a manual choice is remembered.
+- The chosen language also goes to the agents: the Lead writes its questions, brief, and plan in it, and the reviewer writes its findings in it. Code, file names, commit messages, and the JSON contract keys stay English.
+
+#### Technical calls (builder's choices, stated for review)
+
+- **i18n:** typed dictionaries (`packages/web/src/i18n/en.ts`, `id.ts`) with a small `t()` and `Intl` for dates and numbers; no library for two languages. A missing key in either dictionary fails the typecheck.
+- **Language to agents:** the language is a global setting stored server side (the `settings` table), so the Lead and reviewer prompts can read it; the UI language and agent language are the same setting.
+- **Animation:** SVG and CSS transforms only; pivots per limb. Paused with `document.visibilityState` and `prefers-reduced-motion`.
+- **Design tokens:** `docs/DESIGN.md` must be updated: its MOTION 1 dial forbids infinite loops, which the stage needs. The new rule: MOTION 1 everywhere except the wayang stage and the wizard intro, which may loop and must pause as above. The six-stage rail section is replaced by the five-step stepper.
+- **State:** keep TanStack Query and the existing API client.
+- **Which step is current:** steps 1 to 3 are sequential. Once execution starts, steps 4 and 5 are both open (some tasks run while others wait for merge). The "Next step" card picks the action that blocks progress first: a merge or reject decision, then a failed task needing retry, then "agents are working, nothing to do".
+- **Wizard team step:** it picks among the seeded profiles and sets the routing rules' primary and fallback profiles; it never deletes profiles or rules. Skipping the wizard leaves the seeded defaults.
+- **Wizard folder step:** a path field with validation, as the current project form does (a browser page cannot open a native folder picker on the local disk).
+- **Language change mid-project:** applies to the next agent turn; text already written stays in its language.
+- **Upgrade path:** existing installs with projects skip the wizard and open the most recent project.
+
+#### Build order
+
+Each step leaves the app usable, so the work can stop or ship at any step.
+
+1. **i18n and theme first:** the `t()` dictionaries, the language setting (server side, `settings` table), the theme toggle with "follow system", and every existing string moved to `en` and `id`. The UI looks the same but speaks both languages. Pass the language to the Lead and reviewer prompts.
+2. **Shell:** the sidebar (projects, Statistics, Config, language, theme), the five-step stepper, and the "Next step" card, with the existing views mounted inside the steps unchanged.
+3. **Config:** move the Providers page content into the six tabs; Statistics gets its own page.
+4. **Tidy the steps:** go through each step's view, simplify its layout and wording for the target user, and check the anti-goal list (no action lost).
+5. **Artwork:** trace the four wayang figures (split at shoulder and elbow) and the gunungan (detailed and simplified) to SVG, with `CREDITS.md`. Replace the logo and favicon.
+6. **Wizard:** the four screens, shown on an empty install, reopenable from Config → About.
+7. **Work stage:** the kelir with figures driven by run events, the activity feed, pausing on hidden tab and reduced motion.
+8. **Docs and checks:** update `docs/DESIGN.md` (motion rule, stepper), README screenshots, and run the "done when" checks in both languages.
+
+#### Left to the builder
+
+- Exact copy for each step card and wizard screen (in both languages), within the rules above.
+- How the feed derives its sentences from run events.
+- Which existing view fragments are reused as is and which are rewritten.
+- Layout at phone width (the sidebar becomes a drawer).
+
+#### Done when
+
+- A new user on a fresh install reaches step 1 Discuss of a first project through the wizard without reading docs.
+- Every action listed under anti-goals is reachable in the new layout.
+- No untranslated string in either language (typecheck plus a scan of rendered pages).
+- The stage pauses on a hidden tab and under reduced motion.
+- Lead output (questions, brief, plan) arrives in the chosen language for both `id` and `en`.
+
+### v0.7: agent delegation
 
 - DALANG serves an MCP endpoint on loopback. Each run gets a bearer token scoped to that run, which expires when the run ends; the token never enters logs.
 - Tools: `delegate_task` (prompt, optional profile or provider and model, `files_allowed` that must be a subset of the parent's), `task_status`, `task_cancel`, with `wait` and `async` modes.
@@ -422,14 +572,14 @@ What DALANG has that T3 Code does not: a brief agreed before any code, a plan wi
 - Limits: depth 1 (a subtask cannot delegate), a cap on subtasks per task, subtasks count against the provider limiter, and stopping the parent stops its subtasks.
 - Native subagents (Claude's Task tool, Antigravity batches) are shown read-only in the run log.
 
-### v0.7: session protocols and handoff
+### v0.8: session protocols and handoff
 
 - Adapters move to the session protocols (Claude Agent SDK, `codex app-server`, ACP where agy supports it) behind a capability shape, keeping the one-shot CLI path as a fallback for any capability a provider lacks.
 - Steer a running task with a message, and interrupt without losing the session.
 - Context handoff on fallback: the next provider gets the brief plus a budgeted selection of the previous run (its requests, command results, and partial diff) instead of starting over.
 - Native Windows execution, with a sandbox that meets the same tests.
 
-### v0.8: automation
+### v0.9: automation
 
 - Scheduled and webhook-triggered runs (for example a nightly dependency update task), with signature checks on webhooks.
 - Outside agents over MCP: Claude Code or Codex in a terminal can read projects and start tasks, at read-only or full-access level, loopback only.
