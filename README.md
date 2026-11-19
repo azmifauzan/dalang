@@ -60,6 +60,8 @@ npx dalang-cli doctor
 npx dalang-cli
 ```
 
+To update, stop the server and run `npx dalang-cli@latest` (or `npm install -g dalang-cli@latest` if installed globally). Your data is kept; see [Updating](docs/INSTALL.md#updating).
+
 Or run from a local clone:
 
 ```bash

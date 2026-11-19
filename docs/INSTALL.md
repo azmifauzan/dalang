@@ -71,6 +71,18 @@ Native Windows sandboxing is not built in v0.5. Run DALANG inside WSL 2:
 3. Install and log in to your agent CLIs inside WSL, then run `npx dalang-cli doctor` and `npx dalang-cli`.
 4. Open `http://127.0.0.1:4173` from your Windows browser (WSL forwards loopback ports automatically).
 
+## Updating
+
+Stop the server first (Ctrl+C) and wait for running tasks to finish. Then, depending on how you run DALANG:
+
+```bash
+npx dalang-cli@latest              # npx: @latest skips a cached older copy
+npm install -g dalang-cli@latest   # global install, then check with: dalang --version
+git pull && pnpm install && pnpm build   # from source
+```
+
+Your data in `~/.dalang/` and `<repo>/.dalang/` is kept. The database schema is upgraded when the server starts (v6 to v7 is covered by a test). It cannot be downgraded: an older DALANG refuses to start on a newer database. DALANG does not check for new versions itself; watch the [releases page](https://github.com/azmifauzan/dalang/releases) or run `npm view dalang-cli version`.
+
 ## Running from source
 
 ```bash
