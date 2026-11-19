@@ -2,7 +2,7 @@
 
 > One goal in, a running app out. A local web tool that orchestrates Claude Code, Codex, and Antigravity CLI as a small team.
 
-**Status: v0.5.0 (Polish & Distribution) is implemented: `npx dalang-cli` packaging and `dalang doctor`, multiple accounts per provider (`configDir`), rich model details from the CLIs (display names, `[1m]` variants, effort levels up to `max`, unavailable saved model indicator), token & API-equivalent cost statistics, process-level replay tests (quota reroute, review fix round, parallel merge, and headless browser E2E), side-effect-free health checks, hybrid hidden checkpoint refs (`refs/dalang/checkpoints/*`), optional push and GitHub PR after merge (`gh`), macOS `sandbox-exec` confinement, and full documentation. Next: v0.6 (UI revamp with a first-run wizard and Indonesian). See [docs/PRD.md](docs/PRD.md) for the full roadmap.**
+**Status: v0.5.0 (Polish & Distribution) is released on npm as `dalang-cli` (`npx dalang-cli`; verified on Linux, macOS not yet run): `npx dalang-cli` packaging and `dalang doctor`, multiple accounts per provider (`configDir`), rich model details from the CLIs (display names, `[1m]` variants, effort levels up to `max`, unavailable saved model indicator), token & API-equivalent cost statistics, process-level replay tests (quota reroute, review fix round, parallel merge, and headless browser E2E), side-effect-free health checks, hybrid hidden checkpoint refs (`refs/dalang/checkpoints/*`), optional push and GitHub PR after merge (`gh`), macOS `sandbox-exec` confinement, and full documentation. Next: v0.6 (UI revamp with a first-run wizard and Indonesian). See [docs/PRD.md](docs/PRD.md) for the full roadmap.**
 
 DALANG is named after the traditional Javanese puppeteer who directs the whole show. The name is also an acronym for the workflow:
 
@@ -123,7 +123,7 @@ Run on 18 and 19 Nov 2026 on Linux, through the HTTP API and the real sandbox, o
 | v0.2 Jalan | Routing and dispatch, sequential execution, live logs, git checkpoints, stop, retry, resume, rollback | Released |
 | v0.3 Kawal | Reviewer and fix loop, diff view, approve merge, post-merge integration, profiles and routing in UI | Released |
 | v0.4 Paralel | Worktree per task, dependency graph, per-provider limits, quota fallback, usage stats | Released (one real two-task parallel run; quota reroute scripted only) |
-| v0.5 | `npx dalang-cli` and `dalang doctor`, several accounts per provider, model details, token & cost statistics, replay & browser tests, hidden checkpoint refs, macOS sandbox, push and pull request, docs | Implemented |
+| v0.5 | `npx dalang-cli` and `dalang doctor`, several accounts per provider, model details, token & cost statistics, replay & browser tests, hidden checkpoint refs, macOS sandbox, push and pull request, docs | Released |
 | v0.6 | UI revamp: first-run wizard, guided five-step flow, wayang stage during work, Config page, Indonesian and English | Planned |
 | v0.7 | Agent delegation: a running agent splits its task into subtasks on other profiles over MCP | Planned |
 | v0.8 | Session protocols, steering, context handoff on fallback, native Windows | Planned |
