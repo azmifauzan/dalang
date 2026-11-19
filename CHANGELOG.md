@@ -2,14 +2,7 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
-## Unreleased
-
-Security
-- The git guard also refuses `hook.*`, `trace2.*`, and external diff or merge drivers in the repo config. None of them ran on git 2.53 in a test of the commands DALANG uses; this keeps a newer git from turning them into a way out.
-- Docs and the Providers page now say plainly that an agy run can read the whole desktop keyring.
-- **Antigravity in the sandbox is now opt-in and off by default.** Tick "Allow Antigravity to read the desktop keyring" on the Providers page to use it. While it is off, a task routed to agy runs on its backup profile (with a note in Assign and in the run log), a task with no usable backup is blocked with a reason, and agy cannot be a Lead. The setting is stored in a new `settings` table (database schema v3).
-
-## 0.3.0 (unreleased)
+## 0.3.0, 19 Nov
 
 Kawal milestone, verified on 19 Nov with five real-model projects (15 of 15 tasks passed review within 2 rounds): automated verification + review/fix loop, human Gate 2 diff & merge control, post-merge integration tests, and editable agent profiles + routing rules.
 
@@ -20,6 +13,11 @@ Kawal milestone, verified on 19 Nov with five real-model projects (15 of 15 task
 - **Review verdict**: it is read only from the reviewer's reply, never from `review.json` on disk, because the verify command runs agent-written code and could plant a passing file. If the changed files cannot be listed, the review fails instead of skipping the scope check.
 - **Profile safety**: a profile cannot be deleted while a routing rule (primary or fallback), a task, or a run refers to it.
 - **Profiles & routing CRUD (F-21)**: Added API and UI management for agent profiles (including moving `antigravityKeyringAccess` inside the profile editor for `antigravity` profiles) and priority-ordered routing rules.
+
+Security (also in this release)
+- The git guard also refuses `hook.*`, `trace2.*`, and external diff or merge drivers in the repo config. None of them ran on git 2.53 in a test of the commands DALANG uses; this keeps a newer git from turning them into a way out.
+- Docs and the Providers page now say plainly that an agy run can read the whole desktop keyring.
+- **Antigravity in the sandbox is now opt-in and off by default.** Tick "Allow Antigravity to read the desktop keyring" on the Providers page to use it. While it is off, a task routed to agy runs on its backup profile (with a note in Assign and in the run log), a task with no usable backup is blocked with a reason, and agy cannot be a Lead. The setting is stored in a new `settings` table (database schema v3).
 
 ## 0.2.1, 18 Nov
 

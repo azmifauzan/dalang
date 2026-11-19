@@ -112,7 +112,7 @@ Run on 18 Nov 2026 on Linux, through the HTTP API and the real sandbox, one run 
 | --- | --- | --- |
 | v0.1 Rembuk | Projects, Lead chat, brief, plan and kanban, provider status page | Released |
 | v0.2 Jalan | Routing and dispatch, sequential execution, live logs, git checkpoints, stop, retry, resume, rollback | Released |
-| v0.3 Kawal | Reviewer and fix loop, diff view, approve merge, post-merge integration, profiles and routing in UI | Implemented |
+| v0.3 Kawal | Reviewer and fix loop, diff view, approve merge, post-merge integration, profiles and routing in UI | Released |
 | v0.4 Paralel | Worktree per task, dependency graph, per-provider limits, quota fallback, usage stats | Planned |
 | v1.0 | Polish, Windows support, docs, npm release | Planned |
 
