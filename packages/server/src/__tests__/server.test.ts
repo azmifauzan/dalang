@@ -252,7 +252,7 @@ describe('@dalang/server API (v0.1 Rembuk)', () => {
     try {
       const health = await app.inject({ method: 'GET', url: '/api/health' });
       expect(health.statusCode).toBe(200);
-      expect(health.json()).toEqual({ ok: true, version: '0.3.0' });
+      expect(health.json()).toEqual({ ok: true, version: '0.4.0' });
 
       const providersRes = await app.inject({ method: 'GET', url: '/api/providers/status' });
       expect(providersRes.statusCode).toBe(200);
@@ -438,8 +438,13 @@ describe('@dalang/server API (v0.1 Rembuk)', () => {
       which: baseRunner.which,
       async run(cmd, args, opts) {
         const joined = `${cmd} ${args.join(' ')}`;
+        const isProj2 =
+          opts.cwd.endsWith('proj-2') ||
+          (fs.existsSync(path.join(opts.cwd, '.git')) &&
+            fs.statSync(path.join(opts.cwd, '.git')).isFile() &&
+            fs.readFileSync(path.join(opts.cwd, '.git'), 'utf8').includes('proj-2'));
         // Project 2 fails review round 1, passes after fix round 2.
-        if (opts.cwd.endsWith('proj-2') && joined.includes('code review round 1')) {
+        if (isProj2 && joined.includes('code review round 1')) {
           const payload = JSON.stringify({
             task_id: 'T-001',
             status: 'fail',
@@ -589,7 +594,7 @@ describe('@dalang/server API (v0.1 Rembuk)', () => {
     } finally {
       await close();
     }
-  });
+  }, 15_000);
 
   it('refuses requests whose Host or Origin is not loopback (DNS rebinding guard)', async () => {
     const dbDir = makeTempDir('dalang-db-');
@@ -640,5 +645,206 @@ describe('@dalang/server API (v0.1 Rembuk)', () => {
       await close();
     }
   });
+
+  it('supports v0.4 parallel worktree execution, single-task stop, statistics, and clear-cooldown via HTTP API', async () => {
+    const dbDir = makeTempDir('dalang-srv-v4-db-');
+    const projDir = path.join(makeTempDir('dalang-srv-v4-proj-'), 'parallel-app');
+
+    const activeTasks = new Set<string>();
+    let releaseT1!: () => void;
+    const t1Gate = new Promise<void>((r) => {
+      releaseT1 = r;
+    });
+    let bothStarted!: () => void;
+    const bothStartedPromise = new Promise<void>((r) => {
+      bothStarted = r;
+    });
+
+    const baseRunner = createMultiProjectFakeRunner({
+      [projDir]: { title: 'Parallel App', stack: ['TypeScript'], taskTitle: 'Initial scaffold' },
+    });
+
+    const runner: CliRunner = {
+      which: baseRunner.which,
+      async run(cmd, args, opts: RunCommandOptions): Promise<RunCommandResult> {
+        const joined = `${cmd} ${args.join(' ')}`;
+        const taskMatch = joined.match(/\.dalang\/tasks\/([A-Za-z0-9_-]+)\/result\.json/);
+        const isCoderPrompt = taskMatch && !joined.match(/code review round \d+ of \d+ for task/i);
+
+        if (isCoderPrompt) {
+          const extId = taskMatch[1];
+          activeTasks.add(extId);
+          if (activeTasks.size === 2) {
+            bothStarted();
+          }
+
+          if (extId === 'T-001') {
+            await t1Gate;
+            fs.mkdirSync(path.join(opts.cwd, 'src', 'alpha'), { recursive: true });
+            fs.writeFileSync(path.join(opts.cwd, 'src', 'alpha', 'a.ts'), 'export const alpha = 1;\n');
+            fs.mkdirSync(path.dirname(path.join(opts.cwd, '.dalang', 'tasks', 'T-001', 'result.json')), { recursive: true });
+            fs.writeFileSync(
+              path.join(opts.cwd, '.dalang', 'tasks', 'T-001', 'result.json'),
+              JSON.stringify({
+                task_id: 'T-001',
+                status: 'completed',
+                changed_files: ['src/alpha/a.ts'],
+                summary: 'Alpha done',
+                notes: [],
+                blockers: [],
+                verify_command: 'pnpm test',
+                verify_exit_code: 0,
+              }),
+            );
+            activeTasks.delete(extId);
+            const line = JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'Alpha ok' } });
+            return { exitCode: 0, stdout: `${line}\n`, stderr: '', timedOut: false, idleTimedOut: false };
+          }
+
+          if (extId === 'T-002') {
+            await new Promise<void>((resolve) => {
+              if (opts.signal?.aborted) {
+                resolve();
+                return;
+              }
+              opts.signal?.addEventListener('abort', () => resolve(), { once: true });
+            });
+            activeTasks.delete(extId);
+            return { exitCode: null, stdout: '', stderr: '', timedOut: false, idleTimedOut: false, aborted: true };
+          }
+        }
+
+        return baseRunner.run(cmd, args, opts);
+      },
+    };
+
+    const { app, close } = await createDalangServer({
+      dbPath: path.join(dbDir, 'dalang.db'),
+      runner,
+    });
+
+    try {
+      const createRes = await app.inject({
+        method: 'POST',
+        url: '/api/projects',
+        payload: { mode: 'create', name: 'Parallel App', path: projDir },
+      });
+      const projectId = createRes.json().project.id as string;
+
+      await app.inject({ method: 'POST', url: `/api/projects/${projectId}/discuss/finish` });
+      await app.inject({ method: 'POST', url: `/api/projects/${projectId}/briefs/1/approve` });
+      const planRes = await app.inject({
+        method: 'POST',
+        url: `/api/projects/${projectId}/plan/generate`,
+      });
+      const oldTaskId = planRes.json().plan.tasks[0].id as string;
+      await app.inject({ method: 'DELETE', url: `/api/projects/${projectId}/tasks/${oldTaskId}` });
+
+      const t1Res = await app.inject({
+        method: 'POST',
+        url: `/api/projects/${projectId}/tasks`,
+        payload: {
+          title: 'Alpha component',
+          milestone: 'M1',
+          role: 'engineer',
+          complexity: 'low',
+          dependsOn: [],
+          goal: 'Implement alpha',
+          filesAllowed: ['src/alpha/**'],
+          filesReference: ['PROJECT.md'],
+          acceptanceCriteria: ['Alpha exists'],
+          verify: 'pnpm test',
+          needsSplit: false,
+          status: 'ready',
+        },
+      });
+      const t2Res = await app.inject({
+        method: 'POST',
+        url: `/api/projects/${projectId}/tasks`,
+        payload: {
+          title: 'Beta component',
+          milestone: 'M1',
+          role: 'engineer',
+          complexity: 'high',
+          dependsOn: [],
+          goal: 'Implement beta',
+          filesAllowed: ['src/beta/**'],
+          filesReference: ['PROJECT.md'],
+          acceptanceCriteria: ['Beta exists'],
+          verify: 'pnpm test',
+          needsSplit: false,
+          status: 'ready',
+        },
+      });
+      const t1Id = t1Res.json().task.id as string;
+      const t2Id = t2Res.json().task.id as string;
+
+      await app.inject({ method: 'POST', url: `/api/projects/${projectId}/plan/approve` });
+
+      // Start parallel queue -> T-001 (codex) and T-002 (claude-code) enter simultaneously
+      const startRes = await app.inject({
+        method: 'POST',
+        url: `/api/projects/${projectId}/execution/start`,
+        payload: { allowUnconfined: true },
+      });
+      expect(startRes.statusCode).toBe(202);
+      expect(startRes.json().runs).toHaveLength(2);
+
+      await bothStartedPromise;
+      const midExecRes = await app.inject({ method: 'GET', url: `/api/projects/${projectId}/execution` });
+      expect(midExecRes.statusCode).toBe(200);
+      expect(midExecRes.json().execution.activeRuns).toHaveLength(2);
+      expect(midExecRes.json().execution.providerStates).toHaveLength(3);
+
+      // Stop ONLY T-002 while releasing T-001 to complete into awaiting_merge
+      const stopT2Res = await app.inject({
+        method: 'POST',
+        url: `/api/projects/${projectId}/tasks/${t2Id}/stop`,
+      });
+      expect(stopT2Res.statusCode).toBe(200);
+      expect(stopT2Res.json().stopped).toBe(true);
+      releaseT1();
+
+      let finalExec: {
+        activeRuns: unknown[];
+        dispatchPreviews: Array<{ taskId: string; status: string }>;
+      } | null = null;
+      for (let i = 0; i < 80; i++) {
+        const res = await app.inject({ method: 'GET', url: `/api/projects/${projectId}/execution` });
+        finalExec = res.json().execution;
+        const p1 = finalExec!.dispatchPreviews.find((p) => p.taskId === t1Id);
+        const p2 = finalExec!.dispatchPreviews.find((p) => p.taskId === t2Id);
+        if (finalExec!.activeRuns.length === 0 && p1?.status === 'awaiting_merge' && p2?.status === 'stopped') {
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 25));
+      }
+
+      expect(finalExec?.dispatchPreviews.find((p) => p.taskId === t1Id)?.status).toBe('awaiting_merge');
+      expect(finalExec?.dispatchPreviews.find((p) => p.taskId === t2Id)?.status).toBe('stopped');
+
+      const statsRes = await app.inject({
+        method: 'GET',
+        url: `/api/statistics?projectId=${projectId}&days=7`,
+      });
+      expect(statsRes.statusCode).toBe(200);
+      const statsBody = statsRes.json().statistics;
+      expect(statsBody.totals.totalRuns).toBeGreaterThanOrEqual(3);
+      expect(statsBody.providers).toHaveLength(3);
+      expect(statsBody.projects).toHaveLength(1);
+
+      const clearRes = await app.inject({
+        method: 'POST',
+        url: '/api/providers/codex/clear-cooldown',
+      });
+      expect(clearRes.statusCode).toBe(200);
+      expect(clearRes.json().ok).toBe(true);
+      expect(
+        clearRes.json().providerStates.find((ps: { provider: string }) => ps.provider === 'codex')?.inCooldown,
+      ).toBe(false);
+    } finally {
+      await close();
+    }
+  }, 15_000);
 });
 

@@ -307,10 +307,18 @@ export async function wrapWithBwrap(
     }
   }
 
-  // Prevent sandboxed agents from writing executable hooks into `.git/hooks`.
-  const gitHooksDir = path.join(projectPath, '.git', 'hooks');
-  if (!options.readOnly && fs.existsSync(gitHooksDir)) {
-    bwrapArgs.push('--ro-bind', gitHooksDir, gitHooksDir);
+  // Prevent sandboxed agents from writing executable hooks into `.git/hooks` or tampering with a worktree `.git` link file.
+  const dotGit = path.join(projectPath, '.git');
+  if (!options.readOnly && fs.existsSync(dotGit)) {
+    const stat = fs.lstatSync(dotGit);
+    if (stat.isFile() || stat.isSymbolicLink()) {
+      bwrapArgs.push('--ro-bind', dotGit, dotGit);
+    } else if (stat.isDirectory()) {
+      const gitHooksDir = path.join(dotGit, 'hooks');
+      if (fs.existsSync(gitHooksDir)) {
+        bwrapArgs.push('--ro-bind', gitHooksDir, gitHooksDir);
+      }
+    }
   }
 
   bwrapArgs.push('--chdir', projectPath, '--', command, ...args);

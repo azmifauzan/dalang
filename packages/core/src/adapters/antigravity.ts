@@ -189,7 +189,8 @@ export class AntigravityAdapter implements CliAdapter {
     if (options.model) {
       args.push('--model', options.model);
     }
-    if (options.effort) {
+    // A chosen model carries its own level in the id (or has none), so --effort only applies to the CLI default model.
+    if (options.effort && !options.model) {
       args.push('--effort', options.effort);
     }
     args.push(`-p=${options.prompt}`);

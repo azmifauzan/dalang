@@ -4,7 +4,7 @@ import path from 'node:path';
 import { eq, desc } from 'drizzle-orm';
 import { simpleGit } from 'simple-git';
 import type { CreateOrOpenProjectInput, ProjectSummary, ProviderId } from '@dalang/shared';
-import type { DalangDb } from '../db/client.js';
+import { getDbDataDir, type DalangDb } from '../db/client.js';
 import { briefs, plans, projects, tasks } from '../db/schema.js';
 import {
   ensureDir,
@@ -12,8 +12,11 @@ import {
   getProjectDiscussDir,
   getProjectLogsDir,
   getProjectTmpDir,
+  getProjectWorktreesDir,
+  getWorktreesRoot,
 } from '../paths.js';
 import { readArtifactFile, writeArtifactFile } from '../safe-fs.js';
+import { removeTaskWorktree } from './git.js';
 
 function checkSymlinkPointsTo(linkPath: string, targetName: string): boolean {
   try {
@@ -270,6 +273,15 @@ export class ProjectService {
 
   deleteProject(id: string): void {
     const row = this.getProjectRow(id);
+    const worktreeDir = getProjectWorktreesDir(getWorktreesRoot(getDbDataDir(this.db)), row.id);
+    if (fs.existsSync(worktreeDir)) {
+      for (const entry of fs.readdirSync(worktreeDir, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          void removeTaskWorktree(row.path, path.join(worktreeDir, entry.name)).catch(() => undefined);
+        }
+      }
+      fs.rmSync(worktreeDir, { recursive: true, force: true });
+    }
     this.db.delete(projects).where(eq(projects.id, row.id)).run();
   }
 

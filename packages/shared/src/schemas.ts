@@ -3,7 +3,7 @@ import { z } from 'zod';
 export const ProviderIdSchema = z.enum(['claude-code', 'codex', 'antigravity']);
 export type ProviderId = z.infer<typeof ProviderIdSchema>;
 
-export const EffortLevelSchema = z.enum(['low', 'medium', 'high']);
+export const EffortLevelSchema = z.enum(['low', 'medium', 'high', 'xhigh']);
 export type EffortLevel = z.infer<typeof EffortLevelSchema>;
 
 export const TaskRoleSchema = z.enum(['lead', 'planner', 'engineer', 'qa', 'reviewer']);
@@ -422,8 +422,15 @@ export interface AgentProfileDTO {
   idleTimeoutMs: number;
   maxParallel: number;
   maxReviewRounds: number;
+  fallbackProfileId: string | null;
   isDefault: boolean;
   createdAt: string;
+}
+
+/** `gemini-4-neon-high` becomes `{ base: 'gemini-4-neon', level: 'high' }`; null when the id has no level suffix. */
+export function splitEffortModel(model: string): { base: string; level: EffortLevel } | null {
+  const m = model.trim().match(/^(.+)-(low|medium|high|xhigh)$/i);
+  return m ? { base: m[1], level: m[2].toLowerCase() as EffortLevel } : null;
 }
 
 const ProfileBaseFieldsSchema = z.object({
@@ -442,6 +449,7 @@ const ProfileBaseFieldsSchema = z.object({
   idleTimeoutMs: z.number().int().min(5000).max(3_600_000),
   maxParallel: z.number().int().min(1).max(16),
   maxReviewRounds: z.number().int().min(1).max(3),
+  fallbackProfileId: z.string().min(1).nullable(),
 });
 
 export const CreateProfileInputSchema = z.object({
@@ -455,6 +463,7 @@ export const CreateProfileInputSchema = z.object({
   idleTimeoutMs: ProfileBaseFieldsSchema.shape.idleTimeoutMs.default(180_000),
   maxParallel: ProfileBaseFieldsSchema.shape.maxParallel.default(1),
   maxReviewRounds: ProfileBaseFieldsSchema.shape.maxReviewRounds.default(2),
+  fallbackProfileId: ProfileBaseFieldsSchema.shape.fallbackProfileId.default(null),
 });
 export type CreateProfileInput = z.infer<typeof CreateProfileInputSchema>;
 
@@ -490,6 +499,20 @@ export const StartExecutionInputSchema = z.object({
   resumeSession: z.boolean().default(false),
 });
 export type StartExecutionInput = z.infer<typeof StartExecutionInputSchema>;
+
+export const StopExecutionInputSchema = z.object({
+  taskId: z.string().min(1).optional(),
+});
+export type StopExecutionInput = z.infer<typeof StopExecutionInputSchema>;
+
+export const ProviderEventTypeSchema = z.enum([
+  'rate_limit',
+  'login_expired',
+  'timeout',
+  'error',
+  'quota_fallback',
+]);
+export type ProviderEventType = z.infer<typeof ProviderEventTypeSchema>;
 
 export const AssignTaskProfileInputSchema = z.object({
   profileOverride: z.string().min(1).nullable(),
@@ -544,6 +567,9 @@ export interface TaskDispatchPreviewDTO {
   complexity: TaskComplexity;
   status: TaskStatus;
   dependsOn: string[];
+  wave: number;
+  overlappingTasks: string[];
+  blockedByOverlapWith: string | null;
   dependenciesSatisfied: boolean;
   eligible: boolean;
   blockedReason: string | null;
@@ -556,6 +582,7 @@ export interface TaskDispatchPreviewDTO {
   selectionSource: 'override' | 'routing_rule' | 'default';
   /** Set when the routed profile cannot run as configured and another one is used instead. */
   selectionNote: string | null;
+  quotaReroutedReason: string | null;
 }
 
 export interface TaskRunDTO {
@@ -570,6 +597,7 @@ export interface TaskRunDTO {
   model: string | null;
   kind: RunKind;
   branchName: string | null;
+  worktreePath: string | null;
   status: RunStatus;
   cliSessionId: string | null;
   attempt: number;
@@ -669,13 +697,94 @@ export interface GuardStateDTO {
   integrationRuns: IntegrationRunDTO[];
 }
 
+export interface ProviderRuntimeStateDTO {
+  provider: ProviderId;
+  activeCount: number;
+  maxParallel: number;
+  inCooldown: boolean;
+  cooldownReason: string | null;
+  cooldownUntil: string | null;
+  quotaExhausted: boolean;
+  quotaReason: string | null;
+}
+
+export interface ProviderEventDTO {
+  id: string;
+  provider: ProviderId;
+  type: ProviderEventType;
+  detail: string | null;
+  createdAt: string;
+}
+
+export interface ProviderStatisticsDTO {
+  provider: ProviderId;
+  displayName: string;
+  totalRuns: number;
+  completedRuns: number;
+  failedRuns: number;
+  stoppedRuns: number;
+  runningRuns: number;
+  rolledBackRuns: number;
+  fallbackRuns: number;
+  byKind: {
+    execute: number;
+    fix: number;
+    review: number;
+  };
+  totalDurationMs: number;
+  avgDurationMs: number | null;
+  rateLimitEvents: number;
+  timeoutEvents: number;
+  loginExpiredEvents: number;
+  errorEvents: number;
+  quotaFallbackEvents: number;
+  lastEventAt: string | null;
+  lastEventDetail: string | null;
+  activeRuns: number;
+  maxParallel: number;
+  inCooldown: boolean;
+  cooldownReason: string | null;
+  cooldownUntil: string | null;
+  quotaExhausted: boolean;
+  quotaReason: string | null;
+}
+
+export interface ProjectUsageStatisticsDTO {
+  projectId: string;
+  projectName: string;
+  totalRuns: number;
+  completedRuns: number;
+  failedRuns: number;
+  fallbackRuns: number;
+  totalDurationMs: number;
+}
+
+export interface UsageStatisticsResponseDTO {
+  generatedAt: string;
+  projectId: string | null;
+  windowDays: number | null;
+  totals: {
+    totalRuns: number;
+    completedRuns: number;
+    failedRuns: number;
+    fallbackRuns: number;
+    totalDurationMs: number;
+    rateLimitEvents: number;
+  };
+  providers: ProviderStatisticsDTO[];
+  projects: ProjectUsageStatisticsDTO[];
+  recentEvents: ProviderEventDTO[];
+}
+
 export interface ExecutionStateDTO {
   projectId: string;
   planStatus: 'none' | 'draft' | 'approved';
   activeRun: TaskRunDTO | null;
+  activeRuns: TaskRunDTO[];
   queueRunning: boolean;
   sandboxReady: boolean;
   platform: string;
+  providerStates: ProviderRuntimeStateDTO[];
   dispatchPreviews: TaskDispatchPreviewDTO[];
   runs: TaskRunDTO[];
 }

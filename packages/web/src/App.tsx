@@ -106,6 +106,8 @@ export function App() {
           } else if (msg.type === 'run.started' && msg.projectId && msg.runId) {
             setRunLogsByRunId((prev) => ({ ...prev, [msg.runId!]: [] }));
             qc.invalidateQueries({ queryKey: ['execution', msg.projectId] });
+            qc.invalidateQueries({ queryKey: ['providers-status'] });
+            qc.invalidateQueries({ queryKey: ['statistics'] });
           } else if (msg.type === 'run.log' && msg.projectId && msg.runId && msg.line) {
             setRunLogsByRunId((prev) => ({
               ...prev,
@@ -115,8 +117,16 @@ export function App() {
             qc.invalidateQueries({ queryKey: ['execution', msg.projectId] });
             qc.invalidateQueries({ queryKey: ['plan', msg.projectId] });
             qc.invalidateQueries({ queryKey: ['guard', msg.projectId] });
+            qc.invalidateQueries({ queryKey: ['providers-status'] });
+            qc.invalidateQueries({ queryKey: ['statistics'] });
             if (msg.runId) {
               qc.invalidateQueries({ queryKey: ['run-log', msg.projectId, msg.runId] });
+            }
+          } else if (msg.type === 'provider.updated') {
+            qc.invalidateQueries({ queryKey: ['providers-status'] });
+            qc.invalidateQueries({ queryKey: ['statistics'] });
+            if (activeProjectId) {
+              qc.invalidateQueries({ queryKey: ['execution', activeProjectId] });
             }
           } else if (
             (msg.type === 'review.finished' || msg.type === 'integration.finished') &&
@@ -233,7 +243,7 @@ export function App() {
                 />
               </svg>
               <span className="text-base font-bold tracking-tight">DALANG</span>
-              <Badge>v0.3</Badge>
+              <Badge>v0.4</Badge>
             </button>
 
             {activeProject && (

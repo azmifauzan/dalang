@@ -75,6 +75,7 @@ export class ProfileService {
         idleTimeoutMs: input.idleTimeoutMs,
         maxParallel: input.maxParallel,
         maxReviewRounds: input.maxReviewRounds,
+        fallbackProfileId: this.checkedFallbackId(input.fallbackProfileId, null),
         isDefault: false,
         createdAt: now,
       })
@@ -109,11 +110,21 @@ export class ProfileService {
         ...(input.idleTimeoutMs !== undefined ? { idleTimeoutMs: input.idleTimeoutMs } : {}),
         ...(input.maxParallel !== undefined ? { maxParallel: input.maxParallel } : {}),
         ...(input.maxReviewRounds !== undefined ? { maxReviewRounds: input.maxReviewRounds } : {}),
+        ...(input.fallbackProfileId !== undefined
+          ? { fallbackProfileId: this.checkedFallbackId(input.fallbackProfileId, id) }
+          : {}),
       })
       .where(eq(agentProfiles.id, id))
       .run();
 
     return this.getProfile(id);
+  }
+
+  private checkedFallbackId(fallbackId: string | null | undefined, selfId: string | null): string | null {
+    if (!fallbackId) return null;
+    if (fallbackId === selfId) throw new Error('A profile cannot be its own fallback.');
+    this.getProfile(fallbackId);
+    return fallbackId;
   }
 
   deleteProfile(id: string): void {
@@ -131,6 +142,13 @@ export class ProfileService {
     if (usedByRules.length > 0) {
       throw new Error(
         `Cannot delete "${target.name}" while routing rules point to it. Update or remove those rules first.`,
+      );
+    }
+
+    const usedAsFallback = all.filter((p) => p.fallbackProfileId === id);
+    if (usedAsFallback.length > 0) {
+      throw new Error(
+        `Cannot delete "${target.name}" while it is the fallback of ${usedAsFallback.map((p) => `"${p.name}"`).join(', ')}. Change that fallback first.`,
       );
     }
 
@@ -285,6 +303,12 @@ export class ProfileService {
     const byName = new Map(profiles.map((p) => [p.name, p]));
     const rules = this.db.select().from(routingRules).orderBy(asc(routingRules.sortOrder)).all();
 
+    // The routing rule's fallback wins; otherwise the primary profile's own fallback.
+    const ownFallback = (ruleFallbackId: string | null | undefined, primary: AgentProfileDTO) => {
+      const f = byId.get(ruleFallbackId || primary.fallbackProfileId || '');
+      return f && f.id !== primary.id ? f : null;
+    };
+
     // The first rule that matches in order wins; a null complexity matches every complexity (PRD routing).
     const matchedRule =
       rules.find((r) => r.role === input.role && (r.complexity === null || r.complexity === input.complexity)) ??
@@ -293,8 +317,7 @@ export class ProfileService {
     if (input.profileOverride) {
       const overrideProfile = byId.get(input.profileOverride) ?? byName.get(input.profileOverride);
       if (overrideProfile) {
-        const ruleFallback =
-          matchedRule?.fallbackProfileId ? (byId.get(matchedRule.fallbackProfileId) ?? null) : null;
+        const ruleFallback = ownFallback(matchedRule?.fallbackProfileId, overrideProfile);
         const defaultFallback = byId.get('profile-lead') ?? null;
         const fallback =
           ruleFallback && ruleFallback.id !== overrideProfile.id
@@ -309,12 +332,9 @@ export class ProfileService {
     if (matchedRule) {
       const primary = byId.get(matchedRule.profileId);
       if (primary) {
-        const fallback = matchedRule.fallbackProfileId
-          ? (byId.get(matchedRule.fallbackProfileId) ?? null)
-          : null;
         return {
           primary,
-          fallback: fallback && fallback.id !== primary.id ? fallback : null,
+          fallback: ownFallback(matchedRule.fallbackProfileId, primary),
           source: 'routing_rule',
         };
       }
@@ -327,7 +347,7 @@ export class ProfileService {
     const lead = byId.get('profile-lead') ?? null;
     return {
       primary: fallbackDefault,
-      fallback: lead && lead.id !== fallbackDefault.id ? lead : null,
+      fallback: ownFallback(null, fallbackDefault) ?? (lead && lead.id !== fallbackDefault.id ? lead : null),
       source: 'default',
     };
   }
@@ -359,6 +379,7 @@ export class ProfileService {
       profiles[0];
     const configuredFallback =
       (reviewerRule?.fallbackProfileId ? byId.get(reviewerRule.fallbackProfileId) : undefined) ??
+      (configuredPrimary.fallbackProfileId ? byId.get(configuredPrimary.fallbackProfileId) : undefined) ??
       byId.get('profile-lead') ??
       null;
 
@@ -447,6 +468,7 @@ function toDTO(row: typeof agentProfiles.$inferSelect): AgentProfileDTO {
     idleTimeoutMs: row.idleTimeoutMs,
     maxParallel: row.maxParallel,
     maxReviewRounds: row.maxReviewRounds ?? 2,
+    fallbackProfileId: row.fallbackProfileId ?? null,
     isDefault: Boolean(row.isDefault),
     createdAt: row.createdAt,
   };

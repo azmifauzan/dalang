@@ -2,7 +2,7 @@
 
 > One goal in, a running app out. A local web tool that orchestrates Claude Code, Codex, and Antigravity CLI as a small team.
 
-**Status: v0.3 (Kawal) is implemented: projects, Discuss, Agree, List, Assign, Navigate (per-task branch execution, review & fix loop), Guard (diff viewer, Gate 2 approve/reject, post-merge integration suite), and full Providers, Profiles & Routing CRUD. See [docs/PRD.md](docs/PRD.md) for the full roadmap.**
+**Status: v0.4 (Paralel) is implemented: projects, Discuss, Agree, List (Kanban + Dependency Graph), Assign (Routing, Waves, File-Overlap & Concurrency Pool), Navigate (Concurrent Worktree Execution, Live Inspector & Per-Task Stop), Guard (Diff Viewer, Gate 2 Approve/Reject, Post-Merge Integration), and Providers (Profiles, Routing CRUD, Proactive Quota Fallback & Usage Statistics). Verified with scripted unit and API tests; real-model multi-task parallel trials remain unexecuted. See [docs/PRD.md](docs/PRD.md) for the full roadmap.**
 
 DALANG is named after the traditional Javanese puppeteer who directs the whole show. The name is also an acronym for the workflow:
 
@@ -18,9 +18,9 @@ Everything runs on your machine and uses the official CLI logins you already hav
 | --- | --- |
 | Discuss | The Lead asks structured questions and clarifies the goal |
 | Agree | The Lead writes a brief. You edit and approve it (gate 1) |
-| List | The Lead splits the brief into milestones and tasks on a kanban board |
-| Assign | The dispatcher routes each task to an agent profile, within per-provider limits |
-| Navigate | Agents run headless, one task at a time, with live logs and a git checkpoint before and after each task |
+| List | The Lead splits the brief into milestones and tasks on a kanban board or topological dependency graph |
+| Assign | The dispatcher groups tasks into waves, flags file overlaps, and routes each task with proactive quota fallback |
+| Navigate | Non-overlapping agents run concurrently in isolated git worktrees within per-provider limits, with live logs and checkpoints |
 | Guard | A reviewer runs the verify command and writes a review; you inspect diffs, approve merge onto main, or reject (gate 2), followed by post-merge integration tests |
 
 ## Why
@@ -67,7 +67,7 @@ Planned install for releases: `npx dalang`. The npm package is not published yet
 1. **Projects:** create a new folder (DALANG runs `git init`) or open an existing repo.
 2. **Discuss, Agree:** describe a goal, answer the Lead's question cards, press "Enough, write the brief", edit the brief, and approve it.
 3. **List:** generate the plan, adjust tasks on the kanban board, and approve the plan.
-4. **Assign, Navigate:** check which profile each task routes to, then start the sequential run. Watch the live log, stop a run, retry or resume a task, or roll a run back to its checkpoint.
+4. **Assign, Navigate:** inspect the dependency graph, file overlaps, and routed profiles, then start the parallel run. Watch concurrent worktree logs, stop individual tasks or the whole queue, retry or resume a session, or roll back to a checkpoint.
 
 Everything DALANG writes for a project lives in `<repo>/.dalang/` (brief, plan, per-task `result.json`, logs). Global state lives in `~/.dalang/`.
 
@@ -102,9 +102,8 @@ Run on 18 Nov 2026 on Linux, through the HTTP API and the real sandbox, one run 
 
 - **Linux only for confinement.** `bwrap` keeps agents inside the project folder and hides credential folders. macOS and Windows have no sandbox yet, so execution there needs an explicit opt-in.
 - **agy can read your desktop keyring.** It signs in through the Secret Service, and the filtered bus it gets (`xdg-dbus-proxy`, needed along with a desktop session) allows that whole service, so an agy run can read every secret stored there. Claude Code and Codex runs cannot. This is **off by default**: until you tick "Allow Antigravity to read the desktop keyring" on the Providers page, a task routed to agy runs on its backup profile instead, and agy cannot be a Lead inside the sandbox. Provider state folders (`~/.claude`, `~/.codex`, `~/.gemini`) stay writable for token refresh, which is listed in the PRD risks.
-- **The review sample is small.** 15 tasks in five small projects passed review; larger code bases and the agy reviewer are untested. Windows and macOS hosts are untested.
-- **Scope is checked after the fact.** Edits outside a task's `files_allowed` are not blocked while the agent works, but they fail the review (whatever the reviewer says), so the task cannot be merged without your override.
-- **One task at a time.** Parallel runs and worktrees are v0.4.
+- **The review sample is small.** 15 tasks in five small projects passed review; larger code bases and the agy reviewer are untested. Windows and macOS hosts are untested. Parallel worktrees were tried once with real Claude Code (two tasks); a real quota-limit reroute has not been observed (verified via scripted runner tests).
+- **Scope is checked after the fact.** Edits outside a task's `files_allowed` are not blocked while the agent works, but they fail the review (whatever the reviewer says), so the task cannot be merged without your override. Tasks with overlapping `files_allowed` are serialized rather than run concurrently.
 
 ## Roadmap
 
@@ -113,7 +112,7 @@ Run on 18 Nov 2026 on Linux, through the HTTP API and the real sandbox, one run 
 | v0.1 Rembuk | Projects, Lead chat, brief, plan and kanban, provider status page | Released |
 | v0.2 Jalan | Routing and dispatch, sequential execution, live logs, git checkpoints, stop, retry, resume, rollback | Released |
 | v0.3 Kawal | Reviewer and fix loop, diff view, approve merge, post-merge integration, profiles and routing in UI | Released |
-| v0.4 Paralel | Worktree per task, dependency graph, per-provider limits, quota fallback, usage stats | Planned |
+| v0.4 Paralel | Worktree per task, dependency graph, per-provider limits, quota fallback, usage stats | Implemented (one real two-task parallel run; quota reroute scripted only) |
 | v1.0 | Polish, Windows support, docs, npm release | Planned |
 
 ## Documentation

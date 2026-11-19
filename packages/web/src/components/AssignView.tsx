@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import type { ProjectSummary } from '@dalang/shared';
 import { api } from '../lib/api.js';
+import { DependencyGraph } from './DependencyGraph.js';
 import { EmptyPanel, ErrorPanel, LoadingPanel } from './StateViews.js';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -19,6 +20,7 @@ export function AssignView({
 }) {
   const qc = useQueryClient();
   const [allowUnconfined, setAllowUnconfined] = useState(false);
+  const [viewMode, setViewMode] = useState<'table' | 'graph'>('table');
 
   const executionQuery = useQuery({
     queryKey: ['execution', project.id],
@@ -57,6 +59,8 @@ export function AssignView({
   const profiles = profilesQuery.data?.profiles ?? [];
   const rules = routingQuery.data?.rules ?? [];
   const previews = execution?.dispatchPreviews ?? [];
+  const providerStates = execution?.providerStates ?? [];
+  const activeRunsCount = execution?.activeRuns?.length ?? (execution?.activeRun ? 1 : 0);
   const eligibleCount = previews.filter((p) => p.eligible).length;
   const doneCount = previews.filter((p) => p.status === 'done').length;
 
@@ -65,7 +69,8 @@ export function AssignView({
     Boolean(execution) &&
     execution?.planStatus === 'approved' &&
     eligibleCount > 0 &&
-    !execution?.activeRun &&
+    !execution?.queueRunning &&
+    activeRunsCount === 0 &&
     (!needsUnconfinedOptIn || allowUnconfined);
 
   return (
@@ -80,15 +85,26 @@ export function AssignView({
       >
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-lg font-semibold">Assign (Routing & Dispatch Queue)</h1>
+            <h1 className="text-lg font-semibold">Assign (Parallel Routing & Dispatch Queue)</h1>
             {execution && (
               <Badge>
                 {doneCount} / {previews.length} done
               </Badge>
             )}
+            {activeRunsCount > 0 && (
+              <Badge
+                style={{
+                  color: 'var(--accent)',
+                  borderColor: 'var(--accent)',
+                  backgroundColor: 'var(--accent-tint)',
+                }}
+              >
+                {activeRunsCount} running
+              </Badge>
+            )}
           </div>
           <p className="mt-1 text-sm" style={{ color: 'var(--text-secondary)' }}>
-            Verify dependency readiness and agent profile routing before sequential execution starts.
+            Verify dependency waves, non-overlapping file scopes, and agent profile routing before parallel execution starts.
           </p>
         </div>
 
@@ -102,10 +118,10 @@ export function AssignView({
             disabled={!canStart || startMutation.isPending}
           >
             {startMutation.isPending
-              ? 'Starting sequential run...'
-              : execution?.activeRun
-                ? 'Execution already running'
-                : 'Start sequential run'}
+              ? 'Starting parallel run...'
+              : execution?.queueRunning || activeRunsCount > 0
+                ? 'Execution active'
+                : 'Start parallel run'}
           </Button>
         </div>
       </div>
@@ -174,7 +190,60 @@ export function AssignView({
 
       {!executionQuery.isLoading && !executionQuery.isError && execution?.planStatus === 'approved' && (
         <div className="space-y-6">
-          {/* Task dispatch table */}
+          {/* Provider Concurrency & Quota Strip (F-12, F-13) */}
+          {providerStates.length > 0 && (
+            <section
+              aria-label="Provider concurrency and quota status"
+              className="grid grid-cols-1 gap-3 sm:grid-cols-3"
+            >
+              {providerStates.map((ps) => (
+                <div
+                  key={ps.provider}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-3"
+                  style={{
+                    backgroundColor: 'var(--bg-surface)',
+                    borderColor:
+                      ps.inCooldown || ps.quotaExhausted
+                        ? 'var(--error)'
+                        : ps.activeCount > 0
+                          ? 'var(--accent)'
+                          : 'var(--border-subtle)',
+                  }}
+                >
+                  <div>
+                    <div className="font-mono-token text-xs font-semibold uppercase">
+                      {ps.provider}
+                    </div>
+                    <div className="mt-0.5 text-xs" style={{ color: 'var(--text-secondary)' }}>
+                      {ps.inCooldown
+                        ? `Cooldown: ${ps.cooldownReason ?? 'rate limited'}`
+                        : ps.quotaExhausted
+                          ? ps.quotaReason ?? 'Quota exhausted'
+                          : 'Healthy · available'}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <Badge>
+                      {ps.activeCount}/{ps.maxParallel} slots
+                    </Badge>
+                    {(ps.inCooldown || ps.quotaExhausted) && (
+                      <Badge
+                        style={{
+                          color: 'var(--error)',
+                          borderColor: 'var(--error)',
+                          backgroundColor: 'var(--error-tint)',
+                        }}
+                      >
+                        {ps.inCooldown ? 'COOLDOWN' : 'QUOTA'}
+                      </Badge>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </section>
+          )}
+
+          {/* Task dispatch queue & dependency graph */}
           <section
             aria-labelledby="dispatch-table-heading"
             className="rounded-md border p-4"
@@ -183,16 +252,51 @@ export function AssignView({
               borderColor: 'var(--border-subtle)',
             }}
           >
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <h2 id="dispatch-table-heading" className="text-base font-semibold">
-                Approved task queue
-              </h2>
-              <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-                {eligibleCount} ready to dispatch next
-              </span>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 id="dispatch-table-heading" className="text-base font-semibold">
+                  Approved task queue
+                </h2>
+                <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+                  {eligibleCount} ready to dispatch next
+                </span>
+              </div>
+
+              <div
+                role="group"
+                aria-label="Dispatch view mode"
+                className="inline-flex rounded-[6px] border border-input bg-card p-0.5"
+              >
+                <button
+                  type="button"
+                  aria-pressed={viewMode === 'table'}
+                  onClick={() => setViewMode('table')}
+                  className={`min-h-11 cursor-pointer rounded-[4px] px-3 text-sm font-medium transition-colors duration-150 ${
+                    viewMode === 'table'
+                      ? 'bg-primary text-primary-foreground'
+                      : 'text-foreground hover:bg-muted'
+                  }`}
+                >
+                  Queue table
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={viewMode === 'graph'}
+                  onClick={() => setViewMode('graph')}
+                  className={`min-h-11 cursor-pointer rounded-[4px] px-3 text-sm font-medium transition-colors duration-150 ${
+                    viewMode === 'graph'
+                      ? 'bg-primary text-primary-foreground'
+                      : 'text-foreground hover:bg-muted'
+                  }`}
+                >
+                  Dependency graph
+                </button>
+              </div>
             </div>
 
-            {previews.length === 0 ? (
+            {viewMode === 'graph' ? (
+              <DependencyGraph previews={previews} onSelectTask={() => onGoToNavigate()} />
+            ) : previews.length === 0 ? (
               <EmptyPanel
                 title="No tasks in approved plan"
                 description="This plan contains no tasks to dispatch."
@@ -206,7 +310,7 @@ export function AssignView({
               >
                 <table className="w-full border-collapse text-left text-sm">
                   <caption className="sr-only">
-                    Task dispatch readiness and assigned agent profiles
+                    Task dispatch readiness, parallelism waves, and assigned agent profiles
                   </caption>
                   <thead>
                     <tr
@@ -220,7 +324,7 @@ export function AssignView({
                         Role / Level
                       </th>
                       <th scope="col" className="py-2.5 pr-3 font-medium">
-                        Dependencies
+                        Wave / Parallel
                       </th>
                       <th scope="col" className="py-2.5 pr-3 font-medium">
                         Readiness
@@ -253,6 +357,7 @@ export function AssignView({
                             </div>
                             <div className="mt-1 text-xs" style={{ color: 'var(--text-secondary)' }}>
                               Milestone {item.milestone}
+                              {item.dependsOn.length > 0 && ` · Depends on: ${item.dependsOn.join(', ')}`}
                             </div>
                           </th>
                           <td className="py-3 pr-3 whitespace-nowrap">
@@ -264,8 +369,24 @@ export function AssignView({
                               {item.complexity}
                             </span>
                           </td>
-                          <td className="py-3 pr-3 text-xs" style={{ color: 'var(--text-secondary)' }}>
-                            {item.dependsOn.length > 0 ? item.dependsOn.join(', ') : 'None'}
+                          <td className="py-3 pr-3 text-xs">
+                            <Badge>Wave {item.wave + 1}</Badge>
+                            {item.overlappingTasks.length > 0 ? (
+                              <p
+                                className="mt-1"
+                                style={{
+                                  color: item.blockedByOverlapWith
+                                    ? 'var(--error)'
+                                    : 'var(--text-secondary)',
+                                }}
+                              >
+                                Overlap: {item.overlappingTasks.join(', ')}
+                              </p>
+                            ) : (
+                              <p className="mt-1" style={{ color: 'var(--text-secondary)' }}>
+                                Isolated worktree
+                              </p>
+                            )}
                           </td>
                           <td className="py-3 pr-3">
                             <Badge
@@ -333,6 +454,11 @@ export function AssignView({
                             {item.selectionNote && (
                               <p className="mt-1 text-xs" style={{ color: 'var(--text-secondary)' }}>
                                 {item.selectionNote}
+                              </p>
+                            )}
+                            {item.quotaReroutedReason && (
+                              <p className="mt-1 text-xs font-medium" style={{ color: 'var(--accent)' }}>
+                                Quota fallback: {item.quotaReroutedReason}
                               </p>
                             )}
                           </td>

@@ -14,6 +14,7 @@ import {
   type IntegrationRunDTO,
   type PlanDTO,
   type ProviderId,
+  type ProviderRuntimeStateDTO,
   type RejectTaskInput,
   type ReviewContract,
   type RunKind,
@@ -25,11 +26,10 @@ import {
   type TaskResultContract,
   type TaskReviewDTO,
   type TaskRunDTO,
-  type TaskStatus,
 } from '@dalang/shared';
 import { createTurnLogger } from '../adapters/logger.js';
 import type { ProviderRegistry } from '../adapters/registry.js';
-import type { DalangDb } from '../db/client.js';
+import { getDbDataDir, type DalangDb } from '../db/client.js';
 import {
   agentProfiles,
   integrationRuns,
@@ -39,7 +39,7 @@ import {
   runs,
   tasks,
 } from '../db/schema.js';
-import { getProjectLogsDir, getTaskArtifactDir } from '../paths.js';
+import { getProjectLogsDir, getTaskArtifactDir, getTaskWorktreeDir, getWorktreesRoot } from '../paths.js';
 import {
   ensureProjectDir,
   readArtifactFile,
@@ -50,16 +50,17 @@ import { formatZodError } from './contract.js';
 import type { DalangEventBus } from './events.js';
 import {
   branchExists,
-  checkoutBranch,
-  checkoutTaskBranch,
   createGitCheckpoint,
+  createTaskWorktree,
   deleteTaskBranch,
   ensureMainBaseline,
   getChangedFilesBetween,
   getHeadCommit,
   getRepoState,
   getTaskDiff,
+  isAncestorCommit,
   mergeTaskBranchToMain,
+  removeTaskWorktree,
   rollbackGitToCheckpoint,
 } from './git.js';
 import type { LeadService } from './lead.js';
@@ -72,16 +73,42 @@ import {
   tailOutput,
   validateReviewTurnOutput,
 } from './review.js';
+import {
+  computeTaskWaves,
+  globsOverlap,
+  ProviderLimiter,
+  type SlotLease,
+} from './scheduler.js';
 
-interface ActiveProjectExecution {
-  runId: string;
+export interface ExecutionServiceOptions {
+  worktreesRoot?: string;
+  quotaCooldownMs?: number;
+}
+
+interface ActiveTaskExecution {
+  projectId: string;
   taskId: string;
-  queueMode: boolean;
-  queueCancelled: boolean;
+  runId: string;
   controller: AbortController;
+  promise: Promise<RunStatus>;
+}
+
+interface ProjectQueueExecution {
+  projectId: string;
+  cancelled: boolean;
+  controller: AbortController;
+  inFlightTaskIds: Set<string>;
+  wake: () => void;
   promise: Promise<void>;
 }
 
+interface ProviderUsability {
+  usable: boolean;
+  kind: 'ok' | 'blocked' | 'quota' | 'cooldown';
+  reason: string | null;
+}
+
+const DEFAULT_QUOTA_COOLDOWN_MS = 5 * 60_000;
 const RATE_LIMIT_RE = /rate[_ ]?limit|usage limit|hit your limit|quota exceeded|too many requests|\b429\b/i;
 const LOGIN_EXPIRED_RE = /not logged in|unauthorized|authentication required|please log in|token expired/i;
 
@@ -169,16 +196,23 @@ function writePermission(profile: AgentProfileDTO): 'workspace-write' | 'accept-
 
 export class ExecutionService {
   private readonly profiles: ProfileService;
-  private readonly activeProjects = new Map<string, ActiveProjectExecution>();
-  private readonly activeProviderCounts = new Map<ProviderId, number>();
+  private readonly worktreesRoot: string;
+  private readonly quotaCooldownMs: number;
+  private readonly limiter = new ProviderLimiter();
+  private readonly activeTasks = new Map<string, ActiveTaskExecution>();
+  private readonly projectQueues = new Map<string, ProjectQueueExecution>();
+  private readonly projectGitLocks = new Map<string, Promise<void>>();
 
   constructor(
     private readonly db: DalangDb,
     private readonly registry: ProviderRegistry,
     private readonly leadService: LeadService,
     private readonly events?: DalangEventBus,
+    options: ExecutionServiceOptions = {},
   ) {
     this.profiles = new ProfileService(db);
+    this.worktreesRoot = options.worktreesRoot ?? getWorktreesRoot(getDbDataDir(db));
+    this.quotaCooldownMs = options.quotaCooldownMs ?? DEFAULT_QUOTA_COOLDOWN_MS;
     this.reconcileInterruptedRuns();
   }
 
@@ -206,6 +240,26 @@ export class ExecutionService {
       .run();
   }
 
+  private async withProjectGitLock<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.projectGitLocks.get(projectId) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const chained = prev.then(() => current, () => current);
+    this.projectGitLocks.set(projectId, chained);
+
+    await prev;
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (this.projectGitLocks.get(projectId) === chained) {
+        this.projectGitLocks.delete(projectId);
+      }
+    }
+  }
+
   private appendDalangLog(logFileAbs: string, line: string): void {
     const logger = createTurnLogger(logFileAbs);
     try {
@@ -221,18 +275,122 @@ export class ExecutionService {
     return row;
   }
 
-  private incrementProviderCount(provider: ProviderId): void {
-    this.activeProviderCounts.set(provider, (this.activeProviderCounts.get(provider) ?? 0) + 1);
+  private recordProviderEvent(
+    provider: ProviderId,
+    type: 'rate_limit' | 'login_expired' | 'timeout' | 'error' | 'quota_fallback',
+    detail: string,
+  ): void {
+    this.db
+      .insert(providerEvents)
+      .values({
+        id: crypto.randomUUID(),
+        provider,
+        type,
+        detail: detail.slice(0, 300),
+        createdAt: new Date().toISOString(),
+      })
+      .run();
+    this.events?.emitEvent({ type: 'provider.updated', provider });
   }
 
-  private decrementProviderCount(provider: ProviderId): void {
-    const current = this.activeProviderCounts.get(provider) ?? 0;
-    if (current <= 1) this.activeProviderCounts.delete(provider);
-    else this.activeProviderCounts.set(provider, current - 1);
+  private getProviderCooldownInfo(provider: ProviderId): {
+    inCooldown: boolean;
+    reason: string | null;
+    until: string | null;
+  } {
+    const clearedAt = this.registry.getRateLimitClearedAt(provider);
+    const recentEvents = this.db
+      .select()
+      .from(providerEvents)
+      .where(eq(providerEvents.provider, provider))
+      .orderBy(desc(providerEvents.createdAt))
+      .all();
+
+    const now = Date.now();
+    const cutoff = Math.max(now - this.quotaCooldownMs, clearedAt);
+
+    for (const ev of recentEvents) {
+      const evTime = new Date(ev.createdAt).getTime();
+      if (Number.isNaN(evTime) || evTime <= cutoff) break;
+      if (ev.type === 'rate_limit') {
+        return {
+          inCooldown: true,
+          reason: ev.detail || 'Recent rate limit reached',
+          until: new Date(evTime + this.quotaCooldownMs).toISOString(),
+        };
+      }
+      if (ev.type === 'login_expired') {
+        return {
+          inCooldown: true,
+          reason: ev.detail || 'CLI login session expired',
+          until: new Date(evTime + this.quotaCooldownMs).toISOString(),
+        };
+      }
+    }
+
+    return { inCooldown: false, reason: null, until: null };
   }
 
-  private getProviderActiveCount(provider: ProviderId): number {
-    return this.activeProviderCounts.get(provider) ?? 0;
+  private evaluateProviderUsability(
+    provider: ProviderId,
+    model: string | null,
+    sandboxReady: boolean,
+  ): ProviderUsability {
+    const blocked = this.registry.providerBlockedReason(provider, sandboxReady);
+    if (blocked) {
+      return { usable: false, kind: 'blocked', reason: blocked };
+    }
+
+    const cachedUsage = this.registry.getCachedUsage(provider);
+    const exhaustedReason = this.registry.isUsageExhausted(
+      cachedUsage?.usage,
+      model,
+      cachedUsage ? Date.now() - cachedUsage.checkedAt : 0,
+    );
+    if (exhaustedReason) {
+      return { usable: false, kind: 'quota', reason: exhaustedReason };
+    }
+
+    const cooldown = this.getProviderCooldownInfo(provider);
+    if (cooldown.inCooldown) {
+      return { usable: false, kind: 'cooldown', reason: cooldown.reason };
+    }
+
+    return { usable: true, kind: 'ok', reason: null };
+  }
+
+  getProviderRuntimeStates(): ProviderRuntimeStateDTO[] {
+    const allProfiles = this.profiles.listProfiles();
+    const providersList: ProviderId[] = ['claude-code', 'codex', 'antigravity'];
+    return providersList.map((provider) => {
+      const matching = allProfiles.filter((p) => p.provider === provider);
+      const maxParallel = matching.reduce((max, p) => Math.max(max, p.maxParallel), 1);
+      const cooldown = this.getProviderCooldownInfo(provider);
+      const cachedUsage = this.registry.getCachedUsage(provider);
+      const quotaReason = this.registry.isUsageExhausted(
+        cachedUsage?.usage,
+        null,
+        cachedUsage ? Date.now() - cachedUsage.checkedAt : 0,
+      );
+      return {
+        provider,
+        activeCount: this.limiter.getActiveCount(provider),
+        maxParallel,
+        inCooldown: cooldown.inCooldown,
+        cooldownReason: cooldown.reason,
+        cooldownUntil: cooldown.until,
+        quotaExhausted: Boolean(quotaReason),
+        quotaReason,
+      };
+    });
+  }
+
+  private getActiveTasksForProject(projectId: string): ActiveTaskExecution[] {
+    return [...this.activeTasks.values()].filter((t) => t.projectId === projectId);
+  }
+
+  private hasActiveTasksForProject(projectId: string): boolean {
+    return [...this.activeTasks.values()].some((t) => t.projectId === projectId);
   }
 
   assignTaskProfile(projectId: string, taskId: string, profileOverride: string | null): TaskDTO {
@@ -240,7 +398,7 @@ export class ExecutionService {
     if (!plan) throw new Error('No plan exists for this project.');
     const target = plan.tasks.find((t) => t.id === taskId || t.externalId === taskId);
     if (!target) throw new Error(`Task not found: ${taskId}`);
-    if (target.status === 'running' || target.status === 'reviewing') {
+    if (target.status === 'running' || target.status === 'reviewing' || this.activeTasks.has(target.id)) {
       throw new Error(`Cannot reassign ${target.externalId} while it is ${target.status}.`);
     }
 
@@ -271,6 +429,12 @@ export class ExecutionService {
     const sandboxReady = await this.registry.isSandboxReady();
 
     const dispatchPreviews = plan ? this.buildDispatchPreviews(plan, sandboxReady) : [];
+    // Snapshot active tasks/queue and run rows synchronously before any await so a phase
+    // transition (e.g. coder -> review) cannot mutate execHandle.runId after runRows was read.
+    const activeTaskList = this.getActiveTasksForProject(projectId);
+    const activeRunIds = new Set(activeTaskList.map((a) => a.runId).filter(Boolean));
+    const queue = this.projectQueues.get(projectId);
+    const queueRunning = Boolean(queue && !queue.cancelled);
     const runRows = this.db
       .select()
       .from(runs)
@@ -287,20 +451,17 @@ export class ExecutionService {
       ),
     );
 
-    const activeExec = this.activeProjects.get(projectId);
-    const activeRun = activeExec
-      ? (runDtos.find((r) => r.id === activeExec.runId) ??
-        runDtos.find((r) => r.status === 'running') ??
-        null)
-      : (runDtos.find((r) => r.status === 'running') ?? null);
+    const activeRuns = runDtos.filter((r) => activeRunIds.has(r.id) || r.status === 'running');
 
     return {
       projectId,
       planStatus: plan ? plan.status : 'none',
-      activeRun,
-      queueRunning: Boolean(activeExec?.queueMode && !activeExec.queueCancelled),
+      activeRun: activeRuns[0] ?? null,
+      activeRuns,
+      queueRunning,
       sandboxReady,
       platform: process.platform,
+      providerStates: this.getProviderRuntimeStates(),
       dispatchPreviews,
       runs: runDtos,
     };
@@ -309,33 +470,115 @@ export class ExecutionService {
   private routeTask(
     task: Pick<TaskDTO, 'role' | 'complexity' | 'profileOverride'>,
     sandboxReady: boolean,
-  ): ReturnType<ProfileService['resolveProfileForTask']> & { note: string | null; blocked: string | null } {
+  ): ReturnType<ProfileService['resolveProfileForTask']> & {
+    note: string | null;
+    quotaReroutedReason: string | null;
+    proactiveFallback: boolean;
+    skippedPrimaryProvider: ProviderId | null;
+    blocked: string | null;
+  } {
     const routing = this.profiles.resolveProfileForTask({
       role: task.role,
       complexity: task.complexity,
       profileOverride: task.profileOverride,
     });
-    const reason = this.registry.providerBlockedReason(routing.primary.provider, sandboxReady);
-    if (!reason) return { ...routing, note: null, blocked: null };
-    const backup = routing.fallback;
-    if (backup && !this.registry.providerBlockedReason(backup.provider, sandboxReady)) {
+    const primaryStatus = this.evaluateProviderUsability(
+      routing.primary.provider,
+      routing.primary.model || null,
+      sandboxReady,
+    );
+    if (primaryStatus.usable) {
       return {
         ...routing,
-        primary: backup,
-        fallback: null,
-        note: `${routing.primary.name} routes to Antigravity, which is off. Running on ${backup.name} (${backup.provider}) instead. Enable keyring access in the Antigravity profile editor to use it.`,
+        note: null,
+        quotaReroutedReason: null,
+        proactiveFallback: false,
+        skippedPrimaryProvider: null,
         blocked: null,
       };
     }
-    return { ...routing, note: null, blocked: reason };
+
+    const backup = routing.fallback;
+    if (backup) {
+      const backupStatus = this.evaluateProviderUsability(
+        backup.provider,
+        backup.model || null,
+        sandboxReady,
+      );
+      if (backupStatus.usable) {
+        if (primaryStatus.kind === 'blocked') {
+          return {
+            ...routing,
+            primary: backup,
+            fallback: null,
+            note: `${routing.primary.name} routes to Antigravity, which is off. Running on ${backup.name} (${backup.provider}) instead. Enable keyring access in the Antigravity profile editor to use it.`,
+            quotaReroutedReason: null,
+            proactiveFallback: false,
+            skippedPrimaryProvider: null,
+            blocked: null,
+          };
+        }
+        const reasonText = `${routing.primary.name} (${routing.primary.provider}) skipped (${primaryStatus.reason}); proactively routed to backup ${backup.name} (${backup.provider}).`;
+        return {
+          ...routing,
+          primary: backup,
+          fallback: null,
+          note: reasonText,
+          quotaReroutedReason: reasonText,
+          proactiveFallback: true,
+          skippedPrimaryProvider: routing.primary.provider,
+          blocked: null,
+        };
+      }
+    }
+
+    return {
+      ...routing,
+      note: null,
+      quotaReroutedReason: null,
+      proactiveFallback: false,
+      skippedPrimaryProvider: null,
+      blocked: primaryStatus.reason,
+    };
+  }
+
+  private findOverlappingActiveTask(plan: PlanDTO, target: TaskDTO): TaskDTO | null {
+    return (
+      plan.tasks.find(
+        (other) =>
+          other.id !== target.id &&
+          (this.activeTasks.has(other.id) ||
+            other.status === 'running' ||
+            other.status === 'reviewing' ||
+            other.status === 'awaiting_merge' ||
+            other.status === 'review_failed') &&
+          globsOverlap(target.filesAllowed, other.filesAllowed),
+      ) ?? null
+    );
   }
 
   private buildDispatchPreviews(plan: PlanDTO, sandboxReady: boolean): TaskDispatchPreviewDTO[] {
     const statusByExternal = new Map(plan.tasks.map((t) => [t.externalId, t.status]));
+    const waves = computeTaskWaves(plan.tasks);
+
     return plan.tasks.map((task) => {
       const pendingDeps = task.dependsOn.filter((dep) => statusByExternal.get(dep) !== 'done');
       const dependenciesSatisfied = pendingDeps.length === 0;
       const routing = this.routeTask(task, sandboxReady);
+      const wave = waves.get(task.externalId) ?? 0;
+
+      const overlappingTasks = plan.tasks
+        .filter(
+          (other) =>
+            other.id !== task.id &&
+            other.status !== 'done' &&
+            globsOverlap(task.filesAllowed, other.filesAllowed),
+        )
+        .map((other) => other.externalId);
+
+      const activeOverlap = this.findOverlappingActiveTask(plan, task);
+      const blockedByOverlapWith =
+        task.status === 'approved' && activeOverlap ? activeOverlap.externalId : null;
 
       let blockedReason: string | null = null;
       if (plan.status !== 'approved') {
@@ -354,12 +597,15 @@ export class ExecutionService {
         blockedReason = `Task is ${task.status}; use Retry or Resume`;
       } else if (!dependenciesSatisfied) {
         blockedReason = `Waiting on ${pendingDeps.join(', ')}`;
+      } else if (blockedByOverlapWith && activeOverlap) {
+        blockedReason = `Waiting: files overlap with ${blockedByOverlapWith} (${activeOverlap.status})`;
       }
 
       const eligible =
         plan.status === 'approved' &&
         task.status === 'approved' &&
         dependenciesSatisfied &&
+        !blockedByOverlapWith &&
         routing.blocked === null;
       if (!eligible && blockedReason === null && routing.blocked && task.status !== 'done') {
         blockedReason = routing.blocked;
@@ -374,6 +620,9 @@ export class ExecutionService {
         complexity: task.complexity,
         status: task.status,
         dependsOn: task.dependsOn,
+        wave,
+        overlappingTasks,
+        blockedByOverlapWith,
         dependenciesSatisfied,
         eligible,
         blockedReason,
@@ -385,6 +634,7 @@ export class ExecutionService {
         fallbackProfileName: routing.fallback?.name ?? null,
         selectionSource: routing.source,
         selectionNote: routing.note,
+        quotaReroutedReason: routing.quotaReroutedReason,
       };
     });
   }
@@ -392,34 +642,66 @@ export class ExecutionService {
   startExecution(
     projectId: string,
     input: Partial<StartExecutionInput> = {},
-  ): Promise<{ started: boolean; run: TaskRunDTO | null; queueMode: boolean }> {
+  ): Promise<{ started: boolean; run: TaskRunDTO | null; runs?: TaskRunDTO[]; queueMode: boolean }> {
     this.getProjectRow(projectId);
-    if (this.activeProjects.has(projectId)) {
+
+    if (input.taskId) {
+      const plan = this.leadService.getPlan(projectId);
+      const target = plan?.tasks.find((t) => t.id === input.taskId || t.externalId === input.taskId);
+      if (target && this.activeTasks.has(target.id)) {
+        return Promise.reject(new Error(`Task ${target.externalId} is already running.`));
+      }
+
+      // Reserve the task slot synchronously before the first await.
+      const reservationKey = target?.id ?? `${projectId}:${input.taskId}`;
+      const reservation: ActiveTaskExecution = {
+        projectId,
+        taskId: reservationKey,
+        runId: '',
+        controller: new AbortController(),
+        promise: Promise.resolve('stopped'),
+      };
+      this.activeTasks.set(reservationKey, reservation);
+
+      return this.startSingleTaskReserved(projectId, input, reservationKey, reservation).catch((err) => {
+        if (this.activeTasks.get(reservationKey) === reservation) {
+          this.activeTasks.delete(reservationKey);
+        }
+        throw err;
+      });
+    }
+
+    if (this.projectQueues.has(projectId)) {
       return Promise.reject(new Error('An execution run is already in progress for this project.'));
     }
 
-    // Reserve the slot before the first await so two quick requests cannot both start a run.
-    const reservation: ActiveProjectExecution = {
-      runId: '',
-      taskId: '',
-      queueMode: false,
-      queueCancelled: false,
+    let wakeFn = () => {};
+    const queueHandle: ProjectQueueExecution = {
+      projectId,
+      cancelled: false,
       controller: new AbortController(),
+      inFlightTaskIds: new Set(),
+      wake: () => wakeFn(),
       promise: Promise.resolve(),
     };
-    this.activeProjects.set(projectId, reservation);
+    this.projectQueues.set(projectId, queueHandle);
 
-    return this.startExecutionReserved(projectId, input, reservation).catch((err) => {
-      if (this.activeProjects.get(projectId) === reservation) this.activeProjects.delete(projectId);
+    return this.startQueueReserved(projectId, input, queueHandle, (fn) => {
+      wakeFn = fn;
+    }).catch((err) => {
+      if (this.projectQueues.get(projectId) === queueHandle) {
+        this.projectQueues.delete(projectId);
+      }
       throw err;
     });
   }
 
-  private async startExecutionReserved(
+  private async startSingleTaskReserved(
     projectId: string,
     input: Partial<StartExecutionInput>,
-    reservation: ActiveProjectExecution,
-  ): Promise<{ started: boolean; run: TaskRunDTO | null; queueMode: boolean }> {
+    reservationKey: string,
+    reservation: ActiveTaskExecution,
+  ): Promise<{ started: boolean; run: TaskRunDTO | null; runs?: TaskRunDTO[]; queueMode: boolean }> {
     const allowUnconfined = Boolean(input.allowUnconfined);
     const resumeSession = Boolean(input.resumeSession);
     const sandboxReady = await this.registry.isSandboxReady();
@@ -435,55 +717,90 @@ export class ExecutionService {
       throw new Error('Plan must be approved in List before execution can start.');
     }
 
-    if (input.taskId) {
-      const target = plan.tasks.find((t) => t.id === input.taskId || t.externalId === input.taskId);
-      if (!target) throw new Error(`Task not found: ${input.taskId}`);
-      if (target.status === 'running' || target.status === 'reviewing') {
-        throw new Error(`Task ${target.externalId} is currently ${target.status}.`);
-      }
+    const target = plan.tasks.find((t) => t.id === input.taskId || t.externalId === input.taskId);
+    if (!target) throw new Error(`Task not found: ${input.taskId}`);
+    if (target.status === 'running' || target.status === 'reviewing') {
+      throw new Error(`Task ${target.externalId} is currently ${target.status}.`);
+    }
 
-      const statusByExt = new Map(plan.tasks.map((t) => [t.externalId, t.status]));
-      const unmet = target.dependsOn.filter((d) => statusByExt.get(d) !== 'done');
-      if (unmet.length > 0) {
-        throw new Error(
-          `Cannot run ${target.externalId}: waiting for dependencies ${unmet.join(', ')} to finish and merge.`,
-        );
+    if (reservationKey !== target.id) {
+      if (this.activeTasks.has(target.id)) {
+        throw new Error(`Task ${target.externalId} is already running.`);
       }
+      this.activeTasks.delete(reservationKey);
+      reservation.taskId = target.id;
+      this.activeTasks.set(target.id, reservation);
+    }
 
-      let resumeSessionId: string | null = null;
-      if (resumeSession) {
-        const routing = this.routeTask(target, sandboxReady);
-        const prevRuns = this.db
-          .select()
-          .from(runs)
-          .where(and(eq(runs.taskId, target.id), ne(runs.kind, 'review')))
-          .orderBy(desc(runs.startedAt), desc(runs.attempt))
-          .all();
-        const sameProviderRun = prevRuns.find(
-          (r) => Boolean(r.cliSessionId) && r.provider === routing.primary.provider,
-        );
-        if (!sameProviderRun) {
-          const otherSession = prevRuns.find((r) => Boolean(r.cliSessionId));
-          if (otherSession) {
-            throw new Error(
-              `Previous session on ${target.externalId} belongs to ${otherSession.provider}, but current profile uses ${routing.primary.provider}. Use Retry or switch profile back to ${otherSession.provider}.`,
-            );
-          }
-          throw new Error(`No previous CLI session ID found to resume ${target.externalId}.`);
+    const statusByExt = new Map(plan.tasks.map((t) => [t.externalId, t.status]));
+    const unmet = target.dependsOn.filter((d) => statusByExt.get(d) !== 'done');
+    if (unmet.length > 0) {
+      throw new Error(
+        `Cannot run ${target.externalId}: waiting for dependencies ${unmet.join(', ')} to finish and merge.`,
+      );
+    }
+
+    const overlap = this.findOverlappingActiveTask(plan, target);
+    if (overlap) {
+      throw new Error(
+        `Cannot run ${target.externalId}: files_allowed overlaps with ${overlap.externalId} (${overlap.status}). Wait for it to merge or finish.`,
+      );
+    }
+
+    let resumeSessionId: string | null = null;
+    if (resumeSession) {
+      const routing = this.routeTask(target, sandboxReady);
+      const prevRuns = this.db
+        .select()
+        .from(runs)
+        .where(and(eq(runs.taskId, target.id), ne(runs.kind, 'review')))
+        .orderBy(desc(runs.startedAt), desc(runs.attempt))
+        .all();
+      const sameProviderRun = prevRuns.find(
+        (r) => Boolean(r.cliSessionId) && r.provider === routing.primary.provider,
+      );
+      if (!sameProviderRun) {
+        const otherSession = prevRuns.find((r) => Boolean(r.cliSessionId));
+        if (otherSession) {
+          throw new Error(
+            `Previous session on ${target.externalId} belongs to ${otherSession.provider}, but current profile uses ${routing.primary.provider}. Use Retry or switch profile back to ${otherSession.provider}.`,
+          );
         }
-        resumeSessionId = sameProviderRun.cliSessionId!;
+        throw new Error(`No previous CLI session ID found to resume ${target.externalId}.`);
       }
+      resumeSessionId = sameProviderRun.cliSessionId!;
+    }
 
-      const launched = await this.launchSingleTask(projectId, target, reservation, {
-        queueMode: false,
-        resumeSessionId,
-      });
-      return { started: true, run: launched.initialRun, queueMode: false };
+    const launched = await this.launchTaskExecution(projectId, target, reservation, {
+      resumeSessionId,
+      preAcquiredLease: null,
+    });
+    return { started: true, run: launched.initialRun, runs: [launched.initialRun], queueMode: false };
+  }
+
+  private async startQueueReserved(
+    projectId: string,
+    input: Partial<StartExecutionInput>,
+    queueHandle: ProjectQueueExecution,
+    bindWake: (fn: () => void) => void,
+  ): Promise<{ started: boolean; run: TaskRunDTO | null; runs?: TaskRunDTO[]; queueMode: boolean }> {
+    const allowUnconfined = Boolean(input.allowUnconfined);
+    const sandboxReady = await this.registry.isSandboxReady();
+    if (!sandboxReady && !allowUnconfined) {
+      throw new Error(
+        `Bubblewrap sandbox is unavailable on ${process.platform}. Confirm unconfined execution to run tasks without sandbox confinement.`,
+      );
+    }
+
+    const plan = this.leadService.getPlan(projectId);
+    if (!plan) throw new Error('No plan exists yet. Generate and approve a plan in List first.');
+    if (plan.status !== 'approved') {
+      throw new Error('Plan must be approved in List before execution can start.');
     }
 
     const previews = this.buildDispatchPreviews(plan, sandboxReady);
-    const firstEligible = previews.find((p) => p.eligible);
-    if (!firstEligible) {
+    const eligiblePreviews = previews.filter((p) => p.eligible && !this.activeTasks.has(p.taskId));
+    if (eligiblePreviews.length === 0) {
       const allDone = plan.tasks.every((t) => t.status === 'done');
       if (allDone) {
         throw new Error('All tasks in this plan are already done.');
@@ -501,123 +818,240 @@ export class ExecutionService {
       );
     }
 
-    const firstTask = plan.tasks.find((t) => t.id === firstEligible.taskId)!;
-    const launched = await this.launchQueue(projectId, firstTask, reservation);
-    return { started: true, run: launched, queueMode: true };
-  }
+    // Synchronously dispatch the initial parallel batch of non-overlapping tasks up to provider limits.
+    const initialRuns: TaskRunDTO[] = [];
+    const startedNow: TaskDTO[] = [];
+    const launchBatchTasks = async (): Promise<{
+      launched: TaskRunDTO[];
+      waitingForSlot: boolean;
+      firstError: Error | null;
+    }> => {
+      const latestPlan = this.leadService.getPlan(projectId);
+      if (!latestPlan || queueHandle.cancelled) {
+        return { launched: [], waitingForSlot: false, firstError: null };
+      }
+      const sandboxNow = await this.registry.isSandboxReady();
+      const latestPreviews = this.buildDispatchPreviews(latestPlan, sandboxNow);
+      const taskById = new Map(latestPlan.tasks.map((t) => [t.id, t]));
 
-  async waitForProjectExecution(projectId: string): Promise<void> {
-    const active = this.activeProjects.get(projectId);
-    if (active) {
-      await active.promise;
-    }
-  }
+      const candidates = latestPreviews
+        .filter((p) => p.eligible && !this.activeTasks.has(p.taskId))
+        .sort((a, b) => {
+          const ta = taskById.get(a.taskId)!;
+          const tb = taskById.get(b.taskId)!;
+          return ta.position - tb.position;
+        });
 
-  async stopExecution(projectId: string): Promise<{ stopped: boolean }> {
-    const active = this.activeProjects.get(projectId);
-    if (!active) {
-      return { stopped: false };
-    }
-    active.queueCancelled = true;
-    active.controller.abort();
-    await active.promise.catch(() => undefined);
-    return { stopped: true };
-  }
+      const batchPicked: Array<{ task: TaskDTO; lease: SlotLease; taskHandle: ActiveTaskExecution }> = [];
+      let waitingForSlot = false;
 
-  async stopAll(): Promise<void> {
-    const projectIds = [...this.activeProjects.keys()];
-    await Promise.all(projectIds.map((pid) => this.stopExecution(pid)));
-  }
+      for (const cand of candidates) {
+        const task = taskById.get(cand.taskId);
+        if (!task) continue;
+        // Guard against starting two tasks from the same batch whose files overlap.
+        if (batchPicked.some((p) => globsOverlap(p.task.filesAllowed, task.filesAllowed))) {
+          continue;
+        }
+        const routing = this.routeTask(task, sandboxNow);
+        if (routing.blocked) continue;
 
-  private async launchQueue(
-    projectId: string,
-    firstTask: TaskDTO,
-    reservation: ActiveProjectExecution,
-  ): Promise<TaskRunDTO> {
-    const controller = new AbortController();
-    reservation.controller = controller;
-    reservation.queueMode = true;
-    const execHandle = reservation;
-
-    const { runId, initialRun, executeFn } = await this.prepareTaskExecution(
-      projectId,
-      firstTask,
-      execHandle,
-      null,
-    );
-    execHandle.runId = runId;
-    execHandle.taskId = firstTask.id;
-
-    execHandle.promise = (async () => {
-      try {
-        const firstStatus = await executeFn();
-        if (execHandle.queueCancelled || firstStatus === 'stopped' || firstStatus === 'failed') {
-          return;
+        const lease = this.limiter.tryAcquire(routing.primary.provider, routing.primary.maxParallel);
+        if (!lease) {
+          waitingForSlot = true;
+          continue;
         }
 
-        while (!execHandle.queueCancelled) {
-          const latestPlan = this.leadService.getPlan(projectId);
-          if (!latestPlan) break;
-          const sandboxNow = await this.registry.isSandboxReady();
-          const nextPreview = this.buildDispatchPreviews(latestPlan, sandboxNow).find((p) => p.eligible);
-          if (!nextPreview) break;
+        const taskHandle: ActiveTaskExecution = {
+          projectId,
+          taskId: task.id,
+          runId: '',
+          controller: new AbortController(),
+          promise: Promise.resolve('stopped'),
+        };
+        this.activeTasks.set(task.id, taskHandle);
+        queueHandle.inFlightTaskIds.add(task.id);
+        batchPicked.push({ task, lease, taskHandle });
+      }
 
-          const nextTask = latestPlan.tasks.find((t) => t.id === nextPreview.taskId);
-          if (!nextTask) break;
+      const batchRuns: TaskRunDTO[] = [];
+      let firstError: Error | null = null;
+      await Promise.all(
+        batchPicked.map(async ({ task, lease, taskHandle }) => {
+          try {
+            const launched = await this.launchTaskExecution(projectId, task, taskHandle, {
+              resumeSessionId: null,
+              preAcquiredLease: lease,
+            });
+            startedNow.push(task);
+            batchRuns.push(launched.initialRun);
+            launched.completionPromise.finally(() => {
+              queueHandle.inFlightTaskIds.delete(task.id);
+              queueHandle.wake();
+            });
+          } catch (err) {
+            lease.release();
+            queueHandle.inFlightTaskIds.delete(task.id);
+            if (this.activeTasks.get(task.id) === taskHandle) {
+              this.activeTasks.delete(task.id);
+            }
+            const errObj = err instanceof Error ? err : new Error(String(err));
+            if (!firstError) firstError = errObj;
+            this.events?.emitEvent({
+              type: 'run.finished',
+              projectId,
+              taskId: task.id,
+              runId: taskHandle.runId,
+              status: 'failed',
+              error: errObj.message,
+            });
+            queueHandle.wake();
+          }
+        }),
+      );
 
-          const nextCtrl = new AbortController();
-          execHandle.controller = nextCtrl;
-          const nextPrep = await this.prepareTaskExecution(projectId, nextTask, execHandle, null);
-          execHandle.runId = nextPrep.runId;
-          execHandle.taskId = nextTask.id;
+      return { launched: batchRuns, waitingForSlot, firstError };
+    };
 
-          const nextStatus = await nextPrep.executeFn();
-          if (execHandle.queueCancelled || nextStatus === 'stopped' || nextStatus === 'failed') {
+    let currentWakeResolver: (() => void) | null = null;
+    bindWake(() => {
+      if (currentWakeResolver) {
+        const res = currentWakeResolver;
+        currentWakeResolver = null;
+        res();
+      }
+    });
+
+    const unsubRelease = this.limiter.onRelease(() => {
+      queueHandle.wake();
+    });
+
+    let firstBatch: Awaited<ReturnType<typeof launchBatchTasks>>;
+    try {
+      firstBatch = await launchBatchTasks();
+      if (
+        firstBatch.launched.length === 0 &&
+        queueHandle.inFlightTaskIds.size === 0 &&
+        firstBatch.firstError
+      ) {
+        throw firstBatch.firstError;
+      }
+    } catch (err) {
+      unsubRelease();
+      throw err;
+    }
+    initialRuns.push(...firstBatch.launched);
+
+    queueHandle.promise = (async () => {
+      try {
+        let waitingForSlot = firstBatch.waitingForSlot;
+        while (!queueHandle.cancelled) {
+          if (queueHandle.inFlightTaskIds.size === 0 && !waitingForSlot) {
+            break;
+          }
+
+          await new Promise<void>((resolve) => {
+            currentWakeResolver = resolve;
+            if (queueHandle.cancelled) {
+              currentWakeResolver = null;
+              resolve();
+            }
+          });
+          if (queueHandle.cancelled) break;
+
+          const nextBatch = await launchBatchTasks();
+          waitingForSlot = nextBatch.waitingForSlot;
+          if (queueHandle.inFlightTaskIds.size === 0 && !waitingForSlot) {
             break;
           }
         }
-      } catch (err) {
-        this.events?.emitEvent({
-          type: 'run.finished',
-          projectId,
-          taskId: execHandle.taskId,
-          runId: execHandle.runId,
-          status: 'failed',
-          error: err instanceof Error ? err.message : String(err),
-        });
       } finally {
-        if (this.activeProjects.get(projectId) === execHandle) {
-          this.activeProjects.delete(projectId);
+        unsubRelease();
+        if (this.projectQueues.get(projectId) === queueHandle) {
+          this.projectQueues.delete(projectId);
         }
       }
     })();
 
-    return initialRun;
+    return {
+      started: true,
+      run: initialRuns[0] ?? null,
+      runs: initialRuns,
+      queueMode: true,
+    };
   }
 
-  private async launchSingleTask(
+  async waitForProjectExecution(projectId: string): Promise<void> {
+    while (true) {
+      const queue = this.projectQueues.get(projectId);
+      const tasksNow = this.getActiveTasksForProject(projectId);
+      if (!queue && tasksNow.length === 0) break;
+      await Promise.all([
+        queue?.promise.catch(() => undefined),
+        ...tasksNow.map((t) => t.promise.catch(() => undefined)),
+      ]);
+    }
+  }
+
+  async stopExecution(projectId: string, taskId?: string): Promise<{ stopped: boolean }> {
+    if (taskId) {
+      const plan = this.leadService.getPlan(projectId);
+      const matched = plan?.tasks.find((t) => t.id === taskId || t.externalId === taskId);
+      const targetId = matched?.id ?? taskId;
+      const active = this.activeTasks.get(targetId);
+      if (!active || active.projectId !== projectId) {
+        return { stopped: false };
+      }
+      active.controller.abort();
+      await active.promise.catch(() => undefined);
+      return { stopped: true };
+    }
+
+    const queue = this.projectQueues.get(projectId);
+    const activeList = this.getActiveTasksForProject(projectId);
+    if (!queue && activeList.length === 0) {
+      return { stopped: false };
+    }
+
+    if (queue) {
+      queue.cancelled = true;
+      queue.controller.abort();
+      queue.wake();
+    }
+    for (const active of activeList) {
+      active.controller.abort();
+    }
+
+    await this.waitForProjectExecution(projectId);
+    return { stopped: true };
+  }
+
+  async stopAll(): Promise<void> {
+    const projectIds = new Set<string>([
+      ...this.projectQueues.keys(),
+      ...[...this.activeTasks.values()].map((t) => t.projectId),
+    ]);
+    await Promise.all([...projectIds].map((pid) => this.stopExecution(pid)));
+  }
+
+  private async launchTaskExecution(
     projectId: string,
     task: TaskDTO,
-    reservation: ActiveProjectExecution,
-    opts: { queueMode: boolean; resumeSessionId: string | null },
-  ): Promise<{ initialRun: TaskRunDTO }> {
-    const controller = new AbortController();
-    reservation.controller = controller;
-    reservation.queueMode = opts.queueMode;
-    const execHandle = reservation;
-
+    execHandle: ActiveTaskExecution,
+    opts: { resumeSessionId: string | null; preAcquiredLease: SlotLease | null },
+  ): Promise<{ initialRun: TaskRunDTO; completionPromise: Promise<RunStatus> }> {
     const { runId, initialRun, executeFn } = await this.prepareTaskExecution(
       projectId,
       task,
       execHandle,
       opts.resumeSessionId,
+      opts.preAcquiredLease,
     );
     execHandle.runId = runId;
     execHandle.taskId = task.id;
 
-    execHandle.promise = (async () => {
+    const completionPromise = (async (): Promise<RunStatus> => {
       try {
-        await executeFn();
+        return await executeFn();
       } catch (err) {
         this.events?.emitEvent({
           type: 'run.finished',
@@ -627,30 +1061,16 @@ export class ExecutionService {
           status: 'failed',
           error: err instanceof Error ? err.message : String(err),
         });
+        return 'failed';
       } finally {
-        if (this.activeProjects.get(projectId) === execHandle) {
-          this.activeProjects.delete(projectId);
+        if (this.activeTasks.get(task.id) === execHandle) {
+          this.activeTasks.delete(task.id);
         }
       }
     })();
 
-    return { initialRun };
-  }
-
-  private selectProfileRespectingLimit(
-    primary: AgentProfileDTO,
-    fallback: AgentProfileDTO | null,
-  ): { chosen: AgentProfileDTO; fallback: AgentProfileDTO | null; usedFallback: boolean } {
-    const activePrimary = this.getProviderActiveCount(primary.provider);
-    if (activePrimary < primary.maxParallel) {
-      return { chosen: primary, fallback, usedFallback: false };
-    }
-    if (fallback && this.getProviderActiveCount(fallback.provider) < fallback.maxParallel) {
-      return { chosen: fallback, fallback: null, usedFallback: true };
-    }
-    throw new Error(
-      `Provider ${primary.provider} is at max parallel limit (${primary.maxParallel}) and no backup profile is available.`,
-    );
+    execHandle.promise = completionPromise;
+    return { initialRun, completionPromise };
   }
 
   private insertRunRecord(input: {
@@ -662,6 +1082,7 @@ export class ExecutionService {
     model: string | null;
     kind: RunKind;
     branchName: string;
+    worktreePath: string;
     cliSessionId: string | null;
     attempt: number;
     usedFallback: boolean;
@@ -680,6 +1101,7 @@ export class ExecutionService {
         model: input.model,
         kind: input.kind,
         branchName: input.branchName,
+        worktreePath: input.worktreePath,
         status: 'running',
         cliSessionId: input.cliSessionId,
         attempt: input.attempt,
@@ -711,8 +1133,9 @@ export class ExecutionService {
   private async prepareTaskExecution(
     projectId: string,
     task: TaskDTO,
-    execHandle: ActiveProjectExecution,
+    execHandle: ActiveTaskExecution,
     resumeSessionId: string | null,
+    preAcquiredLease: SlotLease | null,
   ): Promise<{
     runId: string;
     initialRun: TaskRunDTO;
@@ -722,27 +1145,46 @@ export class ExecutionService {
     const sandboxReady = await this.registry.isSandboxReady();
     const routing = this.routeTask(task, sandboxReady);
     if (routing.blocked) throw new Error(routing.blocked);
-    const selected = this.selectProfileRespectingLimit(routing.primary, routing.fallback);
 
-    const { baseMainSha } = await ensureMainBaseline(project.path, project.mainBranch);
     const branchName = `dalang/${task.externalId}`;
+    const worktreePath = getTaskWorktreeDir(this.worktreesRoot, projectId, task.externalId);
     const resetToBase = !resumeSessionId || !(await branchExists(project.path, branchName));
-    await checkoutTaskBranch(project.path, branchName, project.mainBranch, resetToBase);
+
+    const { baseMainSha } = await this.withProjectGitLock(projectId, async () => {
+      const baseline = await ensureMainBaseline(project.path, project.mainBranch);
+      await createTaskWorktree(
+        project.path,
+        worktreePath,
+        branchName,
+        project.mainBranch,
+        resetToBase,
+      );
+      return baseline;
+    });
 
     const logsDir = getProjectLogsDir(project.path);
-    const taskArtDir = getTaskArtifactDir(project.path, task.externalId);
     ensureProjectDir(project.path, logsDir);
-    ensureProjectDir(project.path, taskArtDir);
+
+    const taskArtDir = getTaskArtifactDir(worktreePath, task.externalId);
+    ensureProjectDir(worktreePath, taskArtDir);
 
     const relResultPath = path.join('.dalang', 'tasks', task.externalId, 'result.json');
-    const absResultPath = path.join(project.path, relResultPath);
+    const absResultPath = path.join(worktreePath, relResultPath);
     const relReviewPath = path.join('.dalang', 'tasks', task.externalId, 'review.json');
-    const absReviewPath = path.join(project.path, relReviewPath);
+    const absReviewPath = path.join(worktreePath, relReviewPath);
 
-    // Clear stale outputs before checkpointing so only files written in this execution count.
-    removeArtifactFile(project.path, absResultPath);
+    // Clear stale outputs before running so only files written in this execution count.
+    removeArtifactFile(worktreePath, absResultPath);
     if (!resumeSessionId) {
-      removeArtifactFile(project.path, absReviewPath);
+      removeArtifactFile(worktreePath, absReviewPath);
+    }
+
+    if (routing.proactiveFallback && routing.quotaReroutedReason) {
+      this.recordProviderEvent(
+        routing.skippedPrimaryProvider ?? routing.primary.provider,
+        'quota_fallback',
+        routing.quotaReroutedReason,
+      );
     }
 
     const priorRejectionNote = task.rejectionNote ?? null;
@@ -755,17 +1197,20 @@ export class ExecutionService {
       id: runId,
       projectId,
       taskId: task.id,
-      profileId: selected.chosen.id,
-      provider: selected.chosen.provider,
-      model: selected.chosen.model || null,
+      profileId: routing.primary.id,
+      provider: routing.primary.provider,
+      model: routing.primary.model || null,
       kind: 'execute',
       branchName,
+      worktreePath,
       cliSessionId: resumeSessionId,
       attempt,
-      usedFallback: selected.usedFallback,
+      usedFallback: routing.proactiveFallback,
       commitBefore: baseMainSha,
       logPath: relLogPath,
     });
+    execHandle.runId = runId;
+    execHandle.taskId = task.id;
 
     const now = new Date().toISOString();
     this.db
@@ -785,17 +1230,18 @@ export class ExecutionService {
       projectId,
       taskId: task.id,
       runId,
-      profileName: selected.chosen.name,
-      provider: selected.chosen.provider,
+      profileName: routing.primary.name,
+      provider: routing.primary.provider,
     });
     this.events?.emitEvent({ type: 'plan.updated', projectId });
 
-    const initialRun = await this.toRunDTO(project.path, row, task, selected.chosen);
+    const initialRun = await this.toRunDTO(project.path, row, task, routing.primary);
 
     const executeFn = async (): Promise<RunStatus> => {
       return this.executePreparedRun({
         projectId,
         projectPath: project.path,
+        worktreePath,
         mainBranch: project.mainBranch,
         branchName,
         baseMainSha,
@@ -803,8 +1249,9 @@ export class ExecutionService {
         priorRejectionNote,
         execHandle,
         initialRunId: runId,
-        initialProfile: selected.chosen,
-        fallbackProfile: selected.fallback,
+        initialProfile: routing.primary,
+        fallbackProfile: routing.fallback,
+        initialLease: preAcquiredLease,
         sandboxReady,
         routeNote: routing.note,
         attempt,
@@ -824,15 +1271,17 @@ export class ExecutionService {
   private async executePreparedRun(ctx: {
     projectId: string;
     projectPath: string;
+    worktreePath: string;
     mainBranch: string;
     branchName: string;
     baseMainSha: string;
     task: TaskDTO;
     priorRejectionNote: string | null;
-    execHandle: ActiveProjectExecution;
+    execHandle: ActiveTaskExecution;
     initialRunId: string;
     initialProfile: AgentProfileDTO;
     fallbackProfile: AgentProfileDTO | null;
+    initialLease: SlotLease | null;
     sandboxReady: boolean;
     routeNote: string | null;
     attempt: number;
@@ -847,6 +1296,7 @@ export class ExecutionService {
     const coderOutcome = await this.runCoderPhaseWithFallback({
       projectId: ctx.projectId,
       projectPath: ctx.projectPath,
+      worktreePath: ctx.worktreePath,
       branchName: ctx.branchName,
       baseMainSha: ctx.baseMainSha,
       task: ctx.task,
@@ -854,6 +1304,7 @@ export class ExecutionService {
       initialRunId: ctx.initialRunId,
       initialProfile: ctx.initialProfile,
       fallbackProfile: ctx.fallbackProfile,
+      initialLease: ctx.initialLease,
       sandboxReady: ctx.sandboxReady,
       routeNote: ctx.routeNote,
       absLogPath: ctx.absLogPath,
@@ -869,14 +1320,14 @@ export class ExecutionService {
     });
 
     if (coderOutcome.status !== 'completed') {
-      await checkoutBranch(ctx.projectPath, ctx.mainBranch).catch(() => undefined);
       return coderOutcome.status;
     }
 
-    // Enter v0.3 Kawal review + fix loop on the task branch before exposing the diff in Guard.
-    const finalStatus = await this.runReviewAndFixLoop({
+    // Enter v0.3 Kawal review + fix loop inside the task's isolated worktree.
+    return this.runReviewAndFixLoop({
       projectId: ctx.projectId,
       projectPath: ctx.projectPath,
+      worktreePath: ctx.worktreePath,
       mainBranch: ctx.mainBranch,
       branchName: ctx.branchName,
       baseMainSha: ctx.baseMainSha,
@@ -893,21 +1344,20 @@ export class ExecutionService {
       absReviewPath: ctx.absReviewPath,
       relReviewPath: ctx.relReviewPath,
     });
-
-    await checkoutBranch(ctx.projectPath, ctx.mainBranch).catch(() => undefined);
-    return finalStatus;
   }
 
   private async runCoderPhaseWithFallback(opts: {
     projectId: string;
     projectPath: string;
+    worktreePath: string;
     branchName: string;
     baseMainSha: string;
     task: TaskDTO;
-    execHandle: ActiveProjectExecution;
+    execHandle: ActiveTaskExecution;
     initialRunId: string;
     initialProfile: AgentProfileDTO;
     fallbackProfile: AgentProfileDTO | null;
+    initialLease: SlotLease | null;
     sandboxReady: boolean;
     routeNote: string | null;
     absLogPath: string;
@@ -932,6 +1382,7 @@ export class ExecutionService {
       logFileAbs: string,
       sessionToResume: string | null,
       promptText: string,
+      preLease: SlotLease | null,
     ): Promise<{
       status: RunStatus;
       canFallback: boolean;
@@ -948,8 +1399,8 @@ export class ExecutionService {
       let stderr = '';
       let aborted = false;
       let thrownError: string | undefined;
+      let rateLimitFromStream: string | undefined;
 
-      this.incrementProviderCount(profile.provider);
       const emitDalangLine = (line: string) => {
         this.appendDalangLog(logFileAbs, line);
         this.events?.emitEvent({
@@ -979,8 +1430,9 @@ export class ExecutionService {
         scopeWarnings: string[];
       }> => {
         const checkpointAfter = await createGitCheckpoint(
-          opts.projectPath,
+          opts.worktreePath,
           `dalang: checkpoint stopped ${opts.task.externalId}`,
+          opts.projectPath,
         ).catch(() => ({ commitSha: opts.baseMainSha }));
         const finishedAt = new Date().toISOString();
         this.db
@@ -1018,14 +1470,27 @@ export class ExecutionService {
         };
       };
 
+      let lease: SlotLease | null = preLease;
+      let resultAlreadyValidated = false;
       try {
+        if (!lease) {
+          emitDalangLine(
+            `[dalang] Waiting for parallel slot on ${profile.provider} (max ${profile.maxParallel})...`,
+          );
+          lease = await this.limiter.acquire(
+            profile.provider,
+            profile.maxParallel,
+            opts.execHandle.controller.signal,
+          );
+        }
+
         emitDalangLine(
-          `[dalang] Starting ${opts.kind} for ${opts.task.externalId} (${opts.task.title}) on ${opts.branchName} with profile "${profile.name}" (${profile.provider}${profile.model ? `/${profile.model}` : ''})`,
+          `[dalang] Starting ${opts.kind} for ${opts.task.externalId} (${opts.task.title}) in worktree (${opts.branchName}) with profile "${profile.name}" (${profile.provider}${profile.model ? `/${profile.model}` : ''})`,
         );
         if (opts.routeNote) emitDalangLine(`[dalang] ${opts.routeNote}`);
 
         const turn = await adapter.runTurn({
-          projectPath: opts.projectPath,
+          projectPath: opts.worktreePath,
           prompt: promptText,
           sessionId: sessionToResume,
           model: profile.model || null,
@@ -1043,40 +1508,93 @@ export class ExecutionService {
         stdout = turn.stdout;
         stderr = turn.stderr;
         aborted = Boolean(turn.aborted) || opts.execHandle.controller.signal.aborted;
+        rateLimitFromStream = turn.rateLimitReason;
+
+        if (capturedSessionId) {
+          this.db
+            .update(runs)
+            .set({ cliSessionId: capturedSessionId })
+            .where(eq(runs.id, runId))
+            .run();
+        }
+
+        if (!aborted && !thrownError && (exitCode === null || exitCode === 0) && !rateLimitFromStream) {
+          const firstCheck = this.validateResultFile(
+            opts.worktreePath,
+            opts.absResultPath,
+            opts.task.externalId,
+          );
+          if (!firstCheck.ok && !opts.execHandle.controller.signal.aborted) {
+            emitDalangLine(
+              `[dalang] ${firstCheck.error}; requesting structured result.json repair...`,
+            );
+            const jsonSchema = z.toJSONSchema(TaskResultContractSchema);
+            const repairPrompt = [
+              `Your task work finished, but the required contract file failed validation:`,
+              firstCheck.error,
+              ``,
+              `Please write a valid JSON file directly to "${opts.relResultPath}" matching this JSON Schema:`,
+              JSON.stringify(jsonSchema, null, 2),
+            ].join('\n');
+
+            const repairTurn = await adapter.runTurn({
+              projectPath: opts.worktreePath,
+              prompt: repairPrompt,
+              sessionId: capturedSessionId,
+              model: profile.model || null,
+              effort: profile.effort,
+              permissionMode: writePermission(profile),
+              timeoutMs: Math.min(profile.timeoutMs, 180_000),
+              idleTimeoutMs: profile.idleTimeoutMs,
+              signal: opts.execHandle.controller.signal,
+              logFilePath: logFileAbs,
+              onLogLine: emitAdapterLine,
+            });
+            if (repairTurn.sessionId) {
+              capturedSessionId = repairTurn.sessionId;
+              this.db
+                .update(runs)
+                .set({ cliSessionId: capturedSessionId })
+                .where(eq(runs.id, runId))
+                .run();
+            }
+            if (repairTurn.aborted || opts.execHandle.controller.signal.aborted) {
+              aborted = true;
+            }
+            if (repairTurn.exitCode !== null && repairTurn.exitCode !== 0) {
+              exitCode = repairTurn.exitCode;
+              stdout = repairTurn.stdout;
+              stderr = repairTurn.stderr;
+            }
+            if (repairTurn.rateLimitReason) {
+              rateLimitFromStream = repairTurn.rateLimitReason;
+            }
+          } else {
+            resultAlreadyValidated = true;
+          }
+        }
       } catch (err) {
         aborted = opts.execHandle.controller.signal.aborted;
-        thrownError = err instanceof Error ? err.message : String(err);
-        emitDalangLine(`[dalang:error] ${thrownError}`);
+        if (!aborted) {
+          thrownError = err instanceof Error ? err.message : String(err);
+          emitDalangLine(`[dalang:error] ${thrownError}`);
+        }
       } finally {
-        this.decrementProviderCount(profile.provider);
-      }
-
-      if (capturedSessionId) {
-        this.db
-          .update(runs)
-          .set({ cliSessionId: capturedSessionId })
-          .where(eq(runs.id, runId))
-          .run();
+        lease?.release();
       }
 
       if (aborted) return markRunStopped();
 
-      if (thrownError || (exitCode !== null && exitCode !== 0)) {
-        const classified = classifyProviderFailure(exitCode, stdout, stderr, thrownError);
-        this.db
-          .insert(providerEvents)
-          .values({
-            id: crypto.randomUUID(),
-            provider: profile.provider,
-            type: classified.eventType,
-            detail: classified.reason.slice(0, 300),
-            createdAt: new Date().toISOString(),
-          })
-          .run();
+      if (thrownError || rateLimitFromStream || (exitCode !== null && exitCode !== 0)) {
+        const classified = rateLimitFromStream
+          ? { eventType: 'rate_limit' as const, reason: rateLimitFromStream }
+          : classifyProviderFailure(exitCode, stdout, stderr, thrownError);
+        this.recordProviderEvent(profile.provider, classified.eventType, classified.reason);
 
         const checkpointAfter = await createGitCheckpoint(
-          opts.projectPath,
+          opts.worktreePath,
           `dalang: checkpoint failed ${opts.task.externalId}`,
+          opts.projectPath,
         ).catch(() => ({ commitSha: opts.baseMainSha }));
         const finishedAt = new Date().toISOString();
         this.db
@@ -1116,68 +1634,20 @@ export class ExecutionService {
         };
       }
 
-      let validation = this.validateResultFile(
-        opts.projectPath,
+      const validation = this.validateResultFile(
+        opts.worktreePath,
         opts.absResultPath,
         opts.task.externalId,
       );
-      if (!validation.ok && !opts.execHandle.controller.signal.aborted) {
-        emitDalangLine(`[dalang] ${validation.error}; requesting structured result.json repair...`);
-        const jsonSchema = z.toJSONSchema(TaskResultContractSchema);
-        const repairPrompt = [
-          `Your task work finished, but the required contract file failed validation:`,
-          validation.error,
-          ``,
-          `Please write a valid JSON file directly to "${opts.relResultPath}" matching this JSON Schema:`,
-          JSON.stringify(jsonSchema, null, 2),
-        ].join('\n');
-
-        this.incrementProviderCount(profile.provider);
-        try {
-          const repairTurn = await adapter.runTurn({
-            projectPath: opts.projectPath,
-            prompt: repairPrompt,
-            sessionId: capturedSessionId,
-            model: profile.model || null,
-            effort: profile.effort,
-            permissionMode: writePermission(profile),
-            timeoutMs: Math.min(profile.timeoutMs, 180_000),
-            idleTimeoutMs: profile.idleTimeoutMs,
-            signal: opts.execHandle.controller.signal,
-            logFilePath: logFileAbs,
-            onLogLine: emitAdapterLine,
-          });
-          if (repairTurn.sessionId) {
-            capturedSessionId = repairTurn.sessionId;
-            this.db
-              .update(runs)
-              .set({ cliSessionId: capturedSessionId })
-              .where(eq(runs.id, runId))
-              .run();
-          }
-          if (repairTurn.aborted || opts.execHandle.controller.signal.aborted) aborted = true;
-        } catch (err) {
-          aborted = opts.execHandle.controller.signal.aborted;
-          emitDalangLine(
-            `[dalang:error] Repair turn failed: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        } finally {
-          this.decrementProviderCount(profile.provider);
-        }
-        if (aborted) return markRunStopped();
-        validation = this.validateResultFile(
-          opts.projectPath,
-          opts.absResultPath,
-          opts.task.externalId,
-        );
-      }
+      void resultAlreadyValidated;
 
       let scopeWarnings: string[];
       try {
         const changedFiles = await getChangedFilesBetween(
-          opts.projectPath,
+          opts.worktreePath,
           opts.baseMainSha,
           null,
+          opts.projectPath,
         );
         scopeWarnings = findScopeViolations(changedFiles, opts.task.filesAllowed);
       } catch (err) {
@@ -1191,8 +1661,9 @@ export class ExecutionService {
 
       if (!validation.ok) {
         const checkpointAfter = await createGitCheckpoint(
-          opts.projectPath,
+          opts.worktreePath,
           `dalang: checkpoint invalid-result ${opts.task.externalId}`,
+          opts.projectPath,
         ).catch(() => ({ commitSha: opts.baseMainSha }));
         const finishedAt = new Date().toISOString();
         this.db
@@ -1240,8 +1711,9 @@ export class ExecutionService {
         : resultData.blockers.join('; ') || `Task reported status "${resultData.status}"`;
 
       const checkpointAfter = await createGitCheckpoint(
-        opts.projectPath,
+        opts.worktreePath,
         `dalang: ${opts.task.externalId} (${opts.kind} ${succeeded ? 'completed' : 'failed'})`,
+        opts.projectPath,
       );
       const finishedAt = new Date().toISOString();
 
@@ -1297,6 +1769,7 @@ export class ExecutionService {
       opts.absLogPath,
       opts.sessionToResume,
       opts.prompt,
+      opts.initialLease,
     );
 
     if (
@@ -1304,8 +1777,11 @@ export class ExecutionService {
       primaryOutcome.canFallback &&
       opts.fallbackProfile &&
       !opts.execHandle.controller.signal.aborted &&
-      !this.registry.providerBlockedReason(opts.fallbackProfile.provider, opts.sandboxReady) &&
-      this.getProviderActiveCount(opts.fallbackProfile.provider) < opts.fallbackProfile.maxParallel
+      this.evaluateProviderUsability(
+        opts.fallbackProfile.provider,
+        opts.fallbackProfile.model || null,
+        opts.sandboxReady,
+      ).usable
     ) {
       const fbRunId = crypto.randomUUID();
       const fbRelLog = path.join(
@@ -1314,7 +1790,7 @@ export class ExecutionService {
         `run-${opts.task.externalId}-fb-${Date.now()}.log`,
       );
       const fbAbsLog = path.join(opts.projectPath, fbRelLog);
-      removeArtifactFile(opts.projectPath, opts.absResultPath);
+      removeArtifactFile(opts.worktreePath, opts.absResultPath);
 
       this.insertRunRecord({
         id: fbRunId,
@@ -1325,6 +1801,7 @@ export class ExecutionService {
         model: opts.fallbackProfile.model || null,
         kind: opts.kind,
         branchName: opts.branchName,
+        worktreePath: opts.worktreePath,
         cliSessionId: null,
         attempt: this.nextAttemptForTask(opts.task.id),
         usedFallback: true,
@@ -1348,6 +1825,7 @@ export class ExecutionService {
         provider: opts.fallbackProfile.provider,
       });
       const fallbackBanner = `[dalang] Fallback triggered after ${opts.initialProfile.name} failed (${primaryOutcome.failureReason ?? 'error'}). Switching to "${opts.fallbackProfile.name}" (${opts.fallbackProfile.provider}).`;
+      this.recordProviderEvent(opts.initialProfile.provider, 'quota_fallback', fallbackBanner);
       this.appendDalangLog(fbAbsLog, fallbackBanner);
       this.events?.emitEvent({
         type: 'run.log',
@@ -1364,6 +1842,7 @@ export class ExecutionService {
         fbAbsLog,
         null,
         opts.buildPromptForProfile(opts.fallbackProfile),
+        null,
       );
       return {
         status: fbOutcome.status,
@@ -1387,14 +1866,67 @@ export class ExecutionService {
     };
   }
 
+  private resolveUsableReviewer(
+    coderProvider: ProviderId,
+    sandboxReady: boolean,
+  ): ReturnType<ProfileService['resolveReviewerProfile']> {
+    const resolved = this.profiles.resolveReviewerProfile({
+      coderProvider,
+      sandboxReady,
+      registry: this.registry,
+    });
+    if (resolved.blocked) return resolved;
+
+    const primaryUsable = this.evaluateProviderUsability(
+      resolved.primary.provider,
+      resolved.primary.model || null,
+      sandboxReady,
+    );
+    if (primaryUsable.usable) return resolved;
+
+    if (resolved.fallback) {
+      const fbUsable = this.evaluateProviderUsability(
+        resolved.fallback.provider,
+        resolved.fallback.model || null,
+        sandboxReady,
+      );
+      if (fbUsable.usable) {
+        return {
+          primary: resolved.fallback,
+          fallback: null,
+          note: `${resolved.primary.name} (${resolved.primary.provider}) skipped (${primaryUsable.reason}); reviewing with ${resolved.fallback.name} (${resolved.fallback.provider}).`,
+          blocked: null,
+        };
+      }
+    }
+
+    const anyUsable = this.profiles
+      .listProfiles()
+      .find((p) => this.evaluateProviderUsability(p.provider, p.model || null, sandboxReady).usable);
+    if (anyUsable) {
+      return {
+        primary: { ...anyUsable, permissionMode: 'read-only' },
+        fallback: null,
+        note: `${resolved.primary.name} (${resolved.primary.provider}) skipped (${primaryUsable.reason}); reviewing with ${anyUsable.name} (${anyUsable.provider}).`,
+        blocked: null,
+      };
+    }
+
+    return {
+      ...resolved,
+      blocked: primaryUsable.reason ?? 'No usable reviewer profile is available.',
+    };
+  }
+
   private async runReviewAndFixLoop(ctx: {
     projectId: string;
     projectPath: string;
+    worktreePath: string;
     mainBranch: string;
     branchName: string;
     baseMainSha: string;
     task: TaskDTO;
-    execHandle: ActiveProjectExecution;
+    execHandle: ActiveTaskExecution;
     sandboxReady: boolean;
     coderProfile: AgentProfileDTO;
     coderFallback: AgentProfileDTO | null;
@@ -1412,11 +1944,7 @@ export class ExecutionService {
     let activeCoderResult = ctx.coderResult;
     let activeScopeWarnings = ctx.scopeWarnings;
 
-    const initialReviewer = this.profiles.resolveReviewerProfile({
-      coderProvider: activeCoderProfile.provider,
-      sandboxReady: ctx.sandboxReady,
-      registry: this.registry,
-    });
+    const initialReviewer = this.resolveUsableReviewer(activeCoderProfile.provider, ctx.sandboxReady);
     if (initialReviewer.blocked) {
       const now = new Date().toISOString();
       this.db
@@ -1439,11 +1967,7 @@ export class ExecutionService {
         return 'stopped';
       }
 
-      const reviewerRouting = this.profiles.resolveReviewerProfile({
-        coderProvider: activeCoderProfile.provider,
-        sandboxReady: ctx.sandboxReady,
-        registry: this.registry,
-      });
+      const reviewerRouting = this.resolveUsableReviewer(activeCoderProfile.provider, ctx.sandboxReady);
       if (reviewerRouting.blocked) {
         this.db
           .update(tasks)
@@ -1465,10 +1989,15 @@ export class ExecutionService {
         .run();
       this.events?.emitEvent({ type: 'plan.updated', projectId: ctx.projectId });
 
-      const currentHead = (await getHeadCommit(ctx.projectPath)) ?? ctx.baseMainSha;
+      const currentHead = (await getHeadCommit(ctx.worktreePath)) ?? ctx.baseMainSha;
       let changedFiles: string[] = [];
       try {
-        changedFiles = await getChangedFilesBetween(ctx.projectPath, ctx.baseMainSha, currentHead);
+        changedFiles = await getChangedFilesBetween(
+          ctx.worktreePath,
+          ctx.baseMainSha,
+          currentHead,
+          ctx.projectPath,
+        );
         activeScopeWarnings = findScopeViolations(changedFiles, ctx.task.filesAllowed);
       } catch (err) {
         activeScopeWarnings = [
@@ -1487,6 +2016,7 @@ export class ExecutionService {
       const reviewOutcome = await this.executeSingleReviewRound({
         projectId: ctx.projectId,
         projectPath: ctx.projectPath,
+        worktreePath: ctx.worktreePath,
         branchName: ctx.branchName,
         baseMainSha: ctx.baseMainSha,
         currentHead,
@@ -1556,8 +2086,32 @@ export class ExecutionService {
         return 'failed';
       }
 
+      // Check coder profile quota/cooldown before starting fix round.
+      const coderUsability = this.evaluateProviderUsability(
+        activeCoderProfile.provider,
+        activeCoderProfile.model || null,
+        ctx.sandboxReady,
+      );
+      let usedProactiveFixFallback = false;
+      let fixNote = `Fix round ${round} addressing ${reviewData.findings.length} review finding(s).`;
+      if (!coderUsability.usable && activeCoderFallback) {
+        const fbUsability = this.evaluateProviderUsability(
+          activeCoderFallback.provider,
+          activeCoderFallback.model || null,
+          ctx.sandboxReady,
+        );
+        if (fbUsability.usable) {
+          fixNote = `Fix round ${round}: ${activeCoderProfile.name} skipped (${coderUsability.reason}); switched to ${activeCoderFallback.name}.`;
+          this.recordProviderEvent(activeCoderProfile.provider, 'quota_fallback', fixNote);
+          activeCoderProfile = activeCoderFallback;
+          activeCoderFallback = null;
+          activeCoderSessionId = null;
+          usedProactiveFixFallback = true;
+        }
+      }
+
       // Send review findings back to the coder for an automatic fix round (F-18).
-      removeArtifactFile(ctx.projectPath, ctx.absResultPath);
+      removeArtifactFile(ctx.worktreePath, ctx.absResultPath);
       const fixRunId = crypto.randomUUID();
       const fixRelLog = path.join(
         '.dalang',
@@ -1575,9 +2129,10 @@ export class ExecutionService {
         model: activeCoderProfile.model || null,
         kind: 'fix',
         branchName: ctx.branchName,
+        worktreePath: ctx.worktreePath,
         cliSessionId: activeCoderSessionId,
         attempt: this.nextAttemptForTask(ctx.task.id),
-        usedFallback: false,
+        usedFallback: usedProactiveFixFallback,
         commitBefore: ctx.baseMainSha,
         logPath: fixRelLog,
       });
@@ -1602,6 +2157,7 @@ export class ExecutionService {
       const fixOutcome = await this.runCoderPhaseWithFallback({
         projectId: ctx.projectId,
         projectPath: ctx.projectPath,
+        worktreePath: ctx.worktreePath,
         branchName: ctx.branchName,
         baseMainSha: ctx.baseMainSha,
         task: ctx.task,
@@ -1609,8 +2165,9 @@ export class ExecutionService {
         initialRunId: fixRunId,
         initialProfile: activeCoderProfile,
         fallbackProfile: activeCoderFallback,
+        initialLease: null,
         sandboxReady: ctx.sandboxReady,
-        routeNote: `Fix round ${round} addressing ${reviewData.findings.length} review finding(s).`,
+        routeNote: fixNote,
         absLogPath: fixAbsLog,
         absResultPath: ctx.absResultPath,
         relResultPath: ctx.relResultPath,
@@ -1654,13 +2211,14 @@ export class ExecutionService {
   private async executeSingleReviewRound(opts: {
     projectId: string;
     projectPath: string;
+    worktreePath: string;
     branchName: string;
     baseMainSha: string;
     currentHead: string;
     task: TaskDTO;
     round: number;
     maxRounds: number;
-    execHandle: ActiveProjectExecution;
+    execHandle: ActiveTaskExecution;
     sandboxReady: boolean;
     primaryReviewer: AgentProfileDTO;
     fallbackReviewer: AgentProfileDTO | null;
@@ -1696,7 +2254,7 @@ export class ExecutionService {
         `review-${opts.task.externalId}-r${opts.round}-${Date.now()}.log`,
       );
       const absLogPath = path.join(opts.projectPath, relLogPath);
-      removeArtifactFile(opts.projectPath, opts.absReviewPath);
+      removeArtifactFile(opts.worktreePath, opts.absReviewPath);
 
       this.insertRunRecord({
         id: reviewRunId,
@@ -1707,6 +2265,7 @@ export class ExecutionService {
         model: reviewerProfile.model || null,
         kind: 'review',
         branchName: opts.branchName,
+        worktreePath: opts.worktreePath,
         cliSessionId: null,
         attempt: this.nextAttemptForTask(opts.task.id),
         usedFallback,
@@ -1755,7 +2314,7 @@ export class ExecutionService {
       if (!verifyInfo) {
         emitDalangLine(`[dalang] Running verify command: ${opts.task.verify}`);
         try {
-          const verifyRes = await this.registry.runShellCommand(opts.projectPath, opts.task.verify, {
+          const verifyRes = await this.registry.runShellCommand(opts.worktreePath, opts.task.verify, {
             timeoutMs: Math.min(reviewerProfile.timeoutMs, 300_000),
             idleTimeoutMs: reviewerProfile.idleTimeoutMs,
             signal: opts.execHandle.controller.signal,
@@ -1843,14 +2402,21 @@ export class ExecutionService {
       let stderr = '';
       let aborted = false;
       let thrownError: string | undefined;
+      let rateLimitFromStream: string | undefined;
       let validatedContract: ReviewContract | null = null;
       let lastValidationError = 'Review output missing';
 
-      for (let retry = 0; retry <= 2; retry++) {
-        this.incrementProviderCount(reviewerProfile.provider);
-        try {
+      let lease: SlotLease | null = null;
+      try {
+        lease = await this.limiter.acquire(
+          reviewerProfile.provider,
+          reviewerProfile.maxParallel,
+          opts.execHandle.controller.signal,
+        );
+
+        for (let retry = 0; retry <= 2; retry++) {
           const turn = await adapter.runTurn({
-            projectPath: opts.projectPath,
+            projectPath: opts.worktreePath,
             prompt: currentPrompt,
             sessionId: currentSessionId,
             model: reviewerProfile.model || null,
@@ -1874,12 +2440,14 @@ export class ExecutionService {
           stdout = turn.stdout;
           stderr = turn.stderr;
           aborted = Boolean(turn.aborted) || opts.execHandle.controller.signal.aborted;
+          rateLimitFromStream = turn.rateLimitReason ?? rateLimitFromStream;
 
           if (aborted) break;
+          if (rateLimitFromStream) break;
           if (exitCode !== null && exitCode !== 0) break;
 
           const checked = validateReviewTurnOutput({
-            projectPath: opts.projectPath,
+            projectPath: opts.worktreePath,
             expectedTaskId: opts.task.externalId,
             verifyExitCode,
             turn,
@@ -1902,14 +2470,15 @@ export class ExecutionService {
               JSON.stringify(jsonSchema, null, 2),
             ].join('\n');
           }
-        } catch (err) {
-          aborted = opts.execHandle.controller.signal.aborted;
+        }
+      } catch (err) {
+        aborted = opts.execHandle.controller.signal.aborted;
+        if (!aborted) {
           thrownError = err instanceof Error ? err.message : String(err);
           emitDalangLine(`[dalang:error] ${thrownError}`);
-          break;
-        } finally {
-          this.decrementProviderCount(reviewerProfile.provider);
         }
+      } finally {
+        lease?.release();
       }
 
       if (aborted) {
@@ -1940,18 +2509,11 @@ export class ExecutionService {
         };
       }
 
-      if (thrownError || (exitCode !== null && exitCode !== 0)) {
-        const classified = classifyProviderFailure(exitCode, stdout, stderr, thrownError);
-        this.db
-          .insert(providerEvents)
-          .values({
-            id: crypto.randomUUID(),
-            provider: reviewerProfile.provider,
-            type: classified.eventType,
-            detail: classified.reason.slice(0, 300),
-            createdAt: new Date().toISOString(),
-          })
-          .run();
+      if (thrownError || rateLimitFromStream || (exitCode !== null && exitCode !== 0)) {
+        const classified = rateLimitFromStream
+          ? { eventType: 'rate_limit' as const, reason: rateLimitFromStream }
+          : classifyProviderFailure(exitCode, stdout, stderr, thrownError);
+        this.recordProviderEvent(reviewerProfile.provider, classified.eventType, classified.reason);
         const finishedAt = new Date().toISOString();
         this.db
           .update(runs)
@@ -2022,21 +2584,22 @@ export class ExecutionService {
       }
       const finalContract: ReviewContract = validatedContract;
 
-      // Persist both canonical review.json and per-round archive on the host safely.
-      const serialized = JSON.stringify(validatedContract, null, 2);
+      // Persist both canonical review.json and per-round archive safely inside the worktree.
+      const serialized = JSON.stringify(finalContract, null, 2);
       const relRoundReviewPath = path.join(
         '.dalang',
         'tasks',
         opts.task.externalId,
         `review-round-${opts.round}.json`,
       );
-      const absRoundReviewPath = path.join(opts.projectPath, relRoundReviewPath);
-      writeArtifactFile(opts.projectPath, opts.absReviewPath, serialized, 'replace');
-      writeArtifactFile(opts.projectPath, absRoundReviewPath, serialized, 'replace');
+      const absRoundReviewPath = path.join(opts.worktreePath, relRoundReviewPath);
+      writeArtifactFile(opts.worktreePath, opts.absReviewPath, serialized, 'replace');
+      writeArtifactFile(opts.worktreePath, absRoundReviewPath, serialized, 'replace');
 
       const checkpointAfter = await createGitCheckpoint(
-        opts.projectPath,
+        opts.worktreePath,
         `dalang: ${opts.task.externalId} review round ${opts.round} (${finalContract.status})`,
+        opts.projectPath,
       );
       const finishedAt = new Date().toISOString();
 
@@ -2117,8 +2680,11 @@ export class ExecutionService {
       primaryOutcome.canFallback &&
       opts.fallbackReviewer &&
       !opts.execHandle.controller.signal.aborted &&
-      !this.registry.providerBlockedReason(opts.fallbackReviewer.provider, opts.sandboxReady) &&
-      this.getProviderActiveCount(opts.fallbackReviewer.provider) < opts.fallbackReviewer.maxParallel
+      this.evaluateProviderUsability(
+        opts.fallbackReviewer.provider,
+        opts.fallbackReviewer.model || null,
+        opts.sandboxReady,
+      ).usable
     ) {
       const fbOutcome = await runAttempt(opts.fallbackReviewer, true, {
         exitCode: primaryOutcome.verifyExitCode,
@@ -2141,17 +2707,17 @@ export class ExecutionService {
   }
 
   private validateResultFile(
-    projectPath: string,
+    worktreePath: string,
     absResultPath: string,
     expectedTaskId: string,
   ): { ok: true; data: TaskResultContract } | { ok: false; error: string } {
-    const rel = path.relative(projectPath, absResultPath);
+    const rel = path.relative(worktreePath, absResultPath);
     if (!fs.existsSync(absResultPath)) {
       return { ok: false, error: `Expected result file was not written at ${rel}` };
     }
     let raw: string;
     try {
-      raw = readArtifactFile(projectPath, absResultPath).trim();
+      raw = readArtifactFile(worktreePath, absResultPath).trim();
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
@@ -2417,14 +2983,13 @@ export class ExecutionService {
     input: Partial<ApproveMergeInput> = {},
   ): Promise<{ task: TaskDTO; mergeCommitSha: string; integrationRun: IntegrationRunDTO | null }> {
     const project = this.getProjectRow(projectId);
-    if (this.activeProjects.has(projectId)) {
-      throw new Error('Wait for the active run to finish before merging a task.');
-    }
-
     const plan = this.leadService.getPlan(projectId);
     if (!plan) throw new Error('No plan exists for this project.');
     const task = plan.tasks.find((t) => t.id === taskId || t.externalId === taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
+    if (this.activeTasks.has(task.id) || task.status === 'running' || task.status === 'reviewing') {
+      throw new Error(`Wait for ${task.externalId} to finish running before merging.`);
+    }
     if (task.status === 'done') {
       throw new Error(`Task ${task.externalId} has already been merged.`);
     }
@@ -2438,12 +3003,18 @@ export class ExecutionService {
     }
 
     const branchName = task.branchName ?? `dalang/${task.externalId}`;
-    const { mergeCommitSha } = await mergeTaskBranchToMain(
-      project.path,
-      project.mainBranch,
-      branchName,
-      `dalang: merge ${task.externalId} (${task.title})`,
-    );
+    const worktreePath = getTaskWorktreeDir(this.worktreesRoot, projectId, task.externalId);
+
+    const { mergeCommitSha } = await this.withProjectGitLock(projectId, async () => {
+      const merged = await mergeTaskBranchToMain(
+        project.path,
+        project.mainBranch,
+        branchName,
+        `dalang: merge ${task.externalId} (${task.title})`,
+      );
+      await removeTaskWorktree(project.path, worktreePath).catch(() => undefined);
+      return merged;
+    });
 
     const now = new Date().toISOString();
     this.db
@@ -2484,19 +3055,18 @@ export class ExecutionService {
     input: Partial<RejectTaskInput> = {},
   ): Promise<TaskDTO> {
     const project = this.getProjectRow(projectId);
-    if (this.activeProjects.has(projectId)) {
-      throw new Error('Wait for the active run to finish before rejecting a task.');
-    }
-
     const plan = this.leadService.getPlan(projectId);
     if (!plan) throw new Error('No plan exists for this project.');
     const task = plan.tasks.find((t) => t.id === taskId || t.externalId === taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
+    if (this.activeTasks.has(task.id) || task.status === 'running' || task.status === 'reviewing') {
+      throw new Error(`Wait for ${task.externalId} to finish running before rejecting it.`);
+    }
     if (task.status !== 'awaiting_merge' && task.status !== 'review_failed') {
       throw new Error(`Task ${task.externalId} is "${task.status}" and cannot be rejected in Guard.`);
     }
 
-    // Preserve task logs on disk before deleting the unmerged task branch.
+    // Preserve task logs on disk before deleting the unmerged branch/worktree.
     const taskRuns = this.db
       .select()
       .from(runs)
@@ -2513,7 +3083,11 @@ export class ExecutionService {
     }
 
     const branchName = task.branchName ?? `dalang/${task.externalId}`;
-    await deleteTaskBranch(project.path, project.mainBranch, branchName);
+    const worktreePath = getTaskWorktreeDir(this.worktreesRoot, projectId, task.externalId);
+    await this.withProjectGitLock(projectId, async () => {
+      await removeTaskWorktree(project.path, worktreePath).catch(() => undefined);
+      await deleteTaskBranch(project.path, project.mainBranch, branchName);
+    });
 
     const now = new Date().toISOString();
     const note = input.note?.trim() || 'Rejected in Guard';
@@ -2553,9 +3127,6 @@ export class ExecutionService {
     } = {},
   ): Promise<IntegrationRunDTO> {
     const project = this.getProjectRow(projectId);
-    if (this.activeProjects.has(projectId)) {
-      throw new Error('Wait for the active run to finish before running integration tests.');
-    }
 
     const command =
       opts.command?.trim() ||
@@ -2623,11 +3194,13 @@ export class ExecutionService {
       );
     }
 
-    await checkoutBranch(project.path, project.mainBranch);
-    const res = await this.registry.runShellCommand(project.path, command, {
-      timeoutMs: 300_000,
-      idleTimeoutMs: 120_000,
+    const res = await this.withProjectGitLock(projectId, async () => {
+      return this.registry.runShellCommand(project.path, command, {
+        timeoutMs: 300_000,
+        idleTimeoutMs: 120_000,
+      });
     });
+
     const finishedAt = new Date().toISOString();
     const timedOut = res.timedOut || res.idleTimedOut;
     const exitCode = timedOut ? 124 : (res.exitCode ?? 1);
@@ -2678,10 +3251,6 @@ export class ExecutionService {
 
   async rollbackRun(projectId: string, runId: string): Promise<TaskRunDTO> {
     const project = this.getProjectRow(projectId);
-    if (this.activeProjects.has(projectId)) {
-      throw new Error('Stop the active run before rolling back a checkpoint.');
-    }
-
     const row = this.db.select().from(runs).where(eq(runs.id, runId)).get();
     if (!row || row.projectId !== projectId) {
       throw new Error(`Run not found: ${runId}`);
@@ -2695,17 +3264,10 @@ export class ExecutionService {
     if (!row.commitBefore) {
       throw new Error('This run does not have a pre-run checkpoint commit.');
     }
+    const commitBefore = row.commitBefore;
 
     const plan = this.leadService.getPlan(projectId);
     const targetTask = plan?.tasks.find((t) => t.id === row.taskId);
-
-    // `git reset --hard` is destructive: only run it when the repo still ends where DALANG left it.
-    const state = await getRepoState(project.path);
-    if (state.dirtyFiles.length > 0) {
-      throw new Error(
-        `Uncommitted changes would be lost (${state.dirtyFiles.slice(0, 3).join(', ')}). Commit or stash them first.`,
-      );
-    }
 
     const taskBranch = targetTask?.branchName ?? row.branchName;
     const isUnmergedBranchRun =
@@ -2713,69 +3275,91 @@ export class ExecutionService {
       !targetTask?.mergeCommitSha &&
       (await branchExists(project.path, taskBranch!));
 
-    if (isUnmergedBranchRun && taskBranch) {
-      // Check that mainBranch hasn't received unknown external commits since `row.commitBefore`.
-      const mainHead = state.head;
-      const lastMergedOrMain = this.db
-        .select()
-        .from(runs)
-        .where(and(eq(runs.projectId, projectId), ne(runs.status, 'rolled_back'), ne(runs.status, 'running')))
-        .orderBy(desc(runs.startedAt), desc(runs.attempt))
-        .all()
-        .find((r) => r.commitBefore);
-      const knownMainCommits = new Set<string>(
-        [
-          ...this.db
-            .select()
-            .from(runs)
-            .where(and(eq(runs.projectId, projectId), eq(runs.kind, 'execute')))
-            .all()
-            .map((r) => r.commitBefore),
-          lastMergedOrMain?.commitBefore,
-          ...(plan?.tasks.map((t) => t.mergeCommitSha) ?? []),
-        ].filter((c): c is string => Boolean(c)),
-      );
-      if (mainHead && knownMainCommits.size > 0 && !knownMainCommits.has(mainHead)) {
+    if (isUnmergedBranchRun) {
+      if (this.activeTasks.has(row.taskId)) {
+        throw new Error('Stop the active run on this task before rolling it back.');
+      }
+    } else if (this.hasActiveTasksForProject(projectId)) {
+      throw new Error('Stop active runs on this project before rolling back a merged checkpoint.');
+    }
+
+    const affectedTaskIds = new Set<string>([row.taskId]);
+    const rolledBackRunIds: string[] = [];
+
+    await this.withProjectGitLock(projectId, async () => {
+      // `git reset --hard` is destructive: only run it when the repo still ends where DALANG left it.
+      const state = await getRepoState(project.path);
+      if (state.dirtyFiles.length > 0) {
         throw new Error(
-          'The repository has commits that DALANG did not create after the last run. Roll back manually with git.',
+          `Uncommitted changes would be lost (${state.dirtyFiles.slice(0, 3).join(', ')}). Commit or stash them first.`,
         );
       }
 
-      // Preserve logs for this task on disk before deleting the unmerged branch.
-      const taskRuns = this.db.select().from(runs).where(eq(runs.taskId, row.taskId)).all();
-      for (const tr of taskRuns) {
-        const logText = await readArtifactWithGitFallback(project.path, tr.logPath, tr.commitAfter);
-        if (logText !== null) {
-          const abs = path.join(project.path, tr.logPath);
-          if (!fs.existsSync(abs)) {
-            writeArtifactFile(project.path, abs, logText, 'refuse');
+      if (isUnmergedBranchRun && taskBranch) {
+        const mainHead = state.head;
+        const lastMergedOrMain = this.db
+          .select()
+          .from(runs)
+          .where(and(eq(runs.projectId, projectId), ne(runs.status, 'rolled_back'), ne(runs.status, 'running')))
+          .orderBy(desc(runs.startedAt), desc(runs.attempt))
+          .all()
+          .find((r) => r.commitBefore);
+        const knownMainCommits = new Set<string>(
+          [
+            ...this.db
+              .select()
+              .from(runs)
+              .where(and(eq(runs.projectId, projectId), eq(runs.kind, 'execute')))
+              .all()
+              .map((r) => r.commitBefore),
+            lastMergedOrMain?.commitBefore,
+            ...(plan?.tasks.map((t) => t.mergeCommitSha) ?? []),
+          ].filter((c): c is string => Boolean(c)),
+        );
+        if (mainHead && knownMainCommits.size > 0 && !knownMainCommits.has(mainHead)) {
+          throw new Error(
+            'The repository has commits that DALANG did not create after the last run. Roll back manually with git.',
+          );
+        }
+
+        const worktreePath = getTaskWorktreeDir(
+          this.worktreesRoot,
+          projectId,
+          targetTask?.externalId ?? row.taskId,
+        );
+        await removeTaskWorktree(project.path, worktreePath).catch(() => undefined);
+        await deleteTaskBranch(project.path, project.mainBranch, taskBranch);
+      } else {
+        const lastKnown = this.db
+          .select()
+          .from(runs)
+          .where(and(eq(runs.projectId, projectId), ne(runs.status, 'rolled_back'), ne(runs.status, 'running')))
+          .orderBy(desc(runs.startedAt), desc(runs.attempt))
+          .all()
+          .find((r) => r.commitAfter);
+        const knownTips = new Set<string>(
+          [
+            lastKnown?.commitAfter,
+            ...(plan?.tasks.map((t) => t.mergeCommitSha) ?? []),
+          ].filter((c): c is string => Boolean(c)),
+        );
+        if (knownTips.size > 0 && state.head && !knownTips.has(state.head)) {
+          throw new Error(
+            'The repository has commits that DALANG did not create after the last run. Roll back manually with git.',
+          );
+        }
+
+        // Identify any other merged tasks whose merge commit will be rewound by resetting to `commitBefore`.
+        for (const t of plan?.tasks ?? []) {
+          if (t.mergeCommitSha) {
+            const kept = await isAncestorCommit(project.path, t.mergeCommitSha, commitBefore);
+            if (!kept) affectedTaskIds.add(t.id);
           }
         }
-      }
-      await deleteTaskBranch(project.path, project.mainBranch, taskBranch);
-    } else {
-      const lastKnown = this.db
-        .select()
-        .from(runs)
-        .where(and(eq(runs.projectId, projectId), ne(runs.status, 'rolled_back'), ne(runs.status, 'running')))
-        .orderBy(desc(runs.startedAt), desc(runs.attempt))
-        .all()
-        .find((r) => r.commitAfter);
-      const knownTips = new Set<string>(
-        [
-          lastKnown?.commitAfter,
-          ...(plan?.tasks.map((t) => t.mergeCommitSha) ?? []),
-        ].filter((c): c is string => Boolean(c)),
-      );
-      if (knownTips.size > 0 && state.head && !knownTips.has(state.head)) {
-        throw new Error(
-          'The repository has commits that DALANG did not create after the last run. Roll back manually with git.',
-        );
-      }
 
-      await checkoutBranch(project.path, project.mainBranch);
-      await rollbackGitToCheckpoint(project.path, row.commitBefore);
-    }
+        await rollbackGitToCheckpoint(project.path, commitBefore);
+      }
+    });
 
     const now = new Date().toISOString();
     const projectRuns = this.db
@@ -2792,19 +3376,32 @@ export class ExecutionService {
       )
       .all();
 
-    const rolledBackRunIds: string[] = [];
-    const affectedTaskIds = new Set<string>([row.taskId]);
     for (const r of projectRuns) {
       if (r.status === 'rolled_back') continue;
       if (isUnmergedBranchRun) {
         if (r.taskId === row.taskId) rolledBackRunIds.push(r.id);
       } else if (
+        affectedTaskIds.has(r.taskId) ||
         r.startedAt > row.startedAt ||
         (r.startedAt === row.startedAt && r.attempt >= row.attempt) ||
         r.id === row.id
       ) {
         rolledBackRunIds.push(r.id);
         affectedTaskIds.add(r.taskId);
+      }
+    }
+
+    // Include runs belonging to rewound merged tasks even if they started before `row.startedAt` (parallel execution).
+    if (!isUnmergedBranchRun && affectedTaskIds.size > 0) {
+      const rewoundTaskRuns = this.db
+        .select()
+        .from(runs)
+        .where(inArray(runs.taskId, [...affectedTaskIds]))
+        .all();
+      for (const r of rewoundTaskRuns) {
+        if (r.status !== 'rolled_back' && !rolledBackRunIds.includes(r.id)) {
+          rolledBackRunIds.push(r.id);
+        }
       }
     }
 
@@ -2869,7 +3466,10 @@ export class ExecutionService {
   ): Promise<TaskRunDTO> {
     let result: TaskResultContract | null = null;
     if (row.resultPath && row.kind !== 'review') {
-      const raw = await readArtifactWithGitFallback(projectPath, row.resultPath, row.commitAfter);
+      let raw = await readArtifactWithGitFallback(projectPath, row.resultPath, row.commitAfter);
+      if (!raw && row.worktreePath && fs.existsSync(row.worktreePath)) {
+        raw = await readArtifactWithGitFallback(row.worktreePath, row.resultPath, null);
+      }
       if (raw) {
         try {
           const parsed = JSON.parse(raw) as unknown;
@@ -2905,6 +3505,7 @@ export class ExecutionService {
       model: row.model,
       kind: (row.kind as RunKind) ?? 'execute',
       branchName: row.branchName ?? null,
+      worktreePath: row.worktreePath ?? null,
       status: row.status as RunStatus,
       cliSessionId: row.cliSessionId,
       attempt: row.attempt,

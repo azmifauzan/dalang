@@ -53,26 +53,40 @@ export function NavigateView({
   const executionQuery = useQuery({
     queryKey: ['execution', project.id],
     queryFn: () => api.getExecutionState(project.id),
-    refetchInterval: (query) => (query.state.data?.execution.activeRun ? 2500 : false),
+    refetchInterval: (query) => {
+      const ex = query.state.data?.execution;
+      if (!ex) return false;
+      return (ex.activeRuns?.length ?? 0) > 0 || ex.activeRun || ex.queueRunning ? 2500 : false;
+    },
   });
 
   const execution = executionQuery.data?.execution;
   const previews = execution?.dispatchPreviews ?? [];
   const runs = execution?.runs ?? [];
+  const activeRuns = execution?.activeRuns ?? (execution?.activeRun ? [execution.activeRun] : []);
+  const providerStates = execution?.providerStates ?? [];
+  const hasActiveExecution = activeRuns.length > 0 || Boolean(execution?.queueRunning);
 
-  // Keep selected task & run synced to active run or first task
+  // Sync selected task on initial load and follow new runs on the currently selected task
   useEffect(() => {
     if (!execution) return;
-    if (execution.activeRun) {
-      setSelectedTaskId(execution.activeRun.taskId);
-      setSelectedRunId(execution.activeRun.id);
+    if (selectedTaskId) {
+      const runningForSelected = activeRuns.find((r) => r.taskId === selectedTaskId);
+      if (runningForSelected && runningForSelected.id !== selectedRunId) {
+        setSelectedRunId(runningForSelected.id);
+      }
       return;
     }
-    if (!selectedTaskId && previews.length > 0) {
+    if (activeRuns.length > 0) {
+      setSelectedTaskId(activeRuns[0].taskId);
+      setSelectedRunId(activeRuns[0].id);
+      return;
+    }
+    if (previews.length > 0) {
       const firstRunTask = runs[0]?.taskId ?? previews[0].taskId;
       setSelectedTaskId(firstRunTask);
     }
-  }, [execution?.activeRun?.id, previews.length]);
+  }, [activeRuns.map((r) => r.id).join(','), previews.length, selectedTaskId]);
 
   const taskRuns = selectedTaskId ? runs.filter((r) => r.taskId === selectedTaskId) : runs;
   const inspectedRun: TaskRunDTO | null =
@@ -111,7 +125,8 @@ export function NavigateView({
   });
 
   const stopMutation = useMutation({
-    mutationFn: () => api.stopExecution(project.id),
+    mutationFn: (taskId?: string) =>
+      api.stopExecution(project.id, taskId ? { taskId } : {}),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['execution', project.id] });
       qc.invalidateQueries({ queryKey: ['plan', project.id] });
@@ -134,7 +149,7 @@ export function NavigateView({
     Boolean(execution) &&
     execution?.planStatus === 'approved' &&
     eligibleCount > 0 &&
-    !execution?.activeRun &&
+    !hasActiveExecution &&
     (!needsUnconfinedOptIn || allowUnconfined);
 
   const liveLines = inspectedRun ? (liveLogsByRunId[inspectedRun.id] ?? []) : [];
@@ -161,17 +176,19 @@ export function NavigateView({
       >
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-lg font-semibold">Navigate (Sequential Execution & Live Logs)</h1>
+            <h1 className="text-lg font-semibold">Navigate (Parallel Execution & Live Logs)</h1>
             {execution && (
-              <Badge style={execution.activeRun ? statusColors('running') : undefined}>
-                {execution.activeRun
-                  ? `RUNNING ${execution.activeRun.taskExternalId}`
-                  : `${doneCount} / ${previews.length} DONE`}
+              <Badge style={hasActiveExecution ? statusColors('running') : undefined}>
+                {activeRuns.length > 0
+                  ? `RUNNING ${activeRuns.length} ${activeRuns.length === 1 ? 'TASK' : 'TASKS'} (${activeRuns.map((r) => r.taskExternalId).join(', ')})`
+                  : execution.queueRunning
+                    ? 'SCHEDULING QUEUE'
+                    : `${doneCount} / ${previews.length} DONE`}
               </Badge>
             )}
           </div>
           <p className="mt-1 text-sm" style={{ color: 'var(--text-secondary)' }}>
-            Execute one approved task at a time with pre/post git checkpoints, live CLI logs, stop, retry, and session resume.
+            Execute non-overlapping tasks concurrently in isolated git worktrees with per-provider limits, quota fallback, live logs, and rollback.
           </p>
         </div>
 
@@ -184,14 +201,14 @@ export function NavigateView({
               Open Guard
             </Button>
           )}
-          {execution?.activeRun ? (
+          {hasActiveExecution ? (
             <Button
               type="button"
               variant="destructive"
-              onClick={() => stopMutation.mutate()}
+              onClick={() => stopMutation.mutate(undefined)}
               disabled={stopMutation.isPending}
             >
-              {stopMutation.isPending ? 'Stopping...' : 'Stop active run'}
+              {stopMutation.isPending ? 'Stopping...' : activeRuns.length > 1 ? 'Stop all runs' : 'Stop active run'}
             </Button>
           ) : (
             <Button
@@ -199,7 +216,7 @@ export function NavigateView({
               onClick={() => startQueueMutation.mutate()}
               disabled={!canStartQueue || startQueueMutation.isPending}
             >
-              {startQueueMutation.isPending ? 'Starting...' : 'Run sequential queue'}
+              {startQueueMutation.isPending ? 'Starting...' : 'Run parallel queue'}
             </Button>
           )}
         </div>
@@ -275,234 +292,316 @@ export function NavigateView({
       )}
 
       {!executionQuery.isLoading && !executionQuery.isError && execution?.planStatus === 'approved' && (
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-          {/* Left column: Task execution cards */}
-          <section aria-labelledby="nav-tasks-heading" className="min-w-0 space-y-3 lg:col-span-5">
-            <div className="flex items-center justify-between gap-2">
-              <h2 id="nav-tasks-heading" className="text-base font-semibold">
-                Tasks ({previews.length})
-              </h2>
-              <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-                Sequential order
-              </span>
-            </div>
+        <div className="space-y-4">
+          {providerStates.length > 0 && (
+            <section
+              aria-label="Provider concurrency and quota status"
+              className="grid grid-cols-1 gap-3 sm:grid-cols-3"
+            >
+              {providerStates.map((ps) => (
+                <div
+                  key={ps.provider}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-3"
+                  style={{
+                    backgroundColor: 'var(--bg-surface)',
+                    borderColor:
+                      ps.inCooldown || ps.quotaExhausted
+                        ? 'var(--error)'
+                        : ps.activeCount > 0
+                          ? 'var(--accent)'
+                          : 'var(--border-subtle)',
+                  }}
+                >
+                  <div>
+                    <div className="font-mono-token text-xs font-semibold uppercase">
+                      {ps.provider}
+                    </div>
+                    <div className="mt-0.5 text-xs" style={{ color: 'var(--text-secondary)' }}>
+                      {ps.inCooldown
+                        ? ps.cooldownReason ?? 'Rate limit cooldown'
+                        : ps.quotaExhausted
+                          ? ps.quotaReason ?? 'Quota exhausted'
+                          : 'Available'}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <Badge>
+                      {ps.activeCount}/{ps.maxParallel} active
+                    </Badge>
+                    {(ps.inCooldown || ps.quotaExhausted) && (
+                      <Badge
+                        style={{
+                          color: 'var(--error)',
+                          borderColor: 'var(--error)',
+                          backgroundColor: 'var(--error-tint)',
+                        }}
+                      >
+                        {ps.inCooldown ? 'COOLDOWN' : 'QUOTA'}
+                      </Badge>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </section>
+          )}
 
-            {previews.length === 0 ? (
-              <EmptyPanel
-                title="No tasks in plan"
-                description="Add tasks in List before running Navigate."
-              />
-            ) : (
-              <ul className="space-y-3">
-                {previews.map((task) => {
-                  const taskHistory = runs.filter((r) => r.taskId === task.taskId);
-                  const latestRun = taskHistory[0] ?? null;
-                  const resumableRun =
-                    taskHistory.find(
-                      (r) => Boolean(r.cliSessionId) && r.provider === task.resolvedProvider,
-                    ) ?? null;
-                  const isSelected = selectedTaskId === task.taskId;
-                  const isRunningThis = execution.activeRun?.taskId === task.taskId;
-                  const anotherRunning = Boolean(execution.activeRun) && !isRunningThis;
-                  const blockedBySandbox = needsUnconfinedOptIn && !allowUnconfined;
-                  const canRunFresh =
-                    !anotherRunning &&
-                    !isRunningThis &&
-                    !blockedBySandbox &&
-                    task.dependenciesSatisfied &&
-                    task.status !== 'running' &&
-                    task.status !== 'reviewing' &&
-                    task.status !== 'awaiting_merge';
-                  const canResume =
-                    canRunFresh &&
-                    Boolean(resumableRun) &&
-                    (task.status === 'stopped' || task.status === 'failed');
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+            {/* Left column: Task execution cards */}
+            <section aria-labelledby="nav-tasks-heading" className="min-w-0 space-y-3 lg:col-span-5">
+              <div className="flex items-center justify-between gap-2">
+                <h2 id="nav-tasks-heading" className="text-base font-semibold">
+                  Tasks ({previews.length})
+                </h2>
+                <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+                  Parallel wave order
+                </span>
+              </div>
 
-                  return (
-                    <li
-                      key={task.taskId}
-                      className="rounded-md border p-4"
-                      style={{
-                        backgroundColor: 'var(--bg-surface)',
-                        borderColor: isSelected ? 'var(--accent)' : 'var(--border-subtle)',
-                      }}
-                    >
-                      <div className="flex flex-wrap items-start justify-between gap-2">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setSelectedTaskId(task.taskId);
-                            setSelectedRunId(latestRun?.id ?? null);
-                            setConfirmRollbackRunId(null);
-                          }}
-                          className="min-h-[44px] flex-1 text-left"
-                        >
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="font-mono-token text-xs font-bold">
-                              [{task.externalId}]
-                            </span>
-                            <span className="text-sm font-semibold">{task.title}</span>
-                          </div>
-                          <div
-                            className="mt-1 flex flex-wrap items-center gap-2 text-xs"
-                            style={{ color: 'var(--text-secondary)' }}
-                          >
-                            <span>{task.milestone}</span>
-                            <span>{task.resolvedProfileName}</span>
-                            <span>({task.resolvedProvider})</span>
-                            {task.dependsOn.length > 0 && (
-                              <span>deps: {task.dependsOn.join(', ')}</span>
-                            )}
-                          </div>
-                        </button>
+              {previews.length === 0 ? (
+                <EmptyPanel
+                  title="No tasks in plan"
+                  description="Add tasks in List before running Navigate."
+                />
+              ) : (
+                <ul className="space-y-3">
+                  {previews.map((task) => {
+                    const taskHistory = runs.filter((r) => r.taskId === task.taskId);
+                    const latestRun = taskHistory[0] ?? null;
+                    const resumableRun =
+                      taskHistory.find(
+                        (r) => Boolean(r.cliSessionId) && r.provider === task.resolvedProvider,
+                      ) ?? null;
+                    const isSelected = selectedTaskId === task.taskId;
+                    const activeForThisTask = activeRuns.find((r) => r.taskId === task.taskId) ?? null;
+                    const isRunningThis = Boolean(activeForThisTask) || task.status === 'running';
+                    const blockedBySandbox = needsUnconfinedOptIn && !allowUnconfined;
+                    const canRunFresh =
+                      !isRunningThis &&
+                      !blockedBySandbox &&
+                      !task.blockedByOverlapWith &&
+                      task.dependenciesSatisfied &&
+                      task.status !== 'reviewing' &&
+                      task.status !== 'awaiting_merge';
+                    const canResume =
+                      canRunFresh &&
+                      Boolean(resumableRun) &&
+                      (task.status === 'stopped' || task.status === 'failed');
 
-                        <Badge style={statusColors(task.status)}>{task.status}</Badge>
-                      </div>
-
-                      {task.blockedReason && task.status !== 'running' && task.status !== 'done' && (
-                        <p className="mt-2 text-xs" style={{ color: 'var(--text-secondary)' }}>
-                          {task.blockedReason}
-                        </p>
-                      )}
-
-                      <div className="mt-3 flex flex-wrap items-center gap-2">
-                        {isRunningThis ? (
-                          <Button
+                    return (
+                      <li
+                        key={task.taskId}
+                        className="rounded-md border p-4"
+                        style={{
+                          backgroundColor: 'var(--bg-surface)',
+                          borderColor: isSelected ? 'var(--accent)' : 'var(--border-subtle)',
+                        }}
+                      >
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <button
                             type="button"
-                            variant="destructive"
-                            onClick={() => stopMutation.mutate()}
-                            disabled={stopMutation.isPending}
+                            onClick={() => {
+                              setSelectedTaskId(task.taskId);
+                              setSelectedRunId(activeForThisTask?.id ?? latestRun?.id ?? null);
+                              setConfirmRollbackRunId(null);
+                            }}
+                            className="min-h-[44px] flex-1 cursor-pointer text-left"
                           >
-                            Stop
-                          </Button>
-                        ) : (
-                          <>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-mono-token text-xs font-bold">
+                                [{task.externalId}]
+                              </span>
+                              <span className="text-sm font-semibold">{task.title}</span>
+                            </div>
+                            <div
+                              className="mt-1 flex flex-wrap items-center gap-2 text-xs"
+                              style={{ color: 'var(--text-secondary)' }}
+                            >
+                              <span>Wave {task.wave + 1}</span>
+                              <span>·</span>
+                              <span>{task.milestone}</span>
+                              <span>·</span>
+                              <span>
+                                {task.resolvedProfileName} ({task.resolvedProvider})
+                              </span>
+                              {task.dependsOn.length > 0 && (
+                                <span>· deps: {task.dependsOn.join(', ')}</span>
+                              )}
+                            </div>
+                          </button>
+
+                          <Badge style={statusColors(task.status)}>{task.status}</Badge>
+                        </div>
+
+                        {task.quotaReroutedReason && (
+                          <p className="mt-2 text-xs font-medium" style={{ color: 'var(--accent)' }}>
+                            Fallback active: {task.quotaReroutedReason}
+                          </p>
+                        )}
+
+                        {task.blockedReason && task.status !== 'running' && task.status !== 'done' && (
+                          <p className="mt-2 text-xs" style={{ color: 'var(--text-secondary)' }}>
+                            {task.blockedReason}
+                          </p>
+                        )}
+
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          {isRunningThis ? (
                             <Button
                               type="button"
-                              variant={task.eligible ? 'default' : 'outline'}
-                              disabled={!canRunFresh || runTaskMutation.isPending}
-                              onClick={() =>
-                                runTaskMutation.mutate({
-                                  taskId: task.taskId,
-                                  resumeSession: false,
-                                })
-                              }
+                              variant="destructive"
+                              onClick={() => stopMutation.mutate(task.taskId)}
+                              disabled={stopMutation.isPending}
                             >
-                              {task.status === 'failed' ||
-                              task.status === 'review_failed' ||
-                              task.status === 'stopped' ||
-                              task.status === 'done'
-                                ? 'Retry'
-                                : 'Run task'}
+                              Stop
                             </Button>
-                            {onGoToGuard &&
-                              (task.status === 'awaiting_merge' ||
-                                task.status === 'review_failed' ||
-                                task.status === 'reviewing' ||
-                                task.status === 'done') && (
-                                <Button type="button" variant="outline" onClick={onGoToGuard}>
-                                  Open Guard
-                                </Button>
-                              )}
-                            {canResume && (
+                          ) : (
+                            <>
                               <Button
                                 type="button"
-                                variant="outline"
-                                disabled={runTaskMutation.isPending}
+                                variant={task.eligible ? 'default' : 'outline'}
+                                disabled={!canRunFresh || runTaskMutation.isPending}
                                 onClick={() =>
                                   runTaskMutation.mutate({
                                     taskId: task.taskId,
-                                    resumeSession: true,
+                                    resumeSession: false,
                                   })
                                 }
                               >
-                                Resume session
+                                {task.status === 'failed' ||
+                                task.status === 'review_failed' ||
+                                task.status === 'stopped' ||
+                                task.status === 'done'
+                                  ? 'Retry'
+                                  : 'Run task'}
                               </Button>
-                            )}
-                          </>
-                        )}
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </section>
-
-          {/* Right column: Run inspector, live logs, result, and rollback */}
-          <section aria-labelledby="nav-inspector-heading" className="min-w-0 space-y-4 lg:col-span-7">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <h2 id="nav-inspector-heading" className="text-base font-semibold">
-                Run inspector & live logs
-              </h2>
-              {taskRuns.length > 1 && (
-                <div className="flex flex-wrap gap-1.5">
-                  {taskRuns.map((r) => (
-                    <Button
-                      key={r.id}
-                      type="button"
-                      variant={inspectedRun?.id === r.id ? 'default' : 'outline'}
-                      onClick={() => setSelectedRunId(r.id)}
-                    >
-                      Attempt #{r.attempt}
-                    </Button>
-                  ))}
-                </div>
+                              {onGoToGuard &&
+                                (task.status === 'awaiting_merge' ||
+                                  task.status === 'review_failed' ||
+                                  task.status === 'reviewing' ||
+                                  task.status === 'done') && (
+                                  <Button type="button" variant="outline" onClick={onGoToGuard}>
+                                    Open Guard
+                                  </Button>
+                                )}
+                              {canResume && (
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  disabled={runTaskMutation.isPending}
+                                  onClick={() =>
+                                    runTaskMutation.mutate({
+                                      taskId: task.taskId,
+                                      resumeSession: true,
+                                    })
+                                  }
+                                >
+                                  Resume session
+                                </Button>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
               )}
-            </div>
+            </section>
 
-            {!inspectedRun ? (
-              <EmptyPanel
-                title={
-                  selectedTask
-                    ? `No runs yet for [${selectedTask.externalId}]`
-                    : 'No task run recorded yet'
-                }
-                description={
-                  selectedTask
-                    ? `Click Run task on [${selectedTask.externalId}] (${selectedTask.title}), or start the sequential queue to stream live CLI logs here.`
-                    : 'Select an eligible task and click Run task, or start the sequential queue to stream live CLI logs here.'
-                }
-              />
-            ) : (
-              <div
-                className="space-y-4 rounded-md border p-4"
-                style={{
-                  backgroundColor: 'var(--bg-surface)',
-                  borderColor: 'var(--border-subtle)',
-                }}
-              >
-                {/* Run metadata */}
+            {/* Right column: Run inspector, live logs, result, and rollback */}
+            <section aria-labelledby="nav-inspector-heading" className="min-w-0 space-y-4 lg:col-span-7">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h2 id="nav-inspector-heading" className="text-base font-semibold">
+                  Run inspector & live logs
+                </h2>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {activeRuns.length > 1 &&
+                    activeRuns.map((ar) => (
+                      <Button
+                        key={ar.id}
+                        type="button"
+                        variant={inspectedRun?.id === ar.id ? 'default' : 'outline'}
+                        onClick={() => {
+                          setSelectedTaskId(ar.taskId);
+                          setSelectedRunId(ar.id);
+                          setConfirmRollbackRunId(null);
+                        }}
+                      >
+                        Live: {ar.taskExternalId} ({ar.kind})
+                      </Button>
+                    ))}
+                  {taskRuns.length > 1 &&
+                    taskRuns.map((r) => (
+                      <Button
+                        key={r.id}
+                        type="button"
+                        variant={inspectedRun?.id === r.id ? 'default' : 'outline'}
+                        onClick={() => setSelectedRunId(r.id)}
+                      >
+                        Attempt #{r.attempt}
+                      </Button>
+                    ))}
+                </div>
+              </div>
+
+              {!inspectedRun ? (
+                <EmptyPanel
+                  title={
+                    selectedTask
+                      ? `No runs yet for [${selectedTask.externalId}]`
+                      : 'No task run recorded yet'
+                  }
+                  description={
+                    selectedTask
+                      ? `Click Run task on [${selectedTask.externalId}] (${selectedTask.title}), or start the parallel queue to stream live CLI logs here.`
+                      : 'Select an eligible task and click Run task, or start the parallel queue to stream live CLI logs here.'
+                  }
+                />
+              ) : (
                 <div
-                  className="flex flex-wrap items-start justify-between gap-3 border-b pb-3"
-                  style={{ borderColor: 'var(--border-subtle)' }}
+                  className="space-y-4 rounded-md border p-4"
+                  style={{
+                    backgroundColor: 'var(--bg-surface)',
+                    borderColor: 'var(--border-subtle)',
+                  }}
                 >
-                  <div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-mono-token text-xs font-bold">
-                        [{inspectedRun.taskExternalId}]
-                      </span>
-                      <h3 className="text-sm font-semibold">{inspectedRun.taskTitle}</h3>
-                      <Badge>{inspectedRun.kind}</Badge>
-                      <Badge style={statusColors(inspectedRun.status)}>{inspectedRun.status}</Badge>
-                      {inspectedRun.usedFallback && <Badge>Fallback</Badge>}
+                  {/* Run metadata */}
+                  <div
+                    className="flex flex-wrap items-start justify-between gap-3 border-b pb-3"
+                    style={{ borderColor: 'var(--border-subtle)' }}
+                  >
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-mono-token text-xs font-bold">
+                          [{inspectedRun.taskExternalId}]
+                        </span>
+                        <h3 className="text-sm font-semibold">{inspectedRun.taskTitle}</h3>
+                        <Badge>{inspectedRun.kind}</Badge>
+                        <Badge style={statusColors(inspectedRun.status)}>{inspectedRun.status}</Badge>
+                        {inspectedRun.usedFallback && <Badge>Fallback</Badge>}
+                      </div>
+                      <p className="mt-1 text-xs" style={{ color: 'var(--text-secondary)' }}>
+                        Profile: {inspectedRun.profileName} ({inspectedRun.provider}
+                        {inspectedRun.model ? `/${inspectedRun.model}` : ''}) · Attempt #{inspectedRun.attempt} ·{' '}
+                        Duration: {formatDuration(inspectedRun.durationMs)}
+                        {inspectedRun.exitCode !== null ? ` · Exit ${inspectedRun.exitCode}` : ''}
+                      </p>
+                      <p className="mt-1 font-mono-token text-xs" style={{ color: 'var(--text-secondary)' }}>
+                        Checkpoint: {inspectedRun.commitBefore?.slice(0, 7) ?? 'none'} -&gt;{' '}
+                        {inspectedRun.commitAfter?.slice(0, 7) ?? 'pending'}
+                        {inspectedRun.branchName ? ` · Branch: ${inspectedRun.branchName}` : ''}
+                      </p>
+                      {inspectedRun.worktreePath && (
+                        <p className="mt-1 font-mono-token text-xs break-all" style={{ color: 'var(--text-secondary)' }}>
+                          Worktree: {inspectedRun.worktreePath}
+                        </p>
+                      )}
                     </div>
-                    <p className="mt-1 text-xs" style={{ color: 'var(--text-secondary)' }}>
-                      Profile: {inspectedRun.profileName} ({inspectedRun.provider}
-                      {inspectedRun.model ? `/${inspectedRun.model}` : ''}) · Attempt #{inspectedRun.attempt} ·{' '}
-                      Duration: {formatDuration(inspectedRun.durationMs)}
-                      {inspectedRun.exitCode !== null ? ` · Exit ${inspectedRun.exitCode}` : ''}
-                    </p>
-                    <p className="mt-1 font-mono-token text-xs" style={{ color: 'var(--text-secondary)' }}>
-                      Checkpoint: {inspectedRun.commitBefore?.slice(0, 7) ?? 'none'} -&gt;{' '}
-                      {inspectedRun.commitAfter?.slice(0, 7) ?? 'pending'}
-                    </p>
-                  </div>
 
-                  {inspectedRun.commitBefore &&
-                    inspectedRun.status !== 'running' &&
-                    inspectedRun.status !== 'rolled_back' &&
-                    !execution.activeRun && (
+                    {inspectedRun.commitBefore &&
+                      inspectedRun.status !== 'running' &&
+                      inspectedRun.status !== 'rolled_back' &&
+                      !activeRuns.some((r) => r.taskId === inspectedRun.taskId) && (
                       <div>
                         {confirmRollbackRunId === inspectedRun.id ? (
                           <div className="flex flex-wrap items-center gap-2">
@@ -678,6 +777,7 @@ export function NavigateView({
               </div>
             )}
           </section>
+          </div>
         </div>
       )}
     </div>

@@ -11,6 +11,7 @@ import type {
   TaskStatus,
 } from '@dalang/shared';
 import { api } from '../lib/api.js';
+import { DependencyGraph } from './DependencyGraph.js';
 import { EmptyPanel, ErrorPanel, LoadingPanel, ModalDialog } from './StateViews.js';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -117,6 +118,7 @@ export function ListView({
 }) {
   const qc = useQueryClient();
   const [milestoneFilter, setMilestoneFilter] = useState<string>('ALL');
+  const [viewMode, setViewMode] = useState<'kanban' | 'graph'>('kanban');
   const [modalOpen, setModalOpen] = useState(false);
   const [formState, setFormState] = useState<TaskFormState>(emptyTaskForm());
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
@@ -328,6 +330,35 @@ export function ListView({
             </div>
           )}
 
+          {plan && (
+            <div role="group" aria-label="Plan view mode" className="inline-flex rounded-[6px] border border-input bg-card p-0.5">
+              <button
+                type="button"
+                aria-pressed={viewMode === 'kanban'}
+                onClick={() => setViewMode('kanban')}
+                className={`min-h-11 cursor-pointer rounded-[4px] px-3 text-sm font-medium transition-colors duration-150 ${
+                  viewMode === 'kanban'
+                    ? 'bg-primary text-primary-foreground'
+                    : 'text-foreground hover:bg-muted'
+                }`}
+              >
+                Kanban
+              </button>
+              <button
+                type="button"
+                aria-pressed={viewMode === 'graph'}
+                onClick={() => setViewMode('graph')}
+                className={`min-h-11 cursor-pointer rounded-[4px] px-3 text-sm font-medium transition-colors duration-150 ${
+                  viewMode === 'graph'
+                    ? 'bg-primary text-primary-foreground'
+                    : 'text-foreground hover:bg-muted'
+                }`}
+              >
+                Dependency graph
+              </button>
+            </div>
+          )}
+
           {!isLocked && (
             <Button
               type="button"
@@ -415,7 +446,18 @@ export function ListView({
         />
       )}
 
-      {plan && (
+      {plan && viewMode === 'graph' && (
+        <DependencyGraph
+          tasks={visibleTasks}
+          onSelectTask={(taskId) => {
+            const found = visibleTasks.find((t) => t.id === taskId);
+            if (found) openEditModal(found);
+          }}
+          emptyMessage="No tasks match this milestone filter."
+        />
+      )}
+
+      {plan && viewMode === 'kanban' && (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
           {COLUMNS.map((col) => {
             const colTasks = visibleTasks

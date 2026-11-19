@@ -28,17 +28,7 @@ const UNSAFE_REPO_CONFIG = [
 // Settings that make git read a config the plain repo config does not show.
 const UNSAFE_ANY_SCOPE = [/^extensions\.worktreeconfig$/i];
 
-export async function assertRepoConfigSafe(projectPath: string): Promise<void> {
-  const gitEntry = path.join(projectPath, '.git');
-  if (fs.existsSync(gitEntry) && !fs.lstatSync(gitEntry).isDirectory()) {
-    throw new Error('.git is not a plain folder (a gitdir link or symlink); DALANG will not run git on it.');
-  }
-  if (fs.existsSync(path.join(gitEntry, 'config.worktree'))) {
-    throw new Error('.git/config.worktree exists; DALANG will not run git on a repo with a worktree-specific config.');
-  }
-
-  // Every scope git will use, not just the repo file. An error here must stop the run, never pass it.
-  const out = await simpleGit({ baseDir: projectPath }).raw(['config', '--list', '--show-scope', '-z']);
+function assertConfigTokensSafe(out: string): void {
   // `-z --show-scope` prints "scope NUL key NEWLINE value NUL" for each entry.
   const tokens = out.split('\0');
   const bad = new Set<string>();
@@ -59,6 +49,61 @@ export async function assertRepoConfigSafe(projectPath: string): Promise<void> {
       `Repository config defines settings that can run commands (${[...bad].join(', ')}). Remove them from .git/config before running tasks.`,
     );
   }
+}
+
+export async function assertRepoConfigSafe(projectPath: string): Promise<void> {
+  const gitEntry = path.join(projectPath, '.git');
+  if (fs.existsSync(gitEntry) && !fs.lstatSync(gitEntry).isDirectory()) {
+    throw new Error('.git is not a plain folder (a gitdir link or symlink); DALANG will not run git on it.');
+  }
+  if (fs.existsSync(path.join(gitEntry, 'config.worktree'))) {
+    throw new Error('.git/config.worktree exists; DALANG will not run git on a repo with a worktree-specific config.');
+  }
+
+  // Every scope git will use, not just the repo file. An error here must stop the run, never pass it.
+  const out = await simpleGit({ baseDir: projectPath }).raw(['config', '--list', '--show-scope', '-z']);
+  assertConfigTokensSafe(out);
+}
+
+/**
+ * Validate a DALANG-managed linked worktree: the main repo must pass `assertRepoConfigSafe`,
+ * and `<worktree>/.git` must be a regular file pointing strictly inside `<main>/.git/worktrees/`.
+ */
+export async function assertWorktreeSafe(mainProjectPath: string, worktreePath: string): Promise<void> {
+  await assertRepoConfigSafe(mainProjectPath);
+  const dotGit = path.join(worktreePath, '.git');
+  if (!fs.existsSync(dotGit)) {
+    throw new Error(`Worktree "${worktreePath}" is missing .git metadata.`);
+  }
+  const stat = fs.lstatSync(dotGit);
+  if (stat.isSymbolicLink() || !stat.isFile()) {
+    throw new Error(`Worktree "${worktreePath}" .git is not a plain gitdir file.`);
+  }
+  const raw = fs.readFileSync(dotGit, 'utf8').trim();
+  const match = raw.match(/^gitdir:\s*(.+)$/);
+  if (!match) {
+    throw new Error(`Worktree "${worktreePath}" .git file is malformed.`);
+  }
+  const resolvedTarget = fs.realpathSync(path.resolve(worktreePath, match[1].trim()));
+  const expectedWorktreesDir = fs.realpathSync(path.join(mainProjectPath, '.git', 'worktrees'));
+  if (!resolvedTarget.startsWith(expectedWorktreesDir + path.sep)) {
+    throw new Error(
+      `Worktree "${worktreePath}" points outside main repository worktrees (${resolvedTarget}).`,
+    );
+  }
+  if (fs.existsSync(path.join(resolvedTarget, 'config.worktree'))) {
+    throw new Error('Worktree config.worktree exists; DALANG will not run git on it.');
+  }
+  const out = await simpleGit({ baseDir: worktreePath }).raw(['config', '--list', '--show-scope', '-z']);
+  assertConfigTokensSafe(out);
+}
+
+async function assertGitTargetSafe(repoOrWorktreePath: string, mainProjectPath?: string): Promise<void> {
+  if (mainProjectPath && path.resolve(repoOrWorktreePath) !== path.resolve(mainProjectPath)) {
+    await assertWorktreeSafe(mainProjectPath, repoOrWorktreePath);
+    return;
+  }
+  await assertRepoConfigSafe(repoOrWorktreePath);
 }
 
 export function openSafeGit(projectPath: string): SimpleGit {
@@ -91,8 +136,11 @@ export async function getHeadCommit(projectPath: string): Promise<string | null>
   }
 }
 
-export async function getCurrentBranch(projectPath: string): Promise<string | null> {
-  await assertRepoConfigSafe(projectPath);
+export async function getCurrentBranch(
+  projectPath: string,
+  mainProjectPath?: string,
+): Promise<string | null> {
+  await assertGitTargetSafe(projectPath, mainProjectPath);
   const git = openSafeGit(projectPath);
   try {
     const branch = (await git.raw(['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
@@ -116,8 +164,9 @@ export async function branchExists(projectPath: string, branchName: string): Pro
 export async function createGitCheckpoint(
   projectPath: string,
   message: string,
+  mainProjectPath?: string,
 ): Promise<{ commitSha: string; createdCommit: boolean }> {
-  await assertRepoConfigSafe(projectPath);
+  await assertGitTargetSafe(projectPath, mainProjectPath);
   const git = openSafeGit(projectPath);
   const identityArgs = await ensureGitIdentityArgs(git);
   const head = await getHeadCommit(projectPath);
@@ -232,8 +281,9 @@ export async function getChangedFilesBetween(
   projectPath: string,
   baseSha: string | null,
   headSha: string | null,
+  mainProjectPath?: string,
 ): Promise<string[]> {
-  await assertRepoConfigSafe(projectPath);
+  await assertGitTargetSafe(projectPath, mainProjectPath);
   const git = openSafeGit(projectPath);
   const changed = new Set<string>();
 
@@ -261,19 +311,21 @@ export async function getChangedFilesBetween(
 export async function getChangedFilesSinceCommit(
   projectPath: string,
   baseCommitSha: string | null,
+  mainProjectPath?: string,
 ): Promise<string[]> {
-  return getChangedFilesBetween(projectPath, baseCommitSha, null);
+  return getChangedFilesBetween(projectPath, baseCommitSha, null, mainProjectPath);
 }
 
 /** HEAD and the files changed outside `.dalang/`, so rollback can refuse to discard work DALANG did not make. */
 export async function getRepoState(
   projectPath: string,
+  mainProjectPath?: string,
 ): Promise<{ head: string | null; branch: string | null; dirtyFiles: string[] }> {
-  await assertRepoConfigSafe(projectPath);
+  await assertGitTargetSafe(projectPath, mainProjectPath);
   const status = await openSafeGit(projectPath).status();
   return {
     head: await getHeadCommit(projectPath),
-    branch: await getCurrentBranch(projectPath),
+    branch: await getCurrentBranch(projectPath, mainProjectPath),
     dirtyFiles: status.files
       .map((f) => f.path)
       .filter((f) => f !== '.dalang' && !f.startsWith('.dalang/')),
@@ -410,8 +462,134 @@ export async function mergeTaskBranchToMain(
     throw new Error('Failed to resolve HEAD after merge.');
   }
 
+  await removeWorktreesForBranch(projectPath, taskBranch);
   await git.raw(['branch', '-d', taskBranch]).catch(() => undefined);
   return { beforeMergeSha, mergeCommitSha };
+}
+
+export interface GitWorktreeInfo {
+  path: string;
+  head: string | null;
+  branch: string | null;
+}
+
+export async function listGitWorktrees(mainProjectPath: string): Promise<GitWorktreeInfo[]> {
+  await assertRepoConfigSafe(mainProjectPath);
+  const out = await openSafeGit(mainProjectPath).raw(['worktree', 'list', '--porcelain']);
+  const entries: GitWorktreeInfo[] = [];
+  let current: GitWorktreeInfo | null = null;
+
+  for (const rawLine of out.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) {
+      if (current) {
+        entries.push(current);
+        current = null;
+      }
+      continue;
+    }
+    if (line.startsWith('worktree ')) {
+      if (current) entries.push(current);
+      current = { path: line.slice('worktree '.length).trim(), head: null, branch: null };
+    } else if (current && line.startsWith('HEAD ')) {
+      current.head = line.slice('HEAD '.length).trim();
+    } else if (current && line.startsWith('branch ')) {
+      const ref = line.slice('branch '.length).trim();
+      current.branch = ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref;
+    }
+  }
+  if (current) entries.push(current);
+  return entries;
+}
+
+export async function removeTaskWorktree(
+  mainProjectPath: string,
+  worktreePath: string,
+): Promise<void> {
+  await assertRepoConfigSafe(mainProjectPath);
+  const git = openSafeGit(mainProjectPath);
+  if (fs.existsSync(worktreePath)) {
+    await git.raw(['worktree', 'remove', '--force', worktreePath]).catch(() => undefined);
+    fs.rmSync(worktreePath, { recursive: true, force: true });
+  }
+  await git.raw(['worktree', 'prune']).catch(() => undefined);
+}
+
+export async function removeWorktreesForBranch(
+  mainProjectPath: string,
+  branchName: string,
+): Promise<void> {
+  const worktrees = await listGitWorktrees(mainProjectPath).catch(() => []);
+  const mainResolved = fs.existsSync(mainProjectPath)
+    ? fs.realpathSync(mainProjectPath)
+    : path.resolve(mainProjectPath);
+
+  for (const wt of worktrees) {
+    if (wt.branch !== branchName) continue;
+    const wtResolved = fs.existsSync(wt.path) ? fs.realpathSync(wt.path) : path.resolve(wt.path);
+    if (wtResolved === mainResolved) continue;
+    await removeTaskWorktree(mainProjectPath, wt.path);
+  }
+}
+
+export async function createTaskWorktree(
+  mainProjectPath: string,
+  worktreePath: string,
+  branchName: string,
+  baseBranch: string,
+  resetToBase: boolean,
+): Promise<{ worktreePath: string; branchName: string; headSha: string }> {
+  await assertRepoConfigSafe(mainProjectPath);
+  const git = openSafeGit(mainProjectPath);
+  await git.raw(['worktree', 'prune']).catch(() => undefined);
+
+  if (!resetToBase && fs.existsSync(worktreePath)) {
+    try {
+      await assertWorktreeSafe(mainProjectPath, worktreePath);
+      const currentWtBranch = await getCurrentBranch(worktreePath, mainProjectPath);
+      const headSha = await getHeadCommit(worktreePath);
+      if (currentWtBranch === branchName && headSha) {
+        return { worktreePath, branchName, headSha };
+      }
+    } catch {
+      // Recreate broken/unverified worktree below.
+    }
+  }
+
+  await removeTaskWorktree(mainProjectPath, worktreePath);
+  await removeWorktreesForBranch(mainProjectPath, branchName);
+
+  const mainCurrentBranch = await getCurrentBranch(mainProjectPath);
+  if (mainCurrentBranch === branchName && mainCurrentBranch !== baseBranch) {
+    await checkoutBranch(mainProjectPath, baseBranch);
+  }
+
+  fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
+  const exists = await branchExists(mainProjectPath, branchName);
+  if (resetToBase || !exists) {
+    await git.raw(['worktree', 'add', '-B', branchName, worktreePath, baseBranch]);
+  } else {
+    await git.raw(['worktree', 'add', worktreePath, branchName]);
+  }
+
+  await assertWorktreeSafe(mainProjectPath, worktreePath);
+  const headSha = await getHeadCommit(worktreePath);
+  if (!headSha) throw new Error(`Failed to resolve HEAD in worktree for branch ${branchName}.`);
+  return { worktreePath, branchName, headSha };
+}
+
+export async function isAncestorCommit(
+  projectPath: string,
+  ancestorSha: string,
+  descendantRef: string,
+): Promise<boolean> {
+  await assertRepoConfigSafe(projectPath);
+  try {
+    await openSafeGit(projectPath).raw(['merge-base', '--is-ancestor', ancestorSha, descendantRef]);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function deleteTaskBranch(
@@ -420,6 +598,7 @@ export async function deleteTaskBranch(
   taskBranch: string,
 ): Promise<void> {
   await assertRepoConfigSafe(projectPath);
+  await removeWorktreesForBranch(projectPath, taskBranch);
   const current = await getCurrentBranch(projectPath);
   if (current === taskBranch) {
     await checkoutBranch(projectPath, mainBranch);

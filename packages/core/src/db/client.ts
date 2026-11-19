@@ -10,10 +10,17 @@ export type DalangDb = BetterSQLite3Database<typeof schema>;
 export interface DbConnection {
   db: DalangDb;
   sqlite: Database.Database;
+  dataDir: string | null;
   close: () => void;
 }
 
-const SCHEMA_VERSION = 4;
+const dbDataDirs = new WeakMap<object, string | null>();
+
+export function getDbDataDir(db: DalangDb): string | null {
+  return dbDataDirs.get(db) ?? null;
+}
+
+const SCHEMA_VERSION = 6;
 
 const BOOTSTRAP_SQL = `
 PRAGMA journal_mode = WAL;
@@ -117,6 +124,7 @@ CREATE TABLE IF NOT EXISTS agent_profiles (
   idle_timeout_ms INTEGER NOT NULL DEFAULT 180000,
   max_parallel INTEGER NOT NULL DEFAULT 1,
   max_review_rounds INTEGER NOT NULL DEFAULT 2,
+  fallback_profile_id TEXT,
   is_default INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
@@ -152,6 +160,7 @@ CREATE TABLE IF NOT EXISTS runs (
   model TEXT,
   kind TEXT NOT NULL DEFAULT 'execute',
   branch_name TEXT,
+  worktree_path TEXT,
   status TEXT NOT NULL DEFAULT 'running',
   cli_session_id TEXT,
   attempt INTEGER NOT NULL DEFAULT 1,
@@ -339,7 +348,7 @@ function addColumnIfMissing(
   }
 }
 
-function migrateToV4(sqlite: Database.Database, db: DalangDb): void {
+function addColumnsV4(sqlite: Database.Database): void {
   addColumnIfMissing(sqlite, 'projects', 'integration_command', 'TEXT');
   addColumnIfMissing(sqlite, 'tasks', 'branch_name', 'TEXT');
   addColumnIfMissing(sqlite, 'tasks', 'merge_commit_sha', 'TEXT');
@@ -347,7 +356,9 @@ function migrateToV4(sqlite: Database.Database, db: DalangDb): void {
   addColumnIfMissing(sqlite, 'agent_profiles', 'max_review_rounds', 'INTEGER NOT NULL DEFAULT 2');
   addColumnIfMissing(sqlite, 'runs', 'kind', "TEXT NOT NULL DEFAULT 'execute'");
   addColumnIfMissing(sqlite, 'runs', 'branch_name', 'TEXT');
+}
 
+function seedReviewerRule(db: DalangDb): void {
   const existingRules = db.select().from(schema.routingRules).all();
   if (!existingRules.some((r) => r.role === 'reviewer')) {
     const profiles = db.select().from(schema.agentProfiles).all();
@@ -393,9 +404,18 @@ function migrateV1ToV2(db: DalangDb): void {
   }
 }
 
+function migrateToV5(sqlite: Database.Database): void {
+  addColumnIfMissing(sqlite, 'runs', 'worktree_path', 'TEXT');
+}
+
+function migrateToV6(sqlite: Database.Database): void {
+  addColumnIfMissing(sqlite, 'agent_profiles', 'fallback_profile_id', 'TEXT');
+}
+
 export function openDatabase(dbFilePath: string = getDbPath()): DbConnection {
-  if (dbFilePath !== ':memory:') {
-    ensureDir(path.dirname(dbFilePath));
+  const dataDir = dbFilePath !== ':memory:' ? path.dirname(dbFilePath) : null;
+  if (dataDir) {
+    ensureDir(dataDir);
   }
   const sqlite = new Database(dbFilePath);
   const storedVersion = Number(sqlite.pragma('user_version', { simple: true }));
@@ -406,19 +426,26 @@ export function openDatabase(dbFilePath: string = getDbPath()): DbConnection {
     );
   }
   sqlite.exec(BOOTSTRAP_SQL);
+  // Columns first: seeding and the data migrations below query the current schema.
+  const upgrading = storedVersion > 0;
+  if (upgrading && storedVersion < 4) addColumnsV4(sqlite);
+  if (upgrading && storedVersion < 5) migrateToV5(sqlite);
+  if (upgrading && storedVersion < 6) migrateToV6(sqlite);
   const db = drizzle(sqlite, { schema });
+  dbDataDirs.set(db, dataDir);
   seedDefaults(db);
   if (storedVersion > 0 && storedVersion < 2) {
     migrateV1ToV2(db);
   }
-  if (storedVersion > 0 && storedVersion < 4) {
-    migrateToV4(sqlite, db);
+  if (upgrading && storedVersion < 4) {
+    seedReviewerRule(db);
   }
   sqlite.pragma(`user_version = ${SCHEMA_VERSION}`);
 
   return {
     db,
     sqlite,
+    dataDir,
     close: () => sqlite.close(),
   };
 }

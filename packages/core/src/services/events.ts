@@ -37,6 +37,10 @@ export type DalangEvent =
       projectId: string;
       taskId: string | null;
       status: 'passed' | 'failed' | 'skipped';
+    }
+  | {
+      type: 'provider.updated';
+      provider: string;
     };
 
 export class DalangEventBus extends EventEmitter {

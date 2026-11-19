@@ -20,6 +20,7 @@ import {
   ReorderTasksInputSchema,
   RunIntegrationInputSchema,
   StartExecutionInputSchema,
+  StopExecutionInputSchema,
   UpdateProfileInputSchema,
   UpdateRoutingRuleInputSchema,
   UpdateSettingsInputSchema,
@@ -35,6 +36,7 @@ import {
   ProjectService,
   ProviderRegistry,
   SettingsService,
+  StatisticsService,
   openDatabase,
   type CliRunner,
 } from '@dalang/core';
@@ -64,6 +66,9 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
   const profileService = new ProfileService(conn.db);
   const leadService = new LeadService(conn.db, registry, events);
   const executionService = new ExecutionService(conn.db, registry, leadService, events);
+  const statsService = new StatisticsService(conn.db, () =>
+    executionService.getProviderRuntimeStates(),
+  );
 
   let cachedProviderStatuses: ProviderStatus[] | null = null;
   let statusRefreshInFlight: Promise<ProviderStatus[]> | null = null;
@@ -117,7 +122,7 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     return reply.status(statusCode >= 400 ? statusCode : 400).send({ error: message });
   });
 
-  app.get('/api/health', async () => ({ ok: true, version: '0.3.0' }));
+  app.get('/api/health', async () => ({ ok: true, version: '0.4.0' }));
 
   // WebSocket live event stream
   app.get('/ws', { websocket: true }, (socket) => {
@@ -273,7 +278,8 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
   });
 
   app.post<{ Params: { id: string } }>('/api/projects/:id/execution/stop', async (req) => {
-    return executionService.stopExecution(req.params.id);
+    const body = StopExecutionInputSchema.parse(req.body ?? {});
+    return executionService.stopExecution(req.params.id, body.taskId);
   });
 
   app.post<{ Params: { id: string; taskId: string } }>(
@@ -285,6 +291,13 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
         taskId: req.params.taskId,
       });
       return reply.status(202).send(result);
+    },
+  );
+
+  app.post<{ Params: { id: string; taskId: string } }>(
+    '/api/projects/:id/tasks/:taskId/stop',
+    async (req) => {
+      return executionService.stopExecution(req.params.id, req.params.taskId);
     },
   );
 
@@ -358,13 +371,49 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     return { settings: settingsService.update(body) };
   });
 
-  // Providers, Profiles & Routing (F-21, F-22, F-10, F-11)
+  // Providers, Profiles & Routing (F-21, F-22, F-10, F-11, F-24)
   app.get('/api/providers/status', async () => {
-    return { providers: await getProviderStatuses(false) };
+    return {
+      providers: await getProviderStatuses(false),
+      providerStates: executionService.getProviderRuntimeStates(),
+    };
   });
 
   app.post('/api/providers/refresh', async () => {
-    return { providers: await getProviderStatuses(true) };
+    const providers = await getProviderStatuses(true);
+    for (const p of providers) {
+      if (p.loggedIn && !registry.isUsageExhausted(p.usage)) {
+        registry.clearCooldown(p.id);
+      }
+      events.emitEvent({ type: 'provider.updated', provider: p.id });
+    }
+    return {
+      providers,
+      providerStates: executionService.getProviderRuntimeStates(),
+    };
+  });
+
+  app.post<{ Params: { provider: string } }>(
+    '/api/providers/:provider/clear-cooldown',
+    async (req) => {
+      const provider = ProviderIdSchema.parse(req.params.provider);
+      registry.clearCooldown(provider);
+      events.emitEvent({ type: 'provider.updated', provider });
+      return {
+        ok: true,
+        providerStates: executionService.getProviderRuntimeStates(),
+      };
+    },
+  );
+
+  app.get('/api/statistics', async (req) => {
+    const query = z
+      .object({
+        projectId: z.string().min(1).optional(),
+        days: z.coerce.number().int().positive().max(3650).optional(),
+      })
+      .parse(req.query ?? {});
+    return { statistics: statsService.getUsageStatistics(query) };
   });
 
   app.get('/api/profiles', async () => {
@@ -453,6 +502,10 @@ export async function startDalangServer(opts: {
   await app.listen({ host: '127.0.0.1', port });
   const addr = app.server.address();
   const actualPort = typeof addr === 'object' && addr ? addr.port : port;
+  // Warm the provider status (installed CLIs, logins, model lists) so the first page load does not wait for it.
+  void app
+    .inject({ method: 'GET', url: '/api/providers/status', headers: { host: `127.0.0.1:${actualPort}` } })
+    .catch(() => undefined);
   return {
     url: `http://127.0.0.1:${actualPort}`,
     close,

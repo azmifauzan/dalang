@@ -83,7 +83,7 @@ export async function setupApprovedProject(
   }
   const approvedPlan = leadSvc.approvePlan(project.id);
 
-  return { conn, events, project, plan: approvedPlan, leadSvc, execSvc, projDir };
+  return { conn, events, registry, project, plan: approvedPlan, leadSvc, execSvc, projDir };
 }
 
 export function handleLeadCalls(cwd: string, args: string[], opts: RunCommandOptions): RunCommandResult | null {

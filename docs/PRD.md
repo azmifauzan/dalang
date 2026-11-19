@@ -280,7 +280,7 @@ SQLite stores state and indexes, while the full content of artifacts (brief, pla
 | `task_dependency` | task\_id, depends\_on\_id | none |
 | `run` | id, task\_id, profile\_id, provider, model, started, finished, exit\_code, failure\_reason, commit\_before, commit\_after, log path | one `review` (for coder runs) |
 | `review` | id, run\_id, status, file path | none |
-| `agent_profile` | id, name, provider, model, effort, role\_prompt, permission\_mode, timeout, max\_parallel | used by `routing_rule` and `run` |
+| `agent_profile` | id, name, provider, model, effort, role\_prompt, permission\_mode, timeout, max\_parallel, fallback\_profile\_id | used by `routing_rule` and `run` |
 | `routing_rule` | id, order, role, complexity, profile\_id, fallback\_profile\_id | none |
 | `provider_event` | id, provider, type (rate\_limit/error/login\_expired), time | for statistics and fallback |
 
@@ -293,7 +293,7 @@ Each phase must be useful on its own before the next one starts.
 | v0.1 Rembuk | Project, Lead chat (Discuss), brief (Agree), plan generation and kanban (List), provider status page. No execution yet. | One goal yields a valid brief and plan that pass the schema, for 3 sample projects | Met on 18 Nov 2026 (3 of 3 projects, real models) |
 | v0.2 Jalan | Sequential execution, one task at a time, adapters for all three CLIs, live logs, checkpoint commits, stop/retry | A small CRUD application is finished end to end without opening a CLI manually | Met on 18 Nov 2026 (Notes API, 6 tasks, real models) |
 | v0.3 Kawal | Reviewer and fix loop, diff view, approve merge, integration tests, agent profiles and routing in the UI | ≥ 70% of tasks pass review within at most 2 rounds across 5 test projects | Met on 19 Nov 2026 (5 real-model projects, 15 of 15 tasks passed review, 13 on round 1 and 2 on round 2) |
-| v0.4 Paralel | Worktree per task, dependency graph, per-provider parallel limits, quota fallback, usage statistics | Two independent tasks run at the same time without conflict; a quota limit automatically reroutes to a backup profile | Planned |
+| v0.4 Paralel | Worktree per task, dependency graph, per-provider parallel limits, quota fallback, usage statistics | Two independent tasks run at the same time without conflict; a quota limit automatically reroutes to a backup profile | Parallel half met on 19 Nov 2026 (one real-model run, 2 independent tasks ran at the same time and merged cleanly); quota reroute verified with scripted tests only |
 | v1.0 | Polish, Windows support, documentation, npm release | Used by the author to build 10 real projects | Planned |
 
 ### v0.1 implementation notes
@@ -359,6 +359,15 @@ Decisions made while building v0.3 (Kawal):
   | Roman numerals | 3 | 1, 1, 1 | 6 of 6 |
 
   All 15 tasks passed review within 2 rounds (13 on round 1, 2 on round 2), against a target of 70%. In the two round-2 cases Codex failed the first review, the coder fixed the findings, and the second review passed, so the fix loop ran for real. Reviews came from Claude Code and Codex, always a different provider from the coder when one was usable. Fifteen tasks in five small projects shows the flow works, not how often it works on larger code. The reviewer (agy) was not tried, because the keyring switch stays off by default.
+
+
+### v0.4 implementation notes
+
+- Each task runs in its own git worktree at `<data dir>/worktrees/<projectId>/<taskId>` on branch `dalang/{taskId}`. Tasks whose `files_allowed` globs overlap (an empty list overlaps everything) never run at the same time. DALANG checks every worktree before running git on it: `.git` must be a plain file pointing inside the main repo's `.git/worktrees/`, with no `config.worktree`, and the same config denylist as the main repo applies. The sandbox mounts that `.git` file read-only.
+- A global in-process limiter enforces each profile's `max_parallel` per provider across all projects, for coder and reviewer turns alike.
+- Quota fallback is proactive (a cached usage reading shows 0% remaining, or a recent rate-limit or login event puts the provider in cooldown) and reactive (provider failure mid-run). A cached exhausted reading expires at its reset time, or after 15 minutes when no reset time is known, so a provider is not skipped forever.
+- Usage statistics (F-24) count runs, durations, and limit events per provider and per project. Events carry no project id, so the per-project filter applies to runs only.
+- Trial on 19 Nov 2026, real Claude Code, through the HTTP API: a plan of two independent tasks (`upper.js`, `rev.js`) ran at the same time (two tasks active together), both passed review on round 1, both merged with `--no-ff`, the worktrees were removed, main stayed clean, and the 6 tests in the result passed. This is one run. The quota reroute with a real provider limit was not triggered; it is covered by scripted tests only.
 
 ## Risks, mitigations, and decisions
 

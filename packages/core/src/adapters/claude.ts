@@ -38,12 +38,63 @@ export function parseClaudeUsageText(text: string): UsageWindow[] {
   return windows;
 }
 
+// `claude -p "/model"` prints the aliases the CLI accepts, and the `system init` event names the model each
+// one resolves to before any API call. Asking the CLI keeps the list correct when models change.
+
+/** Parse "Available: sonnet, opus, ..., or a full model ID." from the /model reply. */
+export function parseClaudeModelAliases(text: string): string[] {
+  const m = text.match(/Available:\s*([^\n]+)/i);
+  if (!m) return [];
+  return m[1]
+    .replace(/\.\s*$/, '')
+    .split(',')
+    .map((x) => x.trim().replace(/^or\s+/i, ''))
+    .filter((x) => /^[a-z0-9][a-z0-9.\-[\]]*$/i.test(x));
+}
+
 export class ClaudeCodeAdapter implements CliAdapter {
   readonly id = 'claude-code' as const;
   readonly displayName = 'Claude Code';
   readonly binary = 'claude';
 
   constructor(private readonly runner: CliRunner) {}
+
+  private async resolveAlias(binaryPath: string, alias: string): Promise<string | null> {
+    let resolved: string | null = null;
+    let kill: (() => void) | null = null;
+    await this.runner
+      .run(binaryPath, ['-p', 'x', '--bare', '--no-session-persistence', '--model', alias, '--output-format', 'stream-json', '--verbose'], {
+        cwd: os.tmpdir(),
+        timeoutMs: 30_000,
+        onSpawn: (controls) => {
+          kill = controls.kill;
+        },
+        onStdoutLine: (line) => {
+          if (resolved || !line.includes('"init"')) return;
+          try {
+            const ev = JSON.parse(line) as { type?: string; subtype?: string; model?: unknown };
+            if (ev.type === 'system' && ev.subtype === 'init' && typeof ev.model === 'string') {
+              resolved = ev.model;
+              kill?.();
+            }
+          } catch {
+            // Not JSON, keep reading.
+          }
+        },
+      })
+      .catch(() => null);
+    return resolved;
+  }
+
+  private async discoverModels(binaryPath: string): Promise<string[]> {
+    const reply = await this.runner
+      .run(binaryPath, ['-p', '/model', '--bare'], { cwd: os.tmpdir(), timeoutMs: 15_000 })
+      .catch(() => null);
+    const aliases = reply ? parseClaudeModelAliases(reply.stdout) : [];
+    const resolved = await Promise.all(aliases.map((a) => this.resolveAlias(binaryPath, a)));
+    const aliasesThatWork = aliases.filter((_, i) => resolved[i] !== null);
+    return [...new Set([...resolved.filter((m): m is string => m !== null), ...aliasesThatWork])];
+  }
 
   async checkStatus(): Promise<ProviderStatus> {
     const checkedAt = new Date().toISOString();
@@ -62,7 +113,7 @@ export class ClaudeCodeAdapter implements CliAdapter {
         loggedIn: false,
         authSummary: 'Binary not found in PATH',
         sandboxReady,
-        models: ['sonnet', 'opus', 'haiku'],
+        models: [],
         usage: { available: false, windows: [], error: 'Not installed' },
         checkedAt,
       };
@@ -99,9 +150,12 @@ export class ClaudeCodeAdapter implements CliAdapter {
       }
     }
 
-    const usage = loggedIn
-      ? await this.getUsage()
-      : { available: false, windows: [], error: 'Not logged in' };
+    const [usage, models] = await Promise.all([
+      loggedIn
+        ? this.getUsage()
+        : Promise.resolve({ available: false, windows: [], error: 'Not logged in' } as ProviderUsage),
+      loggedIn ? this.discoverModels(binaryPath) : Promise.resolve([] as string[]),
+    ]);
 
     return {
       id: this.id,
@@ -113,7 +167,7 @@ export class ClaudeCodeAdapter implements CliAdapter {
       loggedIn,
       authSummary,
       sandboxReady,
-      models: ['sonnet', 'opus', 'haiku'],
+      models,
       usage,
       checkedAt,
     };
@@ -208,6 +262,7 @@ export class ClaudeCodeAdapter implements CliAdapter {
     let sessionId: string | null = options.sessionId ?? null;
     let resultText = '';
     let structuredOutput: unknown = undefined;
+    let rateLimitReason: string | undefined;
     const assistantChunks: string[] = [];
 
     try {
@@ -225,6 +280,17 @@ export class ClaudeCodeAdapter implements CliAdapter {
             const ev = JSON.parse(trimmed) as Record<string, unknown>;
             if (typeof ev.session_id === 'string' && ev.session_id) {
               sessionId = ev.session_id;
+            }
+            if (ev.type === 'rate_limit_event') {
+              const info = (ev.rate_limit_info && typeof ev.rate_limit_info === 'object'
+                ? ev.rate_limit_info
+                : ev) as Record<string, unknown>;
+              const status = typeof info.status === 'string' ? info.status.toLowerCase() : '';
+              const util = typeof info.utilization === 'number' ? info.utilization : null;
+              if (status === 'rejected' || (util !== null && util >= 1)) {
+                const win = typeof info.rateLimitType === 'string' ? info.rateLimitType : 'quota';
+                rateLimitReason = `Claude rate_limit_event (${win}: ${status || `${Math.round((util ?? 1) * 100)}%`})`;
+              }
             }
             if (ev.type === 'result') {
               if (typeof ev.result === 'string') resultText = ev.result;
@@ -262,6 +328,7 @@ export class ClaudeCodeAdapter implements CliAdapter {
         stderr: res.stderr,
         logFilePath: options.logFilePath,
         aborted: Boolean(res.aborted),
+        ...(rateLimitReason ? { rateLimitReason } : {}),
       };
     } finally {
       logger.close();

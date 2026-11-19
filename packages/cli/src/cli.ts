@@ -44,7 +44,7 @@ export async function main(): Promise<void> {
 
   const staticDir = resolveWebDistDir();
   const { url, close } = await startDalangServer({ port, staticDir });
-  console.log(`DALANG v0.3.0 (Kawal) running at ${url}`);
+  console.log(`DALANG v0.4.0 (Paralel) running at ${url}`);
   if (!staticDir) {
     console.log('Note: web UI dist not found. Run `pnpm build` first.');
   }

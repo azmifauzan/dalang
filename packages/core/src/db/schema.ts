@@ -117,6 +117,7 @@ export const agentProfiles = sqliteTable('agent_profiles', {
   idleTimeoutMs: integer('idle_timeout_ms').notNull().default(180000),
   maxParallel: integer('max_parallel').notNull().default(1),
   maxReviewRounds: integer('max_review_rounds').notNull().default(2),
+  fallbackProfileId: text('fallback_profile_id'),
   isDefault: integer('is_default', { mode: 'boolean' }).notNull().default(false),
   createdAt: text('created_at').notNull(),
 });
@@ -157,6 +158,7 @@ export const runs = sqliteTable('runs', {
   model: text('model'),
   kind: text('kind').notNull().default('execute'),
   branchName: text('branch_name'),
+  worktreePath: text('worktree_path'),
   status: text('status').notNull().default('running'),
   cliSessionId: text('cli_session_id'),
   attempt: integer('attempt').notNull().default(1),

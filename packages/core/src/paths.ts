@@ -37,6 +37,22 @@ export function getTaskArtifactDir(projectPath: string, taskExternalId: string):
   return path.join(getProjectTasksDir(projectPath), taskExternalId);
 }
 
+export function getWorktreesRoot(dataDir?: string | null): string {
+  return path.join(dataDir?.trim() || getDalangHome(), 'worktrees');
+}
+
+export function getProjectWorktreesDir(worktreesRoot: string, projectId: string): string {
+  return path.join(worktreesRoot, projectId);
+}
+
+export function getTaskWorktreeDir(
+  worktreesRoot: string,
+  projectId: string,
+  taskExternalId: string,
+): string {
+  return path.join(getProjectWorktreesDir(worktreesRoot, projectId), taskExternalId);
+}
+
 export function ensureDir(dirPath: string): void {
   fs.mkdirSync(dirPath, { recursive: true });
 }

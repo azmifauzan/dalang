@@ -16,6 +16,7 @@ import type {
   PlanDTO,
   ProjectSummary,
   ProviderId,
+  ProviderRuntimeStateDTO,
   ProviderStatus,
   RejectTaskInput,
   ReorderTasksInput,
@@ -23,12 +24,14 @@ import type {
   RunIntegrationInput,
   SettingsDTO,
   StartExecutionInput,
+  StopExecutionInput,
   TaskDiffDTO,
   TaskDTO,
   TaskRunDTO,
   UpdateProfileInput,
   UpdateRoutingRuleInput,
   UpdateTaskInput,
+  UsageStatisticsResponseDTO,
 } from '@dalang/shared';
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
@@ -151,20 +154,25 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
-  // Assign & Navigate (v0.2 Jalan)
+  // Assign & Navigate (v0.2 Jalan, v0.4 Paralel)
   listRoutingRules: () => request<{ rules: RoutingRuleDTO[] }>('/api/routing'),
   getExecutionState: (id: string) =>
     request<{ execution: ExecutionStateDTO }>(`/api/projects/${id}/execution`),
   startExecution: (id: string, body: Partial<StartExecutionInput> = {}) =>
-    request<{ started: boolean; run: TaskRunDTO | null; queueMode: boolean }>(
+    request<{ started: boolean; run: TaskRunDTO | null; runs?: TaskRunDTO[]; queueMode: boolean }>(
       `/api/projects/${id}/execution/start`,
       {
         method: 'POST',
         body: JSON.stringify(body),
       },
     ),
-  stopExecution: (id: string) =>
+  stopExecution: (id: string, body: StopExecutionInput = {}) =>
     request<{ stopped: boolean }>(`/api/projects/${id}/execution/stop`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  stopTask: (id: string, taskId: string) =>
+    request<{ stopped: boolean }>(`/api/projects/${id}/tasks/${taskId}/stop`, {
       method: 'POST',
     }),
   runTask: (
@@ -172,7 +180,7 @@ export const api = {
     taskId: string,
     body: { allowUnconfined?: boolean; resumeSession?: boolean } = {},
   ) =>
-    request<{ started: boolean; run: TaskRunDTO | null; queueMode: boolean }>(
+    request<{ started: boolean; run: TaskRunDTO | null; runs?: TaskRunDTO[]; queueMode: boolean }>(
       `/api/projects/${id}/tasks/${taskId}/run`,
       {
         method: 'POST',
@@ -218,9 +226,29 @@ export const api = {
     }),
 
   // Providers, Profiles & Routing
-  getProvidersStatus: () => request<{ providers: ProviderStatus[] }>('/api/providers/status'),
+  getProvidersStatus: () =>
+    request<{ providers: ProviderStatus[]; providerStates?: ProviderRuntimeStateDTO[] }>(
+      '/api/providers/status',
+    ),
   refreshProvidersStatus: () =>
-    request<{ providers: ProviderStatus[] }>('/api/providers/refresh', { method: 'POST' }),
+    request<{ providers: ProviderStatus[]; providerStates?: ProviderRuntimeStateDTO[] }>(
+      '/api/providers/refresh',
+      { method: 'POST' },
+    ),
+  clearProviderCooldown: (provider: ProviderId) =>
+    request<{ ok: boolean; providerStates: ProviderRuntimeStateDTO[] }>(
+      `/api/providers/${provider}/clear-cooldown`,
+      { method: 'POST' },
+    ),
+  getUsageStatistics: (params: { projectId?: string; days?: number } = {}) => {
+    const search = new URLSearchParams();
+    if (params.projectId) search.set('projectId', params.projectId);
+    if (params.days !== undefined) search.set('days', String(params.days));
+    const qs = search.toString();
+    return request<{ statistics: UsageStatisticsResponseDTO }>(
+      `/api/statistics${qs ? `?${qs}` : ''}`,
+    );
+  },
   getSettings: () => request<{ settings: SettingsDTO }>('/api/settings'),
   updateSettings: (body: Partial<SettingsDTO>) =>
     request<{ settings: SettingsDTO }>('/api/settings', {

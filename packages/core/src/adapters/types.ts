@@ -51,6 +51,7 @@ export interface AdapterTurnResult {
   stderr: string;
   logFilePath?: string;
   aborted?: boolean;
+  rateLimitReason?: string;
 }
 
 export interface CliAdapter {
