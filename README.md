@@ -2,7 +2,7 @@
 
 > One goal in, a running app out. A local web tool that orchestrates Claude Code, Codex, and Antigravity CLI as a small team.
 
-**Status: v0.6.0 (UI revamp) is implemented and verified on Linux: 4-screen first-run wizard, left sidebar shell with 5-step guided project stepper (`Discuss -> Brief -> Plan -> Work -> Review & merge`) and `"Next step"` card, `Config` with 6 sidebar tabs + dedicated `Statistics` page, Indonesian and English (`ID | EN`) across both the UI and Lead/Reviewer output, Light/Dark/Follow-system theme toggle, archival-derived wayang kulit & redrawn gunungan artwork (`CREDITS.md`), lit kelir Work stage with factual Activity Feed and pause/reduced-motion controls, and non-blocking new-version notice (`GET /api/update-status` and `dalang doctor`). Builds on all v0.5 features (`npx dalang-cli`, `dalang doctor`, multiple accounts per provider, rich CLI model details, token/cost stats, hybrid hidden checkpoints, push & GitHub PR after merge, Linux `bwrap` and macOS `sandbox-exec`). Next: v0.7 (agent delegation over MCP). See [docs/PRD.md](docs/PRD.md) for the full roadmap.**
+**Status: v0.6.0 (UI revamp) is released on npm as `dalang-cli` and verified on Linux: 4-screen first-run wizard, left sidebar shell with 5-step guided project stepper (`Discuss -> Brief -> Plan -> Work -> Review & merge`) and `"Next step"` card, `Config` with 6 sidebar tabs + dedicated `Statistics` page, Indonesian and English (`ID | EN`) across both the UI and Lead/Reviewer output, Light/Dark/Follow-system theme toggle, archival-derived wayang kulit & redrawn gunungan artwork (`CREDITS.md`), lit kelir Work stage with factual Activity Feed and pause/reduced-motion controls, and non-blocking new-version notice (`GET /api/update-status` and `dalang doctor`). Builds on all v0.5 features (`npx dalang-cli`, `dalang doctor`, multiple accounts per provider, rich CLI model details, token/cost stats, hybrid hidden checkpoints, push & GitHub PR after merge, Linux `bwrap` and macOS `sandbox-exec`). Next: v0.7 (session modes: Ask, Quick, Full). See [docs/PRD.md](docs/PRD.md) for the full roadmap.**
 
 DALANG is named after the traditional Javanese puppeteer who directs the whole show. The name is also an acronym for the workflow:
 
@@ -129,10 +129,11 @@ Run on 18 and 19 Nov 2026 on Linux, through the HTTP API and the real sandbox, o
 | v0.3 Kawal | Reviewer and fix loop, diff view, approve merge, post-merge integration, profiles and routing in UI | Released |
 | v0.4 Paralel | Worktree per task, dependency graph, per-provider limits, quota fallback, usage stats | Released (one real two-task parallel run; quota reroute scripted only) |
 | v0.5 | `npx dalang-cli` and `dalang doctor`, several accounts per provider, model details, token & cost statistics, replay & browser tests, hidden checkpoint refs, macOS sandbox, push and pull request, docs | Released |
-| v0.6 | UI revamp: first-run wizard, guided five-step flow, wayang stage during work, Config page, Indonesian and English, new-version notice | Planned |
-| v0.7 | Agent delegation: a running agent splits its task into subtasks on other profiles over MCP | Planned |
-| v0.8 | Session protocols, steering, context handoff on fallback, native Windows | Planned |
-| v0.9 | Scheduled and webhook runs, outside agents over MCP | Planned |
+| v0.6 | UI revamp: first-run wizard, guided five-step flow, wayang stage during work, Config page, Indonesian and English, new-version notice | Released |
+| v0.7 | Session modes: a project opens into a chat; switch to Quick (small fix, no brief) or Full (five steps) from the composer; sessions saved per project and reopenable like a chat | Planned |
+| v0.8 | Agent delegation: a running agent splits its task into subtasks on other profiles over MCP | Planned |
+| v0.9 | Session protocols, steering, context handoff on fallback, native Windows | Planned |
+| v0.10 | Scheduled and webhook runs, outside agents over MCP | Planned |
 
 ## Documentation
 

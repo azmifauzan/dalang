@@ -13,7 +13,7 @@ DALANG runs locally on your machine, binds only to `127.0.0.1`, and uses the off
 - **Platform sandbox** (strongly recommended):
   - **Linux**: `bubblewrap` (`bwrap`), plus `xdg-dbus-proxy` if you enable Antigravity in the sandbox
   - **macOS**: built-in `/usr/bin/sandbox-exec`
-  - **Windows**: run inside **WSL 2 (Ubuntu)** with `bubblewrap` installed (native Windows execution is planned for v0.8)
+  - **Windows**: run inside **WSL 2 (Ubuntu)** with `bubblewrap` installed (native Windows execution is planned for v0.9)
 - **Optional**: GitHub CLI (`gh`) logged in via `gh auth login` if you want DALANG to open pull requests after Gate 2 merges.
 
 ## Quick start (`npx dalang-cli`)

@@ -272,9 +272,9 @@ SQLite stores state and indexes, while the full content of artifacts (brief, pla
 | Entity | Main fields | Relations |
 | --- | --- | --- |
 | `project` | id, name, path, main branch, created | has many `session`, `task` |
-| `session` | id, project\_id, phase (discuss/agree/list/run), cli\_session\_id | has many `message` |
+| `session` | id, project\_id, mode (ask/quick/full, v0.7), work\_state (idle/working, v0.7), title (v0.7), phase (discuss/agree/list/run), cli\_session\_id | has many `message`; one `working` per project (v0.7) |
 | `message` | id, session\_id, role (user/lead), type (text/questions/brief), content, time | none |
-| `brief` | id, project\_id, version, status (draft/approved), file path | one approved `brief` → one `plan` |
+| `brief` | id, project\_id, session\_id (v0.7), version, status (draft/approved), file path | one approved `brief` → one `plan` |
 | `plan` | id, brief\_id, version, file path | has many `task` |
 | `task` | id, plan\_id, title, role, complexity, status, profile\_override, review\_rounds | `task_dependency`, many `run` |
 | `task_dependency` | task\_id, depends\_on\_id | none |
@@ -295,10 +295,11 @@ Each phase must be useful on its own before the next one starts.
 | v0.3 Kawal | Reviewer and fix loop, diff view, approve merge, integration tests, agent profiles and routing in the UI | ≥ 70% of tasks pass review within at most 2 rounds across 5 test projects | Met on 19 Nov 2026 (5 real-model projects, 15 of 15 tasks passed review, 13 on round 1 and 2 on round 2) |
 | v0.4 Paralel | Worktree per task, dependency graph, per-provider parallel limits, quota fallback, usage statistics | Two independent tasks run at the same time without conflict; a quota limit automatically reroutes to a backup profile | Parallel half met on 19 Nov 2026 (one real-model run, 2 independent tasks ran at the same time and merged cleanly); quota reroute verified with scripted tests only |
 | v0.5 | Polish and distribution: npm package with `npx dalang-cli` and `dalang doctor`, several accounts per provider, token and cost statistics, replay tests, macOS sandbox, push and pull request after merge, documentation | `npx dalang-cli` starts on a clean Linux and macOS machine, and replay scenarios cover quota reroute, review fix round, and parallel merge | Released on 19 Nov 2026 as `dalang-cli@0.5.0` on npm (Linux verified: replay scenarios, headless Chromium browser E2E, `dalang doctor`, `pnpm pack` bundle; macOS `sandbox-exec` unit-tested for parity, clean macOS host install not yet run) |
-| v0.6 | UI revamp: first-run wizard, five-step guided project flow, wayang stage with activity feed during work, Config page with sidebar tabs, theme toggle, Indonesian and English (UI and agent output), redrawn gunungan logo, new-version notice | A new user reaches the Discuss step of a first project through the wizard without reading docs, and no action of the v0.5 UI is lost | Implemented on 19 Nov 2026 (verified with unit tests, server API tests, CLI doctor tests, and headless Chromium CDP E2E for fresh-install wizard, upgrade path, 6 Config tabs, Statistics, Work stage pause/visibility, ID/EN i18n with a no-English-leak scan of every step and Config tab, light/dark theme, update notice, and 390px mobile drawer) |
-| v0.7 | Agent delegation: a running agent splits its own task into subtasks on other profiles through a DALANG MCP server | One task is split by its agent into at least two subtasks on two providers, and all of them pass review and merge | Planned |
-| v0.8 | Session protocols (Claude Agent SDK, `codex app-server`, ACP), steering a running task, context handoff on fallback, native Windows | A fallback mid-task continues from the handoff instead of starting over, on all three providers | Planned |
-| v0.9 | Scheduled and webhook-triggered runs, outside agents over MCP | A scheduled run and a run started from a terminal agent both finish without opening the UI | Planned |
+| v0.6 | UI revamp: first-run wizard, five-step guided project flow, wayang stage with activity feed during work, Config page with sidebar tabs, theme toggle, Indonesian and English (UI and agent output), redrawn gunungan logo, new-version notice | A new user reaches the Discuss step of a first project through the wizard without reading docs, and no action of the v0.5 UI is lost | Released on 19 Nov 2026 as `dalang-cli@0.6.0` on npm. Verified on Linux with unit tests, server API tests, CLI doctor tests, and headless Chromium CDP E2E for fresh-install wizard, upgrade path, 6 Config tabs, Statistics, Work stage pause/visibility, ID/EN i18n with a no-English-leak scan of every step and Config tab, light/dark theme, update notice, and 390px mobile drawer) |
+| v0.7 | Session modes: a project opens into a chat; sessions are saved per project and reopenable, with one `working` session at a time, and each runs as Ask (questions only, the default), Quick (small fix or feature, no brief), or Full (the five-step flow), switched from the composer and only upward | A project opens into a chat, a small bug fix goes from request to merge in one screen without a brief, an Ask session never changes a file, and a Full session behaves as in v0.6 | Planned |
+| v0.8 | Agent delegation: a running agent splits its own task into subtasks on other profiles through a DALANG MCP server | One task is split by its agent into at least two subtasks on two providers, and all of them pass review and merge | Planned |
+| v0.9 | Session protocols (Claude Agent SDK, `codex app-server`, ACP), steering a running task, context handoff on fallback, native Windows | A fallback mid-task continues from the handoff instead of starting over, on all three providers | Planned |
+| v0.10 | Scheduled and webhook-triggered runs, outside agents over MCP | A scheduled run and a run started from a terminal agent both finish without opening the UI | Planned |
 
 See [Roadmap after v0.4](#roadmap-after-v04) for the detail and the research behind it.
 
@@ -581,7 +582,54 @@ Each step leaves the app usable, so the work can stop or ship at any step.
 - With a newer version on the registry, the sidebar and Config → About show it; with the check off or the network down, nothing is shown and nothing breaks.
 - Lead output (questions, brief, plan) arrives in the chosen language for both `id` and `en`.
 
-### v0.7: agent delegation
+### v0.7: session modes
+
+#### Intent
+
+The v0.6 flow always runs `Discuss → Brief → Plan → Work → Review & merge`. That is right for a feature and heavy for "explain this module" or "change the button colour". Users should pick how much process a piece of work needs, without losing the merge gate that keeps the repo safe.
+
+#### Decisions (made with the user)
+
+- **Sessions are saved per project and can be reopened, like a normal AI chat.** Each project keeps a list of its sessions (title, mode, last activity). Opening one restores the full conversation, the brief, the plan, and the task board of that session. A session is never "closed": it can be renamed, archived, or deleted (deleting asks for confirmation and never touches merged code).
+- **One session at a time may hold unfinished work.** Sessions are free to pile up, but while a session has running tasks, a task awaiting review, or an unmerged branch (state `working`), no other session in that project can start work. The others stay readable and can still chat in Ask mode. When the work merges or is discarded, the session returns to `idle`. Parallel working sessions are not planned: they would need per-session worktrees and quota arbitration across sessions (revisit after v0.8).
+- **Reopening and continuing.** The Lead's context is restored through the saved CLI session id when the CLI can resume it; otherwise the saved messages are handed back to it as context. A finished Quick or Full session reopens as a chat: new messages are Ask-style questions about what was done, and the composer can start a new Quick or Full cycle in the same session (when no other session is `working`).
+- **A project opens straight into a chat (Ask).** There is no start panel and no mode to pick first. The project page is a conversation with the Lead and one composer at the bottom. The session is created on the first message, in Ask mode, so opening a project and looking around creates nothing.
+- **The mode lives in the composer.** A small segmented control beside the send button reads `Ask | Quick | Full`, with Ask selected. Switching it changes what sending does: Ask sends a message, Quick asks the Lead for a mini plan, Full starts the Discuss step with the Brief gate. The sidebar lists projects, and a project expands to its sessions (newest first, each with a small mode mark and a dot when it is `working`); `New chat` sits at the top of that list. The mode is never picked in the sidebar.
+- **Switching up is promotion.** On an active Ask session the control moves it to Quick or Full and carries the conversation over (the Lead's earlier answers become context for the brief or the mini plan). Switching down is disabled while the session is `working`, with a short reason, because work that changed files cannot become read-only. The Lead may suggest a switch in the chat ("this looks like a small fix, switch to Quick?") with a one-click button; it never switches on its own.
+- **The stepper and timeline appear only after a switch.** Ask shows no steps. Quick shows a short timeline (Request → Work → Review → Merge). Full shows the five-step stepper. A strip above the chat shows the mode badge and the session title (click to rename).
+- **Ask** (the default): a chat with the Lead about the repository. Read-only: no tasks, no worktree, nothing written outside `.dalang/` chat logs. Switching to Full from here is the "turn this talk into a brief" path.
+- **Quick**: for a bug fix or small feature. The user writes the request; the Lead returns one mini plan card (a single task with `files_allowed`, no brief) in the chat; one click on `Run` starts it; the usual verify, review (with the fix loop), and merge gate follow. If the Lead judges the work to need more than one task or touches many areas, it says so and offers a switch to Full, which keeps the request and the Lead's findings as the start of the Discuss step.
+- **Full**: exactly the v0.6 flow, unchanged.
+- **The merge gate applies in every mode that changes files.** Lighter modes skip planning ceremony, not safety: sandbox, `files_allowed`, verify, review, and the approval to merge stay.
+- **Promotion is explicit and one-way** (Ask → Quick, Ask → Full, Quick → Full). Nothing is promoted or demoted by a guess; the Lead may suggest it.
+
+#### Data model change (schema v9)
+
+- `session` gains `title`, `mode` (`ask`, `quick`, `full`), `work_state` (`idle`, `working`), `updated_at`, and `archived_at`. A partial unique index allows one `working` session per project.
+- `brief` and `plan` move from the project to the session (`session_id`), so each session carries its own brief, plan, and task board. Tasks keep their plan.
+- The stage a project holds today moves onto a session. Migration: each project that has a brief, plan, or messages gets one Full session carrying them (`working` if its work is unfinished, otherwise `idle`), titled from the brief or the first message; every other project starts with no session and its chat opens empty.
+- Artifact files move from `.dalang/` to `.dalang/sessions/<session id>/` (brief, plan, review, logs), so sessions do not overwrite each other; the migration moves the existing files.
+- `plan.brief_id` becomes nullable: a Quick plan has no brief. Tasks, runs, reviews, and the merge gate are unchanged.
+
+#### Goals and non-goals
+
+- Goal: opening a project and asking a question needs no choice at all; a small fix needs one input, one click to run, one click to merge.
+- Non-goal: automatic mode detection, several `working` sessions in one project, per-session profiles, full-text search across sessions, and a new Config tab.
+- Anti-goal: a mode that can change files without the merge gate, or a Quick session that silently grows into a large unreviewed change.
+
+#### Done when
+
+- An Ask session on a real repository answers questions and leaves `git status` clean.
+- A Quick session fixes a seeded small bug, passes verify and review, and merges after one approval, with no brief written.
+- Opening a project shows the chat with the composer ready and creates no session until the first message.
+- Switching an Ask session to Quick or Full keeps the conversation; switching a `working` session back to Ask is refused with a reason.
+- A Quick request the Lead judges too big offers a switch to Full, and the Full session starts with that request already in Discuss.
+- Sessions of a project are listed in the sidebar and reopening one restores its conversation, brief, plan, and board; the Lead answers a follow-up in a reopened session with the earlier context.
+- Starting work in a second session while another is `working` is refused with a clear message naming the first; after it merges or is discarded, the second can start.
+- A v0.6 database upgrades to schema v9 with every project's stage, brief, plan, tasks, and messages intact in its session.
+- The i18n leak scan passes for the new screens in Indonesian, and the browser E2E covers all three modes.
+
+### v0.8: agent delegation
 
 - DALANG serves an MCP endpoint on loopback. Each run gets a bearer token scoped to that run, which expires when the run ends; the token never enters logs.
 - Tools: `delegate_task` (prompt, optional profile or provider and model, `files_allowed` that must be a subset of the parent's), `task_status`, `task_cancel`, with `wait` and `async` modes.
@@ -589,14 +637,14 @@ Each step leaves the app usable, so the work can stop or ship at any step.
 - Limits: depth 1 (a subtask cannot delegate), a cap on subtasks per task, subtasks count against the provider limiter, and stopping the parent stops its subtasks.
 - Native subagents (Claude's Task tool, Antigravity batches) are shown read-only in the run log.
 
-### v0.8: session protocols and handoff
+### v0.9: session protocols and handoff
 
 - Adapters move to the session protocols (Claude Agent SDK, `codex app-server`, ACP where agy supports it) behind a capability shape, keeping the one-shot CLI path as a fallback for any capability a provider lacks.
 - Steer a running task with a message, and interrupt without losing the session.
 - Context handoff on fallback: the next provider gets the brief plus a budgeted selection of the previous run (its requests, command results, and partial diff) instead of starting over.
 - Native Windows execution, with a sandbox that meets the same tests.
 
-### v0.9: automation
+### v0.10: automation
 
 - Scheduled and webhook-triggered runs (for example a nightly dependency update task), with signature checks on webhooks.
 - Outside agents over MCP: Claude Code or Codex in a terminal can read projects and start tasks, at read-only or full-access level, loopback only.
