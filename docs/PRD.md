@@ -292,7 +292,7 @@ Each phase must be useful on its own before the next one starts.
 | --- | --- | --- | --- |
 | v0.1 Rembuk | Project, Lead chat (Discuss), brief (Agree), plan generation and kanban (List), provider status page. No execution yet. | One goal yields a valid brief and plan that pass the schema, for 3 sample projects | Met on 18 Nov 2026 (3 of 3 projects, real models) |
 | v0.2 Jalan | Sequential execution, one task at a time, adapters for all three CLIs, live logs, checkpoint commits, stop/retry | A small CRUD application is finished end to end without opening a CLI manually | Met on 18 Nov 2026 (Notes API, 6 tasks, real models) |
-| v0.3 Kawal | Reviewer and fix loop, diff view, approve merge, integration tests, agent profiles and routing in the UI | ≥ 70% of tasks pass review within at most 2 rounds across 5 test projects | Implemented on 18 Nov 2026 (scripted tests pass; one real-model project, 3 of 3 tasks passed on round 1; the 5-project success rate is not yet measured) |
+| v0.3 Kawal | Reviewer and fix loop, diff view, approve merge, integration tests, agent profiles and routing in the UI | ≥ 70% of tasks pass review within at most 2 rounds across 5 test projects | Met on 19 Nov 2026 (5 real-model projects, 15 of 15 tasks passed review, 13 on round 1 and 2 on round 2) |
 | v0.4 Paralel | Worktree per task, dependency graph, per-provider parallel limits, quota fallback, usage statistics | Two independent tasks run at the same time without conflict; a quota limit automatically reroutes to a backup profile | Planned |
 | v1.0 | Polish, Windows support, documentation, npm release | Used by the author to build 10 real projects | Planned |
 
@@ -348,7 +348,17 @@ Decisions made while building v0.3 (Kawal):
 - A merge is refused when the working tree is dirty, aborts and leaves the repo clean on conflict, and runs with hooks disabled. After a merge DALANG runs the integration command (set per project or detected from `package.json`) on the main branch, in the sandbox. Without `bwrap` the integration run is skipped unless you confirm unconfined execution.
 - Rejecting a task deletes its unmerged branch, keeps its logs, and either sends it back to the queue with your note or marks it failed.
 - Profiles and routing rules are editable in the UI. A profile cannot be deleted while a routing rule (as primary or fallback), a task, or a run refers to it. The agy keyring switch now sits in the profile editor as well as on the Providers page.
-- Verified with real models on 18 Nov 2026: a Lead plan for the greeter module (3 tasks), each executed, reviewed, diffed, and merged through the HTTP API. Reviews came from Claude Code and Codex, every task passed on round 1, integration passed after each merge, and `node --test` passed 2 of 2. This run never failed a review, so the fix loop is covered by scripted tests only, and the "70% within 2 rounds across 5 projects" criterion is not yet measured with real models.
+- Verified with real models on 18 Nov 2026 and 19 Nov 2026, through the HTTP API and the real sandbox, with agy off. A first project (greeter, 3 tasks) passed on round 1. The v0.3 criterion was then run at the intended size: five projects, planned by Claude Code with at most 3 tasks each, every task executed, verified, reviewed, diffed, and merged by script with no override.
+
+  | Project | Tasks | Review rounds per task | Tests after merge |
+  | --- | --- | --- | --- |
+  | slugify module | 3 | 1, 1, 1 | 11 of 11 |
+  | stack CLI | 3 | 1, 1, 1 | 28 of 28 |
+  | CSV parse and sum | 3 | 2, 1, 1 | 22 of 22 |
+  | todo HTTP API | 3 | 2, 1, 1 | 29 of 29 |
+  | Roman numerals | 3 | 1, 1, 1 | 6 of 6 |
+
+  All 15 tasks passed review within 2 rounds (13 on round 1, 2 on round 2), against a target of 70%. In the two round-2 cases Codex failed the first review, the coder fixed the findings, and the second review passed, so the fix loop ran for real. Reviews came from Claude Code and Codex, always a different provider from the coder when one was usable. Fifteen tasks in five small projects shows the flow works, not how often it works on larger code. The reviewer (agy) was not tried, because the keyring switch stays off by default.
 
 ## Risks, mitigations, and decisions
 

@@ -96,13 +96,13 @@ Run on 18 Nov 2026 on Linux, through the HTTP API and the real sandbox, one run 
 | v0.1 | Goal to approved brief and plan, one project per Lead provider | 3 of 3 valid, in 117 to 361 seconds |
 | v0.2 | Notes REST API planned as 6 tasks and executed on Claude Code, Codex, and agy | 6 of 6 done in about 9.5 minutes, 27 of 27 tests passing, every endpoint checked by hand |
 | v0.2 | Codex hit "Selected model is at capacity" mid-run | Idle timeout, then the backup profile finished the task |
-| v0.3 | Greeter module planned as 3 tasks, each executed, verified, reviewed (Claude Code and Codex), diffed, and merged | 3 of 3 passed review on round 1, integration passed after every merge, 2 of 2 tests passing |
+| v0.3 | Five small projects (15 tasks), each task executed, verified, reviewed by another provider, diffed, and merged | 15 of 15 passed review within 2 rounds (13 on round 1, 2 on round 2), 96 of 96 tests passing |
 
 ## Known limits
 
 - **Linux only for confinement.** `bwrap` keeps agents inside the project folder and hides credential folders. macOS and Windows have no sandbox yet, so execution there needs an explicit opt-in.
 - **agy can read your desktop keyring.** It signs in through the Secret Service, and the filtered bus it gets (`xdg-dbus-proxy`, needed along with a desktop session) allows that whole service, so an agy run can read every secret stored there. Claude Code and Codex runs cannot. This is **off by default**: until you tick "Allow Antigravity to read the desktop keyring" on the Providers page, a task routed to agy runs on its backup profile instead, and agy cannot be a Lead inside the sandbox. Provider state folders (`~/.claude`, `~/.codex`, `~/.gemini`) stay writable for token refresh, which is listed in the PRD risks.
-- **The review fix loop is only tested with scripts.** In the real-model run no review failed, so the fix round and the "70% within 2 rounds across 5 projects" goal are not measured yet. Windows and macOS hosts are untested.
+- **The review sample is small.** 15 tasks in five small projects passed review; larger code bases and the agy reviewer are untested. Windows and macOS hosts are untested.
 - **Scope is checked after the fact.** Edits outside a task's `files_allowed` are not blocked while the agent works, but they fail the review (whatever the reviewer says), so the task cannot be merged without your override.
 - **One task at a time.** Parallel runs and worktrees are v0.4.
 
@@ -112,7 +112,7 @@ Run on 18 Nov 2026 on Linux, through the HTTP API and the real sandbox, one run 
 | --- | --- | --- |
 | v0.1 Rembuk | Projects, Lead chat, brief, plan and kanban, provider status page | Released |
 | v0.2 Jalan | Routing and dispatch, sequential execution, live logs, git checkpoints, stop, retry, resume, rollback | Released |
-| v0.3 Kawal | Reviewer and fix loop, diff view, approve merge, post-merge integration, profiles and routing in UI | Implemented (scripted suite and one real-model project verified) |
+| v0.3 Kawal | Reviewer and fix loop, diff view, approve merge, post-merge integration, profiles and routing in UI | Implemented |
 | v0.4 Paralel | Worktree per task, dependency graph, per-provider limits, quota fallback, usage stats | Planned |
 | v1.0 | Polish, Windows support, docs, npm release | Planned |
 
