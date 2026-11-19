@@ -2,7 +2,7 @@
 
 > One goal in, a running app out. A local web tool that orchestrates Claude Code, Codex, and Antigravity CLI as a small team.
 
-**Status: v0.4 (Paralel) is implemented: projects, Discuss, Agree, List (Kanban + Dependency Graph), Assign (Routing, Waves, File-Overlap & Concurrency Pool), Navigate (Concurrent Worktree Execution, Live Inspector & Per-Task Stop), Guard (Diff Viewer, Gate 2 Approve/Reject, Post-Merge Integration), and Providers (Profiles, Routing CRUD, Proactive Quota Fallback & Usage Statistics). Verified with scripted unit and API tests; real-model multi-task parallel trials remain unexecuted. See [docs/PRD.md](docs/PRD.md) for the full roadmap.**
+**Status: v0.4.0 (Paralel) is released: projects, Discuss, Agree, List (Kanban + Dependency Graph), Assign (Routing, Waves, File-Overlap & Concurrency Pool), Navigate (Concurrent Worktree Execution, Live Inspector & Per-Task Stop), Guard (Diff Viewer, Gate 2 Approve/Reject, Post-Merge Integration), and Providers (Profiles, Routing CRUD, Proactive Quota Fallback & Usage Statistics). Verified with scripted unit and API tests and one real-model run of two parallel tasks; a real quota-limit reroute has not been observed. Next: v0.5 (distribution) and v0.6 (UI revamp with a first-run wizard and Indonesian). See [docs/PRD.md](docs/PRD.md) for the full roadmap.**
 
 DALANG is named after the traditional Javanese puppeteer who directs the whole show. The name is also an acronym for the workflow:
 
@@ -85,11 +85,11 @@ The core assumptions were tested on Linux with Claude Code, Codex 0.169.0, and A
 | Refuses outside writes when wrapped in `bwrap` | yes | yes | yes |
 | Usage and limits readable before a run | `/usage` | `account/rateLimits/read` via `codex app-server` | `/usage` |
 
-Key findings: `agy` writes outside the workspace even with its sandbox flag, so every adapter is wrapped in `bwrap`. Codex hangs unless stdin is closed, and its own sandbox cannot run inside `bwrap`, so DALANG lets `bwrap` be the boundary. `node-pty` is not required. See the PRD for the full list, including what is still untested (macOS and Windows, prompt-injection attacks on the guard prompt, and live real-model multi-project v0.3 trials).
+Key findings: `agy` writes outside the workspace even with its sandbox flag, so every adapter is wrapped in `bwrap`. Codex hangs unless stdin is closed, and its own sandbox cannot run inside `bwrap`, so DALANG lets `bwrap` be the boundary. `node-pty` is not required. See the PRD for the full list, including what is still untested (macOS and Windows, prompt-injection attacks on the guard prompt, and a real quota-limit reroute).
 
 ## Verified with real models
 
-Run on 18 Nov 2026 on Linux, through the HTTP API and the real sandbox, one run per scenario (so it shows the flow works, not how often).
+Run on 18 and 19 Nov 2026 on Linux, through the HTTP API and the real sandbox, one run per scenario (so it shows the flow works, not how often).
 
 | Phase | Scenario | Result |
 | --- | --- | --- |
@@ -97,6 +97,7 @@ Run on 18 Nov 2026 on Linux, through the HTTP API and the real sandbox, one run 
 | v0.2 | Notes REST API planned as 6 tasks and executed on Claude Code, Codex, and agy | 6 of 6 done in about 9.5 minutes, 27 of 27 tests passing, every endpoint checked by hand |
 | v0.2 | Codex hit "Selected model is at capacity" mid-run | Idle timeout, then the backup profile finished the task |
 | v0.3 | Five small projects (15 tasks), each task executed, verified, reviewed by another provider, diffed, and merged | 15 of 15 passed review within 2 rounds (13 on round 1, 2 on round 2), 96 of 96 tests passing |
+| v0.4 | Two independent tasks on Claude Code, each in its own worktree | Both ran at the same time, passed review on round 1, merged cleanly, 6 of 6 tests passing |
 
 ## Known limits
 
@@ -112,7 +113,7 @@ Run on 18 Nov 2026 on Linux, through the HTTP API and the real sandbox, one run 
 | v0.1 Rembuk | Projects, Lead chat, brief, plan and kanban, provider status page | Released |
 | v0.2 Jalan | Routing and dispatch, sequential execution, live logs, git checkpoints, stop, retry, resume, rollback | Released |
 | v0.3 Kawal | Reviewer and fix loop, diff view, approve merge, post-merge integration, profiles and routing in UI | Released |
-| v0.4 Paralel | Worktree per task, dependency graph, per-provider limits, quota fallback, usage stats | Implemented (one real two-task parallel run; quota reroute scripted only) |
+| v0.4 Paralel | Worktree per task, dependency graph, per-provider limits, quota fallback, usage stats | Released (one real two-task parallel run; quota reroute scripted only) |
 | v0.5 | `npx dalang` and `dalang doctor`, several accounts per provider, token and cost statistics, replay tests, macOS sandbox, push and pull request | Planned |
 | v0.6 | UI revamp: first-run wizard, guided five-step flow, wayang stage during work, Config page, Indonesian and English | Planned |
 | v0.7 | Agent delegation: a running agent splits its task into subtasks on other profiles over MCP | Planned |
