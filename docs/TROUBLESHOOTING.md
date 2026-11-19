@@ -3,7 +3,7 @@
 Start every diagnosis by running:
 
 ```bash
-npx dalang doctor
+npx dalang-cli doctor
 ```
 
 It verifies Node.js, git, sandbox confinement, the data directory, `gh`, and every agent CLI, and prints a direct fix command for each warning or failure.
@@ -12,7 +12,7 @@ It verifies Node.js, git, sandbox confinement, the data directory, `gh`, and eve
 
 ### "Bubblewrap sandbox is unavailable" or "Sandbox confinement is unavailable"
 
-- **Linux**: install `bubblewrap` (`sudo apt install bubblewrap` or `sudo dnf install bubblewrap`), then verify with `which bwrap` and `npx dalang doctor`.
+- **Linux**: install `bubblewrap` (`sudo apt install bubblewrap` or `sudo dnf install bubblewrap`), then verify with `which bwrap` and `npx dalang-cli doctor`.
 - **macOS**: `/usr/bin/sandbox-exec` should be present by default. Verify with `ls -l /usr/bin/sandbox-exec`.
 - **Windows**: run DALANG inside WSL 2 (Ubuntu) with `bubblewrap` installed.
 - If you explicitly want to test without confinement, tick the unconfined confirmation checkbox in Navigate or Guard.
@@ -74,4 +74,4 @@ CLIs periodically retire or rename model ids. Click **Refresh CLI status** to re
 
 ### Database schema version error after downgrading
 
-If you see `Database schema v7 is newer than this DALANG build`, update DALANG to the latest version (`npx dalang@latest`) or point `DALANG_HOME` to a fresh directory.
+If you see `Database schema v7 is newer than this DALANG build`, update DALANG to the latest version (`npx dalang-cli@latest`) or point `DALANG_HOME` to a fresh directory.

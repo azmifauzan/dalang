@@ -10,6 +10,7 @@ import { parseCodexModelsJson } from '../adapters/codex.js';
 import {
   buildMacOsSeatbeltProfile,
   buildProviderAccountEnv,
+  configDirError,
   detectSandboxEngine,
   wrapWithBwrap,
   wrapWithSandbox,
@@ -107,6 +108,15 @@ describe('v0.5 macOS sandbox-exec parity with bwrap', () => {
     expect(wtProfile).toContain(`(deny file-write* (literal "${path.join(wtDir, '.git')}"))`);
   });
 
+  it('rejects account directories that would expose hidden credentials or the project', () => {
+    const home = os.homedir();
+    for (const bad of ['/', '~', home, path.dirname(home), '~/.ssh', '~/.aws/inner', '~/.config']) {
+      expect(configDirError(bad), bad).toBeTruthy();
+    }
+    expect(configDirError('~/.dalang/accounts/work')).toBeNull();
+    expect(configDirError(null)).toBeNull();
+  });
+
   it('mounts custom configDir writable and exports provider env vars in bwrap', async () => {
     if (process.platform !== 'linux') return;
     const proj = makeTempDir('dalang-bwrap-acct-');
@@ -119,6 +129,9 @@ describe('v0.5 macOS sandbox-exec parity with bwrap', () => {
         throw new Error('unused');
       },
     };
+    await expect(
+      wrapWithBwrap(linuxRunner, 'codex', proj, '/usr/bin/codex', ['exec'], { configDir: '~' }),
+    ).rejects.toThrow(/home directory/);
     const inv = await wrapWithBwrap(linuxRunner, 'codex', proj, '/usr/bin/codex', ['exec'], {
       configDir: customDir,
     });

@@ -43,6 +43,8 @@ Each agent profile has an optional **Account config directory** (`configDir`). W
 2. Mounts `<configDir>` writable inside the sandbox (`bwrap` or `sandbox-exec`).
 3. Tracks parallel slots (`maxParallel`), cached quota readings, and rate-limit cooldowns **per account** (`<provider>:<configDir>`), not globally per provider.
 
+Because the directory is writable inside the sandbox, DALANG refuses a `configDir` that is `/`, your home directory or a parent of it, a credential folder the sandbox hides (`~/.ssh`, `~/.aws`, and so on) or a folder containing one, or a git checkout. Use a dedicated folder such as `~/.claude-work`.
+
 This lets you set a backup profile on the same provider backed by a second subscription account. To sign in a second account before configuring it in DALANG:
 
 ```bash

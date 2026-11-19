@@ -1,7 +1,7 @@
 {
-  "name": "dalang",
+  "name": "dalang-cli",
   "version": "0.5.0",
-  "description": "DALANG - Local orchestrator for Claude Code, Codex, and Antigravity CLI",
+  "description": "DALANG: local orchestrator for Claude Code, Codex, and Antigravity CLI",
   "license": "MIT",
   "type": "module",
   "keywords": [
@@ -47,5 +47,17 @@
     "@dalang/core": "workspace:*",
     "@dalang/server": "workspace:*",
     "rolldown": "1.2.19"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/azmifauzan/dalang.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/azmifauzan/dalang#readme",
+  "bugs": {
+    "url": "https://github.com/azmifauzan/dalang/issues"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

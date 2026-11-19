@@ -9,7 +9,7 @@
     "test": "pnpm -r --if-present test",
     "dev:server": "pnpm --filter @dalang/server dev",
     "dev:web": "pnpm --filter @dalang/web dev",
-    "start": "pnpm --filter dalang start"
+    "start": "pnpm --filter dalang-cli start"
   },
   "devDependencies": {
     "typescript": "7.0.2",

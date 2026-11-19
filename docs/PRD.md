@@ -204,7 +204,7 @@ All orchestrator decisions come from JSON files the agent writes to `.dalang/`, 
 | Responsiveness | Logs appear in the UI less than 1 second after the CLI writes them. |
 | Platform | Linux and macOS (P0), Windows via ConPTY (P1). |
 | Compliance | Only runs official CLI binaries. Does not extract OAuth tokens and does not call provider backends directly. |
-| Installation | One command: `npx dalang` starts the server and opens the browser. |
+| Installation | One command: `npx dalang-cli` starts the server and opens the browser. |
 
 ## Architecture and technology stack
 
@@ -229,7 +229,7 @@ The browser talks only to the local server. The server runs the official CLIs, a
 | Validation | Zod 4.6 | Agent output is validated before it is used for decisions |
 | Queue | p-queue 10 (in-process) | Per-provider parallel limits without needing Redis |
 | Git | simple-git 4.1 + `git worktree` | Checkpoint commits and per-task isolation |
-| Distribution | pnpm 12 monorepo, released to npm | `npx dalang` starts the server and opens the browser |
+| Distribution | pnpm 12 monorepo, released to npm | `npx dalang-cli` starts the server and opens the browser |
 
 Versions are the latest stable releases found on the npm registry and nodejs.org on 18 Nov 2026. The lockfile pins them at implementation time.
 
@@ -237,7 +237,7 @@ Verified on Node 26.13.1 (Linux x64, clean install): better-sqlite3 13.2 (in-mem
 
 Two findings that affect installation:
 
-- npm now blocks dependency install scripts until they are approved (`npm install-scripts approve`). better-sqlite3 and node-pty both declare install scripts, so `npx dalang` must either ship an `allowScripts` approval or avoid native modules. better-sqlite3 13 bundles prebuilt binaries for Linux, macOS, and Windows, so no compiler should be needed once approved. `node-pty` stays optional.
+- npm now blocks dependency install scripts until they are approved (`npm install-scripts approve`). better-sqlite3 and node-pty both declare install scripts, so `npx dalang-cli` must either ship an `allowScripts` approval or avoid native modules. better-sqlite3 13 bundles prebuilt binaries for Linux, macOS, and Windows, so no compiler should be needed once approved. `node-pty` stays optional.
 - Open decision: Drizzle 0.45 (stable) with better-sqlite3 needs that native module, while Drizzle 1.0 (rc.5, not stable yet) works with the built-in `node:sqlite` and removes the native dependency. The PRD picks stable now and revisits when Drizzle 1.0 is released.
 
 ## CLI validation results (Nov 18, 2026)
@@ -294,7 +294,7 @@ Each phase must be useful on its own before the next one starts.
 | v0.2 Jalan | Sequential execution, one task at a time, adapters for all three CLIs, live logs, checkpoint commits, stop/retry | A small CRUD application is finished end to end without opening a CLI manually | Met on 18 Nov 2026 (Notes API, 6 tasks, real models) |
 | v0.3 Kawal | Reviewer and fix loop, diff view, approve merge, integration tests, agent profiles and routing in the UI | ≥ 70% of tasks pass review within at most 2 rounds across 5 test projects | Met on 19 Nov 2026 (5 real-model projects, 15 of 15 tasks passed review, 13 on round 1 and 2 on round 2) |
 | v0.4 Paralel | Worktree per task, dependency graph, per-provider parallel limits, quota fallback, usage statistics | Two independent tasks run at the same time without conflict; a quota limit automatically reroutes to a backup profile | Parallel half met on 19 Nov 2026 (one real-model run, 2 independent tasks ran at the same time and merged cleanly); quota reroute verified with scripted tests only |
-| v0.5 | Polish and distribution: npm package with `npx dalang` and `dalang doctor`, several accounts per provider, token and cost statistics, replay tests, macOS sandbox, push and pull request after merge, documentation | `npx dalang` starts on a clean Linux and macOS machine, and replay scenarios cover quota reroute, review fix round, and parallel merge | Implemented on 19 Nov 2026 (Linux verified: replay scenarios, headless Chromium browser E2E, `dalang doctor`, `pnpm pack` bundle; macOS `sandbox-exec` unit-tested for parity, clean macOS host install not yet run) |
+| v0.5 | Polish and distribution: npm package with `npx dalang-cli` and `dalang doctor`, several accounts per provider, token and cost statistics, replay tests, macOS sandbox, push and pull request after merge, documentation | `npx dalang-cli` starts on a clean Linux and macOS machine, and replay scenarios cover quota reroute, review fix round, and parallel merge | Implemented on 19 Nov 2026 (Linux verified: replay scenarios, headless Chromium browser E2E, `dalang doctor`, `pnpm pack` bundle; macOS `sandbox-exec` unit-tested for parity, clean macOS host install not yet run) |
 | v0.6 | UI revamp: first-run wizard, five-step guided project flow, wayang stage with activity feed during work, Config page with sidebar tabs, theme toggle, Indonesian and English (UI and agent output), redrawn gunungan logo | A new user reaches the Discuss step of a first project through the wizard without reading docs, and no action of the v0.5 UI is lost | Planned |
 | v0.7 | Agent delegation: a running agent splits its own task into subtasks on other profiles through a DALANG MCP server | One task is split by its agent into at least two subtasks on two providers, and all of them pass review and merge | Planned |
 | v0.8 | Session protocols (Claude Agent SDK, `codex app-server`, ACP), steering a running task, context handoff on fallback, native Windows | A fallback mid-task continues from the handoff instead of starting over, on all three providers | Planned |
@@ -379,7 +379,7 @@ Decisions made while building v0.3 (Kawal):
 
 Decisions made while building v0.5 (Polish and distribution):
 
-- **Packaging:** `shared`, `core` and `server` stay private workspace packages. `pnpm --filter dalang build` inlines them into `packages/cli/bundle/cli.js` with rolldown; third-party packages stay external and are listed in the `dalang` package's `dependencies`. Checked on 19 Nov 2026 by installing the packed tarball into an empty directory with npm on Node 26 and Node 24: `dalang --version`, `dalang doctor`, and the server (`/api/health` and the UI) all worked. Minimum Node is 24 (22 was not tested).
+- **Packaging:** `shared`, `core` and `server` stay private workspace packages. `pnpm --filter dalang-cli build` inlines them into `packages/cli/bundle/cli.js` with rolldown; third-party packages stay external and are listed in the `dalang` package's `dependencies`. Checked on 19 Nov 2026 by installing the packed tarball into an empty directory with npm on Node 26 and Node 24: `dalang --version`, `dalang doctor`, and the server (`/api/health` and the UI) all worked. Minimum Node is 24 (22 was not tested).
 - **Checkpoints (hybrid hidden refs):** Pre-run baselines (`ensureMainBaseline` on existing repos) and failed/stopped run snapshots are written into hidden refs under `refs/dalang/checkpoints/*` via a temporary `GIT_INDEX_FILE` (`write-tree` + `commit-tree` + `update-ref`), keeping `mainBranch` free of noise commits while preserving rollback. Completed task work still commits on `dalang/{id}` so the reviewer diff, Gate 2 diff inspector, and `git merge --no-ff` keep working cleanly.
 - **Several accounts per provider (schema v7):** `agent_profiles.config_dir` maps to `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, or `AGY_CONFIG_DIR` / `XDG_CONFIG_HOME` and is mounted writable inside the sandbox (`bwrap` and `sandbox-exec`). Usage caches, cooldown windows, and `ProviderLimiter` concurrency slots are keyed per account (`buildAccountKey(provider, configDir)`), allowing a fallback profile on the same provider with a different account.
 - **Model details from the CLIs:** `ProviderModelInfo` carries `id`, `value`, `resolvedModel`, `displayName`, `description`, `supportedEffortLevels` (including `max`), `defaultEffort`, `supportsFastMode`, `supportsThinking`, and `variants` (for example Claude's `[1m]` 1M context option attached to its base model). The profile editor displays names, descriptions, variant toggles, and model-scoped effort options, and marks unavailable saved models instead of silently dropping them.
@@ -414,7 +414,7 @@ What DALANG has that T3 Code does not: a brief agreed before any code, a plan wi
 
 ### v0.5: polish and distribution
 
-- **npm package.** Publish `dalang`; `npx dalang` starts the server and opens the browser. `dalang doctor` checks Node, git, `bwrap` (or `sandbox-exec`), each CLI's install and login, and the data directory, and prints a fix for each failure.
+- **npm package.** Publish `dalang-cli` (the name `dalang` is taken on npm by an unrelated package; the installed command stays `dalang`); `npx dalang-cli` starts the server and opens the browser. `dalang doctor` checks Node, git, `bwrap` (or `sandbox-exec`), each CLI's install and login, and the data directory, and prints a fix for each failure.
 - **Several accounts per provider.** A profile gets an optional config directory, passed as `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, or the agy profile directory, and mounted writable in the sandbox. A fallback profile can then be the same provider on a second account. Usage readings and cooldowns are kept per account, not per provider.
 - **Token and cost statistics.** Read token counts from the events DALANG already captures (Claude's `result` event carries usage and cost; Codex and agy are read where their events carry token counts; to be checked per CLI) and show tokens per model, cache hits, and estimated cost next to the existing run statistics. The estimate is labelled as API-equivalent, not the subscription bill.
 - **Replay tests.** Record real CLI event streams and the files a run wrote into transcripts, and add a replay runner that replaces only the process. Scenarios: quota reroute to a backup profile (the open half of the v0.4 criterion), a failed review followed by a fix round, and two parallel tasks merging. Add one browser scenario on a real server with the replay runner.

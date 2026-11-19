@@ -16,12 +16,12 @@ DALANG runs locally on your machine, binds only to `127.0.0.1`, and uses the off
   - **Windows**: run inside **WSL 2 (Ubuntu)** with `bubblewrap` installed (native Windows execution is planned for v0.8)
 - **Optional**: GitHub CLI (`gh`) logged in via `gh auth login` if you want DALANG to open pull requests after Gate 2 merges.
 
-## Quick start (`npx dalang`)
+## Quick start (`npx dalang-cli`)
 
 Check your machine first:
 
 ```bash
-npx dalang doctor
+npx dalang-cli doctor
 ```
 
 `dalang doctor` checks Node.js, git, the platform sandbox, the writable data directory (`~/.dalang`), `gh`, and every installed CLI's version and login status, printing a concrete fix for any failure.
@@ -29,16 +29,16 @@ npx dalang doctor
 Start the local server and open the browser UI:
 
 ```bash
-npx dalang
+npx dalang-cli
 ```
 
 Useful flags:
 
 ```bash
-npx dalang --port 4173       # Custom loopback port (or set DALANG_PORT)
-npx dalang --no-open         # Start the server without opening a browser tab
-npx dalang doctor --json     # Machine-readable diagnostics
-npx dalang --version         # Print version
+npx dalang-cli --port 4173       # Custom loopback port (or set DALANG_PORT)
+npx dalang-cli --no-open         # Start the server without opening a browser tab
+npx dalang-cli doctor --json     # Machine-readable diagnostics
+npx dalang-cli --version         # Print version
 ```
 
 > **Note on native install scripts (`better-sqlite3`):** newer versions of npm require approving dependency install scripts on first install. `better-sqlite3` bundles prebuilt binaries for Linux, macOS, and Windows so no C++ compiler is needed once approved.
@@ -68,7 +68,7 @@ Native Windows sandboxing is not built in v0.5. Run DALANG inside WSL 2:
    ```bash
    sudo apt update && sudo apt install -y git bubblewrap
    ```
-3. Install and log in to your agent CLIs inside WSL, then run `npx dalang doctor` and `npx dalang`.
+3. Install and log in to your agent CLIs inside WSL, then run `npx dalang-cli doctor` and `npx dalang-cli`.
 4. Open `http://127.0.0.1:4173` from your Windows browser (WSL forwards loopback ports automatically).
 
 ## Running from source

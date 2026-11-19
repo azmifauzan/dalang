@@ -239,7 +239,7 @@ export function formatDoctorReport(report: DoctorReport): string {
   lines.push('');
   lines.push(
     report.ok
-      ? 'Ready to run DALANG (`dalang` or `npx dalang`).'
+      ? 'Ready to run DALANG (`dalang` or `npx dalang-cli`).'
       : 'One or more required checks failed. Apply the fixes above and run `dalang doctor` again.',
   );
   return lines.join('\n');

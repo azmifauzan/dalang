@@ -14,6 +14,7 @@ import type {
   UpdateProfileInput,
   UpdateRoutingRuleInput,
 } from '@dalang/shared';
+import { configDirError } from '../adapters/sandbox.js';
 import type { ProviderRegistry } from '../adapters/registry.js';
 import type { DalangDb } from '../db/client.js';
 import { agentProfiles, routingRules, runs, tasks } from '../db/schema.js';
@@ -61,6 +62,9 @@ export class ProfileService {
       throw new Error(`An agent profile named "${input.name}" already exists.`);
     }
 
+    const dirError = configDirError(input.configDir);
+    if (dirError) throw new Error(dirError);
+
     const id = `profile-${crypto.randomUUID().slice(0, 8)}`;
     const now = new Date().toISOString();
     this.db
@@ -89,6 +93,8 @@ export class ProfileService {
 
   updateProfile(id: string, input: UpdateProfileInput): AgentProfileDTO {
     const current = this.getProfile(id);
+    const dirError = configDirError(input.configDir);
+    if (dirError) throw new Error(dirError);
     if (input.name && input.name !== current.name) {
       const conflict = this.db
         .select()

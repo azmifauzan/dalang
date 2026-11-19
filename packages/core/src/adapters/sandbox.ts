@@ -222,6 +222,38 @@ export function normalizeConfigDir(configDir?: string | null): string | null {
 }
 
 /**
+ * An account directory is mounted writable inside the sandbox, so it must not expose or contain
+ * anything the sandbox hides: the filesystem root, the home directory (or a parent of it), a
+ * credential path or one of its parents, or a project checkout. Returns an error message, or null.
+ */
+export function configDirError(configDir?: string | null): string | null {
+  const resolved = normalizeConfigDir(configDir);
+  if (!resolved) return null;
+  if (!path.isAbsolute(resolved)) return 'Account directory must be an absolute path.';
+  const inside = (parent: string, child: string) =>
+    child === parent || child.startsWith(parent.endsWith(path.sep) ? parent : parent + path.sep);
+  const home = os.homedir();
+  if (resolved === path.parse(resolved).root || inside(resolved, home)) {
+    return 'Account directory must not be the filesystem root, your home directory, or a parent of it.';
+  }
+  for (const rel of [...MASKED_CREDENTIAL_DIRS, ...MASKED_CREDENTIAL_FILES]) {
+    const abs = path.join(home, rel);
+    if (inside(resolved, abs) || inside(abs, resolved)) {
+      return `Account directory must not contain or sit inside ~/${rel}, which the sandbox hides.`;
+    }
+  }
+  if (fs.existsSync(path.join(resolved, '.git'))) {
+    return 'Account directory must not be a git checkout.';
+  }
+  return null;
+}
+
+function assertSafeConfigDir(configDir?: string | null): void {
+  const err = configDirError(configDir);
+  if (err) throw new Error(err);
+}
+
+/**
  * Environment variables that direct a CLI to a profile-specific account directory.
  */
 export function buildProviderAccountEnv(
@@ -397,6 +429,7 @@ export async function wrapWithSandboxExec(
     return { command, args, sandboxed: false, engine: 'none' };
   }
 
+  assertSafeConfigDir(options.configDir);
   const customConfig = normalizeConfigDir(options.configDir);
   if (customConfig && !fs.existsSync(customConfig)) {
     fs.mkdirSync(customConfig, { recursive: true });
@@ -470,6 +503,7 @@ export async function wrapWithBwrap(
   }
 
   if (provider && options.bindProviderDirs !== false) {
+    assertSafeConfigDir(options.configDir);
     const customConfig = normalizeConfigDir(options.configDir);
     if (customConfig) {
       if (!fs.existsSync(customConfig)) {
