@@ -1,56 +1,14 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 240" fill="none">
   <style>
-    .kayon-body {
-      fill: #fdeee6;
-      stroke: #9a3412;
-    }
-    .kayon-line {
-      stroke: #9a3412;
-    }
+    .kayon-body { fill: #fdeee6; stroke: #9a3412; }
+    .kayon-line { stroke: #9a3412; }
     @media (prefers-color-scheme: dark) {
-      .kayon-body {
-        fill: #3b2416;
-        stroke: #e07a38;
-      }
-      .kayon-line {
-        stroke: #e07a38;
-      }
+      .kayon-body { fill: #3b2416; stroke: #e07a38; }
+      .kayon-line { stroke: #e07a38; }
     }
   </style>
-  <!-- Gunungan (Kayon) outer leaf/mountain silhouette -->
-  <path
-    class="kayon-body"
-    d="M12 2C14.2 5.4 19.2 9.4 19.2 14C19.2 16.4 17.6 18.2 15.6 19H8.4C6.4 18.2 4.8 16.4 4.8 14C4.8 9.4 9.8 5.4 12 2Z"
-    stroke-width="1.75"
-    stroke-linejoin="round"
-  />
-  <!-- Gapura (threshold gate) at base of Gunungan -->
-  <path
-    class="kayon-line"
-    d="M9.5 19V16.2L12 14.6L14.5 16.2V19"
-    stroke-width="1.5"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-  />
-  <!-- Pohon Hayat (central axis trunk) -->
-  <path
-    class="kayon-line"
-    d="M12 5.5V14.6"
-    stroke-width="1.5"
-    stroke-linecap="round"
-  />
-  <!-- Symmetrical Sulur (upper & lower foliage branches) -->
-  <path
-    class="kayon-line"
-    d="M12 9.5C10.4 9.5 9.3 8.5 8.8 7.3M12 9.5C13.6 9.5 14.7 8.5 15.2 7.3M12 12.8C9.8 12.8 8.3 11.6 7.6 10.2M12 12.8C14.2 12.8 15.7 11.6 16.4 10.2"
-    stroke-width="1.4"
-    stroke-linecap="round"
-  />
-  <!-- Stepped pedestal & Cempurit (wayang handle rod) -->
-  <path
-    class="kayon-line"
-    d="M6.5 19H17.5M8.5 21.2H15.5M12 19V22.2"
-    stroke-width="1.6"
-    stroke-linecap="round"
-  />
+  <!-- Gunungan (Kayon) traced from TMnr 8-225 (CC BY-SA 3.0), the same drawing as the in-app emblem -->
+  <path class="kayon-body" d="M89.2 10.0L94.1 17.4L107.7 43.8L113.1 59.5L119.7 71.5L123.0 80.6L141.2 114.8L142.8 122.2L143.6 123.1L145.7 121.8L147.4 122.2L149.8 125.1L149.8 128.4L148.2 131.3L149.8 133.0L149.8 135.9L148.2 137.9L149.4 141.2L147.4 144.5L148.6 148.2L145.7 152.4L145.7 156.9L140.8 163.5L137.0 172.6L127.1 229.1L92.5 227.9L92.1 232.0L87.9 232.0L87.5 227.9L52.9 228.7L50.0 207.7L43.4 177.5L39.2 168.5L31.8 156.9L33.5 153.2L31.0 149.9L31.8 146.2L30.2 141.2L31.4 139.6L30.6 134.2L32.6 132.1L32.6 126.8L36.4 123.1L39.2 124.3L44.2 107.0Z" stroke-width="14" stroke-linejoin="round" />
+  <path class="kayon-line" d="M90 28V176 M90 54C80 54 74 47 71 39M90 54C100 54 106 47 109 39 M90 78C74 78 64 68 58 56M90 78C106 78 116 68 122 56 M90 104C68 104 54 93 47 78M90 104C112 104 126 93 133 78" stroke-width="11" stroke-linecap="round" />
+  <path class="kayon-line" d="M68 176V142L90 126L112 142V176 M44 176H136" stroke-width="11" stroke-linecap="round" stroke-linejoin="round" />
 </svg>

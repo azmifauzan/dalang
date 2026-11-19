@@ -17,7 +17,7 @@ All provider status probes follow one strict rule: checking CLI health must neve
 - **Claude Code**: model discovery runs from `os.tmpdir()` with `--bare --no-session-persistence`, which skips hooks, plugins, and MCP servers and sends a single `initialize` control message (verified by automated test).
 - **Codex CLI**: probes run `--version`, `login status`, `debug models`, and a read-only `app-server` JSON-RPC query from `os.tmpdir()`.
 - **Antigravity CLI**: probes run `--version`, `models`, and `-p=/usage --output-format json` from `os.tmpdir()`.
-- Results are cached in the server until you click **Refresh CLI status** on the Providers page.
+- Results are cached in the server until you click **Refresh CLI status** in Config → Agents.
 
 ## Model details and reasoning effort
 
@@ -45,7 +45,7 @@ Each agent profile has an optional **Account config directory** (`configDir`). W
 
 Because the directory is writable inside the sandbox, DALANG refuses a `configDir` that is `/`, your home directory or a parent of it, a credential folder the sandbox hides (`~/.ssh`, `~/.aws`, and so on) or a folder containing one, or a git checkout. Use a dedicated folder such as `~/.claude-work`.
 
-This lets you set a backup profile on the same provider backed by a second subscription account. To sign in a second account before configuring it in DALANG:
+This lets you set a fallback on the same provider backed by a second subscription account (the fallback's account directory). To sign in a second account before configuring it in DALANG:
 
 ```bash
 # Example: second Claude Code account

@@ -15,7 +15,7 @@ It verifies Node.js, git, sandbox confinement, the data directory, `gh`, and eve
 - **Linux**: install `bubblewrap` (`sudo apt install bubblewrap` or `sudo dnf install bubblewrap`), then verify with `which bwrap` and `npx dalang-cli doctor`.
 - **macOS**: `/usr/bin/sandbox-exec` should be present by default. Verify with `ls -l /usr/bin/sandbox-exec`.
 - **Windows**: run DALANG inside WSL 2 (Ubuntu) with `bubblewrap` installed.
-- If you explicitly want to test without confinement, tick the unconfined confirmation checkbox in Navigate or Guard.
+- If you explicitly want to test without confinement, tick the unconfined confirmation checkbox in the Work or Review and merge step.
 
 ### Antigravity tasks keep falling back to another provider
 
@@ -23,11 +23,11 @@ On Linux, sandboxed Antigravity runs require desktop keyring access via `xdg-dbu
 
 1. Install `xdg-dbus-proxy` (`sudo apt install xdg-dbus-proxy`).
 2. Ensure DALANG is started from a desktop session with `DBUS_SESSION_BUS_ADDRESS` set.
-3. Open **Providers -> Edit Antigravity profile** and tick **Allow Antigravity to read the desktop keyring**.
+3. Open **Config → Security** and tick **Allow Antigravity to read the desktop keyring**.
 
 ### Provider shows "LOGIN NEEDED" or runs fail with `login_expired`
 
-Sign in again with the official CLI, then click **Refresh CLI status** on the Providers page:
+Sign in again with the official CLI, then click **Refresh CLI status** in Config → Agents:
 
 ```bash
 claude auth login
@@ -44,7 +44,7 @@ CODEX_HOME=/path/to/dir codex login
 
 ### Provider stays in cooldown after quota resets
 
-DALANG automatically expires a cached "0% remaining" reading at its reset time (or after 15 minutes if no reset time is reported), and reactive rate-limit cooldowns last 5 minutes. You can clear a cooldown immediately from the **Providers** page using **Clear cooldown** (or **Refresh CLI status**).
+DALANG automatically expires a cached "0% remaining" reading at its reset time (or after 15 minutes if no reset time is reported), and reactive rate-limit cooldowns last 5 minutes. You can clear a cooldown immediately from **Config → Agents** using **Clear cooldown** (or **Refresh CLI status**).
 
 ### "Repository config defines settings that can run commands"
 
@@ -62,9 +62,9 @@ Move legitimate filters (like Git LFS) to `--global` config or remove unused loc
 
 DALANG refuses destructive `git reset --hard` rollbacks when you have uncommitted edits outside `.dalang/` or manual commits added after DALANG's last run. Commit or stash your work, or roll back manually with `git`.
 
-### Push or Pull Request fails in Guard
+### Push or Pull Request fails in Review and merge
 
-- **"No git remote is configured"**: add a remote in your repo (`git remote add origin <url>`) or set the remote name in Guard's **Remote push and pull request** panel.
+- **"No git remote is configured"**: add a remote in your repo (`git remote add origin <url>`) or set the remote name in the **Remote push and pull request** panel.
 - **"GitHub CLI (gh) is not installed"**: install `gh` from https://cli.github.com and run `gh auth login`.
 - **Push authentication failed**: git push runs on the host using your normal SSH keys or git credential helper. Test `git push` manually in that repository once to verify remote credentials.
 
@@ -74,4 +74,4 @@ CLIs periodically retire or rename model ids. Click **Refresh CLI status** to re
 
 ### Database schema version error after downgrading
 
-If you see `Database schema v7 is newer than this DALANG build`, update DALANG to the latest version (`npx dalang-cli@latest`) or point `DALANG_HOME` to a fresh directory.
+If you see `Database schema v8 is newer than this DALANG build`, update DALANG to the latest version (`npx dalang-cli@latest`) or point `DALANG_HOME` to a fresh directory.

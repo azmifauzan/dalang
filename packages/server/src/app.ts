@@ -13,6 +13,7 @@ import {
   CreateProfileInputSchema,
   CreateRoutingRuleInputSchema,
   CreateTaskInputSchema,
+  DALANG_VERSION,
   DiscussMessageInputSchema,
   ProviderIdSchema,
   PushPrInputSchema,
@@ -38,8 +39,10 @@ import {
   ProviderRegistry,
   SettingsService,
   StatisticsService,
+  UpdateCheckService,
   openDatabase,
   type CliRunner,
+  type UpdateRegistryFetcher,
 } from '@dalang/core';
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
@@ -48,6 +51,8 @@ export interface CreateServerOptions {
   dbPath?: string;
   staticDir?: string;
   runner?: CliRunner;
+  updateFetcher?: UpdateRegistryFetcher;
+  currentVersion?: string;
 }
 
 export async function createDalangServer(options: CreateServerOptions = {}): Promise<{
@@ -58,6 +63,10 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
   const conn = openDatabase(options.dbPath);
   const runner = options.runner ?? new NodeCliRunner();
   const settingsService = new SettingsService(conn.db);
+  const updateCheckService = new UpdateCheckService(settingsService, {
+    currentVersion: options.currentVersion ?? DALANG_VERSION,
+    fetcher: options.updateFetcher,
+  });
   const registry = new ProviderRegistry(runner, {
     antigravityKeyringAccess: () => settingsService.antigravityKeyringAccess(),
   });
@@ -65,8 +74,12 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
 
   const projectService = new ProjectService(conn.db);
   const profileService = new ProfileService(conn.db);
-  const leadService = new LeadService(conn.db, registry, events);
-  const executionService = new ExecutionService(conn.db, registry, leadService, events);
+  const leadService = new LeadService(conn.db, registry, events, () =>
+    settingsService.resolvedLanguage(),
+  );
+  const executionService = new ExecutionService(conn.db, registry, leadService, events, {
+    getLanguage: () => settingsService.resolvedLanguage(),
+  });
   const statsService = new StatisticsService(conn.db, () =>
     executionService.getProviderRuntimeStates(),
   );
@@ -123,7 +136,20 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     return reply.status(statusCode >= 400 ? statusCode : 400).send({ error: message });
   });
 
-  app.get('/api/health', async () => ({ ok: true, version: '0.5.0' }));
+  app.get('/api/health', async () => ({
+    ok: true,
+    version: options.currentVersion ?? DALANG_VERSION,
+  }));
+
+  app.get('/api/update-status', async (req) => {
+    const query = z
+      .object({
+        force: z.enum(['0', '1', 'true', 'false']).optional(),
+      })
+      .parse(req.query ?? {});
+    const force = query.force === '1' || query.force === 'true';
+    return { update: await updateCheckService.getStatus({ force }) };
+  });
 
   // WebSocket live event stream
   app.get('/ws', { websocket: true }, (socket) => {
@@ -513,12 +539,16 @@ export async function startDalangServer(opts: {
   dbPath?: string;
   staticDir?: string;
   runner?: CliRunner;
+  updateFetcher?: UpdateRegistryFetcher;
+  currentVersion?: string;
 } = {}): Promise<{ url: string; close: () => Promise<void> }> {
   const port = opts.port ?? Number(process.env.DALANG_PORT || 4173);
   const { app, close } = await createDalangServer({
     dbPath: opts.dbPath,
     staticDir: opts.staticDir,
     runner: opts.runner,
+    updateFetcher: opts.updateFetcher,
+    currentVersion: opts.currentVersion,
   });
 
   // Local-only invariant: always bind to 127.0.0.1

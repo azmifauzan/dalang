@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { TaskDispatchPreviewDTO, TaskDTO, TaskStatus } from '@dalang/shared';
+import { useI18n } from '../i18n/index.js';
 import { Badge } from '@/components/ui/badge';
 
 interface DependencyNode {
@@ -94,8 +95,10 @@ export function DependencyGraph({
   tasks,
   selectedTaskId,
   onSelectTask,
-  emptyMessage = 'No tasks in the plan yet.',
+  emptyMessage,
 }: DependencyGraphProps) {
+  const { t, te } = useI18n();
+  const resolvedEmptyMessage = emptyMessage ?? t('graph.empty');
   const containerRef = useRef<HTMLDivElement | null>(null);
   const cardRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
   const [hoveredExt, setHoveredExt] = useState<string | null>(null);
@@ -247,7 +250,7 @@ export function DependencyGraph({
   if (nodes.length === 0) {
     return (
       <div className="rounded-[8px] border border-dashed border-border bg-card p-8 text-center text-sm text-muted-foreground">
-        {emptyMessage}
+        {resolvedEmptyMessage}
       </div>
     );
   }
@@ -258,22 +261,22 @@ export function DependencyGraph({
     <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
         <div className="flex flex-wrap items-center gap-2">
-          <Badge>{wavesList.length} waves</Badge>
-          <Badge>{nodes.length} tasks</Badge>
-          <Badge>{totalEdges} dependencies</Badge>
+          <Badge>{t('graph.wavesCount', { count: wavesList.length })}</Badge>
+          <Badge>{t('graph.tasksCount', { count: nodes.length })}</Badge>
+          <Badge>{t('graph.depsCount', { count: totalEdges })}</Badge>
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <span className="inline-flex items-center gap-1.5">
             <span className="inline-block h-2.5 w-2.5 rounded-[2px] border border-[var(--accent)] bg-[var(--accent-tint)]" />
-            Running / Rerouted
+            {t('graph.legendActive')}
           </span>
           <span className="inline-flex items-center gap-1.5">
             <span className="inline-block h-2.5 w-2.5 rounded-[2px] border border-[var(--pass)] bg-[var(--pass-tint)]" />
-            Passed / Done
+            {t('graph.legendDone')}
           </span>
           <span className="inline-flex items-center gap-1.5">
             <span className="inline-block h-2.5 w-2.5 rounded-[2px] border border-[var(--error)] bg-[var(--error-tint)]" />
-            Failed / Overlap Blocked
+            {t('graph.legendError')}
           </span>
         </div>
       </div>
@@ -343,10 +346,10 @@ export function DependencyGraph({
             >
               <header className="flex items-center justify-between border-b border-border pb-1.5">
                 <span className="font-mono-token text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  Wave {waveIndex + 1}
+                  {t('graph.waveLabel', { n: waveIndex + 1 })}
                 </span>
                 <span className="font-mono-token text-xs text-muted-foreground">
-                  {waveNodes.length} {waveNodes.length === 1 ? 'task' : 'tasks'}
+                  {t('graph.tasksCount', { count: waveNodes.length })}
                 </span>
               </header>
 
@@ -386,7 +389,7 @@ export function DependencyGraph({
                     >
                       <div className="flex flex-wrap items-center justify-between gap-1.5">
                         <Badge>{node.externalId}</Badge>
-                        <Badge className={statusBadgeStyle(node.status)}>{node.status}</Badge>
+                        <Badge className={statusBadgeStyle(node.status)}>{te(node.status)}</Badge>
                       </div>
 
                       <div className="mt-2 line-clamp-2 text-sm font-semibold text-foreground">
@@ -396,9 +399,9 @@ export function DependencyGraph({
                       <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
                         <span className="font-mono-token">{node.milestone}</span>
                         <span>·</span>
-                        <span>{node.role}</span>
+                        <span>{te(node.role)}</span>
                         <span>·</span>
-                        <span>{node.complexity}</span>
+                        <span>{te(node.complexity)}</span>
                       </div>
 
                       {node.profileLabel && (
@@ -412,19 +415,19 @@ export function DependencyGraph({
                           className="mt-1.5 rounded-[4px] border border-[var(--accent)] bg-[var(--accent-tint)] px-2 py-1 text-[11px] text-[var(--accent)]"
                           title={node.quotaReroutedReason}
                         >
-                          Fallback: {node.quotaReroutedReason}
+                          {t('graph.fallbackPrefix', { reason: node.quotaReroutedReason })}
                         </div>
                       )}
 
                       {node.blockedByOverlapWith && (
                         <div className="mt-1.5 rounded-[4px] border border-[var(--error)] bg-[var(--error-tint)] px-2 py-1 text-[11px] text-[var(--error)]">
-                          Overlap pause: {node.blockedByOverlapWith}
+                          {t('graph.overlapPause', { task: node.blockedByOverlapWith })}
                         </div>
                       )}
 
                       {!node.blockedByOverlapWith && node.overlappingTasks.length > 0 && (
                         <div className="mt-1.5 font-mono-token text-[11px] text-muted-foreground">
-                          Shared files: {node.overlappingTasks.join(', ')}
+                          {t('graph.sharedFiles', { tasks: node.overlappingTasks.join(', ') })}
                         </div>
                       )}
 

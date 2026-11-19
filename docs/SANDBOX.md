@@ -42,7 +42,7 @@ On Linux, `agy` authenticates through the desktop Secret Service (`org.freedeskt
 That service exposes the entire desktop keyring, so a sandboxed `agy` run can read any secret stored in your keyring. For that reason:
 
 - **Antigravity in the Linux sandbox is off by default.**
-- Tasks routed to `agy` fall back to their backup profile until you explicitly tick **"Allow Antigravity to read the desktop keyring"** in an Antigravity profile.
+- Tasks routed to `agy` fall back to their fallback CLI until you explicitly tick **"Allow Antigravity to read the desktop keyring"** in an Antigravity profile.
 - Without `xdg-dbus-proxy` or an active desktop session bus, sandboxed `agy` runs are refused.
 
 ## Git config guard and hidden checkpoints

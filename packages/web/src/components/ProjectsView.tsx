@@ -1,42 +1,24 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState, type FormEvent } from 'react';
-import type { ProjectSummary, ProviderId } from '@dalang/shared';
+import type { ProjectSummary } from '@dalang/shared';
+import { useI18n } from '../i18n/index.js';
 import { api } from '../lib/api.js';
-import { EmptyPanel, ErrorPanel, LoadingPanel, ModalDialog } from './StateViews.js';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
-import { NativeSelect } from '@/components/ui/native-select';
-import { Textarea } from '@/components/ui/textarea';
 
 export function ProjectsView({
-  activeProjectId,
   onSelectProject,
 }: {
-  activeProjectId: string | null;
-  onSelectProject: (project: ProjectSummary, targetStage?: 'discuss' | 'agree' | 'list') => void;
+  onSelectProject: (project: ProjectSummary) => void;
 }) {
   const qc = useQueryClient();
+  const { t } = useI18n();
   const [mode, setMode] = useState<'create' | 'open'>('create');
   const [name, setName] = useState('');
   const [repoPath, setRepoPath] = useState('');
   const [stackHint, setStackHint] = useState('');
   const [initGitIfMissing, setInitGitIfMissing] = useState(true);
-  const [leadProvider, setLeadProvider] = useState<ProviderId>('claude-code');
-  const [editingMdProjectId, setEditingMdProjectId] = useState<string | null>(null);
-  const [mdDraft, setMdDraft] = useState('');
-
-  const projectsQuery = useQuery({
-    queryKey: ['projects'],
-    queryFn: () => api.listProjects(),
-  });
-
-  const mdQuery = useQuery({
-    queryKey: ['project-md', editingMdProjectId],
-    queryFn: () => api.getProjectMd(editingMdProjectId!),
-    enabled: Boolean(editingMdProjectId),
-  });
 
   const createMutation = useMutation({
     mutationFn: api.createOrOpenProject,
@@ -45,24 +27,7 @@ export function ProjectsView({
       setName('');
       setRepoPath('');
       setStackHint('');
-      onSelectProject(project, 'discuss');
-    },
-  });
-
-  const deleteMutation = useMutation({
-    mutationFn: (id: string) => api.deleteProject(id),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['projects'] });
-    },
-  });
-
-  const saveMdMutation = useMutation({
-    mutationFn: ({ id, content }: { id: string; content: string }) =>
-      api.saveProjectMd(id, content, true),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['projects'] });
-      qc.invalidateQueries({ queryKey: ['project-md', editingMdProjectId] });
-      setEditingMdProjectId(null);
+      onSelectProject(project);
     },
   });
 
@@ -75,38 +40,28 @@ export function ProjectsView({
       path: repoPath.trim(),
       stackHint: mode === 'create' ? stackHint.trim() || undefined : undefined,
       initGitIfMissing: mode === 'open' ? initGitIfMissing : false,
-      leadProvider,
     });
   };
 
-  const openMdEditor = async (projectId: string) => {
-    setEditingMdProjectId(projectId);
-    const data = await api.getProjectMd(projectId);
-    setMdDraft(data.content);
-  };
-
-  const projects = projectsQuery.data?.projects ?? [];
-
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-      {/* Left column: Create or Open Project form */}
+      {/* Create or Open Project form */}
       <section
         aria-labelledby="project-form-heading"
-        className="rounded-md border p-5 lg:col-span-5"
+        className="rounded-[8px] border p-5 lg:col-span-7"
         style={{
           backgroundColor: 'var(--bg-surface)',
           borderColor: 'var(--border-subtle)',
         }}
       >
-        <h1 id="project-form-heading" className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>
-          Add a workspace
+        <h1 id="project-form-heading" className="text-lg font-semibold">
+          {t('projects.addHeading')}
         </h1>
         <p className="mt-1 text-sm" style={{ color: 'var(--text-secondary)' }}>
-          Register a new folder with git init or open an existing repository. DALANG creates{' '}
-          <code>PROJECT.md</code> and symlinks <code>CLAUDE.md</code> and <code>AGENTS.md</code>.
+          {t('projects.addDesc')}
         </p>
 
-        <div className="mt-4 grid grid-cols-2 gap-2" role="tablist" aria-label="Workspace mode">
+        <div className="mt-4 grid grid-cols-2 gap-2" role="tablist" aria-label={t('projects.addHeading')}>
           <Button
             type="button"
             role="tab"
@@ -114,7 +69,7 @@ export function ProjectsView({
             onClick={() => setMode('create')}
             variant={mode === 'create' ? 'default' : 'outline'}
           >
-            New project
+            {t('projects.modeCreate')}
           </Button>
           <Button
             type="button"
@@ -123,14 +78,14 @@ export function ProjectsView({
             onClick={() => setMode('open')}
             variant={mode === 'open' ? 'default' : 'outline'}
           >
-            Open existing repo
+            {t('projects.modeOpen')}
           </Button>
         </div>
 
-        <form onSubmit={handleSubmit} className="mt-4 space-y-4">
-          <div>
+        <form onSubmit={handleSubmit} className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div className="sm:col-span-2">
             <Label htmlFor="proj-path" className="block text-sm font-medium">
-              Repository folder path
+              {t('projects.pathLabel')}
             </Label>
             <Input
               id="proj-path"
@@ -138,71 +93,55 @@ export function ProjectsView({
               required
               value={repoPath}
               onChange={(e) => setRepoPath(e.target.value)}
-              placeholder="/home/you/dev/my-app"
+              placeholder={t('projects.pathPlaceholder')}
               className="mt-1 font-mono-token text-sm"
             />
           </div>
 
-          <div>
+          <div className="sm:col-span-2">
             <Label htmlFor="proj-name" className="block text-sm font-medium">
-              Project name (optional)
+              {t('projects.nameLabel')}
             </Label>
             <Input
               id="proj-name"
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="Derived from folder name if blank"
+              placeholder={t('projects.namePlaceholder')}
               className="mt-1"
             />
           </div>
 
           {mode === 'create' ? (
-            <div>
+            <div className="sm:col-span-2">
               <Label htmlFor="proj-stack" className="block text-sm font-medium">
-                Initial stack hint for PROJECT.md (optional)
+                {t('projects.stackLabel')}
               </Label>
               <Input
                 id="proj-stack"
                 type="text"
                 value={stackHint}
                 onChange={(e) => setStackHint(e.target.value)}
-                placeholder="TypeScript, Fastify, SQLite, React"
+                placeholder={t('projects.stackPlaceholder')}
                 className="mt-1"
               />
             </div>
           ) : (
-            <Label className="flex min-h-[44px] cursor-pointer items-center gap-3 text-sm">
+            <Label className="flex min-h-[44px] cursor-pointer items-center gap-3 text-sm sm:col-span-2">
               <input
                 type="checkbox"
                 checked={initGitIfMissing}
                 onChange={(e) => setInitGitIfMissing(e.target.checked)}
-                className="h-4 w-4"
+                className="h-4 w-4 accent-[var(--primary)]"
               />
-              <span>Run git init if folder has no .git directory</span>
+              <span>{t('projects.initGitLabel')}</span>
             </Label>
           )}
-
-          <div>
-            <Label htmlFor="proj-lead" className="block text-sm font-medium">
-              Default Lead CLI
-            </Label>
-            <NativeSelect
-              id="proj-lead"
-              value={leadProvider}
-              onChange={(e) => setLeadProvider(e.target.value as ProviderId)}
-              className="mt-1"
-            >
-              <option value="claude-code">Claude Code (claude)</option>
-              <option value="codex">Codex CLI (codex)</option>
-              <option value="antigravity">Antigravity CLI (agy)</option>
-            </NativeSelect>
-          </div>
 
           {createMutation.isError && (
             <div
               role="alert"
-              className="rounded border px-3 py-2 text-sm"
+              className="rounded border px-3 py-2 text-sm sm:col-span-2"
               style={{
                 backgroundColor: 'var(--error-tint)',
                 borderColor: 'var(--error)',
@@ -216,186 +155,42 @@ export function ProjectsView({
           <Button
             type="submit"
             disabled={createMutation.isPending || !repoPath.trim()}
-            className="w-full"
+            className="w-full sm:col-span-2"
           >
             {createMutation.isPending
-              ? 'Initializing workspace...'
+              ? t('projects.initializing')
               : mode === 'create'
-                ? 'Create project & start Discuss'
-                : 'Open repository & start Discuss'}
+                ? t('projects.submitCreate')
+                : t('projects.submitOpen')}
           </Button>
         </form>
       </section>
-
-      {/* Right column: Registered Projects */}
-      <section aria-labelledby="registered-projects-heading" className="space-y-4 lg:col-span-7">
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <h2 id="registered-projects-heading" className="text-lg font-semibold">
-              Registered projects
-            </h2>
-            <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-              Global registry in <code>~/.dalang/</code>, artifacts stored per repo in <code>.dalang/</code>.
-            </p>
-          </div>
-          <Badge>{projects.length} total</Badge>
-        </div>
-
-        {projectsQuery.isLoading && <LoadingPanel label="Loading registered projects..." />}
-
-        {projectsQuery.isError && (
-          <ErrorPanel
-            title="Could not load projects"
-            detail={projectsQuery.error.message}
-            onRetry={() => projectsQuery.refetch()}
-          />
-        )}
-
-        {!projectsQuery.isLoading && !projectsQuery.isError && projects.length === 0 && (
-          <EmptyPanel
-            title="No projects registered yet"
-            description="Create a new project folder or open an existing git repository using the form on the left."
-          />
-        )}
-
-        {!projectsQuery.isLoading && !projectsQuery.isError && projects.length > 0 && (
-          <ul className="space-y-3">
-            {projects.map((proj) => {
-              const isSelected = proj.id === activeProjectId;
-              const linksOk = proj.symlinksValid.claudeMd && proj.symlinksValid.agentsMd;
-              return (
-                <li
-                  key={proj.id}
-                  className="rounded-md border p-4"
-                  style={{
-                    backgroundColor: 'var(--bg-surface)',
-                    borderColor: isSelected ? 'var(--accent)' : 'var(--border-subtle)',
-                  }}
-                >
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <h3 className="text-base font-semibold">{proj.name}</h3>
-                        <Badge>{proj.mainBranch}</Badge>
-                        <Badge>{proj.leadProvider}</Badge>
-                      </div>
-                      <p
-                        className="mt-1 truncate font-mono-token text-xs"
-                        style={{ color: 'var(--text-secondary)' }}
-                        title={proj.path}
-                      >
-                        {proj.path}
-                      </p>
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Button
-                        type="button"
-                        onClick={() => onSelectProject(proj, 'discuss')}
-                      >
-                        Open Discuss
-                      </Button>
-                      <Button
-                        type="button"
-                        onClick={() => openMdEditor(proj.id)}
-                        variant="outline"
-                      >
-                        Edit PROJECT.md
-                      </Button>
-                      <Button
-                        type="button"
-                        onClick={() => deleteMutation.mutate(proj.id)}
-                        disabled={deleteMutation.isPending}
-
-                        aria-label={`Remove ${proj.name} from registry`}
-                        variant="outline"
-                      >
-                        Remove
-                      </Button>
-                    </div>
-                  </div>
-
-                  <div
-                    className="mt-3 flex flex-wrap items-center gap-3 border-t pt-3 text-xs"
-                    style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
-                  >
-                    <span
-                      style={{
-                        color: linksOk ? 'var(--pass)' : 'var(--error)',
-                        fontWeight: 600,
-                      }}
-                    >
-                      {linksOk
-                        ? 'PROJECT.md symlinked to CLAUDE.md & AGENTS.md'
-                        : 'Symlink repair needed for CLAUDE.md / AGENTS.md'}
-                    </span>
-                    <span>
-                      Brief:{' '}
-                      {proj.latestBriefVersion
-                        ? `v${proj.latestBriefVersion} (${proj.latestBriefStatus})`
-                        : 'none'}
-                    </span>
-                    <span>
-                      Plan: {proj.taskCount} tasks ({proj.planStatus})
-                    </span>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </section>
-
-      <ModalDialog
-        open={Boolean(editingMdProjectId)}
-        title="PROJECT.md & Symlink Check"
-        onClose={() => setEditingMdProjectId(null)}
+      {/* What happens next */}
+      <aside
+        aria-labelledby="project-next-heading"
+        className="space-y-4 rounded-[8px] border p-5 lg:col-span-5"
+        style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
       >
-        {mdQuery.isLoading ? (
-          <LoadingPanel label="Reading PROJECT.md..." />
-        ) : (
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (!editingMdProjectId) return;
-              saveMdMutation.mutate({ id: editingMdProjectId, content: mdDraft });
-            }}
-            className="space-y-4"
-          >
-            <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-              Saving automatically ensures <code>CLAUDE.md</code> and <code>AGENTS.md</code> symlink to{' '}
-              <code>PROJECT.md</code>.
-            </div>
-            <div>
-              <Label htmlFor="project-md-editor" className="block text-sm font-medium">
-                PROJECT.md contents
-              </Label>
-              <Textarea
-                id="project-md-editor"
-                rows={14}
-                value={mdDraft}
-                onChange={(e) => setMdDraft(e.target.value)}
-                className="mt-1 font-mono-token text-sm"
-              />
-            </div>
-            <div className="flex flex-wrap justify-end gap-2">
-              <Button
-                type="button"
-                onClick={() => setEditingMdProjectId(null)}
-                variant="outline"
+        <h2 id="project-next-heading" className="text-lg font-semibold">
+          {t('projects.nextHeading')}
+        </h2>
+        <ol className="space-y-3">
+          {(['projects.next1', 'projects.next2', 'projects.next3', 'projects.next4'] as const).map((key, i) => (
+            <li key={key} className="flex gap-3 text-sm">
+              <span
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border font-mono-token text-xs font-semibold"
+                style={{ borderColor: 'var(--accent)', color: 'var(--accent)' }}
               >
-                Cancel
-              </Button>
-              <Button
-                type="submit"
-                disabled={saveMdMutation.isPending}
-              >
-                {saveMdMutation.isPending ? 'Saving...' : 'Save PROJECT.md & verify symlinks'}
-              </Button>
-            </div>
-          </form>
-        )}
-      </ModalDialog>
+                {i + 1}
+              </span>
+              <span style={{ color: 'var(--text-secondary)' }}>{t(key)}</span>
+            </li>
+          ))}
+        </ol>
+        <p className="border-t pt-3 text-xs" style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}>
+          {t('projects.nextTeamNote')}
+        </p>
+      </aside>
     </div>
   );
 }

@@ -10,6 +10,7 @@ import type {
   TaskDTO,
   TaskStatus,
 } from '@dalang/shared';
+import { useI18n } from '../i18n/index.js';
 import { api } from '../lib/api.js';
 import { DependencyGraph } from './DependencyGraph.js';
 import { EmptyPanel, ErrorPanel, LoadingPanel, ModalDialog } from './StateViews.js';
@@ -19,13 +20,6 @@ import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { NativeSelect } from '@/components/ui/native-select';
 import { Textarea } from '@/components/ui/textarea';
-
-const COLUMNS: Array<{ id: TaskStatus; title: string; note: string }> = [
-  { id: 'draft', title: 'Draft', note: 'Needs review before ready' },
-  { id: 'needs_split', title: 'Needs split', note: 'Flagged for decomposition' },
-  { id: 'ready', title: 'Ready', note: 'Scoped & ready for approval' },
-  { id: 'approved', title: 'Approved', note: 'Ready for Assign & Navigate' },
-];
 
 const EXECUTION_STATUSES = new Set<TaskStatus>([
   'approved',
@@ -110,13 +104,14 @@ function taskToForm(task: TaskDTO, profiles: AgentProfileDTO[]): TaskFormState {
 export function ListView({
   project,
   onGoToAgree,
-  onGoToAssign,
+  onGoToWork,
 }: {
   project: ProjectSummary;
   onGoToAgree: () => void;
-  onGoToAssign?: () => void;
+  onGoToWork?: () => void;
 }) {
   const qc = useQueryClient();
+  const { t, te } = useI18n();
   const [milestoneFilter, setMilestoneFilter] = useState<string>('ALL');
   const [viewMode, setViewMode] = useState<'kanban' | 'graph'>('kanban');
   const [modalOpen, setModalOpen] = useState(false);
@@ -125,6 +120,13 @@ export function ListView({
   const [liveStatusAnnouncement, setLiveStatusAnnouncement] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+
+  const columns: Array<{ id: TaskStatus; title: string; note: string }> = [
+    { id: 'draft', title: t('plan.col.draft'), note: t('plan.col.draftNote') },
+    { id: 'needs_split', title: t('plan.col.needs_split'), note: t('plan.col.needs_splitNote') },
+    { id: 'ready', title: t('plan.col.ready'), note: t('plan.col.readyNote') },
+    { id: 'approved', title: t('plan.col.approved'), note: t('plan.col.approvedNote') },
+  ];
 
   const planQuery = useQuery({
     queryKey: ['plan', project.id],
@@ -148,6 +150,7 @@ export function ListView({
     mutationFn: () => api.approvePlan(project.id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['plan', project.id] });
+      qc.invalidateQueries({ queryKey: ['execution', project.id] });
       qc.invalidateQueries({ queryKey: ['projects'] });
     },
   });
@@ -193,7 +196,7 @@ export function ListView({
   const hasApprovedBrief = project.latestBriefStatus === 'approved';
 
   const visibleTasks = (plan?.tasks ?? []).filter(
-    (t) => milestoneFilter === 'ALL' || t.milestone === milestoneFilter,
+    (task) => milestoneFilter === 'ALL' || task.milestone === milestoneFilter,
   );
 
   const openCreateModal = () => {
@@ -214,7 +217,7 @@ export function ListView({
     e.preventDefault();
     const criteria = linesToArray(formState.acceptanceCriteria);
     if (criteria.length === 0 || !formState.verify.trim()) {
-      setFormError('Add at least one acceptance criterion and a verify command.');
+      setFormError(t('plan.incompleteError'));
       return;
     }
     setFormError(null);
@@ -248,7 +251,7 @@ export function ListView({
     const reordered = [...colTasks];
     const [moved] = reordered.splice(index, 1);
     reordered.splice(targetIdx, 0, moved);
-    const updates = reordered.map((t, pos) => ({ id: t.id, position: pos }));
+    const updates = reordered.map((tk, pos) => ({ id: tk.id, position: pos }));
     reorderMutation.mutate(updates);
     setLiveStatusAnnouncement(
       `Moved ${moved.externalId} ${moved.title} to position ${targetIdx + 1} of ${reordered.length}`,
@@ -257,17 +260,15 @@ export function ListView({
 
   const moveTaskToStatus = (task: TaskDTO, nextStatus: EditableTaskStatus) => {
     if (!plan || isLocked || task.status === nextStatus) return;
-    const targetCol = (plan.tasks ?? []).filter((t) => t.status === nextStatus);
-    reorderMutation.mutate([
-      { id: task.id, status: nextStatus, position: targetCol.length },
-    ]);
+    const targetCol = (plan.tasks ?? []).filter((tk) => tk.status === nextStatus);
+    reorderMutation.mutate([{ id: task.id, status: nextStatus, position: targetCol.length }]);
     setLiveStatusAnnouncement(`Moved ${task.externalId} to ${nextStatus}`);
   };
 
   const handleDropOnColumn = (e: DragEvent<HTMLElement>, targetStatus: TaskStatus) => {
     e.preventDefault();
     if (!draggedTaskId || !plan || isLocked || targetStatus === 'approved') return;
-    const task = plan.tasks.find((t) => t.id === draggedTaskId);
+    const task = plan.tasks.find((tk) => tk.id === draggedTaskId);
     setDraggedTaskId(null);
     if (task && task.status !== targetStatus) {
       moveTaskToStatus(task, targetStatus as EditableTaskStatus);
@@ -282,29 +283,25 @@ export function ListView({
 
       {/* Header bar */}
       <div
-        className="flex flex-wrap items-center justify-between gap-4 rounded-md border p-4"
-        style={{
-          backgroundColor: 'var(--bg-surface)',
-          borderColor: 'var(--border-subtle)',
-        }}
+        className="flex flex-wrap items-center justify-between gap-4 rounded-[8px] border p-4"
+        style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
       >
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-lg font-semibold">List (Plan & Kanban)</h1>
+            <h2 className="text-lg font-semibold">{t('plan.title')}</h2>
             {plan && (
               <Badge
-
                 style={{
                   color: isLocked ? 'var(--pass)' : 'var(--text-primary)',
                   borderColor: isLocked ? 'var(--pass)' : 'var(--border-subtle)',
                 }}
               >
-                PLAN v{plan.version} · {plan.status.toUpperCase()}
+                v{plan.version} · {plan.status.toUpperCase()}
               </Badge>
             )}
           </div>
           <p className="mt-1 text-sm" style={{ color: 'var(--text-secondary)' }}>
-            Inspect milestones, adjust dependencies, assign agent profiles, and reorder tasks before approving.
+            {t('plan.subtitle')}
           </p>
         </div>
 
@@ -312,7 +309,7 @@ export function ListView({
           {plan && plan.milestones.length > 0 && (
             <div>
               <Label htmlFor="milestone-filter" className="sr-only">
-                Filter by milestone
+                {t('plan.filterMilestone')}
               </Label>
               <NativeSelect
                 id="milestone-filter"
@@ -320,7 +317,7 @@ export function ListView({
                 onChange={(e) => setMilestoneFilter(e.target.value)}
                 className="w-auto"
               >
-                <option value="ALL">All milestones ({plan.tasks.length})</option>
+                <option value="ALL">{t('plan.allMilestones', { count: plan.tasks.length })}</option>
                 {plan.milestones.map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.id}: {m.title}
@@ -331,7 +328,11 @@ export function ListView({
           )}
 
           {plan && (
-            <div role="group" aria-label="Plan view mode" className="inline-flex rounded-[6px] border border-input bg-card p-0.5">
+            <div
+              role="group"
+              aria-label={t('plan.title')}
+              className="inline-flex rounded-[6px] border border-input bg-card p-0.5"
+            >
               <button
                 type="button"
                 aria-pressed={viewMode === 'kanban'}
@@ -342,7 +343,7 @@ export function ListView({
                     : 'text-foreground hover:bg-muted'
                 }`}
               >
-                Kanban
+                {t('plan.viewKanban')}
               </button>
               <button
                 type="button"
@@ -354,7 +355,7 @@ export function ListView({
                     : 'text-foreground hover:bg-muted'
                 }`}
               >
-                Dependency graph
+                {t('plan.viewGraph')}
               </button>
             </div>
           )}
@@ -364,46 +365,44 @@ export function ListView({
               type="button"
               onClick={() => generateMutation.mutate()}
               disabled={generateMutation.isPending || !hasApprovedBrief}
-
-              title={!hasApprovedBrief ? 'Approve a brief in Agree first' : undefined}
               variant="outline"
             >
               {generateMutation.isPending
-                ? 'Generating plan...'
+                ? t('plan.generating')
                 : plan
-                  ? 'Regenerate plan'
-                  : 'Generate plan from brief'}
+                  ? t('plan.regenerate')
+                  : t('plan.generateFromBrief')}
             </Button>
           )}
 
           {plan && !isLocked && (
             <>
               <Button type="button" onClick={openCreateModal} variant="outline">
-                Add task
+                {t('plan.addTask')}
               </Button>
               <Button
                 type="button"
                 onClick={() => approvePlanMutation.mutate()}
                 disabled={approvePlanMutation.isPending}
               >
-                {approvePlanMutation.isPending ? 'Approving...' : 'Approve plan'}
+                {approvePlanMutation.isPending ? t('plan.approving') : t('plan.approvePlan')}
               </Button>
             </>
           )}
 
-          {plan && isLocked && onGoToAssign && (
-            <Button type="button" onClick={onGoToAssign}>
-              Open Assign
+          {plan && isLocked && onGoToWork && (
+            <Button type="button" onClick={onGoToWork}>
+              {t('plan.openWork')}
             </Button>
           )}
         </div>
       </div>
 
-      {planQuery.isLoading && <LoadingPanel label="Loading plan and kanban tasks..." />}
+      {planQuery.isLoading && <LoadingPanel label={t('plan.loading')} />}
 
       {planQuery.isError && (
         <ErrorPanel
-          title="Could not load plan"
+          title={t('plan.loadError')}
           detail={planQuery.error.message}
           onRetry={() => planQuery.refetch()}
         />
@@ -411,23 +410,19 @@ export function ListView({
 
       {(generateMutation.isError || approvePlanMutation.isError) && (
         <ErrorPanel
-          title="Plan action failed"
+          title={t('plan.actionFailed')}
           detail={
             generateMutation.error?.message ||
             approvePlanMutation.error?.message ||
-            'Unknown error'
+            t('common.unknownError')
           }
         />
       )}
 
       {!planQuery.isLoading && !planQuery.isError && !plan && (
         <EmptyPanel
-          title={hasApprovedBrief ? 'Ready to generate task plan' : 'Approve a brief first'}
-          description={
-            hasApprovedBrief
-              ? 'Your brief is approved. Generate the milestone and task breakdown to populate the Kanban board.'
-              : 'Go to Agree, review or edit your project brief, and click Approve Brief (Gate 1) before generating tasks.'
-          }
+          title={hasApprovedBrief ? t('plan.emptyReadyTitle') : t('plan.emptyNeedBriefTitle')}
+          description={hasApprovedBrief ? t('plan.emptyReadyDesc') : t('plan.emptyNeedBriefDesc')}
           action={
             hasApprovedBrief ? (
               <Button
@@ -435,11 +430,11 @@ export function ListView({
                 onClick={() => generateMutation.mutate()}
                 disabled={generateMutation.isPending}
               >
-                {generateMutation.isPending ? 'Generating plan...' : 'Generate plan now'}
+                {generateMutation.isPending ? t('plan.generating') : t('plan.generateNow')}
               </Button>
             ) : (
               <Button type="button" onClick={onGoToAgree}>
-                Open Agree
+                {t('plan.openBrief')}
               </Button>
             )
           }
@@ -450,38 +445,38 @@ export function ListView({
         <DependencyGraph
           tasks={visibleTasks}
           onSelectTask={(taskId) => {
-            const found = visibleTasks.find((t) => t.id === taskId);
+            const found = visibleTasks.find((tk) => tk.id === taskId);
             if (found) openEditModal(found);
           }}
-          emptyMessage="No tasks match this milestone filter."
+          emptyMessage={t('plan.noTasksMatchFilter')}
         />
       )}
 
       {plan && viewMode === 'kanban' && (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-          {COLUMNS.map((col) => {
+          {columns.map((col) => {
             const colTasks = visibleTasks
-              .filter((t) =>
-                col.id === 'approved' ? EXECUTION_STATUSES.has(t.status) : t.status === col.id,
+              .filter((tk) =>
+                col.id === 'approved' ? EXECUTION_STATUSES.has(tk.status) : tk.status === col.id,
               )
               .sort((a, b) => a.position - b.position);
 
             return (
               <section
                 key={col.id}
-                aria-label={`${col.title} column`}
+                aria-label={col.title}
                 onDragOver={(e) => e.preventDefault()}
                 onDrop={(e) => handleDropOnColumn(e, col.id)}
-                className="flex flex-col rounded-md border p-3"
+                className="flex flex-col rounded-[6px] border p-3"
                 style={{
                   backgroundColor: 'var(--bg-well)',
                   borderColor: 'var(--border-subtle)',
-                  minHeight: '260px',
+                  minHeight: '240px',
                 }}
               >
                 <div className="mb-3 flex items-baseline justify-between gap-2 px-1">
                   <div>
-                    <h2 className="text-sm font-semibold">{col.title}</h2>
+                    <h3 className="text-sm font-semibold">{col.title}</h3>
                     <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
                       {col.note}
                     </p>
@@ -497,7 +492,7 @@ export function ListView({
                       color: 'var(--text-secondary)',
                     }}
                   >
-                    No tasks in {col.title}
+                    {t('plan.noTasksInCol', { col: col.title })}
                   </div>
                 ) : (
                   <ul className="space-y-3">
@@ -507,7 +502,7 @@ export function ListView({
                         draggable={!isLocked}
                         onDragStart={() => setDraggedTaskId(task.id)}
                         onDragEnd={() => setDraggedTaskId(null)}
-                        className="rounded-md border p-3"
+                        className="rounded-[6px] border p-3"
                         style={{
                           backgroundColor: 'var(--bg-surface)',
                           borderColor: 'var(--border-subtle)',
@@ -516,20 +511,20 @@ export function ListView({
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <Badge>{task.externalId}</Badge>
                           <div className="flex flex-wrap items-center gap-1 text-xs">
-                            {task.status !== col.id && <Badge>{task.status}</Badge>}
+                            {task.status !== col.id && <Badge>{te(task.status)}</Badge>}
                             <Badge>{task.milestone}</Badge>
-                            <Badge>{task.complexity}</Badge>
+                            <Badge>{te(task.complexity)}</Badge>
                           </div>
                         </div>
 
-                        <h3 className="mt-2 text-sm font-semibold">{task.title}</h3>
+                        <h4 className="mt-2 text-sm font-semibold">{task.title}</h4>
                         <p className="mt-1 text-xs" style={{ color: 'var(--text-secondary)' }}>
                           {task.goal}
                         </p>
 
                         <div className="mt-2 space-y-1 text-xs" style={{ color: 'var(--text-secondary)' }}>
                           <div>
-                            Role: <strong>{task.role}</strong> · Profile:{' '}
+                            {t('plan.roleLabel')}: <strong>{te(task.role)}</strong> · {t('plan.profileLabel')}:{' '}
                             <strong>
                               {(task.profileOverride &&
                                 profiles.find(
@@ -538,16 +533,16 @@ export function ListView({
                                     p.name === task.profileOverride,
                                 )?.name) ||
                                 task.profileOverride ||
-                                'routing default'}
+                                t('plan.routingDefault')}
                             </strong>
                           </div>
                           {task.dependsOn.length > 0 && (
                             <div className="font-mono-token">
-                              Depends on: {task.dependsOn.join(', ')}
+                              {t('plan.dependsOn', { deps: task.dependsOn.join(', ') })}
                             </div>
                           )}
                           <div className="truncate font-mono-token" title={task.verify}>
-                            Verify: {task.verify}
+                            {t('plan.verify', { cmd: task.verify })}
                           </div>
                         </div>
 
@@ -561,7 +556,7 @@ export function ListView({
                             className="text-xs"
                             variant="outline"
                           >
-                            {isLocked ? 'Inspect' : 'Edit'}
+                            {isLocked ? t('common.inspect') : t('common.edit')}
                           </Button>
 
                           {!isLocked && (
@@ -574,7 +569,7 @@ export function ListView({
                                 aria-label={`Move ${task.externalId} up`}
                                 variant="outline"
                               >
-                                Up
+                                {t('common.up')}
                               </Button>
                               <Button
                                 type="button"
@@ -584,7 +579,7 @@ export function ListView({
                                 aria-label={`Move ${task.externalId} down`}
                                 variant="outline"
                               >
-                                Down
+                                {t('common.down')}
                               </Button>
                             </div>
                           )}
@@ -601,13 +596,13 @@ export function ListView({
 
       <ModalDialog
         open={modalOpen}
-        title={formState.id ? `Task ${formState.externalId}` : 'New Task'}
+        title={formState.id ? t('plan.taskTitle', { id: formState.externalId ?? '' }) : t('plan.newTask')}
         onClose={() => setModalOpen(false)}
       >
         <form onSubmit={handleSaveTask} className="space-y-4">
           <div>
             <Label htmlFor="task-title" className="block text-sm font-medium">
-              Title
+              {t('plan.fieldTitle')}
             </Label>
             <Input
               id="task-title"
@@ -623,7 +618,7 @@ export function ListView({
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div>
               <Label htmlFor="task-milestone" className="block text-sm font-medium">
-                Milestone
+                {t('plan.fieldMilestone')}
               </Label>
               <NativeSelect
                 id="task-milestone"
@@ -642,7 +637,7 @@ export function ListView({
             </div>
             <div>
               <Label htmlFor="task-role" className="block text-sm font-medium">
-                Role
+                {t('plan.fieldRole')}
               </Label>
               <NativeSelect
                 id="task-role"
@@ -653,13 +648,13 @@ export function ListView({
                 }
                 className="mt-1"
               >
-                <option value="engineer">engineer</option>
-                <option value="qa">qa</option>
+                <option value="engineer">{te('engineer')}</option>
+                <option value="qa">{te('qa')}</option>
               </NativeSelect>
             </div>
             <div>
               <Label htmlFor="task-complexity" className="block text-sm font-medium">
-                Complexity
+                {t('plan.fieldComplexity')}
               </Label>
               <NativeSelect
                 id="task-complexity"
@@ -670,9 +665,9 @@ export function ListView({
                 }
                 className="mt-1"
               >
-                <option value="low">low</option>
-                <option value="medium">medium</option>
-                <option value="high">high</option>
+                <option value="low">{te('low')}</option>
+                <option value="medium">{te('medium')}</option>
+                <option value="high">{te('high')}</option>
               </NativeSelect>
             </div>
           </div>
@@ -680,7 +675,7 @@ export function ListView({
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
               <Label htmlFor="task-status" className="block text-sm font-medium">
-                Column status
+                {t('plan.fieldStatus')}
               </Label>
               <NativeSelect
                 id="task-status"
@@ -691,28 +686,28 @@ export function ListView({
                 }
                 className="mt-1"
               >
-                {COLUMNS.filter((c) => c.id !== 'approved').map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.title}
-                  </option>
-                ))}
+                {columns
+                  .filter((c) => c.id !== 'approved')
+                  .map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.title}
+                    </option>
+                  ))}
               </NativeSelect>
             </div>
 
             <div>
               <Label htmlFor="task-profile" className="block text-sm font-medium">
-                Agent profile override
+                {t('plan.fieldProfile')}
               </Label>
               <NativeSelect
                 id="task-profile"
                 disabled={isLocked}
                 value={formState.profileOverride}
-                onChange={(e) =>
-                  setFormState({ ...formState, profileOverride: e.target.value })
-                }
+                onChange={(e) => setFormState({ ...formState, profileOverride: e.target.value })}
                 className="mt-1"
               >
-                <option value="">Use routing rule default</option>
+                <option value="">{t('plan.useRoutingDefault')}</option>
                 {profiles.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name} ({p.provider})
@@ -724,7 +719,7 @@ export function ListView({
 
           <div>
             <Label htmlFor="task-goal" className="block text-sm font-medium">
-              Goal
+              {t('plan.fieldGoal')}
             </Label>
             <Textarea
               id="task-goal"
@@ -739,7 +734,7 @@ export function ListView({
 
           <div>
             <Label htmlFor="task-verify" className="block text-sm font-medium">
-              Verify command
+              {t('plan.fieldVerify')}
             </Label>
             <Input
               id="task-verify"
@@ -748,7 +743,7 @@ export function ListView({
               disabled={isLocked}
               value={formState.verify}
               onChange={(e) => setFormState({ ...formState, verify: e.target.value })}
-              placeholder="Exact command that proves the task is done"
+              placeholder={t('plan.fieldVerifyPlaceholder')}
               className="mt-1 font-mono-token text-sm"
             />
           </div>
@@ -756,7 +751,7 @@ export function ListView({
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
               <Label htmlFor="task-allowed" className="block text-sm font-medium">
-                Allowed files (one glob per line)
+                {t('plan.fieldAllowed')}
               </Label>
               <Textarea
                 id="task-allowed"
@@ -769,7 +764,7 @@ export function ListView({
             </div>
             <div>
               <Label htmlFor="task-ref" className="block text-sm font-medium">
-                Reference files (one per line)
+                {t('plan.fieldReference')}
               </Label>
               <Textarea
                 id="task-ref"
@@ -784,7 +779,7 @@ export function ListView({
 
           <div>
             <Label htmlFor="task-criteria" className="block text-sm font-medium">
-              Acceptance criteria (one per line)
+              {t('plan.fieldCriteria')}
             </Label>
             <Textarea
               id="task-criteria"
@@ -801,7 +796,7 @@ export function ListView({
 
           {plan && (
             <fieldset>
-              <legend className="text-sm font-medium">Depends on tasks</legend>
+              <legend className="text-sm font-medium">{t('plan.fieldDepends')}</legend>
               <div className="mt-2 flex flex-wrap gap-2">
                 {plan.tasks
                   .filter((other) => other.id !== formState.id)
@@ -836,16 +831,16 @@ export function ListView({
             </fieldset>
           )}
 
-          {formError && <ErrorPanel title="Task is incomplete" detail={formError} />}
+          {formError && <ErrorPanel title={t('plan.incompleteTitle')} detail={formError} />}
 
           {(createTaskMutation.isError || updateTaskMutation.isError || deleteTaskMutation.isError) && (
             <ErrorPanel
-              title="Task update failed"
+              title={t('plan.updateFailed')}
               detail={
                 createTaskMutation.error?.message ||
                 updateTaskMutation.error?.message ||
                 deleteTaskMutation.error?.message ||
-                'Unknown error'
+                t('common.unknownError')
               }
             />
           )}
@@ -859,11 +854,12 @@ export function ListView({
                   else setConfirmingDelete(true);
                 }}
                 disabled={deleteTaskMutation.isPending}
-
                 style={{ color: 'var(--error)', borderColor: 'var(--error)' }}
                 variant="outline"
               >
-                {confirmingDelete ? `Confirm: delete ${formState.externalId}` : 'Delete task'}
+                {confirmingDelete
+                  ? t('plan.confirmDeleteTask', { id: formState.externalId ?? '' })
+                  : t('plan.deleteTask')}
               </Button>
             ) : (
               <span />
@@ -871,14 +867,14 @@ export function ListView({
 
             <div className="flex gap-2">
               <Button type="button" onClick={() => setModalOpen(false)} variant="outline">
-                {isLocked ? 'Close' : 'Cancel'}
+                {isLocked ? t('common.close') : t('common.cancel')}
               </Button>
               {!isLocked && (
                 <Button
                   type="submit"
                   disabled={createTaskMutation.isPending || updateTaskMutation.isPending}
                 >
-                  {formState.id ? 'Save task changes' : 'Create task'}
+                  {formState.id ? t('plan.saveTask') : t('plan.createTask')}
                 </Button>
               )}
             </div>

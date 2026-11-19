@@ -7,6 +7,7 @@ import {
   type ReviewContract,
   type TaskDTO,
   type TaskResultContract,
+  type UiLanguage,
 } from '@dalang/shared';
 import type { AdapterTurnResult } from '../adapters/types.js';
 import { readArtifactFile } from '../safe-fs.js';
@@ -129,6 +130,7 @@ export function buildReviewPrompt(opts: {
   scopeWarnings: string[];
   rawDiff: string;
   coderResult: TaskResultContract | null;
+  language?: UiLanguage;
 }): string {
   const jsonSchema = z.toJSONSchema(ReviewContractSchema);
   const isReadOnly = opts.profile.permissionMode === 'read-only';
@@ -136,9 +138,14 @@ export function buildReviewPrompt(opts: {
     opts.rawDiff.length > MAX_DIFF_PROMPT_CHARS
       ? `${opts.rawDiff.slice(0, MAX_DIFF_PROMPT_CHARS)}\n\n... [diff truncated for prompt; inspect repository files directly if needed]`
       : opts.rawDiff;
+  const languageLine =
+    opts.language === 'id'
+      ? `Language: Write the review "summary" and each finding "note" in clear, natural Indonesian (Bahasa Indonesia). Keep JSON keys, enum values ("pass", "fail", severities), file paths, and code identifiers in English.`
+      : `Language: Write the review "summary" and each finding "note" in clear English. Keep JSON keys, enum values, file paths, and code identifiers in English.`;
 
   return [
     `You are performing code review round ${opts.round} of ${opts.maxRounds} for task ${opts.task.externalId}: "${opts.task.title}".`,
+    languageLine,
     opts.profile.rolePrompt ? `Role instructions: ${opts.profile.rolePrompt}` : '',
     isReadOnly
       ? `Permission mode: READ-ONLY. Do NOT modify or create any files in the repository.`

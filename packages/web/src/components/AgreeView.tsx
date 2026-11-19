@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState, type FormEvent } from 'react';
 import type { BriefContent, BriefDTO, ProjectSummary } from '@dalang/shared';
+import { useI18n } from '../i18n/index.js';
 import { api } from '../lib/api.js';
 import { EmptyPanel, ErrorPanel, LoadingPanel, ModalDialog } from './StateViews.js';
 import { Badge } from '@/components/ui/badge';
@@ -31,6 +32,7 @@ export function AgreeView({
   onGoToList: () => void;
 }) {
   const qc = useQueryClient();
+  const { t, te } = useI18n();
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
   const [draft, setDraft] = useState<BriefContent | null>(null);
   const [reviseOpen, setReviseOpen] = useState(false);
@@ -59,7 +61,7 @@ export function AgreeView({
     mutationFn: (content: BriefContent) =>
       api.updateBrief(project.id, activeBrief!.version, content),
     onSuccess: () => {
-      setSaveNotice('Draft saved to .dalang/');
+      setSaveNotice(t('brief.savedNotice'));
       qc.invalidateQueries({ queryKey: ['briefs', project.id] });
     },
   });
@@ -99,18 +101,14 @@ export function AgreeView({
   return (
     <div className="space-y-5">
       <div
-        className="flex flex-wrap items-center justify-between gap-4 rounded-md border p-4"
-        style={{
-          backgroundColor: 'var(--bg-surface)',
-          borderColor: 'var(--border-subtle)',
-        }}
+        className="flex flex-wrap items-center justify-between gap-4 rounded-[8px] border p-4"
+        style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
       >
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-lg font-semibold">Agree (Gate 1: Project Brief)</h1>
+            <h2 className="text-lg font-semibold">{t('brief.title')}</h2>
             {activeBrief && (
               <Badge
-
                 style={{
                   color: isLocked ? 'var(--pass)' : 'var(--text-primary)',
                   borderColor: isLocked ? 'var(--pass)' : 'var(--border-subtle)',
@@ -121,14 +119,14 @@ export function AgreeView({
             )}
           </div>
           <p className="mt-1 text-sm" style={{ color: 'var(--text-secondary)' }}>
-            Edit the brief directly, request a revision from Lead, or approve to lock this version before planning.
+            {t('brief.subtitle')}
           </p>
         </div>
 
         {briefs.length > 0 && (
           <div className="flex flex-wrap items-center gap-2">
             <Label htmlFor="brief-version-select" className="text-xs font-medium">
-              Version
+              {t('brief.version')}
             </Label>
             <NativeSelect
               id="brief-version-select"
@@ -138,7 +136,7 @@ export function AgreeView({
             >
               {briefs.map((b) => (
                 <option key={b.id} value={b.version}>
-                  v{b.version} ({b.status})
+                  v{b.version} ({te(b.status)})
                 </option>
               ))}
             </NativeSelect>
@@ -146,11 +144,11 @@ export function AgreeView({
         )}
       </div>
 
-      {briefsQuery.isLoading && <LoadingPanel label="Loading project briefs..." />}
+      {briefsQuery.isLoading && <LoadingPanel label={t('brief.loading')} />}
 
       {briefsQuery.isError && (
         <ErrorPanel
-          title="Could not load briefs"
+          title={t('brief.loadError')}
           detail={briefsQuery.error.message}
           onRetry={() => briefsQuery.refetch()}
         />
@@ -158,11 +156,11 @@ export function AgreeView({
 
       {!briefsQuery.isLoading && !briefsQuery.isError && !activeBrief && (
         <EmptyPanel
-          title="No brief drafted yet"
-          description="Finish your Q&A in Discuss and press 'Enough, write the brief' to generate Brief v1."
+          title={t('brief.emptyTitle')}
+          description={t('brief.emptyDesc')}
           action={
             <Button type="button" onClick={onGoToDiscuss}>
-              Go to Discuss
+              {t('brief.goToDiscuss')}
             </Button>
           }
         />
@@ -174,25 +172,21 @@ export function AgreeView({
             e.preventDefault();
             saveMutation.mutate(draft);
           }}
-          className="space-y-5 rounded-md border p-6"
-          style={{
-            backgroundColor: 'var(--bg-surface)',
-            borderColor: 'var(--border-subtle)',
-          }}
+          className="space-y-5 rounded-[8px] border p-6"
+          style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
         >
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b pb-4" style={{ borderColor: 'var(--border-subtle)' }}>
+          <div
+            className="flex flex-wrap items-center justify-between gap-3 border-b pb-4"
+            style={{ borderColor: 'var(--border-subtle)' }}
+          >
             <span className="font-mono-token text-xs" style={{ color: 'var(--text-secondary)' }}>
-              File: {activeBrief.filePath}
+              {t('brief.fileLabel', { path: activeBrief.filePath })}
             </span>
             <div className="flex flex-wrap items-center gap-2">
               {!isLocked && (
                 <>
-                  <Button
-                    type="submit"
-                    disabled={saveMutation.isPending}
-                    variant="outline"
-                  >
-                    {saveMutation.isPending ? 'Saving...' : 'Save edits'}
+                  <Button type="submit" disabled={saveMutation.isPending} variant="outline">
+                    {saveMutation.isPending ? t('common.saving') : t('brief.saveEdits')}
                   </Button>
                   <Button
                     type="button"
@@ -200,14 +194,14 @@ export function AgreeView({
                     disabled={reviseMutation.isPending}
                     variant="outline"
                   >
-                    Revise with Lead
+                    {t('brief.reviseWithLead')}
                   </Button>
                   <Button
                     type="button"
                     onClick={() => approveMutation.mutate()}
                     disabled={approveMutation.isPending}
                   >
-                    {approveMutation.isPending ? 'Approving...' : 'Approve brief (Gate 1)'}
+                    {approveMutation.isPending ? t('brief.approving') : t('brief.approveBrief')}
                   </Button>
                 </>
               )}
@@ -219,7 +213,7 @@ export function AgreeView({
                     onClick={() => setReviseOpen(true)}
                     variant="outline"
                   >
-                    Create revision (v{activeBrief.version + 1})
+                    {t('brief.createRevision', { version: activeBrief.version + 1 })}
                   </Button>
                   <Button
                     type="button"
@@ -227,8 +221,8 @@ export function AgreeView({
                     disabled={generatePlanMutation.isPending}
                   >
                     {generatePlanMutation.isPending
-                      ? 'Generating plan & tasks...'
-                      : 'Generate plan & open Kanban'}
+                      ? t('brief.generatingPlan')
+                      : t('brief.generatePlan')}
                   </Button>
                 </>
               )}
@@ -243,12 +237,12 @@ export function AgreeView({
 
           {(saveMutation.isError || approveMutation.isError || generatePlanMutation.isError) && (
             <ErrorPanel
-              title="Brief action failed"
+              title={t('brief.actionFailed')}
               detail={
                 saveMutation.error?.message ||
                 approveMutation.error?.message ||
                 generatePlanMutation.error?.message ||
-                'Unexpected error'
+                t('common.unknownError')
               }
             />
           )}
@@ -256,7 +250,7 @@ export function AgreeView({
           <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
             <div className="md:col-span-2">
               <Label htmlFor="brief-title" className="block text-sm font-medium">
-                Title
+                {t('brief.fieldTitle')}
               </Label>
               <Input
                 id="brief-title"
@@ -270,7 +264,7 @@ export function AgreeView({
 
             <div className="md:col-span-2">
               <Label htmlFor="brief-summary" className="block text-sm font-medium">
-                Summary
+                {t('brief.fieldSummary')}
               </Label>
               <Textarea
                 id="brief-summary"
@@ -284,7 +278,7 @@ export function AgreeView({
 
             <div>
               <Label htmlFor="brief-scope" className="block text-sm font-medium">
-                In scope (one item per line)
+                {t('brief.fieldScope')}
               </Label>
               <Textarea
                 id="brief-scope"
@@ -298,7 +292,7 @@ export function AgreeView({
 
             <div>
               <Label htmlFor="brief-features" className="block text-sm font-medium">
-                Core features (one item per line)
+                {t('brief.fieldFeatures')}
               </Label>
               <Textarea
                 id="brief-features"
@@ -312,7 +306,7 @@ export function AgreeView({
 
             <div>
               <Label htmlFor="brief-stack" className="block text-sm font-medium">
-                Stack (one item per line)
+                {t('brief.fieldStack')}
               </Label>
               <Textarea
                 id="brief-stack"
@@ -326,23 +320,21 @@ export function AgreeView({
 
             <div>
               <Label htmlFor="brief-constraints" className="block text-sm font-medium">
-                Constraints (one item per line)
+                {t('brief.fieldConstraints')}
               </Label>
               <Textarea
                 id="brief-constraints"
                 rows={4}
                 disabled={isLocked}
                 value={arrayToLines(draft.constraints)}
-                onChange={(e) =>
-                  setDraft({ ...draft, constraints: linesToArray(e.target.value) })
-                }
+                onChange={(e) => setDraft({ ...draft, constraints: linesToArray(e.target.value) })}
                 className="mt-1"
               />
             </div>
 
             <div>
               <Label htmlFor="brief-oos" className="block text-sm font-medium">
-                Out of scope (one item per line)
+                {t('brief.fieldOutOfScope')}
               </Label>
               <Textarea
                 id="brief-oos"
@@ -358,7 +350,7 @@ export function AgreeView({
 
             <div>
               <Label htmlFor="brief-assumptions" className="block text-sm font-medium">
-                Assumptions (one item per line)
+                {t('brief.fieldAssumptions')}
               </Label>
               <Textarea
                 id="brief-assumptions"
@@ -377,7 +369,7 @@ export function AgreeView({
 
       <ModalDialog
         open={reviseOpen}
-        title={`Revise Brief v${activeBrief?.version ?? ''}`}
+        title={t('brief.reviseModalTitle', { version: activeBrief?.version ?? '' })}
         onClose={() => setReviseOpen(false)}
       >
         <form
@@ -390,7 +382,7 @@ export function AgreeView({
         >
           <div>
             <Label htmlFor="revise-note" className="block text-sm font-medium">
-              Revision note for Lead
+              {t('brief.reviseNoteLabel')}
             </Label>
             <Textarea
               id="revise-note"
@@ -399,7 +391,7 @@ export function AgreeView({
               autoFocus
               value={reviseNote}
               onChange={(e) => setReviseNote(e.target.value)}
-              placeholder="Explain what should be added, removed, or changed in the next brief version..."
+              placeholder={t('brief.revisePlaceholder')}
               className="mt-1"
             />
           </div>
@@ -410,13 +402,13 @@ export function AgreeView({
           )}
           <div className="flex justify-end gap-2">
             <Button type="button" onClick={() => setReviseOpen(false)} variant="outline">
-              Cancel
+              {t('common.cancel')}
             </Button>
             <Button
               type="submit"
               disabled={reviseMutation.isPending || !reviseNote.trim()}
             >
-              {reviseMutation.isPending ? 'Revising...' : 'Send revision to Lead'}
+              {reviseMutation.isPending ? t('brief.revising') : t('brief.sendRevision')}
             </Button>
           </div>
         </form>

@@ -229,7 +229,7 @@ describe('routing and scaffold', () => {
 });
 
 describe('Antigravity keyring opt-in in routing', () => {
-  it('routes a task meant for Antigravity to its backup profile while the opt-in is off, and back when it is on', async () => {
+  it('routes a task meant for Antigravity to its fallback CLI while the opt-in is off, and back when it is on', async () => {
     if (process.platform !== 'linux') return;
     const seen: string[] = [];
     const { conn, project, plan, execSvc } = await setupApprovedProject(agentRunner('completed', seen));
@@ -239,7 +239,8 @@ describe('Antigravity keyring opt-in in routing', () => {
 
       expect(new SettingsService(conn.db).antigravityKeyringAccess()).toBe(false);
       const off = (await execSvc.getExecutionState(project.id)).dispatchPreviews[0];
-      expect(off).toMatchObject({ resolvedProvider: 'claude-code', resolvedProfileName: 'coder-heavy', eligible: true });
+      // The fallback runs the same profile (its role instructions stay) on the fallback CLI.
+      expect(off).toMatchObject({ resolvedProvider: 'claude-code', resolvedProfileName: 'reviewer', eligible: true });
       expect(off.selectionNote).toMatch(/Antigravity, which is off/);
 
       await execSvc.startExecution(project.id, { taskId: plan.tasks[0].id });
@@ -262,7 +263,7 @@ describe('Antigravity keyring opt-in in routing', () => {
       const profiles = new ProfileService(conn.db).listProfiles();
       const agy = profiles.find((p) => p.provider === 'antigravity')!;
       // No usable backup: no rule fallback, and the default backup (lead) also uses Antigravity.
-      conn.db.update(routingRulesTable).set({ fallbackProfileId: null }).run();
+      conn.db.update(routingRulesTable).set({ fallbackProvider: null, fallbackModel: null, fallbackEffort: null }).run();
       conn.db.update(agentProfiles).set({ provider: 'antigravity' }).where(eq(agentProfiles.name, 'lead')).run();
       execSvc.assignTaskProfile(project.id, plan.tasks[0].id, agy.id);
       const preview = (await execSvc.getExecutionState(project.id)).dispatchPreviews[0];

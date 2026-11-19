@@ -149,26 +149,12 @@ describe('v0.5 Replay runner scenarios (process-only replacement)', () => {
     ]);
 
     try {
-      // Create a second Claude account profile with its own configDir and make it fallback of coder-heavy.
-      const backupProfile = ctx.profileSvc.createProfile({
-        name: 'claude-acct2',
-        provider: 'claude-code',
-        model: 'claude-sonnet-5-5',
-        effort: 'high',
-        rolePrompt: 'Backup Claude account.',
-        permissionMode: 'workspace-write',
-        timeoutMs: 600_000,
-        idleTimeoutMs: 60_000,
-        maxParallel: 1,
-        maxReviewRounds: 2,
-        fallbackProfileId: null,
-        configDir: acct2Dir,
-      });
-
-      // Route engineer/high to coder-heavy with fallback to claude-acct2.
+      // Route engineer/high to coder-heavy with a fallback to a second Claude account (its own config dir).
       const rules = ctx.profileSvc.listRoutingRules();
       const highRule = rules.find((r) => r.role === 'engineer' && r.complexity === 'high')!;
-      ctx.profileSvc.updateRoutingRule(highRule.id, { fallbackProfileId: backupProfile.id });
+      ctx.profileSvc.updateRoutingRule(highRule.id, {
+        fallback: { provider: 'claude-code', model: 'claude-sonnet-5-5', effort: 'high', configDir: acct2Dir },
+      });
 
       await ctx.execSvc.startExecution(ctx.project.id, { allowUnconfined: true });
       await ctx.execSvc.waitForProjectExecution(ctx.project.id);
@@ -185,7 +171,8 @@ describe('v0.5 Replay runner scenarios (process-only replacement)', () => {
       expect(failedPrimary.failureReason).toMatch(/rate_limit_event/i);
       expect(failedPrimary.checkpointAfterRef).toMatch(/^refs\/dalang\/checkpoints\/failed-/);
       expect(succeededBackup.usedFallback).toBe(true);
-      expect(succeededBackup.profileName).toBe('claude-acct2');
+      // The fallback keeps the primary profile (and its role instructions); only the account and model differ.
+      expect(succeededBackup.profileName).toBe('coder-heavy');
       expect(succeededBackup.accountKey).toContain(acct2Dir);
       expect(succeededBackup.inputTokens).toBe(1200);
       expect(succeededBackup.outputTokens).toBe(450);

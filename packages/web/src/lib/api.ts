@@ -32,6 +32,8 @@ import type {
   TaskRunDTO,
   UpdateProfileInput,
   UpdateRoutingRuleInput,
+  UpdateSettingsInput,
+  UpdateStatusDTO,
   UpdateTaskInput,
   UsageStatisticsResponseDTO,
 } from '@dalang/shared';
@@ -262,11 +264,14 @@ export const api = {
     );
   },
   getSettings: () => request<{ settings: SettingsDTO }>('/api/settings'),
-  updateSettings: (body: Partial<SettingsDTO>) =>
+  updateSettings: (body: UpdateSettingsInput) =>
     request<{ settings: SettingsDTO }>('/api/settings', {
       method: 'PATCH',
       body: JSON.stringify(body),
     }),
+  getHealth: () => request<{ ok: boolean; version: string }>('/api/health'),
+  getUpdateStatus: (force = false) =>
+    request<{ update: UpdateStatusDTO }>(`/api/update-status${force ? '?force=1' : ''}`),
   listProfiles: () => request<{ profiles: AgentProfileDTO[] }>('/api/profiles'),
   createProfile: (body: CreateProfileInput) =>
     request<{ profile: AgentProfileDTO }>('/api/profiles', {

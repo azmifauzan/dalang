@@ -2,7 +2,7 @@
 
 > One goal in, a running app out. A local web tool that orchestrates Claude Code, Codex, and Antigravity CLI as a small team.
 
-**Status: v0.5.0 (Polish & Distribution) is released on npm as `dalang-cli` (`npx dalang-cli`; verified on Linux, macOS not yet run): `npx dalang-cli` packaging and `dalang doctor`, multiple accounts per provider (`configDir`), rich model details from the CLIs (display names, `[1m]` variants, effort levels up to `max`, unavailable saved model indicator), token & API-equivalent cost statistics, process-level replay tests (quota reroute, review fix round, parallel merge, and headless browser E2E), side-effect-free health checks, hybrid hidden checkpoint refs (`refs/dalang/checkpoints/*`), optional push and GitHub PR after merge (`gh`), macOS `sandbox-exec` confinement, and full documentation. Next: v0.6 (UI revamp with a first-run wizard and Indonesian). See [docs/PRD.md](docs/PRD.md) for the full roadmap.**
+**Status: v0.6.0 (UI revamp) is implemented and verified on Linux: 4-screen first-run wizard, left sidebar shell with 5-step guided project stepper (`Discuss -> Brief -> Plan -> Work -> Review & merge`) and `"Next step"` card, `Config` with 6 sidebar tabs + dedicated `Statistics` page, Indonesian and English (`ID | EN`) across both the UI and Lead/Reviewer output, Light/Dark/Follow-system theme toggle, archival-derived wayang kulit & redrawn gunungan artwork (`CREDITS.md`), lit kelir Work stage with factual Activity Feed and pause/reduced-motion controls, and non-blocking new-version notice (`GET /api/update-status` and `dalang doctor`). Builds on all v0.5 features (`npx dalang-cli`, `dalang doctor`, multiple accounts per provider, rich CLI model details, token/cost stats, hybrid hidden checkpoints, push & GitHub PR after merge, Linux `bwrap` and macOS `sandbox-exec`). Next: v0.7 (agent delegation over MCP). See [docs/PRD.md](docs/PRD.md) for the full roadmap.**
 
 DALANG is named after the traditional Javanese puppeteer who directs the whole show. The name is also an acronym for the workflow:
 
@@ -16,12 +16,13 @@ Everything runs on your machine and uses the official CLI logins you already hav
 
 | Step | What happens |
 | --- | --- |
-| Discuss | The Lead asks structured questions and clarifies the goal |
-| Agree | The Lead writes a brief. You edit and approve it (gate 1) |
-| List | The Lead splits the brief into milestones and tasks on a kanban board or topological dependency graph |
-| Assign | The dispatcher groups tasks into waves, flags file overlaps, and routes each task with proactive quota fallback |
-| Navigate | Non-overlapping agents run concurrently in isolated git worktrees within per-provider limits, with live logs and checkpoints |
-| Guard | A reviewer runs the verify command and writes a review; you inspect diffs, approve merge onto main, or reject (gate 2), followed by post-merge integration tests |
+| 1 Discuss | The Lead asks structured questions and clarifies the goal |
+| 2 Brief | The Lead writes a brief. You edit and approve it (gate 1) |
+| 3 Plan | The Lead splits the brief into milestones and tasks on a kanban board or topological dependency graph |
+| 4 Work | The dispatcher groups tasks into waves, flags file overlaps, and routes each task with proactive quota fallback. Non-overlapping agents run concurrently in isolated git worktrees within per-provider limits, shown as a wayang stage with a factual activity feed, live logs, and checkpoints |
+| 5 Review and merge | A reviewer runs the verify command and writes a review; you inspect diffs, approve merge onto main, or reject (gate 2), followed by post-merge integration tests, push, and pull request |
+
+A "Next step" card above the steps always says what to do now. The UI is available in English and Indonesian (the Lead and reviewer write in the language you pick), with a light/dark theme toggle.
 
 ## Why
 
@@ -75,10 +76,12 @@ pnpm start        # serves http://127.0.0.1:4173 and opens the browser
 
 ### A first run
 
+0. **Wizard (empty install only):** a four-screen guide covers how DALANG works, which agent CLIs are ready, a recommended team, and your first project. Skip it any time; reopen it from Config → About.
 1. **Projects:** create a new folder (DALANG runs `git init`) or open an existing repo.
-2. **Discuss, Agree:** describe a goal, answer the Lead's question cards, press "Enough, write the brief", edit the brief, and approve it.
-3. **List:** generate the plan, adjust tasks on the kanban board, and approve the plan.
-4. **Assign, Navigate:** inspect the dependency graph, file overlaps, and routed profiles, then start the parallel run. Watch concurrent worktree logs, stop individual tasks or the whole queue, retry or resume a session, or roll back to a checkpoint.
+2. **Discuss, Brief:** describe a goal, answer the Lead's question cards, press "Enough, write the brief", edit the brief, and approve it.
+3. **Plan:** generate the plan, adjust tasks on the kanban board, and approve the plan.
+4. **Work:** inspect the dependency graph, file overlaps, and routed profiles, then start the parallel run. Watch the stage and concurrent worktree logs, stop individual tasks or the whole queue, retry or resume a session, or roll back to a checkpoint.
+5. **Review and merge:** read the review and the diff, then approve the merge or reject with a note.
 
 Everything DALANG writes for a project lives in `<repo>/.dalang/` (brief, plan, per-task `result.json`, logs). Global state lives in `~/.dalang/`.
 
@@ -113,7 +116,7 @@ Run on 18 and 19 Nov 2026 on Linux, through the HTTP API and the real sandbox, o
 ## Known limits
 
 - **Linux only for confinement.** `bwrap` keeps agents inside the project folder and hides credential folders. macOS and Windows have no sandbox yet, so execution there needs an explicit opt-in.
-- **agy can read your desktop keyring.** It signs in through the Secret Service, and the filtered bus it gets (`xdg-dbus-proxy`, needed along with a desktop session) allows that whole service, so an agy run can read every secret stored there. Claude Code and Codex runs cannot. This is **off by default**: until you tick "Allow Antigravity to read the desktop keyring" on the Providers page, a task routed to agy runs on its backup profile instead, and agy cannot be a Lead inside the sandbox. Provider state folders (`~/.claude`, `~/.codex`, `~/.gemini`) stay writable for token refresh, which is listed in the PRD risks.
+- **agy can read your desktop keyring.** It signs in through the Secret Service, and the filtered bus it gets (`xdg-dbus-proxy`, needed along with a desktop session) allows that whole service, so an agy run can read every secret stored there. Claude Code and Codex runs cannot. This is **off by default**: until you tick "Allow Antigravity to read the desktop keyring" in Config → Security, a task routed to agy runs on its backup profile instead, and agy cannot be a Lead inside the sandbox. Provider state folders (`~/.claude`, `~/.codex`, `~/.gemini`) stay writable for token refresh, which is listed in the PRD risks.
 - **The review sample is small.** 15 tasks in five small projects passed review; larger code bases and the agy reviewer are untested. Windows and macOS hosts are untested. Parallel worktrees were tried once with real Claude Code (two tasks); a real quota-limit reroute has not been observed (verified via scripted runner tests).
 - **Scope is checked after the fact.** Edits outside a task's `files_allowed` are not blocked while the agent works, but they fail the review (whatever the reviewer says), so the task cannot be merged without your override. Tasks with overlapping `files_allowed` are serialized rather than run concurrently.
 

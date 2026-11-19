@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { useI18n } from '../i18n/index.js';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogClose, DialogContent, DialogTitle } from '@/components/ui/dialog';
 
@@ -29,6 +30,7 @@ export function ErrorPanel({
   detail: string;
   onRetry?: () => void;
 }) {
+  const { t } = useI18n();
   return (
     <div
       role="alert"
@@ -46,7 +48,7 @@ export function ErrorPanel({
       </p>
       {onRetry && (
         <Button type="button" onClick={onRetry} className="mt-4" variant="outline">
-          Retry request
+          {t('common.retry')}
         </Button>
       )}
     </div>
@@ -93,6 +95,7 @@ export function ModalDialog({
   onClose: () => void;
   children: ReactNode;
 }) {
+  const { t } = useI18n();
   return (
     <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
       <DialogContent>
@@ -101,8 +104,8 @@ export function ModalDialog({
           style={{ borderColor: 'var(--border-subtle)' }}
         >
           <DialogTitle>{title}</DialogTitle>
-          <DialogClose render={<Button variant="outline" aria-label={`Close ${title}`} />}>
-            Close
+          <DialogClose render={<Button variant="outline" aria-label={`${t('common.close')} ${title}`} />}>
+            {t('common.close')}
           </DialogClose>
         </div>
         <div className="overflow-y-auto p-5">{children}</div>

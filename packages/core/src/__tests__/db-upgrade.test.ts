@@ -42,7 +42,7 @@ describe('database upgrade', () => {
     fresh.close();
 
     const upgraded = openDatabase(file);
-    expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(7);
+    expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(8);
     const runCols = (upgraded.sqlite.pragma('table_info(runs)') as Array<{ name: string }>).map((c) => c.name);
     expect(runCols).toContain('worktree_path');
     expect(runCols).toContain('input_tokens');
@@ -55,5 +55,39 @@ describe('database upgrade', () => {
     expect(projCols).toContain('create_pr_after_merge');
     expect(upgraded.sqlite.prepare(`SELECT count(*) n FROM routing_rules WHERE role = 'reviewer'`).get()).toEqual({ n: 1 });
     upgraded.close();
+  });
+
+  it('upgrades a v7 database: fallback profiles become targets and engineer tiers run low, medium, high', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dalang-up8-'));
+    const file = path.join(dir, 'dalang.db');
+    const fresh = openDatabase(file);
+    // Shape of a v7 database: fallbacks are profile ids, and medium was inserted after high.
+    fresh.sqlite.exec(`
+      UPDATE routing_rules SET fallback_provider = NULL, fallback_model = NULL, fallback_effort = NULL,
+        fallback_config_dir = NULL;
+      UPDATE routing_rules SET fallback_profile_id = 'profile-coder-small' WHERE role = 'engineer' AND complexity = 'high';
+      UPDATE routing_rules SET sort_order = 3 WHERE role = 'engineer' AND complexity = 'high';
+      UPDATE routing_rules SET sort_order = 4 WHERE role = 'engineer' AND complexity = 'medium';
+      UPDATE agent_profiles SET fallback_provider = NULL, fallback_model = NULL, fallback_effort = NULL;
+      UPDATE agent_profiles SET fallback_profile_id = 'profile-reviewer' WHERE id = 'profile-lead';
+    `);
+    fresh.sqlite.pragma('user_version = 7');
+    fresh.close();
+
+    const upgraded = openDatabase(file);
+    try {
+      const rules = upgraded.sqlite
+        .prepare(`SELECT complexity, fallback_provider AS p, fallback_model AS m, fallback_effort AS e FROM routing_rules WHERE role = 'engineer' ORDER BY sort_order`)
+        .all() as Array<{ complexity: string; p: string | null; m: string | null; e: string | null }>;
+      expect(rules.map((r) => r.complexity)).toEqual(['low', 'medium', 'high']);
+      // high pointed at coder-small (codex, low effort): the target keeps that CLI and effort.
+      expect(rules.find((r) => r.complexity === 'high')).toMatchObject({ p: 'codex', e: 'low' });
+      const lead = upgraded.sqlite.prepare(`SELECT fallback_provider AS p FROM agent_profiles WHERE id = 'profile-lead'`).get();
+      expect(lead).toEqual({ p: 'antigravity' });
+      const orders = upgraded.sqlite.prepare('SELECT sort_order FROM routing_rules ORDER BY sort_order').all() as Array<{ sort_order: number }>;
+      expect(orders.map((o) => o.sort_order)).toEqual([1, 2, 3, 4, 5, 6]);
+    } finally {
+      upgraded.close();
+    }
   });
 });

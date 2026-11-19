@@ -5,7 +5,7 @@ import { eq, desc } from 'drizzle-orm';
 import { simpleGit } from 'simple-git';
 import type { CreateOrOpenProjectInput, ProjectSummary, ProviderId } from '@dalang/shared';
 import { getDbDataDir, type DalangDb } from '../db/client.js';
-import { briefs, plans, projects, tasks } from '../db/schema.js';
+import { agentProfiles, briefs, plans, projects, routingRules, tasks } from '../db/schema.js';
 import {
   ensureDir,
   getProjectDalangDir,
@@ -240,7 +240,7 @@ export class ProjectService {
         name: derivedName,
         path: resolvedPath,
         mainBranch,
-        leadProvider: input.leadProvider ?? 'claude-code',
+        leadProvider: input.leadProvider ?? this.defaultLeadProvider(),
         leadModel: input.leadModel?.trim() || null,
         createdAt: now,
         updatedAt: now,
@@ -253,6 +253,19 @@ export class ProjectService {
   listProjects(): ProjectSummary[] {
     const rows = this.db.select().from(projects).orderBy(desc(projects.updatedAt)).all();
     return rows.map((row) => this.toSummary(row));
+  }
+
+  /** The provider of the profile the Lead routing rule points at, so new projects follow the team setup. */
+  private defaultLeadProvider(): ProviderId {
+    const row = this.db
+      .select({ provider: agentProfiles.provider })
+      .from(routingRules)
+      .innerJoin(agentProfiles, eq(routingRules.profileId, agentProfiles.id))
+      .where(eq(routingRules.role, 'lead'))
+      .orderBy(routingRules.sortOrder)
+      .limit(1)
+      .get();
+    return (row?.provider as ProviderId | undefined) ?? 'claude-code';
   }
 
   getProject(id: string): ProjectSummary {

@@ -1,5 +1,10 @@
 import { z } from 'zod';
 
+export const DALANG_VERSION = '0.6.0';
+
+export const UiLanguageSchema = z.enum(['en', 'id']);
+export type UiLanguage = z.infer<typeof UiLanguageSchema>;
+
 export const ProviderIdSchema = z.enum(['claude-code', 'codex', 'antigravity']);
 export type ProviderId = z.infer<typeof ProviderIdSchema>;
 
@@ -282,7 +287,7 @@ export const CreateOrOpenProjectInputSchema = z.object({
   path: z.string().min(1),
   stackHint: z.string().optional(),
   initGitIfMissing: z.boolean().default(false),
-  leadProvider: ProviderIdSchema.default('claude-code'),
+  leadProvider: ProviderIdSchema.optional(),
   leadModel: z.string().optional(),
 });
 export type CreateOrOpenProjectInput = z.infer<typeof CreateOrOpenProjectInputSchema>;
@@ -459,7 +464,7 @@ export interface AgentProfileDTO {
   idleTimeoutMs: number;
   maxParallel: number;
   maxReviewRounds: number;
-  fallbackProfileId: string | null;
+  fallback: FallbackTarget | null;
   configDir: string | null;
   isDefault: boolean;
   createdAt: string;
@@ -470,6 +475,19 @@ export function splitEffortModel(model: string): { base: string; level: EffortLe
   const m = model.trim().match(/^(.+)-(low|medium|high|xhigh|max)$/i);
   return m ? { base: m[1], level: m[2].toLowerCase() as EffortLevel } : null;
 }
+
+/**
+ * Where work goes when the primary CLI cannot run it: another CLI, model, and effort. It is not a
+ * profile, so the fallback run keeps the primary profile's role instructions and limits.
+ */
+export const FallbackTargetSchema = z.object({
+  provider: ProviderIdSchema,
+  model: z.string().trim().max(120),
+  effort: EffortLevelSchema,
+  /** A second account of the same CLI (its config directory), or null for the default account. */
+  configDir: z.string().trim().max(500).nullable(),
+});
+export type FallbackTarget = z.infer<typeof FallbackTargetSchema>;
 
 const ProfileBaseFieldsSchema = z.object({
   name: z
@@ -487,7 +505,7 @@ const ProfileBaseFieldsSchema = z.object({
   idleTimeoutMs: z.number().int().min(5000).max(3_600_000),
   maxParallel: z.number().int().min(1).max(16),
   maxReviewRounds: z.number().int().min(1).max(3),
-  fallbackProfileId: z.string().min(1).nullable(),
+  fallback: FallbackTargetSchema.nullable(),
   configDir: z.string().trim().max(500).nullable(),
 });
 
@@ -502,7 +520,7 @@ export const CreateProfileInputSchema = z.object({
   idleTimeoutMs: ProfileBaseFieldsSchema.shape.idleTimeoutMs.default(180_000),
   maxParallel: ProfileBaseFieldsSchema.shape.maxParallel.default(1),
   maxReviewRounds: ProfileBaseFieldsSchema.shape.maxReviewRounds.default(2),
-  fallbackProfileId: ProfileBaseFieldsSchema.shape.fallbackProfileId.default(null),
+  fallback: ProfileBaseFieldsSchema.shape.fallback.default(null),
   configDir: ProfileBaseFieldsSchema.shape.configDir.default(null),
 });
 export type CreateProfileInput = z.infer<typeof CreateProfileInputSchema>;
@@ -514,14 +532,14 @@ const RoutingRuleBaseFieldsSchema = z.object({
   role: TaskRoleSchema,
   complexity: TaskComplexitySchema.nullable(),
   profileId: z.string().min(1),
-  fallbackProfileId: z.string().min(1).nullable(),
+  fallback: FallbackTargetSchema.nullable(),
 });
 
 export const CreateRoutingRuleInputSchema = z.object({
   role: TaskRoleSchema,
   complexity: TaskComplexitySchema.nullable().default(null),
   profileId: z.string().min(1),
-  fallbackProfileId: z.string().min(1).nullable().default(null),
+  fallback: FallbackTargetSchema.nullable().default(null),
 });
 export type CreateRoutingRuleInput = z.infer<typeof CreateRoutingRuleInputSchema>;
 
@@ -595,12 +613,27 @@ export type RunIntegrationInput = z.infer<typeof RunIntegrationInputSchema>;
 
 export const UpdateSettingsInputSchema = z.object({
   antigravityKeyringAccess: z.boolean().optional(),
+  language: UiLanguageSchema.optional(),
+  checkForUpdates: z.boolean().optional(),
 });
 export type UpdateSettingsInput = z.infer<typeof UpdateSettingsInputSchema>;
 
 export interface SettingsDTO {
   /** Lets sandboxed Antigravity runs read the whole desktop keyring. Off by default. */
   antigravityKeyringAccess: boolean;
+  /** Preferred UI and agent output language. Null until the user or browser sets one. */
+  language: UiLanguage | null;
+  /** Whether DALANG checks npm registry once per 24h for a newer version. On by default. */
+  checkForUpdates: boolean;
+}
+
+export interface UpdateStatusDTO {
+  currentVersion: string;
+  latestVersion: string | null;
+  updateAvailable: boolean;
+  checkedAt: string | null;
+  checkEnabled: boolean;
+  releaseNotesUrl: string;
 }
 
 export interface RoutingRuleDTO {
@@ -610,8 +643,7 @@ export interface RoutingRuleDTO {
   complexity: TaskComplexity | null;
   profileId: string;
   profileName: string;
-  fallbackProfileId: string | null;
-  fallbackProfileName: string | null;
+  fallback: FallbackTarget | null;
 }
 
 export interface TaskDispatchPreviewDTO {
@@ -633,8 +665,8 @@ export interface TaskDispatchPreviewDTO {
   resolvedProfileName: string;
   resolvedProvider: ProviderId;
   resolvedModel: string;
-  fallbackProfileId: string | null;
-  fallbackProfileName: string | null;
+  /** The CLI, model, and effort used when the routed one cannot run, or null when none is set. */
+  fallback: FallbackTarget | null;
   selectionSource: 'override' | 'routing_rule' | 'default';
   /** Set when the routed profile cannot run as configured and another one is used instead. */
   selectionNote: string | null;

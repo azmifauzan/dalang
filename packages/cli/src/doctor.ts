@@ -2,12 +2,18 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  compareSemver,
+  DALANG_VERSION,
   detectSandboxEngine,
   ensureDir,
+  fetchLatestNpmVersion,
   getDalangHome,
   NodeCliRunner,
+  openDatabase,
   ProviderRegistry,
+  SettingsService,
   type CliRunner,
+  type UpdateRegistryFetcher,
 } from '@dalang/core';
 
 export type DoctorSeverity = 'pass' | 'warn' | 'fail';
@@ -24,12 +30,37 @@ export interface DoctorReport {
   ok: boolean;
   platform: NodeJS.Platform;
   nodeVersion: string;
+  version: string;
+  latestVersion?: string | null;
+  updateAvailable?: boolean;
   checks: DoctorCheckItem[];
+}
+
+/** Honors the Config → General toggle; a fresh install (no database yet) keeps the default, on. */
+function updateCheckEnabled(dataDir: string): boolean {
+  const dbFile = path.join(dataDir, 'dalang.db');
+  if (!fs.existsSync(dbFile)) return true;
+  try {
+    const conn = openDatabase(dbFile);
+    try {
+      return new SettingsService(conn.db).checkForUpdates();
+    } finally {
+      conn.close();
+    }
+  } catch {
+    return true;
+  }
 }
 
 export async function runDoctorChecks(
   runner: CliRunner = new NodeCliRunner(),
-  opts: { platform?: NodeJS.Platform; dataDir?: string } = {},
+  opts: {
+    platform?: NodeJS.Platform;
+    dataDir?: string;
+    checkUpdates?: boolean;
+    updateFetcher?: UpdateRegistryFetcher;
+    currentVersion?: string;
+  } = {},
 ): Promise<DoctorReport> {
   const platform = opts.platform ?? process.platform;
   const checks: DoctorCheckItem[] = [];
@@ -219,13 +250,36 @@ export async function runDoctorChecks(
     });
   }
 
+  const currentVersion = opts.currentVersion ?? DALANG_VERSION;
+  let latestVersion: string | null = null;
+  let updateAvailable = false;
+
+  if (opts.checkUpdates ?? updateCheckEnabled(dataDir)) {
+    const fetcher = opts.updateFetcher ?? (() => fetchLatestNpmVersion(2500));
+    try {
+      latestVersion = await fetcher();
+      if (latestVersion && compareSemver(latestVersion, currentVersion) > 0) {
+        updateAvailable = true;
+        checks.push({
+          id: 'update',
+          label: 'DALANG version',
+          status: 'warn',
+          detail: `v${currentVersion} installed; v${latestVersion} is available on npm.`,
+          fix: 'Run `npx dalang-cli@latest` or `npm install -g dalang-cli@latest`.',
+        });
+      }
+    } catch {
+      // Offline or unreachable registry: fail silently.
+    }
+  }
+
   const ok = !checks.some((c) => c.status === 'fail');
-  return { ok, platform, nodeVersion, checks };
+  return { ok, platform, nodeVersion, version: currentVersion, latestVersion, updateAvailable, checks };
 }
 
 export function formatDoctorReport(report: DoctorReport): string {
   const lines: string[] = [
-    `DALANG Doctor (platform=${report.platform}, node=v${report.nodeVersion})`,
+    `DALANG Doctor v${report.version} (platform=${report.platform}, node=v${report.nodeVersion})`,
     '',
   ];
   for (const item of report.checks) {

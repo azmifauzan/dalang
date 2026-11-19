@@ -81,7 +81,7 @@ P0 = required in v1, P1 = should be in v1, P2 = after v1.
 | F-10 | List | Kanban board: edit, delete, add, reorder, change dependencies, and change the agent profile per task before approval | P0 |
 | F-11 | Assign | The dispatcher picks up approved tasks whose dependencies are all done, and chooses a profile via routing rules | P0 |
 | F-12 | Assign | Limit on the number of parallel runs per provider | P0 |
-| F-13 | Assign | Fall back to a backup profile when a provider hits a limit, errors, or times out | P1 |
+| F-13 | Assign | Fall back to another CLI, model, and effort (or a second account) when a provider hits a limit, errors, or times out; the fallback keeps the profile's role instructions | P1 |
 | F-14 | Navigate | Run the CLI headless, with logs streamed live to the task card | P0 |
 | F-15 | Navigate | Git checkpoint commits before and after every run, so rollback is one click | P0 |
 | F-16 | Navigate | One git worktree per task for tasks whose files do not overlap | P1 |
@@ -295,7 +295,7 @@ Each phase must be useful on its own before the next one starts.
 | v0.3 Kawal | Reviewer and fix loop, diff view, approve merge, integration tests, agent profiles and routing in the UI | ≥ 70% of tasks pass review within at most 2 rounds across 5 test projects | Met on 19 Nov 2026 (5 real-model projects, 15 of 15 tasks passed review, 13 on round 1 and 2 on round 2) |
 | v0.4 Paralel | Worktree per task, dependency graph, per-provider parallel limits, quota fallback, usage statistics | Two independent tasks run at the same time without conflict; a quota limit automatically reroutes to a backup profile | Parallel half met on 19 Nov 2026 (one real-model run, 2 independent tasks ran at the same time and merged cleanly); quota reroute verified with scripted tests only |
 | v0.5 | Polish and distribution: npm package with `npx dalang-cli` and `dalang doctor`, several accounts per provider, token and cost statistics, replay tests, macOS sandbox, push and pull request after merge, documentation | `npx dalang-cli` starts on a clean Linux and macOS machine, and replay scenarios cover quota reroute, review fix round, and parallel merge | Released on 19 Nov 2026 as `dalang-cli@0.5.0` on npm (Linux verified: replay scenarios, headless Chromium browser E2E, `dalang doctor`, `pnpm pack` bundle; macOS `sandbox-exec` unit-tested for parity, clean macOS host install not yet run) |
-| v0.6 | UI revamp: first-run wizard, five-step guided project flow, wayang stage with activity feed during work, Config page with sidebar tabs, theme toggle, Indonesian and English (UI and agent output), redrawn gunungan logo, new-version notice | A new user reaches the Discuss step of a first project through the wizard without reading docs, and no action of the v0.5 UI is lost | Planned |
+| v0.6 | UI revamp: first-run wizard, five-step guided project flow, wayang stage with activity feed during work, Config page with sidebar tabs, theme toggle, Indonesian and English (UI and agent output), redrawn gunungan logo, new-version notice | A new user reaches the Discuss step of a first project through the wizard without reading docs, and no action of the v0.5 UI is lost | Implemented on 19 Nov 2026 (verified with unit tests, server API tests, CLI doctor tests, and headless Chromium CDP E2E for fresh-install wizard, upgrade path, 6 Config tabs, Statistics, Work stage pause/visibility, ID/EN i18n with a no-English-leak scan of every step and Config tab, light/dark theme, update notice, and 390px mobile drawer) |
 | v0.7 | Agent delegation: a running agent splits its own task into subtasks on other profiles through a DALANG MCP server | One task is split by its agent into at least two subtasks on two providers, and all of them pass review and merge | Planned |
 | v0.8 | Session protocols (Claude Agent SDK, `codex app-server`, ACP), steering a running task, context handoff on fallback, native Windows | A fallback mid-task continues from the handoff instead of starting over, on all three providers | Planned |
 | v0.9 | Scheduled and webhook-triggered runs, outside agents over MCP | A scheduled run and a run started from a terminal agent both finish without opening the UI | Planned |
@@ -495,20 +495,20 @@ Shown when there is no project yet. Four screens with a progress bar, Back, Next
 
 1. **How DALANG works:** a short animation with the wayang cast: you give a goal, the Lead plans, agents work, you approve at two gates (brief and merge).
 2. **Agents:** detected CLIs with version, login, model count, and sandbox state. Anything not ready shows the exact fix command to copy (for example `claude auth login`). Antigravity's keyring permission is asked here with its risk explained. At least one ready agent is required to continue.
-3. **Team:** a recommended setup from the ready agents (Lead, Coder, Reviewer on a different provider, fallback). One click accepts it; details can be changed later in Config.
+3. **Team:** one card per role (Lead, a coder for simple tasks, a coder for complex tasks, Reviewer), each with a CLI choice (Claude, Codex, or Antigravity), a model, and a reasoning effort, plus a fallback card that picks which team member steps in. The defaults come from the seeded profiles and the ready CLIs (a role whose seeded CLI is not ready starts on a ready one). Accepting writes the choices into the role's seeded profile and the routing rules; model details, limits, extra profiles, and accounts stay in Config → Team.
 4. **First project:** pick a folder (new or an existing repo), write the goal in one sentence, and land in step 1 Discuss.
 
 ##### Work stage (step 4)
 
 - A wayang stage (kelir lit by a blencong lamp, banana-trunk base) above the kanban, with the activity feed below it.
-- Characters by role: **Semar** = Lead, **Bima** = Coder, **Arjuna** = Reviewer, **Gatotkaca** = fallback. The provider shows as the colour of the character's label (Claude orange, Codex green, agy blue). Several coders in parallel appear as several Bima figures.
+- Characters by role: **Semar** = Lead, **Bima** = Coder for simple tasks, **Kresna** = Coder for complex tasks, **Arjuna** = Reviewer, **Gatotkaca** = fallback. The provider shows as the colour of the character's label (Claude orange, Codex green, agy blue). Several coders in parallel appear as several Bima figures.
 - Active agents move (body sway, arms worked from shoulder and elbow like a dalang playing them); waiting agents are dimmed (for example "quota, resumes 14:05"). Clicking a figure opens that task's log.
 - Feed lines are factual and come from run events: "Bima (Codex) is writing `src/routes.ts`", "Arjuna (Claude) ran `npm test`: 12/12 passed", "T-001 passed review round 1, waiting for merge approval".
 - Style: shadow (dark silhouettes on the lit screen). The coloured (sungging) version of the same figures is used in the wizard and on Config → Team cards.
 
 ##### Wayang and gunungan artwork
 
-- Source: photographs of real wayang kulit (Tropenmuseum collection on Wikimedia Commons, CC BY-SA 3.0) for Semar, Bima, Arjuna, and Gatotkaca, and a CC0 kayon photograph for the gunungan.
+- Source: photographs of real wayang kulit (Tropenmuseum collection on Wikimedia Commons, CC BY-SA 3.0) for Semar, Bima, Kresna, Arjuna, and Gatotkaca, and a CC0 kayon photograph for the gunungan.
 - Method: cut each figure out of its photo, split it at the real joints (wayang kulit arms are separate pieces pinned at shoulder and elbow), and trace each piece to SVG. Pivot points sit on the pins.
 - The derived artwork stays CC BY-SA 3.0 with attribution in `packages/web/src/assets/wayang/CREDITS.md` and in Config → About. The code stays MIT.
 - Gunungan: a detailed version (tree of life, gate, guardians) for the wizard and About, and a simplified silhouette for the sidebar logo and favicon (fine carving is invisible at 16 to 24 px).
@@ -522,7 +522,7 @@ Opening Config swaps the sidebar for Config tabs with "← Back".
 | General | Language, theme (light, dark, follow system), reopen the wizard, check for new versions (on or off) |
 | Agents | CLI status, login, version, models, quota, cooldown, extra accounts (v0.5) |
 | Team | Agent profiles as wayang cards: character by role, provider, model, effort, fallback |
-| Task routing | Routing rules shown as sentences ("Complex engineer tasks → Bima (Codex), fallback Gatotkaca (Claude)") with the editor behind them |
+| Task routing | Routing rules shown as sentences ("Complex engineer tasks → Kresna (Codex), fallback Gatotkaca (Claude)") with the editor behind them |
 | Security | Sandbox state, agy keyring permission, running without a sandbox, with the risk of each |
 | About | Version and update status, licence, wayang artwork credits, documentation links |
 
@@ -543,10 +543,11 @@ Statistics move to their own sidebar entry.
 - **Language to agents:** the language is a global setting stored server side (the `settings` table), so the Lead and reviewer prompts can read it; the UI language and agent language are the same setting.
 - **Animation:** SVG and CSS transforms only; pivots per limb. Paused with `document.visibilityState` and `prefers-reduced-motion`.
 - **Design tokens:** `docs/DESIGN.md` must be updated: its MOTION 1 dial forbids infinite loops, which the stage needs. The new rule: MOTION 1 everywhere except the wayang stage and the wizard intro, which may loop and must pause as above. The six-stage rail section is replaced by the five-step stepper.
-- **Update notice:** the server asks the npm registry (`https://registry.npmjs.org/dalang-cli/latest`) for the newest version at most once per 24 hours and caches the answer in the `settings` table. The request carries no project, account, or usage data. It is on by default and can be switched off in Config → General (the owner's call to confirm: an unattended outgoing request from a local-first tool). When a newer version exists, the sidebar footer shows "Version X is available" and Config → About shows the command to copy (`npx dalang-cli@latest` or `npm install -g dalang-cli@latest`, with a link to the release notes). DALANG never installs or restarts itself. `dalang doctor` prints the same hint. Offline or a failed check shows nothing.
+- **Update notice:** the server asks the npm registry (`https://registry.npmjs.org/dalang-cli/latest`) for the newest version at most once per 24 hours and caches the answer in the `settings` table. The request carries no project, account, or usage data. It is on by default and can be switched off in Config → General (the owner's call to confirm: an unattended outgoing request from a local-first tool). When a newer version exists, the sidebar footer shows "Version X is available" and Config → About shows the command to copy (`npx dalang-cli@latest` or `npm install -g dalang-cli@latest`, with a link to the release notes). DALANG never installs or restarts itself. `dalang doctor` prints the same hint. A failed check (offline, registry down) counts as the day's attempt, keeps the last known answer, and shows nothing when there is none.
 - **State:** keep TanStack Query and the existing API client.
 - **Which step is current:** steps 1 to 3 are sequential. Once execution starts, steps 4 and 5 are both open (some tasks run while others wait for merge). The "Next step" card picks the action that blocks progress first: a merge or reject decision, then a failed task needing retry, then "agents are working, nothing to do".
-- **Wizard team step:** it picks among the seeded profiles and sets the routing rules' primary and fallback profiles; it never deletes profiles or rules. Skipping the wizard leaves the seeded defaults.
+- **Fallback is a target, not a profile (schema v8):** a fallback is a CLI, model, effort, and an optional account directory, stored on routing rules and on profiles (`fallback_provider`, `fallback_model`, `fallback_effort`, `fallback_config_dir`). The fallback run is the primary profile started on that target, so the role instructions, limits, and permissions stay the same. A target identical to the primary route is ignored. Upgrading copies each old fallback profile's CLI, model, effort, and account into a target, and puts the engineer tiers back in low, medium, high order.
+- **Wizard team step:** it edits the provider, model, and effort of the four seeded role profiles (lead, coder-small, coder-heavy, reviewer) and sets the routing rules' primary profiles and fallback targets; the light and heavy coder tiers stay separate. It never deletes profiles or rules. Skipping the wizard leaves the seeded defaults.
 - **Wizard folder step:** a path field with validation, as the current project form does (a browser page cannot open a native folder picker on the local disk).
 - **Language change mid-project:** applies to the next agent turn; text already written stays in its language.
 - **Upgrade path:** existing installs with projects skip the wizard and open the most recent project.

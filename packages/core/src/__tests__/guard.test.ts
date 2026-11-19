@@ -505,14 +505,12 @@ describe('v0.3 Kawal: Reviewer, Fix Loop, Guard Diff/Merge, Integration, Profile
         idleTimeoutMs: 120_000,
         maxParallel: 1,
         maxReviewRounds: 3,
-        fallbackProfileId: 'profile-lead',
+        fallback: { provider: 'claude-code', model: '', effort: 'high', configDir: null },
       });
       expect(custom.maxReviewRounds).toBe(3);
-      expect(custom.fallbackProfileId).toBe('profile-lead');
-      expect(() => svc.updateProfile(custom.id, { fallbackProfileId: custom.id })).toThrow(/own fallback/);
-      expect(() => svc.updateProfile(custom.id, { fallbackProfileId: 'nope' })).toThrow();
+      expect(custom.fallback).toEqual({ provider: 'claude-code', model: '', effort: 'high', configDir: null });
       expect(() => svc.deleteProfile('profile-lead')).toThrow();
-      expect(svc.updateProfile(custom.id, { fallbackProfileId: null }).fallbackProfileId).toBeNull();
+      expect(svc.updateProfile(custom.id, { fallback: null }).fallback).toBeNull();
 
       const updated = svc.updateProfile(custom.id, { maxReviewRounds: 2, model: 'sonnet' });
       expect(updated.model).toBe('sonnet');
@@ -522,7 +520,7 @@ describe('v0.3 Kawal: Reviewer, Fix Loop, Guard Diff/Merge, Integration, Profile
         role: 'reviewer',
         complexity: 'high',
         profileId: custom.id,
-        fallbackProfileId: 'profile-lead',
+        fallback: { provider: 'claude-code', model: '', effort: 'high', configDir: null },
       });
       expect(rule.profileName).toBe('custom-reviewer');
 

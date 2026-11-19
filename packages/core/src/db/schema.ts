@@ -122,7 +122,10 @@ export const agentProfiles = sqliteTable('agent_profiles', {
   idleTimeoutMs: integer('idle_timeout_ms').notNull().default(180000),
   maxParallel: integer('max_parallel').notNull().default(1),
   maxReviewRounds: integer('max_review_rounds').notNull().default(2),
-  fallbackProfileId: text('fallback_profile_id'),
+  fallbackProvider: text('fallback_provider'),
+  fallbackModel: text('fallback_model'),
+  fallbackEffort: text('fallback_effort'),
+  fallbackConfigDir: text('fallback_config_dir'),
   configDir: text('config_dir'),
   isDefault: integer('is_default', { mode: 'boolean' }).notNull().default(false),
   createdAt: text('created_at').notNull(),
@@ -136,9 +139,10 @@ export const routingRules = sqliteTable('routing_rules', {
   profileId: text('profile_id')
     .notNull()
     .references(() => agentProfiles.id, { onDelete: 'cascade' }),
-  fallbackProfileId: text('fallback_profile_id').references(() => agentProfiles.id, {
-    onDelete: 'set null',
-  }),
+  fallbackProvider: text('fallback_provider'),
+  fallbackModel: text('fallback_model'),
+  fallbackEffort: text('fallback_effort'),
+  fallbackConfigDir: text('fallback_config_dir'),
 });
 
 export const providerEvents = sqliteTable('provider_events', {

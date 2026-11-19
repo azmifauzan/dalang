@@ -8,6 +8,7 @@ import type {
   TaskDiffFileDTO,
   TaskReviewDTO,
 } from '@dalang/shared';
+import { useI18n } from '../i18n/index.js';
 import { api } from '@/lib/api';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -18,7 +19,7 @@ import { EmptyPanel, ErrorPanel, LoadingPanel, ModalDialog } from '@/components/
 
 interface GuardViewProps {
   project: ProjectSummary;
-  onGoToNavigate?: () => void;
+  onGoToWork?: () => void;
 }
 
 function guardStatusStyle(status: string): { color: string; borderColor: string; backgroundColor?: string } {
@@ -68,23 +69,9 @@ function diffLineClasses(line: string): string {
   return 'text-foreground';
 }
 
-function formatStatusLabel(status: string): string {
-  switch (status) {
-    case 'awaiting_merge':
-      return 'Awaiting merge';
-    case 'review_failed':
-      return 'Review failed';
-    case 'reviewing':
-      return 'Reviewing';
-    case 'done':
-      return 'Merged';
-    default:
-      return status.replace(/_/g, ' ');
-  }
-}
-
-export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
+export function GuardView({ project, onGoToWork }: GuardViewProps) {
   const qc = useQueryClient();
+  const { t, te } = useI18n();
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [selectedRound, setSelectedRound] = useState<number | null>(null);
   const [showVerifyOutput, setShowVerifyOutput] = useState(false);
@@ -104,6 +91,21 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
   const [expandedIntegrationId, setExpandedIntegrationId] = useState<string | null>(null);
   const [collapsedDiffPaths, setCollapsedDiffPaths] = useState<Record<string, boolean>>({});
   const [actionMessage, setActionMessage] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+
+  const formatStatusLabel = (status: string): string => {
+    switch (status) {
+      case 'awaiting_merge':
+        return t('guard.status.awaiting_merge');
+      case 'review_failed':
+        return t('guard.status.review_failed');
+      case 'reviewing':
+        return t('guard.status.reviewing');
+      case 'done':
+        return t('guard.status.done');
+      default:
+        return status.replace(/_/g, ' ');
+    }
+  };
 
   const guardQuery = useQuery({
     queryKey: ['guard', project.id],
@@ -163,7 +165,10 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
       setSelectedRound(null);
       return;
     }
-    const latest = selectedEntry.latestReview?.round ?? selectedEntry.reviews[selectedEntry.reviews.length - 1]?.round ?? null;
+    const latest =
+      selectedEntry.latestReview?.round ??
+      selectedEntry.reviews[selectedEntry.reviews.length - 1]?.round ??
+      null;
     setSelectedRound(latest);
     setShowVerifyOutput(false);
     setCollapsedDiffPaths({});
@@ -211,12 +216,12 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
         setExpandedIntegrationId(data.integrationRun.id);
       }
       const integrationSummary = data.integrationRun
-        ? ` Integration status: ${data.integrationRun.status}.`
+        ? t('guard.integrationStatus', { status: te(data.integrationRun.status) })
         : '';
       const pushSummary = data.pushPrResult ? ` ${data.pushPrResult.message}` : '';
       setActionMessage({
         kind: data.pushPrResult && !data.pushPrResult.pushed ? 'err' : 'ok',
-        text: `Merged ${data.task.externalId} to ${guard?.mainBranch ?? 'main'} (${data.mergeCommitSha.slice(0, 8)}).${integrationSummary}${pushSummary}`,
+        text: `Merged ${data.task.externalId} -> ${guard?.mainBranch ?? 'main'} (${data.mergeCommitSha.slice(0, 8)}).${integrationSummary}${pushSummary}`,
       });
       invalidateAll();
     },
@@ -234,15 +239,11 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
       setRejectNote('');
       setActionMessage({
         kind: 'ok',
-        text: data.task.status === 'approved'
-          ? `Rejected ${data.task.externalId} and re-queued it for another coding pass.`
-          : `Rejected ${data.task.externalId} and recorded feedback.`,
+        text: `${data.task.externalId}: ${te(data.task.status)}`,
       });
       invalidateAll();
     },
-    onError: (err) => {
-      setActionMessage({ kind: 'err', text: (err as Error).message });
-    },
+    onError: (err) => setActionMessage({ kind: 'err', text: (err as Error).message }),
   });
 
   const saveCommandMutation = useMutation({
@@ -250,24 +251,20 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
       api.updateProjectSettings(project.id, { integrationCommand }),
     onSuccess: (res) => {
       setCmdDraft(res.project.integrationCommand ?? '');
-      setActionMessage({ kind: 'ok', text: 'Integration test command saved.' });
+      setActionMessage({ kind: 'ok', text: t('guard.saveCommand') });
       invalidateAll();
     },
-    onError: (err) => {
-      setActionMessage({ kind: 'err', text: (err as Error).message });
-    },
+    onError: (err) => setActionMessage({ kind: 'err', text: (err as Error).message }),
   });
 
   const saveRemoteSettingsMutation = useMutation({
     mutationFn: (vars: { gitRemote: string | null; pushAfterMerge: boolean; createPrAfterMerge: boolean }) =>
       api.updateProjectSettings(project.id, vars),
     onSuccess: () => {
-      setActionMessage({ kind: 'ok', text: 'Push and pull request settings saved.' });
+      setActionMessage({ kind: 'ok', text: t('guard.saveRemote') });
       invalidateAll();
     },
-    onError: (err) => {
-      setActionMessage({ kind: 'err', text: (err as Error).message });
-    },
+    onError: (err) => setActionMessage({ kind: 'err', text: (err as Error).message }),
   });
 
   const pushPrMutation = useMutation({
@@ -280,9 +277,7 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
       setActionMessage({ kind: 'ok', text: res.result.message });
       invalidateAll();
     },
-    onError: (err) => {
-      setActionMessage({ kind: 'err', text: (err as Error).message });
-    },
+    onError: (err) => setActionMessage({ kind: 'err', text: (err as Error).message }),
   });
 
   const runIntegrationMutation = useMutation({
@@ -295,26 +290,24 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
       setExpandedIntegrationId(res.integrationRun.id);
       setActionMessage({
         kind: res.integrationRun.status === 'failed' ? 'err' : 'ok',
-        text: `Integration run finished: ${res.integrationRun.status}${
+        text: `${te(res.integrationRun.status)}${
           res.integrationRun.exitCode !== null ? ` (exit ${res.integrationRun.exitCode})` : ''
-        }.`,
+        }`,
       });
       invalidateAll();
     },
-    onError: (err) => {
-      setActionMessage({ kind: 'err', text: (err as Error).message });
-    },
+    onError: (err) => setActionMessage({ kind: 'err', text: (err as Error).message }),
   });
 
   if (guardQuery.isLoading) {
-    return <LoadingPanel label="Loading Guard reviews, diffs, and integration history..." />;
+    return <LoadingPanel label={t('guard.loading')} />;
   }
 
   if (guardQuery.isError || !guard) {
     return (
       <ErrorPanel
-        title="Could not load Guard state"
-        detail={(guardQuery.error as Error)?.message ?? 'Unknown error'}
+        title={t('guard.loadError')}
+        detail={(guardQuery.error as Error)?.message ?? t('common.unknownError')}
         onRetry={() => guardQuery.refetch()}
       />
     );
@@ -324,7 +317,8 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
   const failedCount = guard.tasks.filter((e) => e.task.status === 'review_failed').length;
   const doneCount = guard.tasks.filter((e) => e.task.status === 'done').length;
 
-  const effectiveCommandPreview = cmdDraft.trim() || guard.integrationCommand || guard.detectedIntegrationCommand || '';
+  const effectiveCommandPreview =
+    cmdDraft.trim() || guard.integrationCommand || guard.detectedIntegrationCommand || '';
   const needsUnconfinedWarning = !guard.sandboxReady;
 
   const toggleDiffFile = (filePath: string) => {
@@ -333,44 +327,41 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
 
   return (
     <div className="space-y-6">
-      {/* Guard Stage Header */}
+      {/* Header */}
       <section className="rounded-[8px] border border-border bg-card p-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0 space-y-1">
             <div className="flex flex-wrap items-center gap-2">
-              <h1 className="text-xl font-semibold tracking-tight">Guard</h1>
-              <Badge>Gate 2: {guard.mainBranch}</Badge>
+              <h2 className="text-lg font-semibold tracking-tight">{t('guard.title')}</h2>
+              <Badge>{guard.mainBranch}</Badge>
             </div>
             <p className="text-sm text-muted-foreground">
-              Review automated verification findings, inspect branch diffs, and decide whether to merge onto{' '}
-              <span className="font-mono-token text-foreground">{guard.mainBranch}</span> or send tasks back.
+              {t('guard.subtitle', { branch: guard.mainBranch })}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            {onGoToNavigate && (
-              <Button type="button" variant="outline" onClick={onGoToNavigate}>
-                Back to Navigate
+            {onGoToWork && (
+              <Button type="button" variant="outline" onClick={onGoToWork}>
+                {t('guard.backToWork')}
               </Button>
             )}
             <Button type="button" variant="outline" onClick={() => guardQuery.refetch()}>
-              Refresh
+              {t('common.refresh')}
             </Button>
           </div>
         </div>
 
         <div className="mt-4 flex flex-wrap gap-2 text-xs">
           <Badge style={awaitingCount > 0 ? guardStatusStyle('awaiting_merge') : undefined}>
-            Awaiting merge: {awaitingCount}
+            {t('guard.awaitingMerge', { count: awaitingCount })}
           </Badge>
           <Badge style={failedCount > 0 ? guardStatusStyle('review_failed') : undefined}>
-            Review failed: {failedCount}
+            {t('guard.reviewFailed', { count: failedCount })}
           </Badge>
           <Badge style={doneCount > 0 ? guardStatusStyle('done') : undefined}>
-            Merged: {doneCount}
+            {t('guard.merged', { count: doneCount })}
           </Badge>
-          <Badge>
-            Integration runs: {guard.integrationRuns.length}
-          </Badge>
+          <Badge>{t('guard.integrationRuns', { count: guard.integrationRuns.length })}</Badge>
         </div>
 
         {actionMessage && (
@@ -396,30 +387,30 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
         )}
       </section>
 
-      {/* Main Split Workspace: Task Gate Queue + Inspector */}
+      {/* Main Split Workspace */}
       {sortedEntries.length === 0 ? (
         <EmptyPanel
-          title="No tasks ready for Guard yet"
-          description="Run approved tasks in Navigate first. Completed coder branches enter automated code review and arrive here for your merge decision."
+          title={t('guard.emptyTitle')}
+          description={t('guard.emptyDesc')}
           action={
-            onGoToNavigate ? (
-              <Button type="button" onClick={onGoToNavigate}>
-                Open Navigate
+            onGoToWork ? (
+              <Button type="button" onClick={onGoToWork}>
+                {t('guard.openWork')}
               </Button>
             ) : undefined
           }
         />
       ) : (
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(260px,330px)_minmax(0,1fr)]">
-          {/* Task Gate Queue */}
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(250px,310px)_minmax(0,1fr)]">
+          {/* Task queue */}
           <aside
-            aria-label="Guard task queue"
+            aria-label={t('guard.tasksQueue', { count: sortedEntries.length })}
             className="min-w-0 rounded-[8px] border border-border bg-card p-3"
           >
             <div className="mb-2 flex items-center justify-between px-1">
-              <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                Tasks ({sortedEntries.length})
-              </h2>
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                {t('guard.tasksQueue', { count: sortedEntries.length })}
+              </h3>
             </div>
             <ul className="space-y-2">
               {sortedEntries.map((entry) => {
@@ -430,7 +421,7 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
                       type="button"
                       aria-pressed={isSelected}
                       onClick={() => setSelectedTaskId(entry.task.id)}
-                      className={`min-h-11 w-full rounded-[6px] border px-3 py-2.5 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${
+                      className={`min-h-11 w-full cursor-pointer rounded-[6px] border px-3 py-2.5 text-left transition-colors ${
                         isSelected
                           ? 'border-primary bg-accent/10'
                           : 'border-border bg-background hover:bg-muted/60'
@@ -444,9 +435,7 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
                       </div>
                       <p className="mt-1 truncate text-sm font-medium">{entry.task.title}</p>
                       <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                        <span>
-                          Rounds: {entry.task.reviewRounds}
-                        </span>
+                        <span>{t('guard.roundsCount', { count: entry.task.reviewRounds })}</span>
                         {entry.latestReview && (
                           <span className="font-mono-token">
                             Verify: {entry.latestReview.verifyExitCode === 0 ? 'OK' : `exit ${entry.latestReview.verifyExitCode}`}
@@ -454,7 +443,9 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
                         )}
                         {entry.latestReview && entry.latestReview.contract.findings.length > 0 && (
                           <span>
-                            Findings: {entry.latestReview.contract.findings.length}
+                            {t('guard.findingsCount', {
+                              count: entry.latestReview.contract.findings.length,
+                            })}
                           </span>
                         )}
                       </div>
@@ -465,10 +456,9 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
             </ul>
           </aside>
 
-          {/* Selected Task Review & Diff Inspector */}
+          {/* Selected Task Inspector */}
           {selectedEntry && (
             <div className="min-w-0 space-y-6">
-              {/* Task Gate Summary & Human Decision Bar */}
               <section className="rounded-[8px] border border-border bg-card p-5">
                 <div className="flex flex-wrap items-start justify-between gap-4">
                   <div className="min-w-0 space-y-1">
@@ -478,29 +468,28 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
                         {formatStatusLabel(selectedEntry.task.status)}
                       </Badge>
                       {selectedEntry.task.branchName && (
-                        <Badge className="h-auto max-w-full whitespace-normal break-all py-1">
+                        <Badge className="h-auto max-w-full py-1 whitespace-normal break-all">
                           {selectedEntry.task.branchName}
                         </Badge>
                       )}
                       {selectedEntry.task.mergeCommitSha && (
-                        <Badge>
-                          Merged {selectedEntry.task.mergeCommitSha.slice(0, 8)}
-                        </Badge>
+                        <Badge>{selectedEntry.task.mergeCommitSha.slice(0, 8)}</Badge>
                       )}
                       {selectedEntry.task.prUrl && (
                         <a
                           href={selectedEntry.task.prUrl}
                           target="_blank"
                           rel="noreferrer"
-                          className="inline-flex min-h-8 items-center rounded-[4px] border border-primary px-2 py-0.5 font-mono-token text-xs font-medium text-primary underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                          className="inline-flex min-h-8 items-center rounded-[4px] border border-primary px-2 py-0.5 font-mono-token text-xs font-medium text-primary underline underline-offset-2"
                         >
-                          Open PR
+                          {t('guard.openPr')}
                         </a>
                       )}
                     </div>
-                    <h2 className="text-lg font-semibold leading-snug">{selectedEntry.task.title}</h2>
+                    <h3 className="text-lg leading-snug font-semibold">{selectedEntry.task.title}</h3>
                     <p className="text-sm text-muted-foreground">{selectedEntry.task.goal}</p>
                   </div>
+
                   {selectedEntry.task.status === 'done' && (
                     <div className="flex flex-wrap items-center gap-2">
                       <Button
@@ -514,7 +503,9 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
                           })
                         }
                       >
-                        {pushPrMutation.isPending ? 'Pushing...' : `Push ${guard.mainBranch}`}
+                        {pushPrMutation.isPending
+                          ? t('guard.pushing')
+                          : t('guard.pushBranch', { branch: guard.mainBranch })}
                       </Button>
                       <Button
                         type="button"
@@ -526,7 +517,7 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
                           })
                         }
                       >
-                        {pushPrMutation.isPending ? 'Opening PR...' : 'Push & open PR'}
+                        {pushPrMutation.isPending ? t('guard.openingPr') : t('guard.pushAndPr')}
                       </Button>
                     </div>
                   )}
@@ -542,7 +533,7 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
                       color: 'var(--error)',
                     }}
                   >
-                    <span className="font-semibold">Note: </span>
+                    <span className="font-semibold">{t('guard.humanNoteLabel')} </span>
                     {selectedEntry.task.rejectionNote}
                   </div>
                 )}
@@ -558,14 +549,15 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
                           onChange={(e) => setRunIntegrationOnMerge(e.target.checked)}
                         />
                         <span>
-                          Run post-merge integration tests on{' '}
-                          <span className="font-mono-token">{guard.mainBranch}</span>
+                          {t('guard.runIntegrationAfterMerge', { branch: guard.mainBranch })}
                           {effectiveCommandPreview ? (
                             <span className="font-mono-token text-xs text-muted-foreground">
                               {' '}({effectiveCommandPreview})
                             </span>
                           ) : (
-                            <span className="text-xs text-muted-foreground"> (skips if none set)</span>
+                            <span className="text-xs text-muted-foreground">
+                              {' '}{t('guard.skipsIfNone')}
+                            </span>
                           )}
                         </span>
                       </label>
@@ -582,7 +574,7 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
                               setRejectModalOpen(true);
                             }}
                           >
-                            Reject and send back
+                            {t('guard.rejectSendBack')}
                           </Button>
                         )}
                         {selectedEntry.canApproveMerge && (
@@ -601,7 +593,9 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
                               }
                             }}
                           >
-                            {approveMergeMutation.isPending ? 'Merging...' : 'Approve and merge'}
+                            {approveMergeMutation.isPending
+                              ? t('guard.merging')
+                              : t('guard.approveMerge')}
                           </Button>
                         )}
                       </div>
@@ -610,17 +604,15 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
                 )}
               </section>
 
-              {/* Review Rounds & Findings */}
+              {/* Automated Review */}
               <section className="rounded-[8px] border border-border bg-card p-5">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <h3 className="text-base font-semibold">Automated review</h3>
-                    <p className="text-xs text-muted-foreground">
-                      Independent reviewer checks verify output, acceptance criteria, and file scope.
-                    </p>
+                    <h3 className="text-base font-semibold">{t('guard.autoReviewTitle')}</h3>
+                    <p className="text-xs text-muted-foreground">{t('guard.autoReviewDesc')}</p>
                   </div>
                   {selectedEntry.reviews.length > 1 && (
-                    <div className="flex flex-wrap gap-1.5" role="group" aria-label="Review rounds">
+                    <div className="flex flex-wrap gap-1.5" role="group" aria-label={t('guard.autoReviewTitle')}>
                       {selectedEntry.reviews.map((rev) => (
                         <Button
                           key={rev.id}
@@ -631,7 +623,7 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
                             setShowVerifyOutput(false);
                           }}
                         >
-                          Round {rev.round}
+                          {t('guard.roundLabel', { n: rev.round })}
                         </Button>
                       ))}
                     </div>
@@ -641,23 +633,26 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
                 {!activeReview ? (
                   <p className="mt-4 text-sm text-muted-foreground">
                     {selectedEntry.task.status === 'reviewing'
-                      ? 'Automated review is currently running for this task.'
-                      : 'No completed review report is recorded for this task.'}
+                      ? t('guard.reviewRunning')
+                      : t('guard.noReviewRecorded')}
                   </p>
                 ) : (
                   <div className="mt-4 space-y-4">
                     <div className="flex flex-wrap items-center gap-2 text-xs">
                       <Badge style={guardStatusStyle(activeReview.status)}>
-                        Verdict: {activeReview.status}
+                        {t('guard.verdictLabel', { status: activeReview.status })}
                       </Badge>
                       <Badge>
-                        Reviewer: {activeReview.reviewerProfileName} ({activeReview.reviewerProvider})
+                        {t('guard.reviewerLabel', {
+                          name: activeReview.reviewerProfileName,
+                          provider: activeReview.reviewerProvider,
+                        })}
                       </Badge>
                       {activeReview.reviewerModel && (
                         <Badge>Model: {activeReview.reviewerModel}</Badge>
                       )}
                       <Badge
-                        className="h-auto max-w-full whitespace-normal break-all py-1"
+                        className="h-auto max-w-full py-1 whitespace-normal break-all"
                         style={guardStatusStyle(activeReview.verifyExitCode === 0 ? 'passed' : 'failed')}
                       >
                         {activeReview.verifyCommand}: exit {activeReview.verifyExitCode}
@@ -668,13 +663,13 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
                     </div>
 
                     <div className="rounded-[6px] border border-border bg-background p-3.5 text-sm">
-                      <p className="font-medium">Summary</p>
+                      <p className="font-medium">{t('guard.summaryLabel')}</p>
                       <p className="mt-1 whitespace-pre-wrap text-muted-foreground">
                         {activeReview.contract.summary}
                       </p>
                       {activeReview.humanNote && (
                         <p className="mt-2 text-xs text-muted-foreground">
-                          <span className="font-semibold text-foreground">Human note: </span>
+                          <span className="font-semibold text-foreground">{t('guard.humanNoteLabel')} </span>
                           {activeReview.humanNote}
                         </p>
                       )}
@@ -689,7 +684,7 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
                           color: 'var(--error)',
                         }}
                       >
-                        <p className="font-semibold">Scope warnings (outside files_allowed)</p>
+                        <p className="font-semibold">{t('work.scopeWarnings')}</p>
                         <ul className="mt-1 list-disc pl-5 font-mono-token text-xs">
                           {activeReview.scopeWarnings.map((w) => (
                             <li key={w}>{w}</li>
@@ -698,7 +693,6 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
                       </div>
                     )}
 
-                    {/* Verify command output toggle */}
                     <div>
                       <Button
                         type="button"
@@ -706,29 +700,28 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
                         aria-expanded={showVerifyOutput}
                         onClick={() => setShowVerifyOutput((v) => !v)}
                       >
-                        {showVerifyOutput ? 'Hide verify output' : 'Show verify output'}
+                        {showVerifyOutput ? t('guard.hideVerifyOutput') : t('guard.showVerifyOutput')}
                       </Button>
                       {showVerifyOutput && (
                         <pre className="mt-2 max-h-64 overflow-x-auto overflow-y-auto rounded-[6px] border border-border bg-background p-3 font-mono-token text-xs">
-                          {activeReview.verifyOutput || '(no output captured)'}
+                          {activeReview.verifyOutput || t('guard.noOutputCaptured')}
                         </pre>
                       )}
                     </div>
 
-                    {/* Findings */}
                     <div className="space-y-2">
                       <h4 className="text-sm font-semibold">
-                        Findings ({activeReview.contract.findings.length})
+                        {t('guard.findingsCount', { count: activeReview.contract.findings.length })}
                       </h4>
                       {activeReview.contract.findings.length === 0 ? (
                         <p className="text-sm text-muted-foreground">
-                          No issues reported in round {activeReview.round}.
+                          {t('guard.noIssuesRound', { round: activeReview.round })}
                         </p>
                       ) : (
                         <ul className="space-y-2">
                           {activeReview.contract.findings.map((finding, i) => (
                             <li
-                              key={`${finding.severity}-${finding.file ?? ''}-${i}`}
+                              key={`${te(finding.severity)}-${finding.file ?? ''}-${i}`}
                               className="rounded-[6px] border border-border bg-background p-3 text-sm"
                             >
                               <div className="flex flex-wrap items-center gap-2">
@@ -737,7 +730,7 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
                                     finding.severity,
                                   )}`}
                                 >
-                                  {finding.severity}
+                                  {te(finding.severity)}
                                 </span>
                                 {finding.file && (
                                   <span className="font-mono-token text-xs text-muted-foreground">
@@ -755,19 +748,21 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
                 )}
               </section>
 
-              {/* Per-Task Branch Diff */}
+              {/* Branch Diff */}
               <section className="rounded-[8px] border border-border bg-card p-5">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <h3 className="text-base font-semibold">Branch diff</h3>
+                    <h3 className="text-base font-semibold">{t('guard.branchDiffTitle')}</h3>
                     <p className="text-xs text-muted-foreground">
-                      Changes introduced on {selectedEntry.task.branchName ?? 'task branch'} relative to{' '}
-                      {guard.mainBranch}.
+                      {t('guard.branchDiffDesc', {
+                        branch: selectedEntry.task.branchName ?? 'branch',
+                        main: guard.mainBranch,
+                      })}
                     </p>
                   </div>
                   {diffQuery.data?.diff && (
                     <div className="flex flex-wrap items-center gap-2 font-mono-token text-xs">
-                      <Badge>{diffQuery.data.diff.files.length} file(s)</Badge>
+                      <Badge>{t('guard.filesCount', { count: diffQuery.data.diff.files.length })}</Badge>
                       <Badge style={guardStatusStyle('passed')}>
                         +{diffQuery.data.diff.totalAdditions}
                       </Badge>
@@ -779,29 +774,25 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
                 </div>
 
                 {!selectedEntry.diffAvailable ? (
-                  <p className="mt-4 text-sm text-muted-foreground">
-                    No unmerged or recorded branch commits are available for diff inspection.
-                  </p>
+                  <p className="mt-4 text-sm text-muted-foreground">{t('guard.noDiffAvailable')}</p>
                 ) : diffQuery.isLoading ? (
                   <div className="mt-4">
-                    <LoadingPanel label="Computing unified diff..." />
+                    <LoadingPanel label={t('guard.loadingDiff')} />
                   </div>
                 ) : diffQuery.isError ? (
                   <div className="mt-4">
                     <ErrorPanel
-                      title="Could not load branch diff"
+                      title={t('guard.diffError')}
                       detail={(diffQuery.error as Error).message}
                       onRetry={() => diffQuery.refetch()}
                     />
                   </div>
                 ) : diffQuery.data?.diff.files.length === 0 ? (
-                  <p className="mt-4 text-sm text-muted-foreground">No file changes detected in this branch diff.</p>
+                  <p className="mt-4 text-sm text-muted-foreground">{t('guard.noFileChanges')}</p>
                 ) : (
                   <div className="mt-4 space-y-3">
                     {diffQuery.data?.diff.truncated && (
-                      <p className="text-xs text-muted-foreground">
-                        Large diff output truncated for display safety. Inspect the git branch locally for full patches.
-                      </p>
+                      <p className="text-xs text-muted-foreground">{t('guard.diffTruncated')}</p>
                     )}
                     {[...(diffQuery.data?.diff.files ?? [])]
                       .sort((a, b) => {
@@ -810,47 +801,48 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
                         return aMeta - bMeta;
                       })
                       .map((file: TaskDiffFileDTO) => {
-                      const collapsed = Boolean(collapsedDiffPaths[file.path]);
-                      const patchLines = file.patch ? file.patch.split('\n') : [];
-                      return (
-                        <div key={file.path} className="min-w-0 overflow-hidden rounded-[6px] border border-border">
-                          <button
-                            type="button"
-                            aria-expanded={!collapsed}
-                            onClick={() => toggleDiffFile(file.path)}
-                            className="flex min-h-11 w-full flex-wrap items-center justify-between gap-2 bg-muted/50 px-3 py-2 text-left hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-                          >
-                            <div className="flex min-w-0 items-center gap-2">
-                              <Badge>{file.status}</Badge>
-                              <span className="truncate font-mono-token text-xs font-medium">{file.path}</span>
-                            </div>
-                            <span className="font-mono-token text-xs text-muted-foreground">
-                              +{file.additions} / -{file.deletions} {collapsed ? '(show)' : '(hide)'}
-                            </span>
-                          </button>
-                          {!collapsed && (
-                            <div className="overflow-x-auto border-t border-border bg-background">
-                              {patchLines.length === 0 ? (
-                                <p className="p-3 font-mono-token text-xs text-muted-foreground">
-                                  (Binary file or empty patch)
-                                </p>
-                              ) : (
-                                <pre className="py-2 font-mono-token text-xs leading-relaxed">
-                                  {patchLines.map((line, lineIdx) => (
-                                    <div
-                                      key={lineIdx}
-                                      className={`min-w-max px-3 whitespace-pre ${diffLineClasses(line)}`}
-                                    >
-                                      {line || ' '}
-                                    </div>
-                                  ))}
-                                </pre>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
+                        const collapsed = Boolean(collapsedDiffPaths[file.path]);
+                        const patchLines = file.patch ? file.patch.split('\n') : [];
+                        return (
+                          <div key={file.path} className="min-w-0 overflow-hidden rounded-[6px] border border-border">
+                            <button
+                              type="button"
+                              aria-expanded={!collapsed}
+                              onClick={() => toggleDiffFile(file.path)}
+                              className="flex min-h-11 w-full cursor-pointer flex-wrap items-center justify-between gap-2 bg-muted/50 px-3 py-2 text-left hover:bg-muted"
+                            >
+                              <div className="flex min-w-0 items-center gap-2">
+                                <Badge>{te(file.status)}</Badge>
+                                <span className="truncate font-mono-token text-xs font-medium">{file.path}</span>
+                              </div>
+                              <span className="font-mono-token text-xs text-muted-foreground">
+                                +{file.additions} / -{file.deletions}{' '}
+                                ({collapsed ? t('common.show') : t('common.hide')})
+                              </span>
+                            </button>
+                            {!collapsed && (
+                              <div className="overflow-x-auto border-t border-border bg-background">
+                                {patchLines.length === 0 ? (
+                                  <p className="p-3 font-mono-token text-xs text-muted-foreground">
+                                    {t('guard.binaryOrEmpty')}
+                                  </p>
+                                ) : (
+                                  <pre className="py-2 font-mono-token text-xs leading-relaxed">
+                                    {patchLines.map((line, lineIdx) => (
+                                      <div
+                                        key={lineIdx}
+                                        className={`min-w-max px-3 whitespace-pre ${diffLineClasses(line)}`}
+                                      >
+                                        {line || ' '}
+                                      </div>
+                                    ))}
+                                  </pre>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                   </div>
                 )}
               </section>
@@ -859,16 +851,13 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
         </div>
       )}
 
-      {/* Post-Merge Integration Suite (F-20) */}
+      {/* Post-merge integration suite */}
       <section className="rounded-[8px] border border-border bg-card p-5">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="space-y-1">
-            <h2 className="text-base font-semibold">Post-merge integration tests</h2>
-            <p className="text-sm text-muted-foreground">
-              Runs the project-wide test suite directly on <span className="font-mono-token">{guard.mainBranch}</span>{' '}
-              after merges or manually on demand.
-            </p>
-          </div>
+        <div className="space-y-1">
+          <h3 className="text-base font-semibold">{t('guard.integrationTitle')}</h3>
+          <p className="text-sm text-muted-foreground">
+            {t('guard.integrationDesc', { branch: guard.mainBranch })}
+          </p>
         </div>
 
         <form
@@ -879,7 +868,7 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
           }}
         >
           <div className="min-w-0 flex-1 space-y-1.5">
-            <Label htmlFor="integration-command-input">Integration command</Label>
+            <Label htmlFor="integration-command-input">{t('guard.integrationCmdLabel')}</Label>
             <Input
               id="integration-command-input"
               value={cmdDraft}
@@ -888,29 +877,27 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
             />
             {guard.detectedIntegrationCommand && (
               <p className="text-xs text-muted-foreground">
-                Auto-detected from repository:{' '}
+                {t('guard.integrationDetected')}{' '}
                 <span className="font-mono-token">{guard.detectedIntegrationCommand}</span>
               </p>
             )}
           </div>
           <div className="flex flex-wrap gap-2">
-            <Button
-              type="submit"
-              variant="outline"
-              disabled={saveCommandMutation.isPending}
-            >
-              {saveCommandMutation.isPending ? 'Saving...' : 'Save command'}
+            <Button type="submit" variant="outline" disabled={saveCommandMutation.isPending}>
+              {saveCommandMutation.isPending ? t('common.saving') : t('guard.saveCommand')}
             </Button>
             <Button
               type="button"
               disabled={
                 runIntegrationMutation.isPending ||
-                (!effectiveCommandPreview) ||
+                !effectiveCommandPreview ||
                 (needsUnconfinedWarning && !allowUnconfinedIntegration)
               }
               onClick={() => runIntegrationMutation.mutate()}
             >
-              {runIntegrationMutation.isPending ? 'Running suite...' : 'Run integration suite'}
+              {runIntegrationMutation.isPending
+                ? t('guard.runningSuite')
+                : t('guard.runIntegration')}
             </Button>
           </div>
         </form>
@@ -923,19 +910,14 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
               checked={allowUnconfinedIntegration}
               onChange={(e) => setAllowUnconfinedIntegration(e.target.checked)}
             />
-            <span>
-              Sandbox confinement (bwrap on Linux, sandbox-exec on macOS) is unavailable on this host ({guard.platform}). Allow running the integration
-              command without filesystem isolation.
-            </span>
+            <span>{t('guard.unconfinedIntegration', { platform: guard.platform })}</span>
           </label>
         )}
 
         <div className="mt-5 space-y-2">
-          <h3 className="text-sm font-semibold">Recent integration runs</h3>
+          <h4 className="text-sm font-semibold">{t('guard.recentIntegrations')}</h4>
           {guard.integrationRuns.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              No integration runs recorded yet. Approve a merge or click Run integration suite above.
-            </p>
+            <p className="text-sm text-muted-foreground">{t('guard.noIntegrationsYet')}</p>
           ) : (
             <ul className="space-y-2">
               {guard.integrationRuns.map((irun: IntegrationRunDTO) => {
@@ -944,8 +926,8 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
                   <li key={irun.id} className="rounded-[6px] border border-border bg-background p-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="flex min-w-0 flex-wrap items-center gap-2">
-                        <Badge style={guardStatusStyle(irun.status)}>{irun.status}</Badge>
-                        <span className="min-w-0 max-w-full break-all font-mono-token text-xs font-medium">
+                        <Badge style={guardStatusStyle(irun.status)}>{te(irun.status)}</Badge>
+                        <span className="min-w-0 max-w-full font-mono-token text-xs font-medium break-all">
                           {irun.command}
                         </span>
                         {irun.taskExternalId && <Badge>{irun.taskExternalId}</Badge>}
@@ -967,13 +949,13 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
                           aria-expanded={isExpanded}
                           onClick={() => setExpandedIntegrationId(isExpanded ? null : irun.id)}
                         >
-                          {isExpanded ? 'Hide log' : 'View log'}
+                          {isExpanded ? t('guard.hideLog') : t('guard.viewLog')}
                         </Button>
                       </div>
                     </div>
                     {isExpanded && (
                       <pre className="mt-3 max-h-60 overflow-x-auto overflow-y-auto rounded-[6px] border border-border bg-card p-3 font-mono-token text-xs">
-                        {irun.output || '(no output)'}
+                        {irun.output || t('guard.noOutputCaptured')}
                       </pre>
                     )}
                   </li>
@@ -984,13 +966,11 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
         </div>
       </section>
 
-      {/* Optional Remote Push & Pull Request Settings (v0.5) */}
+      {/* Remote Push & PR */}
       <section className="rounded-[8px] border border-border bg-card p-5">
         <div className="space-y-1">
-          <h2 className="text-base font-semibold">Remote push and pull request</h2>
-          <p className="text-sm text-muted-foreground">
-            Optionally push after Gate 2 approval and open a pull request via <span className="font-mono-token">gh</span> using the task brief and review summary.
-          </p>
+          <h3 className="text-base font-semibold">{t('guard.remoteTitle')}</h3>
+          <p className="text-sm text-muted-foreground">{t('guard.remoteDesc')}</p>
         </div>
 
         <form
@@ -1006,7 +986,7 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
         >
           <div className="grid gap-3 md:grid-cols-3 md:items-end">
             <div className="space-y-1.5">
-              <Label htmlFor="guard-git-remote">Git remote</Label>
+              <Label htmlFor="guard-git-remote">{t('guard.gitRemoteLabel')}</Label>
               <Input
                 id="guard-git-remote"
                 value={remoteDraft}
@@ -1022,7 +1002,7 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
                 checked={pushAfterMergeDraft}
                 onChange={(e) => setPushAfterMergeDraft(e.target.checked)}
               />
-              <span>Push {guard.mainBranch} after merge</span>
+              <span>{t('guard.pushAfterMerge', { branch: guard.mainBranch })}</span>
             </label>
 
             <label className="flex min-h-11 cursor-pointer items-center gap-2 text-sm">
@@ -1032,27 +1012,25 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
                 checked={createPrAfterMergeDraft}
                 onChange={(e) => setCreatePrAfterMergeDraft(e.target.checked)}
               />
-              <span>Open PR with gh after merge</span>
+              <span>{t('guard.openPrAfterMerge')}</span>
             </label>
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
             <p className="text-xs text-muted-foreground">
-              {guard.ghAvailable
-                ? 'GitHub CLI (gh) detected on this machine.'
-                : 'GitHub CLI (gh) not found in PATH; install gh and run `gh auth login` to open pull requests.'}
+              {guard.ghAvailable ? t('guard.ghAvailable') : t('guard.ghMissing')}
             </p>
             <Button type="submit" variant="outline" disabled={saveRemoteSettingsMutation.isPending}>
-              {saveRemoteSettingsMutation.isPending ? 'Saving...' : 'Save remote settings'}
+              {saveRemoteSettingsMutation.isPending ? t('common.saving') : t('guard.saveRemote')}
             </Button>
           </div>
         </form>
       </section>
 
-      {/* Reject & Send Back Modal */}
+      {/* Reject Modal */}
       <ModalDialog
         open={rejectModalOpen}
-        title={selectedEntry ? `Reject ${selectedEntry.task.externalId}` : 'Reject task'}
+        title={t('guard.rejectModalTitle', { id: selectedEntry?.task.externalId ?? '' })}
         onClose={() => setRejectModalOpen(false)}
       >
         <form
@@ -1068,15 +1046,15 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
           }}
         >
           <p className="text-sm text-muted-foreground">
-            Rejecting removes the unmerged task branch without touching <span className="font-mono-token">{guard.mainBranch}</span>.
+            {t('guard.rejectDesc', { branch: guard.mainBranch })}
           </p>
           <div className="space-y-1.5">
-            <Label htmlFor="reject-note-input">Feedback for coder</Label>
+            <Label htmlFor="reject-note-input">{t('guard.rejectFeedbackLabel')}</Label>
             <Textarea
               id="reject-note-input"
               value={rejectNote}
               onChange={(e) => setRejectNote(e.target.value)}
-              placeholder="Explain what needs to change before merging..."
+              placeholder={t('guard.rejectFeedbackPlaceholder')}
             />
           </div>
           <label className="flex min-h-11 cursor-pointer items-center gap-2 text-sm">
@@ -1086,33 +1064,32 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
               checked={rejectRequeue}
               onChange={(e) => setRejectRequeue(e.target.checked)}
             />
-            <span>Re-queue task as approved so Navigate can re-run it with this note</span>
+            <span>{t('guard.rejectRequeueLabel')}</span>
           </label>
           <div className="flex flex-wrap justify-end gap-2">
             <Button type="button" variant="outline" onClick={() => setRejectModalOpen(false)}>
-              Cancel
+              {t('common.cancel')}
             </Button>
             <Button type="submit" variant="destructive" disabled={rejectMutation.isPending}>
-              {rejectMutation.isPending ? 'Rejecting...' : 'Confirm reject'}
+              {rejectMutation.isPending ? t('guard.rejecting') : t('guard.confirmReject')}
             </Button>
           </div>
         </form>
       </ModalDialog>
 
-      {/* Failed Review Override Modal */}
+      {/* Override Modal */}
       <ModalDialog
         open={Boolean(overrideModalTaskId)}
-        title="Merge task with failed automated review?"
+        title={t('guard.overrideTitle')}
         onClose={() => setOverrideModalTaskId(null)}
       >
         <div className="space-y-4">
           <p className="text-sm text-muted-foreground">
-            Automated review did not pass for this task. You can still override Gate 2 and merge into{' '}
-            <span className="font-mono-token">{guard.mainBranch}</span>, or cancel and reject it back to the coder.
+            {t('guard.overrideDesc', { branch: guard.mainBranch })}
           </p>
           <div className="flex flex-wrap justify-end gap-2">
             <Button type="button" variant="outline" onClick={() => setOverrideModalTaskId(null)}>
-              Cancel
+              {t('common.cancel')}
             </Button>
             <Button
               type="button"
@@ -1127,7 +1104,7 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
                 });
               }}
             >
-              {approveMergeMutation.isPending ? 'Merging...' : 'Override and merge'}
+              {approveMergeMutation.isPending ? t('guard.merging') : t('guard.overrideConfirm')}
             </Button>
           </div>
         </div>

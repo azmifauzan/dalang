@@ -2,10 +2,11 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DALANG_VERSION } from '@dalang/core';
 import { startDalangServer } from '@dalang/server';
 import { formatDoctorReport, runDoctorChecks } from './doctor.js';
 
-export const DALANG_VERSION = '0.5.0';
+export { DALANG_VERSION };
 
 function resolveWebDistDir(): string | undefined {
   const here = path.dirname(fileURLToPath(import.meta.url));

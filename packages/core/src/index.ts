@@ -1,3 +1,4 @@
+export { DALANG_VERSION } from '@dalang/shared';
 export * from './paths.js';
 export * from './db/schema.js';
 export * from './db/client.js';
@@ -11,6 +12,7 @@ export * from './services/events.js';
 export * from './services/project.js';
 export * from './services/profiles.js';
 export * from './services/settings.js';
+export * from './services/update-check.js';
 export * from './services/contract.js';
 export * from './services/lead.js';
 export * from './services/git.js';

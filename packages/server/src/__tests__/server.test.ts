@@ -252,7 +252,7 @@ describe('@dalang/server API (v0.1 Rembuk)', () => {
     try {
       const health = await app.inject({ method: 'GET', url: '/api/health' });
       expect(health.statusCode).toBe(200);
-      expect(health.json()).toEqual({ ok: true, version: '0.5.0' });
+      expect(health.json()).toEqual({ ok: true, version: '0.6.0' });
 
       const providersRes = await app.inject({ method: 'GET', url: '/api/providers/status' });
       expect(providersRes.statusCode).toBe(200);
@@ -499,7 +499,7 @@ describe('@dalang/server API (v0.1 Rembuk)', () => {
       const createRule = await app.inject({
         method: 'POST',
         url: '/api/routing',
-        payload: { role: 'reviewer', complexity: 'high', profileId: profId, fallbackProfileId: 'profile-lead' },
+        payload: { role: 'reviewer', complexity: 'high', profileId: profId, fallback: { provider: 'claude-code', model: '', effort: 'high', configDir: null } },
       });
       expect(createRule.statusCode).toBe(201);
       const ruleId = createRule.json().rule.id as string;
@@ -624,20 +624,59 @@ describe('@dalang/server API (v0.1 Rembuk)', () => {
     }
   });
 
-  it('keeps the Antigravity keyring opt-in off by default and stores a change', async () => {
+  it('keeps the Antigravity keyring opt-in off by default and stores settings changes', async () => {
     const dbDir = makeTempDir('dalang-db-');
-    const { app, close } = await createDalangServer({ dbPath: path.join(dbDir, 'dalang.db') });
+    const { app, close } = await createDalangServer({
+      dbPath: path.join(dbDir, 'dalang.db'),
+      updateFetcher: async () => '0.7.0',
+    });
     try {
       const before = await app.inject({ method: 'GET', url: '/api/settings' });
-      expect(before.json()).toEqual({ settings: { antigravityKeyringAccess: false } });
+      expect(before.json()).toEqual({
+        settings: {
+          antigravityKeyringAccess: false,
+          language: null,
+          checkForUpdates: true,
+        },
+      });
 
       const patched = await app.inject({
         method: 'PATCH',
         url: '/api/settings',
-        payload: { antigravityKeyringAccess: true },
+        payload: { antigravityKeyringAccess: true, language: 'id' },
       });
-      expect(patched.json()).toEqual({ settings: { antigravityKeyringAccess: true } });
-      expect((await app.inject({ method: 'GET', url: '/api/settings' })).json().settings.antigravityKeyringAccess).toBe(true);
+      expect(patched.json()).toEqual({
+        settings: {
+          antigravityKeyringAccess: true,
+          language: 'id',
+          checkForUpdates: true,
+        },
+      });
+      expect((await app.inject({ method: 'GET', url: '/api/settings' })).json().settings).toEqual({
+        antigravityKeyringAccess: true,
+        language: 'id',
+        checkForUpdates: true,
+      });
+
+      const updateRes = await app.inject({ method: 'GET', url: '/api/update-status' });
+      expect(updateRes.statusCode).toBe(200);
+      expect(updateRes.json().update).toMatchObject({
+        currentVersion: '0.6.0',
+        latestVersion: '0.7.0',
+        updateAvailable: true,
+        checkEnabled: true,
+      });
+
+      await app.inject({
+        method: 'PATCH',
+        url: '/api/settings',
+        payload: { checkForUpdates: false },
+      });
+      const disabledRes = await app.inject({ method: 'GET', url: '/api/update-status' });
+      expect(disabledRes.json().update).toMatchObject({
+        updateAvailable: false,
+        checkEnabled: false,
+      });
 
       const bad = await app.inject({ method: 'PATCH', url: '/api/settings', payload: { antigravityKeyringAccess: 'yes' } });
       expect(bad.statusCode).toBe(400);

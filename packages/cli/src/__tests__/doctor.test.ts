@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { ReplayCliRunner } from '@dalang/core';
+import { openDatabase, ReplayCliRunner, SettingsService } from '@dalang/core';
 import { formatDoctorReport, runDoctorChecks } from '../doctor.js';
 
 const tempDirs: string[] = [];
@@ -27,7 +27,11 @@ describe('dalang doctor', () => {
       turns: [],
     });
 
-    const report = await runDoctorChecks(runner, { platform: 'linux', dataDir });
+    const report = await runDoctorChecks(runner, {
+      platform: 'linux',
+      dataDir,
+      checkUpdates: false,
+    });
     expect(report.ok).toBe(true);
     expect(report.checks.find((c) => c.id === 'node')?.status).toBe('pass');
     expect(report.checks.find((c) => c.id === 'git')?.status).toBe('pass');
@@ -48,7 +52,11 @@ describe('dalang doctor', () => {
       turns: [],
     });
 
-    const report = await runDoctorChecks(runner, { platform: 'linux', dataDir });
+    const report = await runDoctorChecks(runner, {
+      platform: 'linux',
+      dataDir,
+      checkUpdates: false,
+    });
     expect(report.ok).toBe(false);
     const sandbox = report.checks.find((c) => c.id === 'sandbox');
     expect(sandbox?.status).toBe('warn');
@@ -65,7 +73,11 @@ describe('dalang doctor', () => {
       binaries: ['git', 'sandbox-exec', 'claude'],
       turns: [],
     });
-    const macReport = await runDoctorChecks(macRunner, { platform: 'darwin', dataDir });
+    const macReport = await runDoctorChecks(macRunner, {
+      platform: 'darwin',
+      dataDir,
+      checkUpdates: false,
+    });
     expect(macReport.ok).toBe(true);
     expect(macReport.checks.find((c) => c.id === 'sandbox')?.label).toContain('sandbox-exec');
 
@@ -74,7 +86,64 @@ describe('dalang doctor', () => {
       binaries: ['git', 'claude'],
       turns: [],
     });
-    const winReport = await runDoctorChecks(winRunner, { platform: 'win32', dataDir });
+    const winReport = await runDoctorChecks(winRunner, {
+      platform: 'win32',
+      dataDir,
+      checkUpdates: false,
+    });
     expect(winReport.checks.find((c) => c.id === 'sandbox')?.fix).toContain('WSL');
+  });
+
+  it('prints an update hint when a newer npm version is available and stays silent offline', async () => {
+    const dataDir = makeTempDir('dalang-doc-upd-');
+    const runner = new ReplayCliRunner({
+      name: 'doctor-upd',
+      binaries: ['git', 'bwrap', 'claude'],
+      turns: [],
+    });
+
+    const newerReport = await runDoctorChecks(runner, {
+      platform: 'linux',
+      dataDir,
+      currentVersion: '0.6.0',
+      updateFetcher: async () => '0.7.0',
+    });
+    expect(newerReport.updateAvailable).toBe(true);
+    const updCheck = newerReport.checks.find((c) => c.id === 'update');
+    expect(updCheck?.status).toBe('warn');
+    expect(updCheck?.fix).toContain('npx dalang-cli@latest');
+
+    const offlineReport = await runDoctorChecks(runner, {
+      platform: 'linux',
+      dataDir,
+      currentVersion: '0.6.0',
+      updateFetcher: async () => {
+        throw new Error('ENOTFOUND');
+      },
+    });
+    expect(offlineReport.updateAvailable).toBe(false);
+    expect(offlineReport.checks.find((c) => c.id === 'update')).toBeUndefined();
+  });
+
+  it('skips the registry request when the update check is switched off in Config', async () => {
+    const dataDir = makeTempDir('dalang-doc-off-');
+    const conn = openDatabase(path.join(dataDir, 'dalang.db'));
+    new SettingsService(conn.db).update({ checkForUpdates: false });
+    conn.close();
+    let calls = 0;
+    const report = await runDoctorChecks(
+      new ReplayCliRunner({ name: 'doctor-off', binaries: ['git', 'bwrap', 'claude'], turns: [] }),
+      {
+        platform: 'linux',
+        dataDir,
+        currentVersion: '0.6.0',
+        updateFetcher: async () => {
+          calls += 1;
+          return '0.7.0';
+        },
+      },
+    );
+    expect(calls).toBe(0);
+    expect(report.updateAvailable).toBe(false);
   });
 });

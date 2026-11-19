@@ -25,6 +25,7 @@ import {
   type TaskComplexity,
   type TaskDTO,
   type TaskStatus,
+  type UiLanguage,
   type UpdateTaskInput,
 } from '@dalang/shared';
 import type { ProviderRegistry } from '../adapters/registry.js';
@@ -63,6 +64,13 @@ export function hasDependencyCycle(
   return dfs(sourceId);
 }
 
+export function buildLanguageInstruction(language: UiLanguage): string {
+  if (language === 'id') {
+    return 'Language: Write all human-readable prose (questions, options, reasons, summaries, brief fields, milestone titles and descriptions, task titles, goals, and acceptance criteria) in clear, natural Indonesian (Bahasa Indonesia). Keep JSON keys, enum values, code, file paths, and verify commands in English.';
+  }
+  return 'Language: Write all human-readable prose in clear English. Keep JSON keys, enum values, code, file paths, and verify commands in English.';
+}
+
 export class LeadService {
   private readonly activeTurns = new Set<string>();
 
@@ -70,6 +78,7 @@ export class LeadService {
     private readonly db: DalangDb,
     private readonly registry: ProviderRegistry,
     private readonly events?: DalangEventBus,
+    private readonly getLanguage: () => UiLanguage = () => 'en',
   ) {}
 
   /** One Lead turn per project at a time: turns share a CLI session and write numbered artifacts. */
@@ -281,6 +290,7 @@ export class LeadService {
 
     const prompt = [
       `You are the Lead architect in DALANG's Discuss phase.`,
+      buildLanguageInstruction(this.getLanguage()),
       `Project: ${project.name} (${project.path})`,
       projectContext ? `\nCurrent PROJECT.md:\n${projectContext}\n` : '',
       `User input:\n${userText}`,
@@ -365,6 +375,7 @@ export class LeadService {
 
     const prompt = [
       `The user has ended the Discuss Q&A ("enough, write the brief").`,
+      buildLanguageInstruction(this.getLanguage()),
       `Synthesize everything discussed so far into a concrete, testable Project Brief.`,
       transcriptSummary ? `\nDiscussion transcript:\n${transcriptSummary}\n` : '',
       `Write the brief JSON directly to "${relBriefPath}" with version = ${nextVersion}.`,
@@ -501,6 +512,7 @@ export class LeadService {
 
     const prompt = [
       `Revise the project brief based on the user's feedback note.`,
+      buildLanguageInstruction(this.getLanguage()),
       `Previous brief (v${version}):\n${JSON.stringify(prevBrief.content, null, 2)}`,
       `User revision note:\n${note}`,
       ``,
@@ -624,6 +636,7 @@ export class LeadService {
 
     const prompt = [
       `Break the approved project brief into concrete milestones and small, verifiable tasks.`,
+      buildLanguageInstruction(this.getLanguage()),
       `Approved Brief (v${briefDto.version}):\n${JSON.stringify(briefDto.content, null, 2)}`,
       ``,
       `Task design rules:`,
@@ -758,6 +771,7 @@ export class LeadService {
 
         const prompt = [
           `Task "${item.task.id}" (${item.task.title}) has needs_split: true.`,
+          buildLanguageInstruction(this.getLanguage()),
           `Split this task into 2 to 4 smaller, concrete subtasks (depth ${depth + 1} of ${MAX_SPLIT_DEPTH}).`,
           depth + 1 >= MAX_SPLIT_DEPTH
             ? `This is the maximum split depth (${MAX_SPLIT_DEPTH}), so every subtask MUST set "needs_split": false.`

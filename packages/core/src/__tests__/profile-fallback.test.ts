@@ -3,43 +3,73 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { openDatabase } from '../db/client.js';
-import { ProfileService } from '../services/profiles.js';
+import { ProfileService, withFallbackTarget } from '../services/profiles.js';
 
-describe('per-profile fallback', () => {
-  it('uses the profile fallback unless the routing rule names one, and blocks deleting a fallback in use', () => {
+describe('fallback target (CLI, model, effort)', () => {
+  it('runs the primary profile on the fallback CLI and keeps its role instructions', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dalang-fb-'));
     const conn = openDatabase(path.join(dir, 'dalang.db'));
-    const svc = new ProfileService(conn.db);
-    const heavy = svc.getProfile('profile-coder-heavy');
+    try {
+      const svc = new ProfileService(conn.db);
+      const heavy = svc.getProfile('profile-coder-heavy');
 
-    // Seeded rule for engineer/high names profile-lead as fallback, so the rule wins.
-    const withRule = svc.resolveProfileForTask({ role: 'engineer', complexity: 'high', profileOverride: null });
-    expect(withRule.primary.id).toBe(heavy.id);
-    expect(withRule.fallback?.id).toBe('profile-lead');
+      // The seeded engineer/high rule names a fallback target, so the rule wins.
+      const withRule = svc.resolveProfileForTask({ role: 'engineer', complexity: 'high', profileOverride: null });
+      expect(withRule.primary.id).toBe(heavy.id);
+      expect(withRule.fallback?.rolePrompt).toBe(heavy.rolePrompt);
 
-    // With no rule fallback, the primary profile's own fallback applies.
-    const rule = svc.listRoutingRules().find((r) => r.role === 'engineer' && r.complexity === 'high')!;
-    svc.updateRoutingRule(rule.id, { fallbackProfileId: null });
-    svc.updateProfile(heavy.id, { fallbackProfileId: 'profile-reviewer' });
-    const own = svc.resolveProfileForTask({ role: 'engineer', complexity: 'high', profileOverride: null });
-    expect(own.fallback?.id).toBe('profile-reviewer');
+      // A rule target on another CLI changes provider, model, and effort but not the profile.
+      const rule = svc.listRoutingRules().find((r) => r.role === 'engineer' && r.complexity === 'high')!;
+      svc.updateRoutingRule(rule.id, {
+        fallback: { provider: 'codex', model: 'gpt-x', effort: 'low', configDir: null },
+      });
+      const viaRule = svc.resolveProfileForTask({ role: 'engineer', complexity: 'high', profileOverride: null });
+      expect(viaRule.fallback).toMatchObject({
+        id: heavy.id,
+        name: 'coder-heavy',
+        provider: 'codex',
+        model: 'gpt-x',
+        effort: 'low',
+        rolePrompt: heavy.rolePrompt,
+      });
 
-    // A profile that is another profile's fallback cannot be deleted.
-    const spare = svc.createProfile({
-      name: 'spare',
-      provider: 'codex',
-      model: '',
-      effort: 'low',
-      rolePrompt: '',
-      permissionMode: 'workspace-write',
-      timeoutMs: 600_000,
-      idleTimeoutMs: 120_000,
-      maxParallel: 1,
-      maxReviewRounds: 2,
-      fallbackProfileId: null,
-    });
-    svc.updateProfile(heavy.id, { fallbackProfileId: spare.id });
-    expect(() => svc.deleteProfile(spare.id)).toThrow(/fallback of/);
-    conn.close();
+      // With no rule target, the profile's own fallback applies.
+      svc.updateRoutingRule(rule.id, { fallback: null });
+      svc.updateProfile(heavy.id, {
+        fallback: { provider: 'antigravity', model: '', effort: 'medium', configDir: null },
+      });
+      const own = svc.resolveProfileForTask({ role: 'engineer', complexity: 'high', profileOverride: null });
+      expect(own.fallback?.provider).toBe('antigravity');
+      expect(own.fallback?.name).toBe('coder-heavy');
+    } finally {
+      conn.close();
+    }
+  });
+
+  it('drops a fallback that would run the same thing, and keeps a second account of the same CLI', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dalang-fb2-'));
+    const conn = openDatabase(path.join(dir, 'dalang.db'));
+    try {
+      const svc = new ProfileService(conn.db);
+      const heavy = svc.getProfile('profile-coder-heavy');
+      expect(
+        withFallbackTarget(heavy, { provider: heavy.provider, model: heavy.model, effort: heavy.effort, configDir: null }),
+      ).toBeNull();
+      const otherAccount = withFallbackTarget(heavy, {
+        provider: heavy.provider,
+        model: heavy.model,
+        effort: heavy.effort,
+        configDir: path.join(dir, 'acct2'),
+      });
+      expect(otherAccount?.configDir).toBe(path.join(dir, 'acct2'));
+      // Another CLI never inherits the primary's account directory.
+      const otherCli = withFallbackTarget(
+        { ...heavy, configDir: path.join(dir, 'acct1') },
+        { provider: 'codex', model: '', effort: 'low', configDir: null },
+      );
+      expect(otherCli?.configDir).toBeNull();
+    } finally {
+      conn.close();
+    }
   });
 });

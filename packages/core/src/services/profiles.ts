@@ -5,6 +5,7 @@ import type {
   CreateProfileInput,
   CreateRoutingRuleInput,
   EffortLevel,
+  FallbackTarget,
   PermissionMode,
   PlanTaskRole,
   ProviderId,
@@ -30,6 +31,63 @@ export interface ResolvedReviewerRouting {
   fallback: AgentProfileDTO | null;
   note: string | null;
   blocked: string | null;
+}
+
+/** Reads the three nullable fallback columns back into one target. */
+function targetFromColumns(row: {
+  fallbackProvider: string | null;
+  fallbackModel: string | null;
+  fallbackEffort: string | null;
+  fallbackConfigDir: string | null;
+}): FallbackTarget | null {
+  if (!row.fallbackProvider) return null;
+  return {
+    provider: row.fallbackProvider as ProviderId,
+    model: row.fallbackModel ?? '',
+    effort: (row.fallbackEffort ?? 'medium') as EffortLevel,
+    configDir: row.fallbackConfigDir ?? null,
+  };
+}
+
+function targetToColumns(target: FallbackTarget | null | undefined) {
+  return {
+    fallbackProvider: target?.provider ?? null,
+    fallbackModel: target ? target.model : null,
+    fallbackEffort: target?.effort ?? null,
+    fallbackConfigDir: target?.configDir?.trim() || null,
+  };
+}
+
+/** Two routes are the same when they would start the same CLI with the same model. */
+export function sameRoute(
+  a: { provider: ProviderId; model: string },
+  b: { provider: ProviderId; model: string },
+): boolean {
+  return a.provider === b.provider && a.model === b.model;
+}
+
+/**
+ * The fallback run: the primary profile (role instructions, limits, permissions) started on another
+ * CLI, model, and effort. Null when the target would not change anything.
+ */
+export function withFallbackTarget(
+  primary: AgentProfileDTO,
+  target: FallbackTarget | null | undefined,
+): AgentProfileDTO | null {
+  if (!target) return null;
+  // An account directory belongs to one CLI; another CLI uses its default account.
+  const configDir = target.configDir ?? (target.provider === primary.provider ? primary.configDir : null);
+  if (sameRoute(primary, target) && primary.effort === target.effort && configDir === primary.configDir) {
+    return null;
+  }
+  return {
+    ...primary,
+    provider: target.provider,
+    model: target.model,
+    effort: target.effort,
+    configDir,
+    fallback: null,
+  };
 }
 
 export class ProfileService {
@@ -62,7 +120,7 @@ export class ProfileService {
       throw new Error(`An agent profile named "${input.name}" already exists.`);
     }
 
-    const dirError = configDirError(input.configDir);
+    const dirError = configDirError(input.configDir) ?? configDirError(input.fallback?.configDir);
     if (dirError) throw new Error(dirError);
 
     const id = `profile-${crypto.randomUUID().slice(0, 8)}`;
@@ -81,7 +139,7 @@ export class ProfileService {
         idleTimeoutMs: input.idleTimeoutMs,
         maxParallel: input.maxParallel,
         maxReviewRounds: input.maxReviewRounds,
-        fallbackProfileId: this.checkedFallbackId(input.fallbackProfileId, null),
+        ...targetToColumns(input.fallback),
         configDir: input.configDir?.trim() || null,
         isDefault: false,
         createdAt: now,
@@ -93,7 +151,7 @@ export class ProfileService {
 
   updateProfile(id: string, input: UpdateProfileInput): AgentProfileDTO {
     const current = this.getProfile(id);
-    const dirError = configDirError(input.configDir);
+    const dirError = configDirError(input.configDir) ?? configDirError(input.fallback?.configDir);
     if (dirError) throw new Error(dirError);
     if (input.name && input.name !== current.name) {
       const conflict = this.db
@@ -119,9 +177,7 @@ export class ProfileService {
         ...(input.idleTimeoutMs !== undefined ? { idleTimeoutMs: input.idleTimeoutMs } : {}),
         ...(input.maxParallel !== undefined ? { maxParallel: input.maxParallel } : {}),
         ...(input.maxReviewRounds !== undefined ? { maxReviewRounds: input.maxReviewRounds } : {}),
-        ...(input.fallbackProfileId !== undefined
-          ? { fallbackProfileId: this.checkedFallbackId(input.fallbackProfileId, id) }
-          : {}),
+        ...(input.fallback !== undefined ? targetToColumns(input.fallback) : {}),
         ...(input.configDir !== undefined
           ? { configDir: input.configDir?.trim() || null }
           : {}),
@@ -130,13 +186,6 @@ export class ProfileService {
       .run();
 
     return this.getProfile(id);
-  }
-
-  private checkedFallbackId(fallbackId: string | null | undefined, selfId: string | null): string | null {
-    if (!fallbackId) return null;
-    if (fallbackId === selfId) throw new Error('A profile cannot be its own fallback.');
-    this.getProfile(fallbackId);
-    return fallbackId;
   }
 
   deleteProfile(id: string): void {
@@ -149,18 +198,11 @@ export class ProfileService {
     const usedByRules = this.db
       .select()
       .from(routingRules)
-      .where(or(eq(routingRules.profileId, id), eq(routingRules.fallbackProfileId, id)))
+      .where(eq(routingRules.profileId, id))
       .all();
     if (usedByRules.length > 0) {
       throw new Error(
         `Cannot delete "${target.name}" while routing rules point to it. Update or remove those rules first.`,
-      );
-    }
-
-    const usedAsFallback = all.filter((p) => p.fallbackProfileId === id);
-    if (usedAsFallback.length > 0) {
-      throw new Error(
-        `Cannot delete "${target.name}" while it is the fallback of ${usedAsFallback.map((p) => `"${p.name}"`).join(', ')}. Change that fallback first.`,
       );
     }
 
@@ -198,21 +240,14 @@ export class ProfileService {
         complexity: (rule.complexity as TaskComplexity | null) ?? null,
         profileId: rule.profileId,
         profileName: byId.get(rule.profileId)?.name ?? rule.profileId,
-        fallbackProfileId: rule.fallbackProfileId ?? null,
-        fallbackProfileName: rule.fallbackProfileId
-          ? (byId.get(rule.fallbackProfileId)?.name ?? rule.fallbackProfileId)
-          : null,
+        fallback: targetFromColumns(rule),
       }));
   }
 
   createRoutingRule(input: CreateRoutingRuleInput): RoutingRuleDTO {
     this.getProfile(input.profileId);
-    if (input.fallbackProfileId) {
-      if (input.fallbackProfileId === input.profileId) {
-        throw new Error('Fallback profile must differ from primary profile.');
-      }
-      this.getProfile(input.fallbackProfileId);
-    }
+    const dirError = configDirError(input.fallback?.configDir);
+    if (dirError) throw new Error(dirError);
 
     const existing = this.db.select().from(routingRules).all();
     const nextOrder = existing.reduce((max, r) => Math.max(max, r.sortOrder), 0) + 1;
@@ -225,7 +260,7 @@ export class ProfileService {
         role: input.role,
         complexity: input.complexity ?? null,
         profileId: input.profileId,
-        fallbackProfileId: input.fallbackProfileId ?? null,
+        ...targetToColumns(input.fallback),
       })
       .run();
 
@@ -237,16 +272,11 @@ export class ProfileService {
     if (!current) throw new Error(`Routing rule not found: ${id}`);
 
     const nextProfileId = input.profileId ?? current.profileId;
-    const nextFallback =
-      input.fallbackProfileId !== undefined ? input.fallbackProfileId : current.fallbackProfileId;
+    const nextFallback = input.fallback !== undefined ? input.fallback : targetFromColumns(current);
 
     this.getProfile(nextProfileId);
-    if (nextFallback) {
-      if (nextFallback === nextProfileId) {
-        throw new Error('Fallback profile must differ from primary profile.');
-      }
-      this.getProfile(nextFallback);
-    }
+    const dirError = configDirError(input.fallback?.configDir);
+    if (dirError) throw new Error(dirError);
 
     this.db
       .update(routingRules)
@@ -254,7 +284,7 @@ export class ProfileService {
         ...(input.role !== undefined ? { role: input.role } : {}),
         ...(input.complexity !== undefined ? { complexity: input.complexity } : {}),
         profileId: nextProfileId,
-        fallbackProfileId: nextFallback ?? null,
+        ...targetToColumns(nextFallback),
       })
       .where(eq(routingRules.id, id))
       .run();
@@ -315,11 +345,14 @@ export class ProfileService {
     const byName = new Map(profiles.map((p) => [p.name, p]));
     const rules = this.db.select().from(routingRules).orderBy(asc(routingRules.sortOrder)).all();
 
-    // The routing rule's fallback wins; otherwise the primary profile's own fallback.
-    const ownFallback = (ruleFallbackId: string | null | undefined, primary: AgentProfileDTO) => {
-      const f = byId.get(ruleFallbackId || primary.fallbackProfileId || '');
-      return f && f.id !== primary.id ? f : null;
-    };
+    // The routing rule's fallback target wins; otherwise the primary profile's own, then the Lead's CLI.
+    const lead = byId.get('profile-lead') ?? null;
+    const leadTarget: FallbackTarget | null = lead
+      ? { provider: lead.provider, model: lead.model, effort: lead.effort, configDir: lead.configDir }
+      : null;
+    const ownFallback = (ruleTarget: FallbackTarget | null | undefined, primary: AgentProfileDTO) =>
+      withFallbackTarget(primary, ruleTarget ?? primary.fallback) ??
+      withFallbackTarget(primary, leadTarget);
 
     // The first rule that matches in order wins; a null complexity matches every complexity (PRD routing).
     const matchedRule =
@@ -329,15 +362,12 @@ export class ProfileService {
     if (input.profileOverride) {
       const overrideProfile = byId.get(input.profileOverride) ?? byName.get(input.profileOverride);
       if (overrideProfile) {
-        const ruleFallback = ownFallback(matchedRule?.fallbackProfileId, overrideProfile);
-        const defaultFallback = byId.get('profile-lead') ?? null;
-        const fallback =
-          ruleFallback && ruleFallback.id !== overrideProfile.id
-            ? ruleFallback
-            : defaultFallback && defaultFallback.id !== overrideProfile.id
-              ? defaultFallback
-              : null;
-        return { primary: overrideProfile, fallback, source: 'override' };
+        const ruleTarget = matchedRule ? targetFromColumns(matchedRule) : null;
+        return {
+          primary: overrideProfile,
+          fallback: ownFallback(ruleTarget, overrideProfile),
+          source: 'override',
+        };
       }
     }
 
@@ -346,7 +376,7 @@ export class ProfileService {
       if (primary) {
         return {
           primary,
-          fallback: ownFallback(matchedRule.fallbackProfileId, primary),
+          fallback: ownFallback(targetFromColumns(matchedRule), primary),
           source: 'routing_rule',
         };
       }
@@ -356,10 +386,9 @@ export class ProfileService {
       (input.role === 'qa' ? byId.get('profile-reviewer') : byId.get('profile-coder-heavy')) ??
       byId.get('profile-lead') ??
       profiles[0];
-    const lead = byId.get('profile-lead') ?? null;
     return {
       primary: fallbackDefault,
-      fallback: ownFallback(null, fallbackDefault) ?? (lead && lead.id !== fallbackDefault.id ? lead : null),
+      fallback: ownFallback(null, fallbackDefault),
       source: 'default',
     };
   }
@@ -389,11 +418,19 @@ export class ProfileService {
       byId.get('profile-reviewer') ??
       byId.get('profile-lead') ??
       profiles[0];
+    const lead = byId.get('profile-lead') ?? null;
+    // The reviewer's fallback keeps the reviewer's role instructions on another CLI and model.
     const configuredFallback =
-      (reviewerRule?.fallbackProfileId ? byId.get(reviewerRule.fallbackProfileId) : undefined) ??
-      (configuredPrimary.fallbackProfileId ? byId.get(configuredPrimary.fallbackProfileId) : undefined) ??
-      byId.get('profile-lead') ??
-      null;
+      withFallbackTarget(configuredPrimary, reviewerRule ? targetFromColumns(reviewerRule) : null) ??
+      withFallbackTarget(configuredPrimary, configuredPrimary.fallback) ??
+      (lead
+        ? withFallbackTarget(configuredPrimary, {
+            provider: lead.provider,
+            model: lead.model,
+            effort: lead.effort,
+            configDir: lead.configDir,
+          })
+        : null);
 
     const isUsable = (p: AgentProfileDTO | null | undefined): p is AgentProfileDTO =>
       Boolean(p && !input.registry.providerBlockedReason(p.provider, input.sandboxReady));
@@ -405,7 +442,7 @@ export class ProfileService {
 
     let chosen: AgentProfileDTO | null = isUsable(configuredPrimary) ? configuredPrimary : null;
     let fallback: AgentProfileDTO | null =
-      configuredFallback && isUsable(configuredFallback) && configuredFallback.id !== chosen?.id
+      configuredFallback && isUsable(configuredFallback) && !(chosen && sameRoute(configuredFallback, chosen))
         ? configuredFallback
         : null;
     let note: string | null = null;
@@ -447,7 +484,7 @@ export class ProfileService {
       if (crossCandidate) {
         const previous = chosen;
         chosen = crossCandidate;
-        fallback = isUsable(previous) && previous.id !== chosen.id ? previous : fallback;
+        fallback = isUsable(previous) && !sameRoute(previous, chosen) ? previous : fallback;
         note = `Cross-model review: switched from ${previous.name} (${previous.provider}) to ${chosen.name} (${chosen.provider}) because coder used ${input.coderProvider}.`;
       } else {
         note = note ?? `Cross-model review unavailable (no other usable provider besides ${input.coderProvider}); reviewing with ${chosen.name}.`;
@@ -460,7 +497,8 @@ export class ProfileService {
 
     return {
       primary: effectiveChosen,
-      fallback: effectiveFallback && effectiveFallback.id !== effectiveChosen.id ? effectiveFallback : null,
+      fallback:
+        effectiveFallback && !sameRoute(effectiveFallback, effectiveChosen) ? effectiveFallback : null,
       note,
       blocked: null,
     };
@@ -480,7 +518,7 @@ function toDTO(row: typeof agentProfiles.$inferSelect): AgentProfileDTO {
     idleTimeoutMs: row.idleTimeoutMs,
     maxParallel: row.maxParallel,
     maxReviewRounds: row.maxReviewRounds ?? 2,
-    fallbackProfileId: row.fallbackProfileId ?? null,
+    fallback: targetFromColumns(row),
     configDir: row.configDir ?? null,
     isDefault: Boolean(row.isDefault),
     createdAt: row.createdAt,

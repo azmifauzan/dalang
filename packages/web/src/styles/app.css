@@ -2,6 +2,10 @@
 
 @custom-variant dark (html[data-theme='dark'] &);
 
+:root {
+  color-scheme: light dark;
+}
+
 :root,
 html[data-theme="light"] {
   --bg-canvas: #f7f4ee;
@@ -20,6 +24,21 @@ html[data-theme="light"] {
   --error: #991b1b;
   --error-tint: #fee2e2;
   --focus-ring: #9a3412;
+  /* Provider identity badges (WCAG AA >= 5.4:1) */
+  --provider-claude-fg: #9a3412;
+  --provider-claude-bg: #fdeee6;
+  --provider-codex-fg: #166534;
+  --provider-codex-bg: #dcfce7;
+  --provider-agy-fg: #1d4ed8;
+  --provider-agy-bg: #dbeafe;
+  /* Wayang Kelir stage tokens */
+  --kelir-bg: #f6e7c8;
+  --kelir-glow: #fff7e1;
+  --kelir-edge: #dfc89e;
+  --debog-bg: #5c4632;
+  --debog-border: #3d2d1f;
+  --wayang-shadow: #1c1714;
+  --wayang-shadow-back: #2d2520;
   color-scheme: light;
 }
 
@@ -40,6 +59,21 @@ html[data-theme="dark"] {
   --error: #fca5a5;
   --error-tint: #3b1919;
   --focus-ring: #f08c4b;
+  /* Provider identity badges (WCAG AA >= 8.1:1) */
+  --provider-claude-fg: #fdba74;
+  --provider-claude-bg: #3b2416;
+  --provider-codex-fg: #86efac;
+  --provider-codex-bg: #143321;
+  --provider-agy-fg: #93c5fd;
+  --provider-agy-bg: #172554;
+  /* Wayang Kelir stage tokens (lit lamp screen in warm dark mode) */
+  --kelir-bg: #2b2219;
+  --kelir-glow: #4a3723;
+  --kelir-edge: #4e3f30;
+  --debog-bg: #3d2e20;
+  --debog-border: #594431;
+  --wayang-shadow: #120e0b;
+  --wayang-shadow-back: #1c1612;
   color-scheme: dark;
 }
 
@@ -68,6 +102,103 @@ pre,
 :focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
+}
+
+/* Wayang kelir stage & wizard puppet animations (MOTION 1 exception in DESIGN.md).
+ * Strictly opt-in under prefers-reduced-motion: no-preference, compositor transforms only,
+ * and pauseable via .wayang-paused (visibilitychange + user Pause button). */
+.kelir-screen {
+  background: radial-gradient(
+    ellipse 64% 72% at 50% 24%,
+    var(--kelir-glow) 0%,
+    var(--kelir-bg) 68%,
+    var(--kelir-edge) 100%
+  );
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .wayang-figure.wayang-active .wayang-body-group {
+    animation: wayang-sway 3.2s ease-in-out infinite;
+    will-change: transform;
+  }
+
+  .wayang-figure.wayang-active .wayang-front-upper {
+    animation: wayang-front-shoulder 2.4s ease-in-out infinite;
+    will-change: transform;
+  }
+
+  .wayang-figure.wayang-active .wayang-front-forearm {
+    animation: wayang-front-elbow 1.9s ease-in-out infinite;
+    will-change: transform;
+  }
+
+  .wayang-figure.wayang-active .wayang-back-upper {
+    animation: wayang-back-shoulder 2.8s ease-in-out infinite;
+    will-change: transform;
+  }
+
+  .wayang-figure.wayang-active .wayang-back-forearm {
+    animation: wayang-back-elbow 2.2s ease-in-out infinite;
+    will-change: transform;
+  }
+}
+
+.wayang-figure.wayang-paused .wayang-body-group,
+.wayang-figure.wayang-paused .wayang-front-upper,
+.wayang-figure.wayang-paused .wayang-front-forearm,
+.wayang-figure.wayang-paused .wayang-back-upper,
+.wayang-figure.wayang-paused .wayang-back-forearm {
+  animation-play-state: paused;
+}
+
+@keyframes wayang-sway {
+  0%,
+  100% {
+    transform: rotate(-1.6deg) translateY(0px);
+  }
+  50% {
+    transform: rotate(1.8deg) translateY(-2.5px);
+  }
+}
+
+@keyframes wayang-front-shoulder {
+  0%,
+  100% {
+    transform: rotate(-7deg);
+  }
+  50% {
+    transform: rotate(9deg);
+  }
+}
+
+@keyframes wayang-front-elbow {
+  0%,
+  100% {
+    transform: rotate(10deg);
+  }
+  50% {
+    transform: rotate(-11deg);
+  }
+}
+
+@keyframes wayang-back-shoulder {
+  0%,
+  100% {
+    transform: rotate(6deg);
+  }
+  50% {
+    transform: rotate(-7deg);
+  }
+}
+
+@keyframes wayang-back-elbow {
+  0%,
+  100% {
+    transform: rotate(-8deg);
+  }
+  50% {
+    transform: rotate(9deg);
+  }
 }
 
 /* shadcn/ui tokens resolve to the DESIGN.md palette, so both themes follow data-theme. */

@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState, type FormEvent, type KeyboardEvent } from 'react';
+import { useEffect, useState, type FormEvent, type KeyboardEvent } from 'react';
 import type { DiscussRound, ProjectSummary, ProviderId, QuestionItem } from '@dalang/shared';
+import { useI18n } from '../i18n/index.js';
 import { api } from '../lib/api.js';
 import { EmptyPanel, ErrorPanel, LoadingPanel } from './StateViews.js';
 import { Badge } from '@/components/ui/badge';
@@ -18,17 +19,29 @@ interface AnswerDraft {
 export function DiscussView({
   project,
   liveLogs,
+  initialGoal,
+  onConsumeInitialGoal,
   onGoToAgree,
 }: {
   project: ProjectSummary;
   liveLogs: string[];
+  initialGoal?: string;
+  onConsumeInitialGoal?: () => void;
   onGoToAgree: () => void;
 }) {
   const qc = useQueryClient();
-  const [message, setMessage] = useState('');
+  const { t, formatTime } = useI18n();
+  const [message, setMessage] = useState(initialGoal ?? '');
   const [answersByQid, setAnswersByQid] = useState<Record<string, AnswerDraft>>({});
   const [leadProvider, setLeadProvider] = useState<ProviderId>(project.leadProvider);
   const [leadModel, setLeadModel] = useState(project.leadModel ?? '');
+
+  useEffect(() => {
+    if (initialGoal) {
+      setMessage(initialGoal);
+      onConsumeInitialGoal?.();
+    }
+  }, [initialGoal, onConsumeInitialGoal]);
 
   const discussQuery = useQuery({
     queryKey: ['discuss', project.id],
@@ -49,10 +62,7 @@ export function DiscussView({
   });
 
   const sendMutation = useMutation({
-    mutationFn: (vars: {
-      text: string;
-      questions?: QuestionItem[];
-    }) => {
+    mutationFn: (vars: { text: string; questions?: QuestionItem[] }) => {
       const structuredAnswers = (vars.questions ?? []).map((q) => {
         const draft = answersByQid[q.id] ?? { selectedOptions: [], customText: '' };
         return {
@@ -88,12 +98,8 @@ export function DiscussView({
   });
 
   const messages = discussQuery.data?.messages ?? [];
-  const latestQuestionsMsg = [...messages]
-    .reverse()
-    .find((m) => m.type === 'questions');
-  const activeRound = latestQuestionsMsg
-    ? (latestQuestionsMsg.content as DiscussRound)
-    : null;
+  const latestQuestionsMsg = [...messages].reverse().find((m) => m.type === 'questions');
+  const activeRound = latestQuestionsMsg ? (latestQuestionsMsg.content as DiscussRound) : null;
   const activeQuestions = activeRound?.questions ?? [];
 
   const toggleOption = (q: QuestionItem, option: string) => {
@@ -133,7 +139,7 @@ export function DiscussView({
     const trimmed = message.trim();
     if (!trimmed && !hasAnswers) return;
     sendMutation.mutate({
-      text: trimmed || 'Here are my answers to the questions above.',
+      text: trimmed || t('discuss.defaultAnswersText'),
       questions: activeQuestions.length > 0 ? activeQuestions : undefined,
     });
   };
@@ -141,7 +147,6 @@ export function DiscussView({
   const handleTextareaKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      // IME-safe check per modern-web-guidance
       if (e.nativeEvent.isComposing || e.keyCode === 229) {
         return;
       }
@@ -154,19 +159,16 @@ export function DiscussView({
 
   return (
     <div className="space-y-5">
-      {/* Top Stage Header + Lead Provider Selector */}
+      {/* Stage header + Lead selector */}
       <div
-        className="flex flex-wrap items-end justify-between gap-4 rounded-md border p-4"
-        style={{
-          backgroundColor: 'var(--bg-surface)',
-          borderColor: 'var(--border-subtle)',
-        }}
+        className="flex flex-wrap items-end justify-between gap-4 rounded-[8px] border p-4"
+        style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
       >
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-lg font-semibold">Discuss (Rembuk)</h1>
+            <h2 className="text-lg font-semibold">{t('discuss.title')}</h2>
             {discussQuery.data?.session?.cliSessionId && (
-              <Badge  title={discussQuery.data.session.cliSessionId}>
+              <Badge title={discussQuery.data.session.cliSessionId}>
                 session: {discussQuery.data.session.cliSessionId.slice(0, 10)}
               </Badge>
             )}
@@ -175,14 +177,14 @@ export function DiscussView({
             )}
           </div>
           <p className="mt-1 text-sm" style={{ color: 'var(--text-secondary)' }}>
-            Describe your goal. The Lead agent clarifies scope with structured questions before drafting the brief.
+            {t('discuss.subtitle')}
           </p>
         </div>
 
         <div className="flex flex-wrap items-end gap-3">
           <div>
             <Label htmlFor="discuss-provider" className="block text-xs font-medium">
-              Lead CLI
+              {t('discuss.leadCli')}
             </Label>
             <NativeSelect
               id="discuss-provider"
@@ -202,7 +204,7 @@ export function DiscussView({
 
           <div>
             <Label htmlFor="discuss-model" className="block text-xs font-medium">
-              Model (optional)
+              {t('discuss.modelOptional')}
             </Label>
             <Input
               id="discuss-model"
@@ -213,7 +215,7 @@ export function DiscussView({
               onBlur={() =>
                 settingsMutation.mutate({ leadProvider, leadModel: leadModel.trim() || null })
               }
-              placeholder="CLI default"
+              placeholder={t('common.cliDefault')}
               className="mt-1 font-mono-token text-sm"
             />
             <datalist id="lead-model-suggestions">
@@ -230,16 +232,15 @@ export function DiscussView({
             onClick={() => finishMutation.mutate()}
             disabled={finishMutation.isPending || sendMutation.isPending}
           >
-            {finishMutation.isPending ? 'Writing brief...' : 'Enough, write the brief'}
+            {finishMutation.isPending ? t('discuss.writingBrief') : t('discuss.writeBrief')}
           </Button>
         </div>
       </div>
 
-      {discussQuery.isLoading && <LoadingPanel label="Loading discussion transcript..." />}
-
+      {discussQuery.isLoading && <LoadingPanel label={t('discuss.loading')} />}
       {discussQuery.isError && (
         <ErrorPanel
-          title="Could not load Discuss state"
+          title={t('discuss.loadError')}
           detail={discussQuery.error.message}
           onRetry={() => discussQuery.refetch()}
         />
@@ -247,16 +248,10 @@ export function DiscussView({
 
       {!discussQuery.isLoading && !discussQuery.isError && (
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-          {/* Conversation Stream */}
-          <section
-            aria-label="Lead conversation transcript"
-            className="space-y-4 lg:col-span-7"
-          >
+          {/* Conversation stream */}
+          <section aria-label={t('discuss.title')} className="space-y-4 lg:col-span-7">
             {messages.length === 0 ? (
-              <EmptyPanel
-                title="Start with one general goal"
-                description="Write what you want to build or change in this repository. The Lead will inspect PROJECT.md and return structured clarification questions."
-              />
+              <EmptyPanel title={t('discuss.emptyTitle')} description={t('discuss.emptyDesc')} />
             ) : (
               <div className="space-y-3">
                 {messages.map((msg) => {
@@ -265,7 +260,7 @@ export function DiscussView({
                   return (
                     <article
                       key={msg.id}
-                      className="rounded-md border p-4"
+                      className="rounded-[6px] border p-4"
                       style={{
                         backgroundColor: isError
                           ? 'var(--error-tint)'
@@ -277,38 +272,51 @@ export function DiscussView({
                     >
                       <div className="flex items-center justify-between gap-2 text-xs">
                         <span className="font-semibold uppercase tracking-wide">
-                          {msg.role === 'user' ? 'You' : msg.role === 'lead' ? 'Lead' : 'System'}
+                          {msg.role === 'user'
+                            ? t('discuss.roleUser')
+                            : msg.role === 'lead'
+                              ? t('discuss.roleLead')
+                              : t('discuss.roleSystem')}
                         </span>
                         <span style={{ color: 'var(--text-secondary)' }}>
-                          {new Date(msg.createdAt).toLocaleTimeString()}
+                          {formatTime(msg.createdAt)}
                         </span>
                       </div>
 
                       {msg.type === 'questions' ? (
                         <div className="mt-2 space-y-2 text-sm">
                           <p className="font-medium">
-                            Round {(msg.content as DiscussRound).round}:{' '}
-                            {(msg.content as DiscussRound).summary || 'Clarification questions'}
+                            {t('discuss.roundHeading', {
+                              round: (msg.content as DiscussRound).round,
+                              summary:
+                                (msg.content as DiscussRound).summary ||
+                                t('discuss.clarificationQuestions'),
+                            })}
                           </p>
-                          <ul className="list-disc space-y-1 pl-5" style={{ color: 'var(--text-secondary)' }}>
+                          <ul
+                            className="list-disc space-y-1 pl-5"
+                            style={{ color: 'var(--text-secondary)' }}
+                          >
                             {(msg.content as DiscussRound).questions.map((q) => (
                               <li key={q.id}>{q.question}</li>
                             ))}
                           </ul>
                           {(msg.content as DiscussRound).ready_for_brief && (
                             <p className="font-medium" style={{ color: 'var(--pass)' }}>
-                              Lead reports enough context is gathered. Press "Enough, write the brief" to draft the brief.
+                              {t('discuss.readyForBrief')}
                             </p>
                           )}
                         </div>
                       ) : msg.type === 'brief' ? (
                         <div className="mt-2 flex flex-wrap items-center justify-between gap-3 text-sm">
                           <span>
-                            Drafted Brief v{(msg.content as { version: number; title: string }).version}:{' '}
+                            {t('discuss.draftedBrief', {
+                              version: (msg.content as { version: number; title: string }).version,
+                            })}{' '}
                             <strong>{(msg.content as { version: number; title: string }).title}</strong>
                           </span>
                           <Button type="button" onClick={onGoToAgree} variant="outline">
-                            Open Agree
+                            {t('discuss.openBrief')}
                           </Button>
                         </div>
                       ) : (
@@ -328,14 +336,11 @@ export function DiscussView({
               <div
                 role="status"
                 aria-live="polite"
-                className="rounded-md border p-4"
-                style={{
-                  backgroundColor: 'var(--bg-well)',
-                  borderColor: 'var(--border-control)',
-                }}
+                className="rounded-[6px] border p-4"
+                style={{ backgroundColor: 'var(--bg-well)', borderColor: 'var(--border-control)' }}
               >
                 <p className="text-sm font-medium">
-                  Lead agent ({leadProvider}) is running headless inside bwrap sandbox...
+                  {t('discuss.leadRunning', { provider: leadProvider })}
                 </p>
                 {liveLogs.length > 0 && (
                   <pre
@@ -350,7 +355,7 @@ export function DiscussView({
 
             {(sendMutation.isError || finishMutation.isError) && (
               <ErrorPanel
-                title="Lead turn failed"
+                title={t('discuss.turnFailed')}
                 detail={
                   sendMutation.error?.message ||
                   finishMutation.error?.message ||
@@ -361,16 +366,13 @@ export function DiscussView({
 
             <form
               onSubmit={handleComposerSubmit}
-              className="rounded-md border p-4"
-              style={{
-                backgroundColor: 'var(--bg-surface)',
-                borderColor: 'var(--border-subtle)',
-              }}
+              className="rounded-[6px] border p-4"
+              style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
             >
               <Label htmlFor="discuss-composer" className="block text-sm font-medium">
                 {activeQuestions.length > 0
-                  ? 'Additional notes or context for Lead (optional when answering cards)'
-                  : 'Goal or follow-up message for Lead'}
+                  ? t('discuss.composerWithQuestions')
+                  : t('discuss.composerDefault')}
               </Label>
               <Textarea
                 id="discuss-composer"
@@ -378,37 +380,34 @@ export function DiscussView({
                 value={message}
                 onChange={(e) => setMessage(e.target.value)}
                 onKeyDown={handleTextareaKeyDown}
-                placeholder="Describe what you want to build, constraints, or follow-up notes..."
+                placeholder={t('discuss.composerPlaceholder')}
                 className="mt-2"
               />
               <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
                 <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-                  Enter submits, Shift+Enter adds a newline.
+                  {t('discuss.enterHint')}
                 </span>
                 <Button
                   type="submit"
                   disabled={sendMutation.isPending || finishMutation.isPending}
                 >
                   {sendMutation.isPending
-                    ? 'Sending to Lead...'
+                    ? t('discuss.sending')
                     : activeQuestions.length > 0
-                      ? 'Submit answers & continue'
-                      : 'Send to Lead'}
+                      ? t('discuss.submitAnswers')
+                      : t('discuss.sendToLead')}
                 </Button>
               </div>
             </form>
           </section>
 
-          {/* Structured Question Cards */}
-          <aside
-            aria-label="Structured Lead questions"
-            className="space-y-4 lg:col-span-5"
-          >
-            <h2 className="text-base font-semibold">Question deck</h2>
+          {/* Structured Question Deck */}
+          <aside aria-label={t('discuss.questionDeck')} className="space-y-4 lg:col-span-5">
+            <h3 className="text-base font-semibold">{t('discuss.questionDeck')}</h3>
             {activeQuestions.length === 0 ? (
               <EmptyPanel
-                title="No pending questions"
-                description="When the Lead sends structured clarification questions, they appear here as selectable cards with custom text inputs."
+                title={t('discuss.noPendingTitle')}
+                description={t('discuss.noPendingDesc')}
               />
             ) : (
               <div className="space-y-3">
@@ -417,7 +416,7 @@ export function DiscussView({
                   return (
                     <fieldset
                       key={q.id}
-                      className="rounded-md border p-4"
+                      className="rounded-[6px] border p-4"
                       style={{
                         backgroundColor: 'var(--bg-surface)',
                         borderColor: 'var(--border-subtle)',
@@ -427,7 +426,7 @@ export function DiscussView({
                         Q{idx + 1}. {q.question}
                       </legend>
                       <p className="mt-1 text-xs" style={{ color: 'var(--text-secondary)' }}>
-                        Why it matters: {q.reason}
+                        {t('discuss.whyItMatters', { reason: q.reason })}
                       </p>
 
                       {q.options.length > 0 && (
@@ -464,14 +463,14 @@ export function DiscussView({
                             className="block text-xs font-medium"
                             style={{ color: 'var(--text-secondary)' }}
                           >
-                            Custom answer (optional)
+                            {t('discuss.customAnswer')}
                           </Label>
                           <Input
                             id={`q-custom-${q.id}`}
                             type="text"
                             value={draft.customText}
                             onChange={(e) => setCustomText(q.id, e.target.value)}
-                            placeholder="Write a specific answer..."
+                            placeholder={t('discuss.customPlaceholder')}
                             className="mt-1 text-sm"
                           />
                         </div>

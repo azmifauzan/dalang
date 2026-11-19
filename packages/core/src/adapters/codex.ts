@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import {
+  DALANG_VERSION,
   EFFORT_LEVEL_ORDER,
   type EffortLevel,
   type ProviderModelInfo,
@@ -237,7 +238,7 @@ export class CodexAdapter implements CliAdapter {
               jsonrpc: '2.0',
               id: 1,
               method: 'initialize',
-              params: { clientInfo: { name: 'dalang', version: '0.5.0' } },
+              params: { clientInfo: { name: 'dalang', version: DALANG_VERSION } },
             }) +
               '\n' +
               JSON.stringify({ jsonrpc: '2.0', method: 'initialized', params: {} }) +

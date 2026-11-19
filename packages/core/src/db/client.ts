@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 import Database from 'better-sqlite3';
+import { and, eq } from 'drizzle-orm';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { ensureDir, getDbPath } from '../paths.js';
 import * as schema from './schema.js';
@@ -20,7 +21,7 @@ export function getDbDataDir(db: DalangDb): string | null {
   return dbDataDirs.get(db) ?? null;
 }
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 
 const BOOTSTRAP_SQL = `
 PRAGMA journal_mode = WAL;
@@ -130,6 +131,10 @@ CREATE TABLE IF NOT EXISTS agent_profiles (
   max_parallel INTEGER NOT NULL DEFAULT 1,
   max_review_rounds INTEGER NOT NULL DEFAULT 2,
   fallback_profile_id TEXT,
+  fallback_provider TEXT,
+  fallback_model TEXT,
+  fallback_effort TEXT,
+  fallback_config_dir TEXT,
   config_dir TEXT,
   is_default INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
@@ -141,7 +146,11 @@ CREATE TABLE IF NOT EXISTS routing_rules (
   role TEXT NOT NULL,
   complexity TEXT,
   profile_id TEXT NOT NULL REFERENCES agent_profiles(id) ON DELETE CASCADE,
-  fallback_profile_id TEXT REFERENCES agent_profiles(id) ON DELETE SET NULL
+  fallback_profile_id TEXT REFERENCES agent_profiles(id) ON DELETE SET NULL,
+  fallback_provider TEXT,
+  fallback_model TEXT,
+  fallback_effort TEXT,
+  fallback_config_dir TEXT
 );
 
 CREATE TABLE IF NOT EXISTS provider_events (
@@ -228,6 +237,32 @@ CREATE TABLE IF NOT EXISTS integration_runs (
 );
 `;
 
+/** Role instructions of the seeded profiles. Earlier releases seeded shorter text; see refreshDefaultRolePrompts. */
+const DEFAULT_ROLE_PROMPTS: Record<string, string> = {
+  'profile-lead': "You are the Lead: the architect and planner of this project, not its coder.\n- Clarify before you plan. Ask only questions whose answers change what gets built, one decision per question, and offer concrete options with the trade-off of each.\n- Write briefs a stranger could build from: goal, scope, non-goals, constraints, and measurable done-criteria. Never invent requirements the user did not state; mark your own assumptions as assumptions.\n- Split work into small tasks that one agent can finish and verify on its own. Give every task a precise goal, acceptance criteria that can be checked, the narrowest files_allowed that still works, dependencies only when one task truly needs another's output, and a verify command that fails when the work is wrong.\n- Keep tasks that touch the same files apart in time, not in parallel. Mark a task needs_split instead of handing a vague or oversized one to a coder.\n- Read PROJECT.md and the existing code before deciding on structure. Follow the project's conventions and reuse what exists before proposing something new.",
+  'profile-coder-small': "You are a focused engineer working a small, well-scoped task.\n- Do exactly what the goal and acceptance criteria ask, with the smallest change that satisfies them. No refactors, renames, or cleanups outside the task, and no new dependencies.\n- Read PROJECT.md and the code around your change first. Match the existing style, naming, and patterns, and reuse existing helpers.\n- Stay inside files_allowed. If the task needs a file outside it, stop and report it as blocked instead of editing it.\n- Cover the new or changed behaviour with a test when the project has tests, then run the verify command and fix what it reports. Never weaken or delete a test to make it pass.\n- Report honestly: what you changed, which commands you ran and their results, and anything left undone. If the goal is ambiguous, contradictory, or larger than described, stop and report blocked with the reason rather than guessing.",
+  'profile-coder-heavy': "You are a senior engineer taking on multi-file or high-complexity work.\n- Understand before you edit: read the relevant modules, trace the data flow and the callers of anything you change, and form a short plan first. Prefer the root cause over a patch on the symptom.\n- Keep the change cohesive. Put logic where it belongs, preserve public interfaces and existing behaviour that the task does not mention, and reuse existing abstractions before adding new ones. Add a dependency only when it clearly lowers total complexity.\n- Handle the edge cases: empty and invalid input, error paths, concurrency, partial failure, and data loss. Validate at trust boundaries and never log or commit secrets.\n- Write tests for the behaviour you add or change, including the failure cases, and update docs or types the change touches. Run the verify command and fix real causes; never weaken or delete a test to get green.\n- Stay inside files_allowed. If correctness needs a change beyond it, stop and report blocked with the exact file and reason. Finish by summarising what changed, how you verified it, and the risks or follow-ups that remain.",
+  'profile-reviewer': "You are an independent reviewer. You did not write this code and you do not fix it; you judge it.\n- Start from the acceptance criteria. Check each one against the actual diff and, where possible, against real behaviour. Run the verify command yourself and report its real output; do not trust the coder's summary.\n- Check that every changed file is inside files_allowed and that nothing unrelated slipped in.\n- Hunt for real defects: logic errors, unhandled edge cases and error paths, race conditions, resource leaks, broken or missing tests, regressions in untouched callers, and security problems such as injection, path traversal, unsafe deserialisation, and leaked secrets.\n- Rate each finding honestly: critical (breaks correctness or security), major (a likely bug or a missed criterion), minor (small and safe to defer), info (an observation). Fail the review only for unmet acceptance criteria or critical and major defects. Do not fail on style or personal preference.\n- Every finding names the file and line, says what goes wrong and when, and suggests a concrete fix. No speculation and no vague advice. Never modify files.",
+};
+
+/** Prompts written by earlier releases. A profile still holding one of these was never customised. */
+const PREVIOUS_ROLE_PROMPTS: Record<string, string> = {
+  'profile-lead': "Lead architect: clarify goals, author concise briefs, and decompose tasks with clear verify commands.",
+  'profile-coder-small': "Focused engineer for well-scoped, low-complexity tasks.",
+  'profile-coder-heavy': "Senior engineer for multi-file or high-complexity tasks.",
+  'profile-reviewer': "Independent reviewer verifying acceptance criteria and running test commands.",
+};
+
+/** Upgrades untouched seeded profiles to the current role instructions; edited ones are left alone. */
+function refreshDefaultRolePrompts(db: DalangDb): void {
+  for (const [id, previous] of Object.entries(PREVIOUS_ROLE_PROMPTS)) {
+    db.update(schema.agentProfiles)
+      .set({ rolePrompt: DEFAULT_ROLE_PROMPTS[id] })
+      .where(and(eq(schema.agentProfiles.id, id), eq(schema.agentProfiles.rolePrompt, previous)))
+      .run();
+  }
+}
+
 function seedDefaults(db: DalangDb): void {
   const existing = db.select().from(schema.agentProfiles).all();
   if (existing.length > 0) return;
@@ -240,7 +275,7 @@ function seedDefaults(db: DalangDb): void {
       provider: 'claude-code',
       model: '',
       effort: 'high',
-      rolePrompt: 'Lead architect: clarify goals, author concise briefs, and decompose tasks with clear verify commands.',
+      rolePrompt: DEFAULT_ROLE_PROMPTS['profile-lead'],
       permissionMode: 'workspace-write',
       timeoutMs: 1800000,
       idleTimeoutMs: 180000,
@@ -255,7 +290,7 @@ function seedDefaults(db: DalangDb): void {
       provider: 'codex',
       model: '',
       effort: 'low',
-      rolePrompt: 'Focused engineer for well-scoped, low-complexity tasks.',
+      rolePrompt: DEFAULT_ROLE_PROMPTS['profile-coder-small'],
       permissionMode: 'workspace-write',
       timeoutMs: 1800000,
       idleTimeoutMs: 180000,
@@ -270,7 +305,7 @@ function seedDefaults(db: DalangDb): void {
       provider: 'claude-code',
       model: '',
       effort: 'high',
-      rolePrompt: 'Senior engineer for multi-file or high-complexity tasks.',
+      rolePrompt: DEFAULT_ROLE_PROMPTS['profile-coder-heavy'],
       permissionMode: 'workspace-write',
       timeoutMs: 1800000,
       idleTimeoutMs: 180000,
@@ -285,7 +320,7 @@ function seedDefaults(db: DalangDb): void {
       provider: 'antigravity',
       model: 'gemini-4-hydrogen-high',
       effort: 'high',
-      rolePrompt: 'Independent reviewer verifying acceptance criteria and running test commands.',
+      rolePrompt: DEFAULT_ROLE_PROMPTS['profile-reviewer'],
       permissionMode: 'read-only',
       timeoutMs: 1200000,
       idleTimeoutMs: 180000,
@@ -306,7 +341,9 @@ function seedDefaults(db: DalangDb): void {
         role: 'lead',
         complexity: null,
         profileId: 'profile-lead',
-        fallbackProfileId: null,
+        fallbackProvider: null,
+        fallbackModel: null,
+        fallbackEffort: null,
       },
       {
         id: crypto.randomUUID(),
@@ -314,7 +351,10 @@ function seedDefaults(db: DalangDb): void {
         role: 'engineer',
         complexity: 'low',
         profileId: 'profile-coder-small',
-        fallbackProfileId: 'profile-coder-heavy',
+        fallbackProvider: 'claude-code',
+        fallbackModel: '',
+        fallbackEffort: 'high',
+        fallbackConfigDir: null,
       },
       {
         id: crypto.randomUUID(),
@@ -322,7 +362,10 @@ function seedDefaults(db: DalangDb): void {
         role: 'engineer',
         complexity: 'medium',
         profileId: 'profile-coder-heavy',
-        fallbackProfileId: 'profile-lead',
+        fallbackProvider: 'codex',
+        fallbackModel: '',
+        fallbackEffort: 'high',
+        fallbackConfigDir: null,
       },
       {
         id: crypto.randomUUID(),
@@ -330,7 +373,10 @@ function seedDefaults(db: DalangDb): void {
         role: 'engineer',
         complexity: 'high',
         profileId: 'profile-coder-heavy',
-        fallbackProfileId: 'profile-lead',
+        fallbackProvider: 'codex',
+        fallbackModel: '',
+        fallbackEffort: 'high',
+        fallbackConfigDir: null,
       },
       {
         id: crypto.randomUUID(),
@@ -338,7 +384,10 @@ function seedDefaults(db: DalangDb): void {
         role: 'qa',
         complexity: null,
         profileId: 'profile-reviewer',
-        fallbackProfileId: 'profile-lead',
+        fallbackProvider: 'claude-code',
+        fallbackModel: '',
+        fallbackEffort: 'high',
+        fallbackConfigDir: null,
       },
       {
         id: crypto.randomUUID(),
@@ -346,7 +395,10 @@ function seedDefaults(db: DalangDb): void {
         role: 'reviewer',
         complexity: null,
         profileId: 'profile-reviewer',
-        fallbackProfileId: 'profile-lead',
+        fallbackProvider: 'claude-code',
+        fallbackModel: '',
+        fallbackEffort: 'high',
+        fallbackConfigDir: null,
       },
     ])
     .run();
@@ -389,7 +441,9 @@ function seedReviewerRule(db: DalangDb): void {
           role: 'reviewer',
           complexity: null,
           profileId: reviewer.id,
-          fallbackProfileId: lead && lead.id !== reviewer.id ? lead.id : null,
+          ...(lead && lead.id !== reviewer.id
+            ? { fallbackProvider: lead.provider, fallbackModel: lead.model, fallbackEffort: lead.effort, fallbackConfigDir: lead.configDir }
+            : {}),
         })
         .run();
     }
@@ -414,7 +468,9 @@ function migrateV1ToV2(db: DalangDb): void {
         role: 'engineer',
         complexity: 'medium',
         profileId: heavy.id,
-        fallbackProfileId: lead ? lead.id : null,
+        ...(lead
+          ? { fallbackProvider: lead.provider, fallbackModel: lead.model, fallbackEffort: lead.effort, fallbackConfigDir: lead.configDir }
+          : {}),
       })
       .run();
   }
@@ -447,6 +503,47 @@ function migrateToV7(sqlite: Database.Database): void {
   addColumnIfMissing(sqlite, 'runs', 'cost_source', 'TEXT');
 }
 
+/**
+ * v8: a fallback is a CLI, model, and effort instead of a profile, and the seeded engineer rules
+ * run low, medium, high (an older upgrade left medium after high).
+ */
+function migrateToV8(sqlite: Database.Database): void {
+  for (const table of ['agent_profiles', 'routing_rules']) {
+    addColumnIfMissing(sqlite, table, 'fallback_provider', 'TEXT');
+    addColumnIfMissing(sqlite, table, 'fallback_model', 'TEXT');
+    addColumnIfMissing(sqlite, table, 'fallback_effort', 'TEXT');
+    addColumnIfMissing(sqlite, table, 'fallback_config_dir', 'TEXT');
+    sqlite.exec(`
+      UPDATE ${table} SET
+        fallback_provider = (SELECT f.provider FROM agent_profiles f WHERE f.id = ${table}.fallback_profile_id),
+        fallback_model = (SELECT f.model FROM agent_profiles f WHERE f.id = ${table}.fallback_profile_id),
+        fallback_effort = (SELECT f.effort FROM agent_profiles f WHERE f.id = ${table}.fallback_profile_id),
+        fallback_config_dir = (SELECT f.config_dir FROM agent_profiles f WHERE f.id = ${table}.fallback_profile_id)
+      WHERE fallback_profile_id IS NOT NULL AND fallback_provider IS NULL
+        AND EXISTS (SELECT 1 FROM agent_profiles f WHERE f.id = ${table}.fallback_profile_id);
+    `);
+  }
+  // Hand the sort slots the three engineer tiers already occupy back out in low, medium, high order.
+  const tiers = sqlite
+    .prepare(
+      `SELECT id, complexity, sort_order FROM routing_rules WHERE role = 'engineer' AND complexity IN ('low', 'medium', 'high')`,
+    )
+    .all() as Array<{ id: string; complexity: string; sort_order: number }>;
+  const rank = { low: 0, medium: 1, high: 2 } as Record<string, number>;
+  const slots = tiers.map((r) => r.sort_order).sort((a, b) => a - b);
+  const ordered = [...tiers].sort((a, b) => rank[a.complexity] - rank[b.complexity]);
+  const update = sqlite.prepare('UPDATE routing_rules SET sort_order = ? WHERE id = ?');
+  ordered.forEach((r, i) => update.run(slots[i], r.id));
+  // Close any gaps or duplicate slots so every rule has its own position.
+  const all = sqlite
+    .prepare(
+      `SELECT id FROM routing_rules ORDER BY sort_order,
+         CASE complexity WHEN 'low' THEN 0 WHEN 'medium' THEN 1 WHEN 'high' THEN 2 ELSE 3 END, rowid`,
+    )
+    .all() as Array<{ id: string }>;
+  all.forEach((r, i) => update.run(i + 1, r.id));
+}
+
 export function openDatabase(dbFilePath: string = getDbPath()): DbConnection {
   const dataDir = dbFilePath !== ':memory:' ? path.dirname(dbFilePath) : null;
   if (dataDir) {
@@ -467,9 +564,11 @@ export function openDatabase(dbFilePath: string = getDbPath()): DbConnection {
   if (upgrading && storedVersion < 5) migrateToV5(sqlite);
   if (upgrading && storedVersion < 6) migrateToV6(sqlite);
   if (upgrading && storedVersion < 7) migrateToV7(sqlite);
+  if (upgrading && storedVersion < 8) migrateToV8(sqlite);
   const db = drizzle(sqlite, { schema });
   dbDataDirs.set(db, dataDir);
   seedDefaults(db);
+  refreshDefaultRolePrompts(db);
   if (storedVersion > 0 && storedVersion < 2) {
     migrateV1ToV2(db);
   }

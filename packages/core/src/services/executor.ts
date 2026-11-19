@@ -29,6 +29,7 @@ import {
   type TaskResultContract,
   type TaskReviewDTO,
   type TaskRunDTO,
+  type UiLanguage,
 } from '@dalang/shared';
 import { createTurnLogger } from '../adapters/logger.js';
 import type { ProviderRegistry } from '../adapters/registry.js';
@@ -92,6 +93,7 @@ import {
 export interface ExecutionServiceOptions {
   worktreesRoot?: string;
   quotaCooldownMs?: number;
+  getLanguage?: () => UiLanguage;
 }
 
 interface ActiveTaskExecution {
@@ -254,10 +256,16 @@ function usageDbFields(
   };
 }
 
+/** "codex · gpt-5" for a fallback run: the role stays the same, so the CLI and model are what differ. */
+function routeLabel(p: { provider: string; model: string }): string {
+  return p.model ? `${p.provider} · ${p.model}` : p.provider;
+}
+
 export class ExecutionService {
   private readonly profiles: ProfileService;
   private readonly worktreesRoot: string;
   private readonly quotaCooldownMs: number;
+  private readonly getLanguage: () => UiLanguage;
   private readonly limiter = new ProviderLimiter();
   private readonly activeTasks = new Map<string, ActiveTaskExecution>();
   private readonly projectQueues = new Map<string, ProjectQueueExecution>();
@@ -273,6 +281,7 @@ export class ExecutionService {
     this.profiles = new ProfileService(db);
     this.worktreesRoot = options.worktreesRoot ?? getWorktreesRoot(getDbDataDir(db));
     this.quotaCooldownMs = options.quotaCooldownMs ?? DEFAULT_QUOTA_COOLDOWN_MS;
+    this.getLanguage = options.getLanguage ?? (() => 'en');
     this.reconcileInterruptedRuns();
   }
 
@@ -435,12 +444,18 @@ export class ExecutionService {
     const accounts: Array<{ provider: ProviderId; configDir: string | null; accountKey: string }> =
       providersList.map((provider) => ({ provider, configDir: null, accountKey: provider }));
 
-    for (const prof of allProfiles) {
-      const dir = prof.configDir?.trim() || null;
+    // Accounts come from profiles and from fallback targets (a second account is often only a fallback).
+    const named: Array<{ provider: ProviderId; configDir: string | null }> = [
+      ...allProfiles,
+      ...allProfiles.flatMap((p) => (p.fallback ? [p.fallback] : [])),
+      ...this.profiles.listRoutingRules().flatMap((r) => (r.fallback ? [r.fallback] : [])),
+    ];
+    for (const entry of named) {
+      const dir = entry.configDir?.trim() || null;
       if (!dir) continue;
-      const key = buildAccountKey(prof.provider, dir);
+      const key = buildAccountKey(entry.provider, dir);
       if (!accounts.some((a) => a.accountKey === key)) {
-        accounts.push({ provider: prof.provider, configDir: dir, accountKey: key });
+        accounts.push({ provider: entry.provider, configDir: dir, accountKey: key });
       }
     }
 
@@ -603,7 +618,7 @@ export class ExecutionService {
             ...routing,
             primary: backup,
             fallback: null,
-            note: `${routing.primary.name} routes to Antigravity, which is off. Running on ${backup.name} (${backup.provider}) instead. Enable keyring access in the Antigravity profile editor to use it.`,
+            note: `${routing.primary.name} routes to Antigravity, which is off. Running on ${routeLabel(backup)} instead. Enable keyring access in the Antigravity profile editor to use it.`,
             quotaReroutedReason: null,
             proactiveFallback: false,
             skippedPrimaryProvider: null,
@@ -611,7 +626,7 @@ export class ExecutionService {
             blocked: null,
           };
         }
-        const reasonText = `${routing.primary.name} (${routing.primary.provider}) skipped (${primaryStatus.reason}); proactively routed to backup ${backup.name} (${backup.provider}).`;
+        const reasonText = `${routing.primary.name} (${routing.primary.provider}) skipped (${primaryStatus.reason}); proactively routed to the fallback ${routeLabel(backup)}.`;
         return {
           ...routing,
           primary: backup,
@@ -725,8 +740,14 @@ export class ExecutionService {
         resolvedProfileName: routing.primary.name,
         resolvedProvider: routing.primary.provider,
         resolvedModel: routing.primary.model,
-        fallbackProfileId: routing.fallback?.id ?? null,
-        fallbackProfileName: routing.fallback?.name ?? null,
+        fallback: routing.fallback
+          ? {
+              provider: routing.fallback.provider,
+              model: routing.fallback.model,
+              effort: routing.fallback.effort,
+              configDir: routing.fallback.configDir,
+            }
+          : null,
         selectionSource: routing.source,
         selectionNote: routing.note,
         quotaReroutedReason: routing.quotaReroutedReason,
@@ -1966,7 +1987,7 @@ export class ExecutionService {
         profileName: opts.fallbackProfile.name,
         provider: opts.fallbackProfile.provider,
       });
-      const fallbackBanner = `[dalang] Fallback triggered after ${opts.initialProfile.name} failed (${primaryOutcome.failureReason ?? 'error'}). Switching to "${opts.fallbackProfile.name}" (${opts.fallbackProfile.provider}).`;
+      const fallbackBanner = `[dalang] Fallback triggered after ${opts.initialProfile.name} failed (${primaryOutcome.failureReason ?? 'error'}). Switching to ${routeLabel(opts.fallbackProfile)}.`;
       this.recordProviderEvent(
         opts.initialProfile.provider,
         'quota_fallback',
@@ -2043,7 +2064,7 @@ export class ExecutionService {
         return {
           primary: resolved.fallback,
           fallback: null,
-          note: `${resolved.primary.name} (${resolved.primary.provider}) skipped (${primaryUsable.reason}); reviewing with ${resolved.fallback.name} (${resolved.fallback.provider}).`,
+          note: `${resolved.primary.name} (${resolved.primary.provider}) skipped (${primaryUsable.reason}); reviewing with ${routeLabel(resolved.fallback)}.`,
           blocked: null,
         };
       }
@@ -2252,7 +2273,7 @@ export class ExecutionService {
           activeCoderFallback.configDir,
         );
         if (fbUsability.usable) {
-          fixNote = `Fix round ${round}: ${activeCoderProfile.name} skipped (${coderUsability.reason}); switched to ${activeCoderFallback.name}.`;
+          fixNote = `Fix round ${round}: ${activeCoderProfile.name} skipped (${coderUsability.reason}); switched to ${routeLabel(activeCoderFallback)}.`;
           this.recordProviderEvent(
             activeCoderProfile.provider,
             'quota_fallback',
@@ -2552,6 +2573,7 @@ export class ExecutionService {
         scopeWarnings: opts.scopeWarnings,
         rawDiff: opts.rawDiff,
         coderResult: opts.coderResult,
+        language: this.getLanguage(),
       });
 
       let currentSessionId: string | null = null;
