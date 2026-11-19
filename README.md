@@ -126,7 +126,7 @@ Run on 18 and 19 Nov 2026 on Linux, through the HTTP API and the real sandbox, o
 | v0.3 Kawal | Reviewer and fix loop, diff view, approve merge, post-merge integration, profiles and routing in UI | Released |
 | v0.4 Paralel | Worktree per task, dependency graph, per-provider limits, quota fallback, usage stats | Released (one real two-task parallel run; quota reroute scripted only) |
 | v0.5 | `npx dalang-cli` and `dalang doctor`, several accounts per provider, model details, token & cost statistics, replay & browser tests, hidden checkpoint refs, macOS sandbox, push and pull request, docs | Released |
-| v0.6 | UI revamp: first-run wizard, guided five-step flow, wayang stage during work, Config page, Indonesian and English | Planned |
+| v0.6 | UI revamp: first-run wizard, guided five-step flow, wayang stage during work, Config page, Indonesian and English, new-version notice | Planned |
 | v0.7 | Agent delegation: a running agent splits its task into subtasks on other profiles over MCP | Planned |
 | v0.8 | Session protocols, steering, context handoff on fallback, native Windows | Planned |
 | v0.9 | Scheduled and webhook runs, outside agents over MCP | Planned |

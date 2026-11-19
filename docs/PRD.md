@@ -295,7 +295,7 @@ Each phase must be useful on its own before the next one starts.
 | v0.3 Kawal | Reviewer and fix loop, diff view, approve merge, integration tests, agent profiles and routing in the UI | ≥ 70% of tasks pass review within at most 2 rounds across 5 test projects | Met on 19 Nov 2026 (5 real-model projects, 15 of 15 tasks passed review, 13 on round 1 and 2 on round 2) |
 | v0.4 Paralel | Worktree per task, dependency graph, per-provider parallel limits, quota fallback, usage statistics | Two independent tasks run at the same time without conflict; a quota limit automatically reroutes to a backup profile | Parallel half met on 19 Nov 2026 (one real-model run, 2 independent tasks ran at the same time and merged cleanly); quota reroute verified with scripted tests only |
 | v0.5 | Polish and distribution: npm package with `npx dalang-cli` and `dalang doctor`, several accounts per provider, token and cost statistics, replay tests, macOS sandbox, push and pull request after merge, documentation | `npx dalang-cli` starts on a clean Linux and macOS machine, and replay scenarios cover quota reroute, review fix round, and parallel merge | Released on 19 Nov 2026 as `dalang-cli@0.5.0` on npm (Linux verified: replay scenarios, headless Chromium browser E2E, `dalang doctor`, `pnpm pack` bundle; macOS `sandbox-exec` unit-tested for parity, clean macOS host install not yet run) |
-| v0.6 | UI revamp: first-run wizard, five-step guided project flow, wayang stage with activity feed during work, Config page with sidebar tabs, theme toggle, Indonesian and English (UI and agent output), redrawn gunungan logo | A new user reaches the Discuss step of a first project through the wizard without reading docs, and no action of the v0.5 UI is lost | Planned |
+| v0.6 | UI revamp: first-run wizard, five-step guided project flow, wayang stage with activity feed during work, Config page with sidebar tabs, theme toggle, Indonesian and English (UI and agent output), redrawn gunungan logo, new-version notice | A new user reaches the Discuss step of a first project through the wizard without reading docs, and no action of the v0.5 UI is lost | Planned |
 | v0.7 | Agent delegation: a running agent splits its own task into subtasks on other profiles through a DALANG MCP server | One task is split by its agent into at least two subtasks on two providers, and all of them pass review and merge | Planned |
 | v0.8 | Session protocols (Claude Agent SDK, `codex app-server`, ACP), steering a running task, context handoff on fallback, native Windows | A fallback mid-task continues from the handoff instead of starting over, on all three providers | Planned |
 | v0.9 | Scheduled and webhook-triggered runs, outside agents over MCP | A scheduled run and a run started from a terminal agent both finish without opening the UI | Planned |
@@ -519,12 +519,12 @@ Opening Config swaps the sidebar for Config tabs with "← Back".
 
 | Tab | Content |
 | --- | --- |
-| General | Language, theme (light, dark, follow system), reopen the wizard |
+| General | Language, theme (light, dark, follow system), reopen the wizard, check for new versions (on or off) |
 | Agents | CLI status, login, version, models, quota, cooldown, extra accounts (v0.5) |
 | Team | Agent profiles as wayang cards: character by role, provider, model, effort, fallback |
 | Task routing | Routing rules shown as sentences ("Complex engineer tasks → Bima (Codex), fallback Gatotkaca (Claude)") with the editor behind them |
 | Security | Sandbox state, agy keyring permission, running without a sandbox, with the risk of each |
-| About | Version, licence, wayang artwork credits, documentation links |
+| About | Version and update status, licence, wayang artwork credits, documentation links |
 
 Statistics move to their own sidebar entry.
 
@@ -543,6 +543,7 @@ Statistics move to their own sidebar entry.
 - **Language to agents:** the language is a global setting stored server side (the `settings` table), so the Lead and reviewer prompts can read it; the UI language and agent language are the same setting.
 - **Animation:** SVG and CSS transforms only; pivots per limb. Paused with `document.visibilityState` and `prefers-reduced-motion`.
 - **Design tokens:** `docs/DESIGN.md` must be updated: its MOTION 1 dial forbids infinite loops, which the stage needs. The new rule: MOTION 1 everywhere except the wayang stage and the wizard intro, which may loop and must pause as above. The six-stage rail section is replaced by the five-step stepper.
+- **Update notice:** the server asks the npm registry (`https://registry.npmjs.org/dalang-cli/latest`) for the newest version at most once per 24 hours and caches the answer in the `settings` table. The request carries no project, account, or usage data. It is on by default and can be switched off in Config → General (the owner's call to confirm: an unattended outgoing request from a local-first tool). When a newer version exists, the sidebar footer shows "Version X is available" and Config → About shows the command to copy (`npx dalang-cli@latest` or `npm install -g dalang-cli@latest`, with a link to the release notes). DALANG never installs or restarts itself. `dalang doctor` prints the same hint. Offline or a failed check shows nothing.
 - **State:** keep TanStack Query and the existing API client.
 - **Which step is current:** steps 1 to 3 are sequential. Once execution starts, steps 4 and 5 are both open (some tasks run while others wait for merge). The "Next step" card picks the action that blocks progress first: a merge or reject decision, then a failed task needing retry, then "agents are working, nothing to do".
 - **Wizard team step:** it picks among the seeded profiles and sets the routing rules' primary and fallback profiles; it never deletes profiles or rules. Skipping the wizard leaves the seeded defaults.
@@ -556,7 +557,7 @@ Each step leaves the app usable, so the work can stop or ship at any step.
 
 1. **i18n and theme first:** the `t()` dictionaries, the language setting (server side, `settings` table), the theme toggle with "follow system", and every existing string moved to `en` and `id`. The UI looks the same but speaks both languages. Pass the language to the Lead and reviewer prompts.
 2. **Shell:** the sidebar (projects, Statistics, Config, language, theme), the five-step stepper, and the "Next step" card, with the existing views mounted inside the steps unchanged.
-3. **Config:** move the Providers page content into the six tabs; Statistics gets its own page.
+3. **Config:** move the Providers page content into the six tabs; Statistics gets its own page. Add the update notice here (server check, sidebar hint, About command, General toggle, `doctor` hint).
 4. **Tidy the steps:** go through each step's view, simplify its layout and wording for the target user, and check the anti-goal list (no action lost).
 5. **Artwork:** trace the four wayang figures (split at shoulder and elbow) and the gunungan (detailed and simplified) to SVG, with `CREDITS.md`. Replace the logo and favicon.
 6. **Wizard:** the four screens, shown on an empty install, reopenable from Config → About.
@@ -576,6 +577,7 @@ Each step leaves the app usable, so the work can stop or ship at any step.
 - Every action listed under anti-goals is reachable in the new layout.
 - No untranslated string in either language (typecheck plus a scan of rendered pages).
 - The stage pauses on a hidden tab and under reduced motion.
+- With a newer version on the registry, the sidebar and Config → About show it; with the check off or the network down, nothing is shown and nothing breaks.
 - Lead output (questions, brief, plan) arrives in the chosen language for both `id` and `en`.
 
 ### v0.7: agent delegation
