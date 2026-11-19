@@ -16,5 +16,7 @@ export * from './services/lead.js';
 export * from './services/git.js';
 export * from './services/review.js';
 export * from './services/scheduler.js';
+export * from './services/pricing.js';
 export * from './services/stats.js';
 export * from './services/executor.js';
+export * from './testing/replay-runner.js';

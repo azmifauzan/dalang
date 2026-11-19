@@ -15,6 +15,7 @@ import {
   CreateTaskInputSchema,
   DiscussMessageInputSchema,
   ProviderIdSchema,
+  PushPrInputSchema,
   RejectTaskInputSchema,
   ReorderRoutingRulesInputSchema,
   ReorderTasksInputSchema,
@@ -122,7 +123,7 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     return reply.status(statusCode >= 400 ? statusCode : 400).send({ error: message });
   });
 
-  app.get('/api/health', async () => ({ ok: true, version: '0.4.0' }));
+  app.get('/api/health', async () => ({ ok: true, version: '0.5.0' }));
 
   // WebSocket live event stream
   app.get('/ws', { websocket: true }, (socket) => {
@@ -161,6 +162,9 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
         leadProvider: ProviderIdSchema.optional(),
         leadModel: z.string().nullable().optional(),
         integrationCommand: z.string().trim().nullable().optional(),
+        pushAfterMerge: z.boolean().optional(),
+        createPrAfterMerge: z.boolean().optional(),
+        gitRemote: z.string().trim().nullable().optional(),
       })
       .parse(req.body);
     return { project: projectService.updateSettings(req.params.id, body) };
@@ -350,6 +354,16 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
   );
 
   app.post<{ Params: { id: string; taskId: string } }>(
+    '/api/projects/:id/tasks/:taskId/push-pr',
+    async (req) => {
+      const body = PushPrInputSchema.parse(req.body ?? {});
+      return {
+        result: await executionService.pushTaskBranchAndPr(req.params.id, req.params.taskId, body),
+      };
+    },
+  );
+
+  app.post<{ Params: { id: string; taskId: string } }>(
     '/api/projects/:id/tasks/:taskId/reject',
     async (req) => {
       const body = RejectTaskInputSchema.parse(req.body ?? {});
@@ -397,7 +411,14 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     '/api/providers/:provider/clear-cooldown',
     async (req) => {
       const provider = ProviderIdSchema.parse(req.params.provider);
-      registry.clearCooldown(provider);
+      const body = z
+        .object({ accountKey: z.string().min(1).optional() })
+        .parse(req.body ?? {});
+      if (body.accountKey) {
+        registry.clearCooldownByAccountKey(body.accountKey);
+      } else {
+        registry.clearCooldown(provider);
+      }
       events.emitEvent({ type: 'provider.updated', provider });
       return {
         ok: true,
@@ -491,11 +512,13 @@ export async function startDalangServer(opts: {
   port?: number;
   dbPath?: string;
   staticDir?: string;
+  runner?: CliRunner;
 } = {}): Promise<{ url: string; close: () => Promise<void> }> {
   const port = opts.port ?? Number(process.env.DALANG_PORT || 4173);
   const { app, close } = await createDalangServer({
     dbPath: opts.dbPath,
     staticDir: opts.staticDir,
+    runner: opts.runner,
   });
 
   // Local-only invariant: always bind to 127.0.0.1

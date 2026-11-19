@@ -135,12 +135,12 @@ export function computeTaskWaves(
 }
 
 export interface SlotLease {
-  provider: ProviderId;
+  provider: string;
   release: () => void;
 }
 
 interface LimiterWaiter {
-  provider: ProviderId;
+  provider: string;
   limit: number;
   resolve: (lease: SlotLease) => void;
   reject: (err: Error) => void;
@@ -148,37 +148,38 @@ interface LimiterWaiter {
 }
 
 /**
- * Process-wide per-provider concurrency limiter shared across all projects and runs.
+ * Process-wide per-account concurrency limiter shared across all projects and runs.
+ * Keyed by `accountKey` (`<provider>` or `<provider>:<configDir>`).
  */
 export class ProviderLimiter {
-  private readonly activeCounts = new Map<ProviderId, number>();
+  private readonly activeCounts = new Map<string, number>();
   private readonly waiters: LimiterWaiter[] = [];
-  private readonly releaseListeners = new Set<(provider: ProviderId) => void>();
+  private readonly releaseListeners = new Set<(accountKey: string) => void>();
 
-  getActiveCount(provider: ProviderId): number {
-    return this.activeCounts.get(provider) ?? 0;
+  getActiveCount(accountKey: string): number {
+    return this.activeCounts.get(accountKey) ?? 0;
   }
 
-  hasCapacity(provider: ProviderId, limit: number): boolean {
+  hasCapacity(accountKey: string, limit: number): boolean {
     const effectiveLimit = Math.max(1, limit);
-    return this.getActiveCount(provider) < effectiveLimit;
+    return this.getActiveCount(accountKey) < effectiveLimit;
   }
 
-  tryAcquire(provider: ProviderId, limit: number): SlotLease | null {
-    if (!this.hasCapacity(provider, limit)) return null;
-    return this.createLease(provider);
+  tryAcquire(accountKey: string, limit: number): SlotLease | null {
+    if (!this.hasCapacity(accountKey, limit)) return null;
+    return this.createLease(accountKey);
   }
 
-  acquire(provider: ProviderId, limit: number, signal?: AbortSignal): Promise<SlotLease> {
+  acquire(accountKey: string, limit: number, signal?: AbortSignal): Promise<SlotLease> {
     if (signal?.aborted) {
       return Promise.reject(new Error('Aborted while waiting for provider parallel slot'));
     }
-    const immediate = this.tryAcquire(provider, limit);
+    const immediate = this.tryAcquire(accountKey, limit);
     if (immediate) return Promise.resolve(immediate);
 
     return new Promise<SlotLease>((resolve, reject) => {
       const waiter: LimiterWaiter = {
-        provider,
+        provider: accountKey,
         limit: Math.max(1, limit),
         resolve,
         reject,
@@ -198,7 +199,7 @@ export class ProviderLimiter {
     });
   }
 
-  onRelease(listener: (provider: ProviderId) => void): () => void {
+  onRelease(listener: (accountKey: string) => void): () => void {
     this.releaseListeners.add(listener);
     return () => {
       this.releaseListeners.delete(listener);
@@ -221,34 +222,34 @@ export class ProviderLimiter {
     });
   }
 
-  private createLease(provider: ProviderId): SlotLease {
-    this.activeCounts.set(provider, this.getActiveCount(provider) + 1);
+  private createLease(accountKey: string): SlotLease {
+    this.activeCounts.set(accountKey, this.getActiveCount(accountKey) + 1);
     let released = false;
     return {
-      provider,
+      provider: accountKey,
       release: () => {
         if (released) return;
         released = true;
-        const current = this.getActiveCount(provider);
-        if (current <= 1) this.activeCounts.delete(provider);
-        else this.activeCounts.set(provider, current - 1);
+        const current = this.getActiveCount(accountKey);
+        if (current <= 1) this.activeCounts.delete(accountKey);
+        else this.activeCounts.set(accountKey, current - 1);
 
-        this.drainWaiters(provider);
+        this.drainWaiters(accountKey);
         for (const listener of [...this.releaseListeners]) {
-          listener(provider);
+          listener(accountKey);
         }
       },
     };
   }
 
-  private drainWaiters(provider: ProviderId): void {
+  private drainWaiters(accountKey: string): void {
     for (let i = 0; i < this.waiters.length; i++) {
       const w = this.waiters[i];
-      if (w.provider !== provider) continue;
-      if (!this.hasCapacity(provider, w.limit)) continue;
+      if (w.provider !== accountKey) continue;
+      if (!this.hasCapacity(accountKey, w.limit)) continue;
       this.waiters.splice(i, 1);
       w.cleanup?.();
-      w.resolve(this.createLease(provider));
+      w.resolve(this.createLease(accountKey));
       i--;
     }
   }

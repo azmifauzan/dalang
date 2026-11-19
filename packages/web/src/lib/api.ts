@@ -18,6 +18,8 @@ import type {
   ProviderId,
   ProviderRuntimeStateDTO,
   ProviderStatus,
+  PushPrInput,
+  PushPrResultDTO,
   RejectTaskInput,
   ReorderTasksInput,
   RoutingRuleDTO,
@@ -67,6 +69,9 @@ export const api = {
       leadProvider?: ProviderId;
       leadModel?: string | null;
       integrationCommand?: string | null;
+      pushAfterMerge?: boolean;
+      createPrAfterMerge?: boolean;
+      gitRemote?: string | null;
     },
   ) =>
     request<{ project: ProjectSummary }>(`/api/projects/${id}/settings`, {
@@ -207,13 +212,20 @@ export const api = {
   getTaskDiff: (id: string, taskId: string) =>
     request<{ diff: TaskDiffDTO }>(`/api/projects/${id}/tasks/${taskId}/diff`),
   approveMergeTask: (id: string, taskId: string, body: Partial<ApproveMergeInput> = {}) =>
-    request<{ task: TaskDTO; mergeCommitSha: string; integrationRun: IntegrationRunDTO | null }>(
-      `/api/projects/${id}/tasks/${taskId}/approve-merge`,
-      {
-        method: 'POST',
-        body: JSON.stringify(body),
-      },
-    ),
+    request<{
+      task: TaskDTO;
+      mergeCommitSha: string;
+      integrationRun: IntegrationRunDTO | null;
+      pushPrResult?: PushPrResultDTO | null;
+    }>(`/api/projects/${id}/tasks/${taskId}/approve-merge`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  pushTaskPr: (id: string, taskId: string, body: Partial<PushPrInput> = {}) =>
+    request<{ result: PushPrResultDTO }>(`/api/projects/${id}/tasks/${taskId}/push-pr`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   rejectTask: (id: string, taskId: string, body: Partial<RejectTaskInput> = {}) =>
     request<{ task: TaskDTO }>(`/api/projects/${id}/tasks/${taskId}/reject`, {
       method: 'POST',

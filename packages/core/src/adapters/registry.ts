@@ -1,8 +1,19 @@
-import type { ProviderId, ProviderStatus, ProviderUsage, UsageWindow } from '@dalang/shared';
+import {
+  buildAccountKey,
+  type ProviderId,
+  type ProviderStatus,
+  type ProviderUsage,
+  type SandboxEngine,
+  type UsageWindow,
+} from '@dalang/shared';
 import { AntigravityAdapter, KEYRING_OFF_MESSAGE } from './antigravity.js';
 import { ClaudeCodeAdapter } from './claude.js';
 import { CodexAdapter } from './codex.js';
-import { findBwrap, NodeCliRunner, wrapWithBwrap } from './sandbox.js';
+import {
+  detectSandboxEngine,
+  NodeCliRunner,
+  wrapWithSandbox,
+} from './sandbox.js';
 import type { CliAdapter, CliRunner, RunCommandResult } from './types.js';
 
 export interface ProviderPolicy {
@@ -34,8 +45,8 @@ export class ProviderRegistry {
   private readonly adapters: Map<ProviderId, CliAdapter>;
   private readonly runner: CliRunner;
   private readonly policy: ProviderPolicy;
-  private readonly usageCache = new Map<ProviderId, UsageSnapshot>();
-  private readonly rateLimitClearedAt = new Map<ProviderId, number>();
+  private readonly usageCache = new Map<string, UsageSnapshot>();
+  private readonly rateLimitClearedAt = new Map<string, number>();
 
   constructor(
     runner: CliRunner = new NodeCliRunner(),
@@ -50,13 +61,26 @@ export class ProviderRegistry {
     ]);
   }
 
-  async isSandboxReady(): Promise<boolean> {
-    return Boolean(await findBwrap(this.runner));
+  getRunner(): CliRunner {
+    return this.runner;
   }
 
-  /** Why a provider cannot run right now, or null. Agy in the sandbox needs the user's keyring opt-in. */
+  async getSandboxEngine(): Promise<SandboxEngine> {
+    return (await detectSandboxEngine(this.runner)).engine;
+  }
+
+  async isSandboxReady(): Promise<boolean> {
+    return (await this.getSandboxEngine()) !== 'none';
+  }
+
+  /** Why a provider cannot run right now, or null. Agy in the Linux bwrap sandbox needs the user's keyring opt-in. */
   providerBlockedReason(provider: ProviderId, sandboxReady: boolean): string | null {
-    if (provider === 'antigravity' && sandboxReady && !this.policy.antigravityKeyringAccess()) {
+    if (
+      provider === 'antigravity' &&
+      sandboxReady &&
+      process.platform === 'linux' &&
+      !this.policy.antigravityKeyringAccess()
+    ) {
       return KEYRING_OFF_MESSAGE;
     }
     return null;
@@ -70,20 +94,33 @@ export class ProviderRegistry {
     return adapter;
   }
 
-  getCachedUsage(provider: ProviderId): UsageSnapshot | null {
-    return this.usageCache.get(provider) ?? null;
+  getCachedUsage(provider: ProviderId, configDir?: string | null): UsageSnapshot | null {
+    const key = buildAccountKey(provider, configDir);
+    return this.usageCache.get(key) ?? null;
   }
 
-  getRateLimitClearedAt(provider: ProviderId): number {
-    return this.rateLimitClearedAt.get(provider) ?? 0;
+  getRateLimitClearedAt(provider: ProviderId, configDir?: string | null): number {
+    const key = buildAccountKey(provider, configDir);
+    return this.rateLimitClearedAt.get(key) ?? 0;
   }
 
-  clearCooldown(provider: ProviderId): void {
-    this.rateLimitClearedAt.set(provider, Date.now());
+  clearCooldown(provider: ProviderId, configDir?: string | null): void {
+    const key = buildAccountKey(provider, configDir);
+    this.rateLimitClearedAt.set(key, Date.now());
   }
 
-  setUsageSnapshot(provider: ProviderId, usage: ProviderUsage, checkedAt: number = Date.now()): void {
-    this.usageCache.set(provider, { usage, checkedAt });
+  clearCooldownByAccountKey(accountKey: string): void {
+    this.rateLimitClearedAt.set(accountKey, Date.now());
+  }
+
+  setUsageSnapshot(
+    provider: ProviderId,
+    usage: ProviderUsage,
+    checkedAt: number = Date.now(),
+    configDir?: string | null,
+  ): void {
+    const key = buildAccountKey(provider, configDir);
+    this.usageCache.set(key, { usage, checkedAt });
   }
 
   /**
@@ -128,10 +165,10 @@ export class ProviderRegistry {
     return hit ? `Quota exhausted (${hit.label}: 0% remaining)` : null;
   }
 
-  async refreshUsage(provider: ProviderId): Promise<ProviderUsage> {
+  async refreshUsage(provider: ProviderId, configDir?: string | null): Promise<ProviderUsage> {
     const adapter = this.getAdapter(provider);
-    const usage = await adapter.getUsage();
-    this.setUsageSnapshot(provider, usage);
+    const usage = await adapter.getUsage(configDir);
+    this.setUsageSnapshot(provider, usage, Date.now(), configDir);
     return usage;
   }
 
@@ -147,7 +184,7 @@ export class ProviderRegistry {
     return statuses;
   }
 
-  /** Run a project verify or integration command inside bwrap when available, without provider state dirs. */
+  /** Run a project verify or integration command inside the platform sandbox when available, without provider state dirs. */
   async runShellCommand(
     projectPath: string,
     command: string,
@@ -158,7 +195,7 @@ export class ProviderRegistry {
       onLogLine?: (line: string) => void;
     } = {},
   ): Promise<RunCommandResult> {
-    const invocation = await wrapWithBwrap(
+    const invocation = await wrapWithSandbox(
       this.runner,
       null,
       projectPath,

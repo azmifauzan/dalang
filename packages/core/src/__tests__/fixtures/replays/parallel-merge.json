@@ -1,0 +1,68 @@
+{
+  "name": "parallel-merge",
+  "description": "Two non-overlapping tasks run concurrently in isolated worktrees, pass review, and merge cleanly into main.",
+  "turns": [
+    {
+      "id": "coder-t001-alpha",
+      "match": {
+        "provider": "codex",
+        "promptContains": "T-001"
+      },
+      "delayMs": 120,
+      "files": {
+        "src/alpha.mjs": "export const alpha = () => 'ALPHA';\n",
+        "src/alpha.test.mjs": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { alpha } from './alpha.mjs';\ntest('alpha', () => assert.equal(alpha(), 'ALPHA'));\n",
+        ".dalang/tasks/T-001/result.json": "{\"task_id\":\"T-001\",\"status\":\"completed\",\"changed_files\":[\"src/alpha.mjs\",\"src/alpha.test.mjs\"],\"summary\":\"Created alpha helper and test\",\"notes\":[],\"blockers\":[],\"verify_command\":\"node --test src/alpha.test.mjs\",\"verify_exit_code\":0}"
+      },
+      "stdoutLines": [
+        "{\"type\":\"thread.started\",\"thread_id\":\"codex-t1\"}",
+        "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"Finished T-001\"}}",
+        "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1400,\"cached_input_tokens\":700,\"output_tokens\":160}}"
+      ],
+      "exitCode": 0
+    },
+    {
+      "id": "coder-t002-beta",
+      "match": {
+        "provider": "codex",
+        "promptContains": "T-002"
+      },
+      "delayMs": 120,
+      "files": {
+        "src/beta.mjs": "export const beta = () => 'BETA';\n",
+        "src/beta.test.mjs": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { beta } from './beta.mjs';\ntest('beta', () => assert.equal(beta(), 'BETA'));\n",
+        ".dalang/tasks/T-002/result.json": "{\"task_id\":\"T-002\",\"status\":\"completed\",\"changed_files\":[\"src/beta.mjs\",\"src/beta.test.mjs\"],\"summary\":\"Created beta helper and test\",\"notes\":[],\"blockers\":[],\"verify_command\":\"node --test src/beta.test.mjs\",\"verify_exit_code\":0}"
+      },
+      "stdoutLines": [
+        "{\"type\":\"thread.started\",\"thread_id\":\"codex-t2\"}",
+        "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"Finished T-002\"}}",
+        "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1600,\"cached_input_tokens\":800,\"output_tokens\":190}}"
+      ],
+      "exitCode": 0
+    },
+    {
+      "id": "reviewer-t001",
+      "match": {
+        "provider": "claude-code",
+        "promptContains": "task T-001"
+      },
+      "stdoutLines": [
+        "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-rev-t1\",\"model\":\"claude-sonnet-5-5\"}",
+        "{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"claude-rev-t1\",\"result\":\"{\\\"task_id\\\":\\\"T-001\\\",\\\"status\\\":\\\"pass\\\",\\\"verify_exit_code\\\":0,\\\"summary\\\":\\\"Alpha task verified.\\\",\\\"findings\\\":[]}\",\"usage\":{\"input_tokens\":700,\"output_tokens\":90,\"cache_read_input_tokens\":1400,\"cache_creation_input_tokens\":0},\"total_cost_usd\":0.0026}"
+      ],
+      "exitCode": 0
+    },
+    {
+      "id": "reviewer-t002",
+      "match": {
+        "provider": "claude-code",
+        "promptContains": "task T-002"
+      },
+      "stdoutLines": [
+        "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-rev-t2\",\"model\":\"claude-sonnet-5-5\"}",
+        "{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"claude-rev-t2\",\"result\":\"{\\\"task_id\\\":\\\"T-002\\\",\\\"status\\\":\\\"pass\\\",\\\"verify_exit_code\\\":0,\\\"summary\\\":\\\"Beta task verified.\\\",\\\"findings\\\":[]}\",\"usage\":{\"input_tokens\":750,\"output_tokens\":95,\"cache_read_input_tokens\":1500,\"cache_creation_input_tokens\":0},\"total_cost_usd\":0.0028}"
+      ],
+      "exitCode": 0
+    }
+  ]
+}

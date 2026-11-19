@@ -97,6 +97,9 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
 
   const [cmdDraft, setCmdDraft] = useState<string>('');
   const [cmdInitialized, setCmdInitialized] = useState(false);
+  const [remoteDraft, setRemoteDraft] = useState<string>('');
+  const [pushAfterMergeDraft, setPushAfterMergeDraft] = useState<boolean>(false);
+  const [createPrAfterMergeDraft, setCreatePrAfterMergeDraft] = useState<boolean>(false);
   const [allowUnconfinedIntegration, setAllowUnconfinedIntegration] = useState(false);
   const [expandedIntegrationId, setExpandedIntegrationId] = useState<string | null>(null);
   const [collapsedDiffPaths, setCollapsedDiffPaths] = useState<Record<string, boolean>>({});
@@ -118,6 +121,9 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
   useEffect(() => {
     if (!guard || cmdInitialized) return;
     setCmdDraft(guard.integrationCommand ?? guard.detectedIntegrationCommand ?? '');
+    setRemoteDraft(guard.gitRemote ?? '');
+    setPushAfterMergeDraft(Boolean(guard.pushAfterMerge));
+    setCreatePrAfterMergeDraft(Boolean(guard.createPrAfterMerge));
     setCmdInitialized(true);
   }, [guard, cmdInitialized]);
 
@@ -207,9 +213,10 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
       const integrationSummary = data.integrationRun
         ? ` Integration status: ${data.integrationRun.status}.`
         : '';
+      const pushSummary = data.pushPrResult ? ` ${data.pushPrResult.message}` : '';
       setActionMessage({
-        kind: 'ok',
-        text: `Merged ${data.task.externalId} to ${guard?.mainBranch ?? 'main'} (${data.mergeCommitSha.slice(0, 8)}).${integrationSummary}`,
+        kind: data.pushPrResult && !data.pushPrResult.pushed ? 'err' : 'ok',
+        text: `Merged ${data.task.externalId} to ${guard?.mainBranch ?? 'main'} (${data.mergeCommitSha.slice(0, 8)}).${integrationSummary}${pushSummary}`,
       });
       invalidateAll();
     },
@@ -244,6 +251,33 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
     onSuccess: (res) => {
       setCmdDraft(res.project.integrationCommand ?? '');
       setActionMessage({ kind: 'ok', text: 'Integration test command saved.' });
+      invalidateAll();
+    },
+    onError: (err) => {
+      setActionMessage({ kind: 'err', text: (err as Error).message });
+    },
+  });
+
+  const saveRemoteSettingsMutation = useMutation({
+    mutationFn: (vars: { gitRemote: string | null; pushAfterMerge: boolean; createPrAfterMerge: boolean }) =>
+      api.updateProjectSettings(project.id, vars),
+    onSuccess: () => {
+      setActionMessage({ kind: 'ok', text: 'Push and pull request settings saved.' });
+      invalidateAll();
+    },
+    onError: (err) => {
+      setActionMessage({ kind: 'err', text: (err as Error).message });
+    },
+  });
+
+  const pushPrMutation = useMutation({
+    mutationFn: (vars: { taskId: string; createPr: boolean }) =>
+      api.pushTaskPr(project.id, vars.taskId, {
+        remote: remoteDraft.trim() || undefined,
+        createPr: vars.createPr,
+      }),
+    onSuccess: (res) => {
+      setActionMessage({ kind: 'ok', text: res.result.message });
       invalidateAll();
     },
     onError: (err) => {
@@ -453,10 +487,49 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
                           Merged {selectedEntry.task.mergeCommitSha.slice(0, 8)}
                         </Badge>
                       )}
+                      {selectedEntry.task.prUrl && (
+                        <a
+                          href={selectedEntry.task.prUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex min-h-8 items-center rounded-[4px] border border-primary px-2 py-0.5 font-mono-token text-xs font-medium text-primary underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                        >
+                          Open PR
+                        </a>
+                      )}
                     </div>
                     <h2 className="text-lg font-semibold leading-snug">{selectedEntry.task.title}</h2>
                     <p className="text-sm text-muted-foreground">{selectedEntry.task.goal}</p>
                   </div>
+                  {selectedEntry.task.status === 'done' && (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={pushPrMutation.isPending}
+                        onClick={() =>
+                          pushPrMutation.mutate({
+                            taskId: selectedEntry.task.id,
+                            createPr: false,
+                          })
+                        }
+                      >
+                        {pushPrMutation.isPending ? 'Pushing...' : `Push ${guard.mainBranch}`}
+                      </Button>
+                      <Button
+                        type="button"
+                        disabled={pushPrMutation.isPending || !guard.ghAvailable}
+                        onClick={() =>
+                          pushPrMutation.mutate({
+                            taskId: selectedEntry.task.id,
+                            createPr: true,
+                          })
+                        }
+                      >
+                        {pushPrMutation.isPending ? 'Opening PR...' : 'Push & open PR'}
+                      </Button>
+                    </div>
+                  )}
                 </div>
 
                 {selectedEntry.task.rejectionNote && (
@@ -851,7 +924,7 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
               onChange={(e) => setAllowUnconfinedIntegration(e.target.checked)}
             />
             <span>
-              Linux bubblewrap sandbox is unavailable on this host ({guard.platform}). Allow running the integration
+              Sandbox confinement (bwrap on Linux, sandbox-exec on macOS) is unavailable on this host ({guard.platform}). Allow running the integration
               command without filesystem isolation.
             </span>
           </label>
@@ -909,6 +982,71 @@ export function GuardView({ project, onGoToNavigate }: GuardViewProps) {
             </ul>
           )}
         </div>
+      </section>
+
+      {/* Optional Remote Push & Pull Request Settings (v0.5) */}
+      <section className="rounded-[8px] border border-border bg-card p-5">
+        <div className="space-y-1">
+          <h2 className="text-base font-semibold">Remote push and pull request</h2>
+          <p className="text-sm text-muted-foreground">
+            Optionally push after Gate 2 approval and open a pull request via <span className="font-mono-token">gh</span> using the task brief and review summary.
+          </p>
+        </div>
+
+        <form
+          className="mt-4 space-y-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            saveRemoteSettingsMutation.mutate({
+              gitRemote: remoteDraft.trim() || null,
+              pushAfterMerge: pushAfterMergeDraft,
+              createPrAfterMerge: createPrAfterMergeDraft,
+            });
+          }}
+        >
+          <div className="grid gap-3 md:grid-cols-3 md:items-end">
+            <div className="space-y-1.5">
+              <Label htmlFor="guard-git-remote">Git remote</Label>
+              <Input
+                id="guard-git-remote"
+                value={remoteDraft}
+                onChange={(e) => setRemoteDraft(e.target.value)}
+                placeholder={guard.gitRemote ?? 'origin'}
+              />
+            </div>
+
+            <label className="flex min-h-11 cursor-pointer items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                className="h-4 w-4 accent-[var(--primary)]"
+                checked={pushAfterMergeDraft}
+                onChange={(e) => setPushAfterMergeDraft(e.target.checked)}
+              />
+              <span>Push {guard.mainBranch} after merge</span>
+            </label>
+
+            <label className="flex min-h-11 cursor-pointer items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                className="h-4 w-4 accent-[var(--primary)]"
+                checked={createPrAfterMergeDraft}
+                onChange={(e) => setCreatePrAfterMergeDraft(e.target.checked)}
+              />
+              <span>Open PR with gh after merge</span>
+            </label>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+            <p className="text-xs text-muted-foreground">
+              {guard.ghAvailable
+                ? 'GitHub CLI (gh) detected on this machine.'
+                : 'GitHub CLI (gh) not found in PATH; install gh and run `gh auth login` to open pull requests.'}
+            </p>
+            <Button type="submit" variant="outline" disabled={saveRemoteSettingsMutation.isPending}>
+              {saveRemoteSettingsMutation.isPending ? 'Saving...' : 'Save remote settings'}
+            </Button>
+          </div>
+        </form>
       </section>
 
       {/* Reject & Send Back Modal */}

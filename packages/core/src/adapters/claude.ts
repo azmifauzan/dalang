@@ -1,8 +1,27 @@
 import os from 'node:os';
-import type { ProviderStatus, ProviderUsage, UsageWindow } from '@dalang/shared';
+import {
+  EFFORT_LEVEL_ORDER,
+  type EffortLevel,
+  type ProviderModelInfo,
+  type ProviderStatus,
+  type ProviderUsage,
+  type UsageWindow,
+} from '@dalang/shared';
 import { createTurnLogger } from './logger.js';
-import { findBwrap, wrapWithBwrap } from './sandbox.js';
-import type { AdapterTurnOptions, AdapterTurnResult, CliAdapter, CliRunner } from './types.js';
+import {
+  buildProviderAccountEnv,
+  detectSandboxEngine,
+  wrapWithSandbox,
+} from './sandbox.js';
+import type {
+  AdapterTurnOptions,
+  AdapterTurnResult,
+  CliAdapter,
+  CliRunner,
+  TurnTokenUsage,
+} from './types.js';
+
+const VALID_EFFORTS = new Set<string>(EFFORT_LEVEL_ORDER);
 
 export function parseClaudeUsageText(text: string): UsageWindow[] {
   const windows: UsageWindow[] = [];
@@ -38,28 +57,190 @@ export function parseClaudeUsageText(text: string): UsageWindow[] {
   return windows;
 }
 
-// The stream-json control protocol's `initialize` request returns the models this CLI offers (the same list as
-// its /model picker) without any API call. Asking the CLI keeps the list correct when models change.
+// Health-check rule (side-effect-free):
+// The stream-json control protocol's `initialize` request runs with `--bare --no-session-persistence`,
+// which skips hooks, MCP servers, plugins, and session writes, and makes no API call.
 const CLAUDE_INITIALIZE = `${JSON.stringify({ type: 'control_request', request_id: 'dalang-init', request: { subtype: 'initialize' } })}\n`;
 
-/** Model ids from the `initialize` control response: the resolved id of each entry, then any other value it accepts. */
-export function parseClaudeInitializeModels(stdout: string): string[] {
+interface RawClaudeInitModel {
+  value?: unknown;
+  resolvedModel?: unknown;
+  displayName?: unknown;
+  description?: unknown;
+  supportsEffort?: unknown;
+  supportedEffortLevels?: unknown;
+  supportsFastMode?: unknown;
+  supportsAdaptiveThinking?: unknown;
+  supportsThinkingOff?: unknown;
+}
+
+function stripContextBracket(raw: string): { base: string; bracket: string | null } {
+  const m = raw.match(/^(.+)\[([^\]]+)\]$/);
+  return m ? { base: m[1], bracket: m[2] } : { base: raw, bracket: null };
+}
+
+function variantLabel(bracket: string): string {
+  if (/^1m$/i.test(bracket)) return '1M context';
+  return `${bracket.toUpperCase()} context`;
+}
+
+/**
+ * Parse rich model metadata from Claude Code's `initialize` control response.
+ * Variants such as `claude-fable-5-2[1m]` attach to their base model in `variants` rather than duplicating it.
+ */
+export function parseClaudeInitializeModels(stdout: string): ProviderModelInfo[] {
   for (const line of stdout.split(/\r?\n/)) {
     if (!line.includes('control_response')) continue;
     try {
       const ev = JSON.parse(line) as { response?: { response?: { models?: unknown } } };
-      const models = ev.response?.response?.models;
-      if (!Array.isArray(models)) continue;
-      const entries = models.filter(
-        (m): m is { value: string; resolvedModel?: string } => typeof m?.value === 'string' && m.value !== 'default',
-      );
-      const resolved = entries.map((m) => (typeof m.resolvedModel === 'string' && m.resolvedModel) || m.value);
-      return [...new Set([...resolved, ...entries.map((m) => m.value)])];
+      const rawModels = ev.response?.response?.models;
+      if (!Array.isArray(rawModels)) continue;
+
+      const byBase = new Map<string, ProviderModelInfo>();
+      const order: string[] = [];
+
+      for (const item of rawModels as RawClaudeInitModel[]) {
+        if (typeof item?.value !== 'string' || !item.value || item.value === 'default') continue;
+        const rawValue = item.value.trim();
+        const rawResolved =
+          typeof item.resolvedModel === 'string' && item.resolvedModel.trim()
+            ? item.resolvedModel.trim()
+            : rawValue;
+
+        const valParts = stripContextBracket(rawValue);
+        const resParts = stripContextBracket(rawResolved);
+        const baseKey = resParts.base;
+        const bracket = valParts.bracket ?? resParts.bracket;
+
+        const supportedEffortLevels: EffortLevel[] = Array.isArray(item.supportedEffortLevels)
+          ? (item.supportedEffortLevels.filter(
+              (lvl): lvl is EffortLevel => typeof lvl === 'string' && VALID_EFFORTS.has(lvl),
+            ) as EffortLevel[])
+          : item.supportsEffort
+            ? ['low', 'medium', 'high']
+            : [];
+
+        const defaultEffort: EffortLevel | null = supportedEffortLevels.includes('high')
+          ? 'high'
+          : supportedEffortLevels.includes('medium')
+            ? 'medium'
+            : (supportedEffortLevels[0] ?? null);
+
+        const displayName =
+          typeof item.displayName === 'string' && item.displayName.trim()
+            ? item.displayName.trim()
+            : baseKey;
+        const description = typeof item.description === 'string' ? item.description.trim() : '';
+        const supportsFastMode = Boolean(item.supportsFastMode);
+        const supportsThinking = Boolean(
+          item.supportsAdaptiveThinking || item.supportsThinkingOff === false,
+        );
+
+        const existing = byBase.get(baseKey);
+        if (existing) {
+          if (bracket && !existing.variants.some((v) => v.value === rawValue)) {
+            existing.variants.push({
+              id: bracket.toLowerCase(),
+              label: variantLabel(bracket),
+              value: rawValue,
+            });
+          } else if (!bracket) {
+            existing.value = rawValue;
+          }
+          continue;
+        }
+
+        const entry: ProviderModelInfo = {
+          id: baseKey,
+          value: bracket ? baseKey : rawValue,
+          resolvedModel: baseKey,
+          displayName,
+          description,
+          supportedEffortLevels,
+          defaultEffort,
+          supportsFastMode,
+          supportsThinking,
+          variants: bracket
+            ? [
+                {
+                  id: bracket.toLowerCase(),
+                  label: variantLabel(bracket),
+                  value: rawValue,
+                },
+              ]
+            : [],
+        };
+        byBase.set(baseKey, entry);
+        order.push(baseKey);
+      }
+
+      return order.map((k) => byBase.get(k)!);
     } catch {
       // Not JSON, keep reading.
     }
   }
   return [];
+}
+
+function extractClaudeUsage(ev: Record<string, unknown>, fallbackModel?: string | null): TurnTokenUsage | undefined {
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cacheReadTokens = 0;
+  let cacheWriteTokens = 0;
+  let costUsd: number | null =
+    typeof ev.total_cost_usd === 'number' && Number.isFinite(ev.total_cost_usd)
+      ? ev.total_cost_usd
+      : null;
+  let model = fallbackModel ?? null;
+
+  if (ev.usage && typeof ev.usage === 'object') {
+    const u = ev.usage as Record<string, unknown>;
+    if (typeof u.input_tokens === 'number') inputTokens = u.input_tokens;
+    if (typeof u.output_tokens === 'number') outputTokens = u.output_tokens;
+    if (typeof u.cache_read_input_tokens === 'number') cacheReadTokens = u.cache_read_input_tokens;
+    if (typeof u.cache_creation_input_tokens === 'number') cacheWriteTokens = u.cache_creation_input_tokens;
+  }
+
+  if (ev.modelUsage && typeof ev.modelUsage === 'object') {
+    const entries = Object.entries(ev.modelUsage as Record<string, Record<string, unknown>>);
+    if (entries.length > 0) {
+      let sumIn = 0;
+      let sumOut = 0;
+      let sumRead = 0;
+      let sumWrite = 0;
+      let sumCost = 0;
+      let hasCost = false;
+      for (const [mName, mStats] of entries) {
+        if (!model) model = mName;
+        if (typeof mStats?.inputTokens === 'number') sumIn += mStats.inputTokens;
+        if (typeof mStats?.outputTokens === 'number') sumOut += mStats.outputTokens;
+        if (typeof mStats?.cacheReadInputTokens === 'number') sumRead += mStats.cacheReadInputTokens;
+        if (typeof mStats?.cacheCreationInputTokens === 'number') sumWrite += mStats.cacheCreationInputTokens;
+        if (typeof mStats?.costUSD === 'number') {
+          sumCost += mStats.costUSD;
+          hasCost = true;
+        }
+      }
+      if (inputTokens === 0 && sumIn > 0) inputTokens = sumIn;
+      if (outputTokens === 0 && sumOut > 0) outputTokens = sumOut;
+      if (cacheReadTokens === 0 && sumRead > 0) cacheReadTokens = sumRead;
+      if (cacheWriteTokens === 0 && sumWrite > 0) cacheWriteTokens = sumWrite;
+      if (costUsd === null && hasCost) costUsd = sumCost;
+    }
+  }
+
+  if (inputTokens === 0 && outputTokens === 0 && cacheReadTokens === 0 && cacheWriteTokens === 0 && costUsd === null) {
+    return undefined;
+  }
+
+  return {
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+    costUsd,
+    model,
+  };
 }
 
 export class ClaudeCodeAdapter implements CliAdapter {
@@ -69,22 +250,27 @@ export class ClaudeCodeAdapter implements CliAdapter {
 
   constructor(private readonly runner: CliRunner) {}
 
-  private async discoverModels(binaryPath: string): Promise<string[]> {
+  /**
+   * Side-effect-free model discovery: `--bare --no-session-persistence` skips user/project hooks,
+   * MCP servers, plugins, and session persistence, and `initialize` makes no model API call.
+   */
+  private async discoverModels(binaryPath: string, configDir?: string | null): Promise<ProviderModelInfo[]> {
+    const env = buildProviderAccountEnv(this.id, configDir);
     const reply = await this.runner
       .run(
         binaryPath,
         ['-p', '--bare', '--no-session-persistence', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose'],
-        { cwd: os.tmpdir(), timeoutMs: 15_000, stdinData: CLAUDE_INITIALIZE },
+        { cwd: os.tmpdir(), timeoutMs: 15_000, stdinData: CLAUDE_INITIALIZE, env },
       )
       .catch(() => null);
     return reply ? parseClaudeInitializeModels(reply.stdout) : [];
   }
 
-  async checkStatus(): Promise<ProviderStatus> {
+  async checkStatus(configDir?: string | null): Promise<ProviderStatus> {
     const checkedAt = new Date().toISOString();
     const binaryPath = await this.runner.which(this.binary);
-    const bwrapPath = await this.runner.which('bwrap');
-    const sandboxReady = Boolean(bwrapPath && process.platform === 'linux');
+    const { engine: sandboxEngine } = await detectSandboxEngine(this.runner);
+    const sandboxReady = sandboxEngine !== 'none';
 
     if (!binaryPath) {
       return {
@@ -97,16 +283,18 @@ export class ClaudeCodeAdapter implements CliAdapter {
         loggedIn: false,
         authSummary: 'Binary not found in PATH',
         sandboxReady,
+        sandboxEngine,
         models: [],
         usage: { available: false, windows: [], error: 'Not installed' },
         checkedAt,
       };
     }
 
-    const cwd = os.homedir();
+    const cwd = os.tmpdir();
+    const env = buildProviderAccountEnv(this.id, configDir);
     const [verRes, authRes] = await Promise.all([
-      this.runner.run(binaryPath, ['--version'], { cwd, timeoutMs: 5000 }).catch(() => null),
-      this.runner.run(binaryPath, ['auth', 'status'], { cwd, timeoutMs: 5000 }).catch(() => null),
+      this.runner.run(binaryPath, ['--version'], { cwd, timeoutMs: 5000, env }).catch(() => null),
+      this.runner.run(binaryPath, ['auth', 'status'], { cwd, timeoutMs: 5000, env }).catch(() => null),
     ]);
 
     const version = verRes?.stdout.trim() || null;
@@ -136,9 +324,9 @@ export class ClaudeCodeAdapter implements CliAdapter {
 
     const [usage, models] = await Promise.all([
       loggedIn
-        ? this.getUsage()
+        ? this.getUsage(configDir)
         : Promise.resolve({ available: false, windows: [], error: 'Not logged in' } as ProviderUsage),
-      loggedIn ? this.discoverModels(binaryPath) : Promise.resolve([] as string[]),
+      loggedIn ? this.discoverModels(binaryPath, configDir) : Promise.resolve([] as ProviderModelInfo[]),
     ]);
 
     return {
@@ -151,28 +339,31 @@ export class ClaudeCodeAdapter implements CliAdapter {
       loggedIn,
       authSummary,
       sandboxReady,
+      sandboxEngine,
       models,
       usage,
       checkedAt,
     };
   }
 
-  async getUsage(): Promise<ProviderUsage> {
+  async getUsage(configDir?: string | null): Promise<ProviderUsage> {
     const binaryPath = await this.runner.which(this.binary);
     if (!binaryPath) {
       return { available: false, windows: [], error: 'Binary not installed' };
     }
+    const env = buildProviderAccountEnv(this.id, configDir);
     try {
       const res = await this.runner.run(
         binaryPath,
         [
           '-p',
           '/usage',
+          '--no-session-persistence',
           '--setting-sources',
           'project',
           '--strict-mcp-config',
         ],
-        { cwd: os.homedir(), timeoutMs: 12000, idleTimeoutMs: 10000 },
+        { cwd: os.tmpdir(), timeoutMs: 12000, idleTimeoutMs: 10000, env },
       );
       const combined = `${res.stdout}\n${res.stderr}`.trim();
       const windows = parseClaudeUsageText(combined);
@@ -200,12 +391,13 @@ export class ClaudeCodeAdapter implements CliAdapter {
       throw new Error('Claude Code CLI (claude) is not installed');
     }
 
-    const bwrapAvailable = Boolean(await findBwrap(this.runner));
+    const { engine: sandboxEngine } = await detectSandboxEngine(this.runner);
+    const sandboxAvailable = sandboxEngine !== 'none';
     const permissionFlag =
       options.permissionMode === 'read-only'
         ? 'plan'
         : options.permissionMode === 'workspace-write'
-          ? bwrapAvailable
+          ? sandboxAvailable
             ? 'bypassPermissions'
             : 'auto'
           : 'acceptEdits';
@@ -233,20 +425,23 @@ export class ClaudeCodeAdapter implements CliAdapter {
       args.push('--effort', options.effort);
     }
 
-    const invocation = await wrapWithBwrap(
+    const invocation = await wrapWithSandbox(
       this.runner,
       this.id,
       options.projectPath,
       binaryPath,
       args,
-      { readOnly: options.permissionMode === 'read-only' },
+      { readOnly: options.permissionMode === 'read-only', configDir: options.configDir },
     );
+    const env = buildProviderAccountEnv(this.id, options.configDir);
 
     const logger = createTurnLogger(options.logFilePath);
     let sessionId: string | null = options.sessionId ?? null;
+    let resolvedModel: string | null = options.model ?? null;
     let resultText = '';
     let structuredOutput: unknown = undefined;
     let rateLimitReason: string | undefined;
+    let usage: TurnTokenUsage | undefined;
     const assistantChunks: string[] = [];
 
     try {
@@ -255,6 +450,7 @@ export class ClaudeCodeAdapter implements CliAdapter {
         timeoutMs: options.timeoutMs ?? 600_000,
         idleTimeoutMs: options.idleTimeoutMs ?? 180_000,
         signal: options.signal,
+        env,
         onStdoutLine: (line) => {
           logger.write(line);
           options.onLogLine?.(line);
@@ -264,6 +460,9 @@ export class ClaudeCodeAdapter implements CliAdapter {
             const ev = JSON.parse(trimmed) as Record<string, unknown>;
             if (typeof ev.session_id === 'string' && ev.session_id) {
               sessionId = ev.session_id;
+            }
+            if (ev.type === 'system' && typeof ev.model === 'string' && ev.model) {
+              resolvedModel = ev.model;
             }
             if (ev.type === 'rate_limit_event') {
               const info = (ev.rate_limit_info && typeof ev.rate_limit_info === 'object'
@@ -279,9 +478,12 @@ export class ClaudeCodeAdapter implements CliAdapter {
             if (ev.type === 'result') {
               if (typeof ev.result === 'string') resultText = ev.result;
               if (ev.structured_output !== undefined) structuredOutput = ev.structured_output;
+              const extracted = extractClaudeUsage(ev, resolvedModel);
+              if (extracted) usage = extracted;
             }
             if (ev.type === 'assistant' && ev.message && typeof ev.message === 'object') {
-              const msg = ev.message as { content?: Array<{ type?: string; text?: string }> };
+              const msg = ev.message as { model?: string; content?: Array<{ type?: string; text?: string }> };
+              if (typeof msg.model === 'string' && msg.model) resolvedModel = msg.model;
               for (const block of msg.content ?? []) {
                 if (block.type === 'text' && typeof block.text === 'string') {
                   assistantChunks.push(block.text);
@@ -313,6 +515,7 @@ export class ClaudeCodeAdapter implements CliAdapter {
         logFilePath: options.logFilePath,
         aborted: Boolean(res.aborted),
         ...(rateLimitReason ? { rateLimitReason } : {}),
+        ...(usage ? { usage } : {}),
       };
     } finally {
       logger.close();

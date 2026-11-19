@@ -17,16 +17,40 @@ importers:
 
   packages/cli:
     dependencies:
+      '@fastify/static':
+        specifier: 10.1.11
+        version: 10.1.11
+      '@fastify/websocket':
+        specifier: 11.3.7
+        version: 11.3.7
+      better-sqlite3:
+        specifier: 13.2.0
+        version: 13.2.0
+      drizzle-orm:
+        specifier: 0.45.4
+        version: 0.45.4(@types/better-sqlite3@7.6.13)(better-sqlite3@13.2.0)
+      fastify:
+        specifier: 5.12.8
+        version: 5.12.8
+      simple-git:
+        specifier: 4.1.0
+        version: 4.1.0
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
+    devDependencies:
       '@dalang/core':
         specifier: workspace:*
         version: link:../core
       '@dalang/server':
         specifier: workspace:*
         version: link:../server
-    devDependencies:
       '@types/node':
         specifier: ^24.0.0
         version: 24.19.2
+      rolldown:
+        specifier: 1.2.19
+        version: 1.2.19
 
   packages/core:
     dependencies:

@@ -1,0 +1,65 @@
+{
+  "name": "review-fix-round",
+  "description": "Round 1 fails verify and review; coder fixes the bug in round 2; review passes and merges cleanly.",
+  "turns": [
+    {
+      "id": "coder-round-1-buggy",
+      "match": {
+        "provider": "codex",
+        "promptContains": "T-001"
+      },
+      "files": {
+        "src/slug.mjs": "export function slugify(s) { return s.toLowerCase(); }\n",
+        "src/slug.test.mjs": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { slugify } from './slug.mjs';\ntest('slugify replaces spaces', () => assert.equal(slugify('Hello World'), 'hello-world'));\n",
+        ".dalang/tasks/T-001/result.json": "{\"task_id\":\"T-001\",\"status\":\"completed\",\"changed_files\":[\"src/slug.mjs\",\"src/slug.test.mjs\"],\"summary\":\"Initial slugify draft\",\"notes\":[],\"blockers\":[],\"verify_command\":\"node --test src/slug.test.mjs\",\"verify_exit_code\":1}"
+      },
+      "stdoutLines": [
+        "{\"type\":\"thread.started\",\"thread_id\":\"codex-coder-1\"}",
+        "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"Wrote initial slugify.\"}}",
+        "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1800,\"cached_input_tokens\":600,\"output_tokens\":220}}"
+      ],
+      "exitCode": 0
+    },
+    {
+      "id": "reviewer-round-1-fail",
+      "match": {
+        "provider": "claude-code",
+        "promptContains": "code review round 1"
+      },
+      "stdoutLines": [
+        "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-rev-1\",\"model\":\"claude-opus-5-5\"}",
+        "{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"claude-rev-1\",\"result\":\"{\\\"task_id\\\":\\\"T-001\\\",\\\"status\\\":\\\"fail\\\",\\\"verify_exit_code\\\":1,\\\"summary\\\":\\\"Spaces are not converted to hyphens.\\\",\\\"findings\\\":[{\\\"severity\\\":\\\"critical\\\",\\\"file\\\":\\\"src/slug.mjs\\\",\\\"note\\\":\\\"Replace whitespace runs with hyphens.\\\"}]}\",\"usage\":{\"input_tokens\":900,\"output_tokens\":150,\"cache_read_input_tokens\":1200,\"cache_creation_input_tokens\":0},\"total_cost_usd\":0.0071}"
+      ],
+      "exitCode": 0
+    },
+    {
+      "id": "coder-fix-round-2",
+      "match": {
+        "provider": "codex",
+        "promptContains": "Review round 1 FAILED"
+      },
+      "files": {
+        "src/slug.mjs": "export function slugify(s) { return s.trim().toLowerCase().replace(/\\s+/g, '-'); }\n",
+        ".dalang/tasks/T-001/result.json": "{\"task_id\":\"T-001\",\"status\":\"completed\",\"changed_files\":[\"src/slug.mjs\"],\"summary\":\"Fixed whitespace replacement in slugify\",\"notes\":[],\"blockers\":[],\"verify_command\":\"node --test src/slug.test.mjs\",\"verify_exit_code\":0}"
+      },
+      "stdoutLines": [
+        "{\"type\":\"thread.started\",\"thread_id\":\"codex-coder-1\"}",
+        "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"Fixed slugify and tests pass.\"}}",
+        "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":2100,\"cached_input_tokens\":1400,\"output_tokens\":190}}"
+      ],
+      "exitCode": 0
+    },
+    {
+      "id": "reviewer-round-2-pass",
+      "match": {
+        "provider": "claude-code",
+        "promptContains": "code review round 2"
+      },
+      "stdoutLines": [
+        "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-rev-2\",\"model\":\"claude-opus-5-5\"}",
+        "{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"claude-rev-2\",\"result\":\"{\\\"task_id\\\":\\\"T-001\\\",\\\"status\\\":\\\"pass\\\",\\\"verify_exit_code\\\":0,\\\"summary\\\":\\\"Verify passes and slugify handles spaces properly.\\\",\\\"findings\\\":[]}\",\"usage\":{\"input_tokens\":850,\"output_tokens\":120,\"cache_read_input_tokens\":1500,\"cache_creation_input_tokens\":0},\"total_cost_usd\":0.0064}"
+      ],
+      "exitCode": 0
+    }
+  ]
+}

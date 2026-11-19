@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { ProviderId } from '@dalang/shared';
+import type { ProviderId, SandboxEngine } from '@dalang/shared';
 import type { CliRunner, RunCommandOptions, RunCommandResult } from './types.js';
 
 export function buildPathEnv(extraEnv?: Record<string, string | undefined>): NodeJS.ProcessEnv {
@@ -193,6 +193,15 @@ export interface BwrapInvocation {
   command: string;
   args: string[];
   sandboxed: boolean;
+  engine?: SandboxEngine;
+}
+
+export interface SandboxWrapOptions {
+  dbusSocket?: string;
+  readOnly?: boolean;
+  bindProviderDirs?: boolean;
+  configDir?: string | null;
+  platform?: NodeJS.Platform;
 }
 
 const PROVIDER_STATE_DIRS: Record<ProviderId, string[]> = {
@@ -201,9 +210,69 @@ const PROVIDER_STATE_DIRS: Record<ProviderId, string[]> = {
   antigravity: ['.gemini'],
 };
 
-export async function findBwrap(runner: CliRunner): Promise<string | null> {
-  if (process.platform !== 'linux') return null;
+const MASKED_CREDENTIAL_DIRS = ['.ssh', '.gnupg', '.aws', '.docker', '.kube', '.config/gcloud'] as const;
+const MASKED_CREDENTIAL_FILES = ['.git-credentials', '.netrc'] as const;
+
+export function normalizeConfigDir(configDir?: string | null): string | null {
+  const trimmed = configDir?.trim();
+  if (!trimmed) return null;
+  if (trimmed === '~') return os.homedir();
+  if (trimmed.startsWith('~/')) return path.resolve(os.homedir(), trimmed.slice(2));
+  return path.resolve(trimmed);
+}
+
+/**
+ * Environment variables that direct a CLI to a profile-specific account directory.
+ */
+export function buildProviderAccountEnv(
+  provider: ProviderId,
+  configDir?: string | null,
+): Record<string, string | undefined> {
+  const resolved = normalizeConfigDir(configDir);
+  if (!resolved) return {};
+  if (provider === 'claude-code') {
+    return { CLAUDE_CONFIG_DIR: resolved };
+  }
+  if (provider === 'codex') {
+    return { CODEX_HOME: resolved };
+  }
+  return {
+    AGY_CONFIG_DIR: resolved,
+    XDG_CONFIG_HOME: resolved,
+  };
+}
+
+export async function findBwrap(
+  runner: CliRunner,
+  platform: NodeJS.Platform = process.platform,
+): Promise<string | null> {
+  if (platform !== 'linux') return null;
   return runner.which('bwrap');
+}
+
+export async function findSandboxExec(
+  runner: CliRunner,
+  platform: NodeJS.Platform = process.platform,
+): Promise<string | null> {
+  if (platform !== 'darwin') return null;
+  const fromPath = await runner.which('sandbox-exec');
+  if (fromPath) return fromPath;
+  return fs.existsSync('/usr/bin/sandbox-exec') ? '/usr/bin/sandbox-exec' : null;
+}
+
+export async function detectSandboxEngine(
+  runner: CliRunner,
+  platform: NodeJS.Platform = process.platform,
+): Promise<{ engine: SandboxEngine; binaryPath: string | null }> {
+  if (platform === 'linux') {
+    const bwrapPath = await findBwrap(runner, platform);
+    return bwrapPath ? { engine: 'bwrap', binaryPath: bwrapPath } : { engine: 'none', binaryPath: null };
+  }
+  if (platform === 'darwin') {
+    const sbPath = await findSandboxExec(runner, platform);
+    return sbPath ? { engine: 'sandbox-exec', binaryPath: sbPath } : { engine: 'none', binaryPath: null };
+  }
+  return { engine: 'none', binaryPath: null };
 }
 
 export interface DbusProxy {
@@ -241,17 +310,119 @@ export async function startDbusProxy(runner: CliRunner): Promise<DbusProxy | nul
   return { socketPath, stop };
 }
 
+function escapeSbpl(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+/**
+ * Build a macOS Seatbelt (SBPL) profile with the same confinement guarantees as `bwrap`:
+ * - Deny writes everywhere by default; allow writes only to projectPath (unless readOnly), temp dirs, /dev/null,
+ *   and the active provider state/config directory.
+ * - Deny writes to `.git/hooks` or a worktree `.git` link file.
+ * - Deny reading credential directories and files (`~/.ssh`, `~/.gnupg`, `~/.aws`, etc.).
+ */
+export function buildMacOsSeatbeltProfile(
+  provider: ProviderId | null,
+  projectPath: string,
+  options: SandboxWrapOptions = {},
+): string {
+  const home = os.homedir();
+  const resolvedProject = path.resolve(projectPath);
+  const rules: string[] = [
+    '(version 1)',
+    '(allow default)',
+    '(deny file-write*)',
+    '(allow file-write* (literal "/dev/null") (literal "/dev/tty") (literal "/dev/dtracehelper"))',
+    '(allow file-write* (subpath "/tmp") (subpath "/private/tmp") (subpath "/private/var/folders"))',
+  ];
+
+  const tmpDir = os.tmpdir();
+  if (tmpDir && tmpDir !== '/tmp' && tmpDir !== '/private/tmp') {
+    rules.push(`(allow file-write* (subpath "${escapeSbpl(tmpDir)}"))`);
+  }
+
+  if (!options.readOnly) {
+    rules.push(`(allow file-write* (subpath "${escapeSbpl(resolvedProject)}"))`);
+  }
+
+  if (provider && options.bindProviderDirs !== false) {
+    const customConfig = normalizeConfigDir(options.configDir);
+    if (customConfig) {
+      rules.push(`(allow file-write* (subpath "${escapeSbpl(customConfig)}"))`);
+    } else {
+      for (const rel of PROVIDER_STATE_DIRS[provider]) {
+        const abs = path.join(home, rel);
+        rules.push(`(allow file-write* (subpath "${escapeSbpl(abs)}") (literal "${escapeSbpl(abs)}"))`);
+      }
+    }
+  }
+
+  // Mask credential folders and files from agent reads, matching bwrap.
+  for (const rel of MASKED_CREDENTIAL_DIRS) {
+    const abs = path.join(home, rel);
+    if (!resolvedProject.startsWith(abs + path.sep)) {
+      rules.push(`(deny file-read* (subpath "${escapeSbpl(abs)}"))`);
+    }
+  }
+  for (const rel of MASKED_CREDENTIAL_FILES) {
+    const abs = path.join(home, rel);
+    rules.push(`(deny file-read* (literal "${escapeSbpl(abs)}"))`);
+  }
+
+  // Prevent sandboxed agents from writing `.git/hooks` or tampering with a worktree `.git` file.
+  const dotGit = path.join(resolvedProject, '.git');
+  if (!options.readOnly && fs.existsSync(dotGit)) {
+    const stat = fs.lstatSync(dotGit);
+    if (stat.isFile() || stat.isSymbolicLink()) {
+      rules.push(`(deny file-write* (literal "${escapeSbpl(dotGit)}"))`);
+    } else if (stat.isDirectory()) {
+      rules.push(`(deny file-write* (subpath "${escapeSbpl(path.join(dotGit, 'hooks'))}"))`);
+    }
+  }
+
+  return rules.join('\n');
+}
+
+export async function wrapWithSandboxExec(
+  runner: CliRunner,
+  provider: ProviderId | null,
+  projectPath: string,
+  command: string,
+  args: string[],
+  options: SandboxWrapOptions = {},
+): Promise<BwrapInvocation> {
+  const platform = options.platform ?? process.platform;
+  const sbPath = await findSandboxExec(runner, platform);
+  if (!sbPath) {
+    return { command, args, sandboxed: false, engine: 'none' };
+  }
+
+  const customConfig = normalizeConfigDir(options.configDir);
+  if (customConfig && !fs.existsSync(customConfig)) {
+    fs.mkdirSync(customConfig, { recursive: true });
+  }
+
+  const profile = buildMacOsSeatbeltProfile(provider, projectPath, options);
+  return {
+    command: sbPath,
+    args: ['-p', profile, command, ...args],
+    sandboxed: true,
+    engine: 'sandbox-exec',
+  };
+}
+
 export async function wrapWithBwrap(
   runner: CliRunner,
   provider: ProviderId | null,
   projectPath: string,
   command: string,
   args: string[],
-  options: { dbusSocket?: string; readOnly?: boolean; bindProviderDirs?: boolean } = {},
+  options: SandboxWrapOptions = {},
 ): Promise<BwrapInvocation> {
-  const bwrapPath = await findBwrap(runner);
+  const platform = options.platform ?? process.platform;
+  const bwrapPath = await findBwrap(runner, platform);
   if (!bwrapPath) {
-    return { command, args, sandboxed: false };
+    return { command, args, sandboxed: false, engine: 'none' };
   }
 
   const home = os.homedir();
@@ -287,22 +458,33 @@ export async function wrapWithBwrap(
 
   // Credentials no agent run needs; DALANG itself does the git pushing and signing.
   // ~/.npmrc stays visible on purpose: private-registry installs need its token.
-  for (const rel of ['.ssh', '.gnupg', '.aws', '.docker', '.kube', '.config/gcloud']) {
+  for (const rel of MASKED_CREDENTIAL_DIRS) {
     const abs = path.join(home, rel);
     if (fs.existsSync(abs) && !projectPath.startsWith(abs + path.sep)) {
       bwrapArgs.push('--tmpfs', abs);
     }
   }
-  for (const rel of ['.git-credentials', '.netrc']) {
+  for (const rel of MASKED_CREDENTIAL_FILES) {
     const abs = path.join(home, rel);
     if (fs.existsSync(abs)) bwrapArgs.push('--ro-bind', '/dev/null', abs);
   }
 
   if (provider && options.bindProviderDirs !== false) {
-    for (const rel of PROVIDER_STATE_DIRS[provider]) {
-      const abs = path.join(home, rel);
-      if (fs.existsSync(abs)) {
-        bwrapArgs.push('--bind', abs, abs);
+    const customConfig = normalizeConfigDir(options.configDir);
+    if (customConfig) {
+      if (!fs.existsSync(customConfig)) {
+        fs.mkdirSync(customConfig, { recursive: true });
+      }
+      bwrapArgs.push('--bind', customConfig, customConfig);
+      for (const [envKey, envVal] of Object.entries(buildProviderAccountEnv(provider, customConfig))) {
+        if (envVal) bwrapArgs.push('--setenv', envKey, envVal);
+      }
+    } else {
+      for (const rel of PROVIDER_STATE_DIRS[provider]) {
+        const abs = path.join(home, rel);
+        if (fs.existsSync(abs)) {
+          bwrapArgs.push('--bind', abs, abs);
+        }
       }
     }
   }
@@ -327,5 +509,27 @@ export async function wrapWithBwrap(
     command: bwrapPath,
     args: bwrapArgs,
     sandboxed: true,
+    engine: 'bwrap',
   };
+}
+
+/**
+ * Cross-platform sandbox wrapper: uses `bwrap` on Linux and `sandbox-exec` on macOS.
+ */
+export async function wrapWithSandbox(
+  runner: CliRunner,
+  provider: ProviderId | null,
+  projectPath: string,
+  command: string,
+  args: string[],
+  options: SandboxWrapOptions = {},
+): Promise<BwrapInvocation> {
+  const platform = options.platform ?? process.platform;
+  if (platform === 'linux') {
+    return wrapWithBwrap(runner, provider, projectPath, command, args, options);
+  }
+  if (platform === 'darwin') {
+    return wrapWithSandboxExec(runner, provider, projectPath, command, args, options);
+  }
+  return { command, args, sandboxed: false, engine: 'none' };
 }

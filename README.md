@@ -2,7 +2,7 @@
 
 > One goal in, a running app out. A local web tool that orchestrates Claude Code, Codex, and Antigravity CLI as a small team.
 
-**Status: v0.4.0 (Paralel) is released: projects, Discuss, Agree, List (Kanban + Dependency Graph), Assign (Routing, Waves, File-Overlap & Concurrency Pool), Navigate (Concurrent Worktree Execution, Live Inspector & Per-Task Stop), Guard (Diff Viewer, Gate 2 Approve/Reject, Post-Merge Integration), and Providers (Profiles, Routing CRUD, Proactive Quota Fallback & Usage Statistics). Verified with scripted unit and API tests and one real-model run of two parallel tasks; a real quota-limit reroute has not been observed. Next: v0.5 (distribution) and v0.6 (UI revamp with a first-run wizard and Indonesian). See [docs/PRD.md](docs/PRD.md) for the full roadmap.**
+**Status: v0.5.0 (Polish & Distribution) is implemented: `npx dalang` packaging and `dalang doctor`, multiple accounts per provider (`configDir`), rich model details from the CLIs (display names, `[1m]` variants, effort levels up to `max`, unavailable saved model indicator), token & API-equivalent cost statistics, process-level replay tests (quota reroute, review fix round, parallel merge, and headless browser E2E), side-effect-free health checks, hybrid hidden checkpoint refs (`refs/dalang/checkpoints/*`), optional push and GitHub PR after merge (`gh`), macOS `sandbox-exec` confinement, and full documentation. Next: v0.6 (UI revamp with a first-run wizard and Indonesian). See [docs/PRD.md](docs/PRD.md) for the full roadmap.**
 
 DALANG is named after the traditional Javanese puppeteer who directs the whole show. The name is also an acronym for the workflow:
 
@@ -34,7 +34,7 @@ Developers with several coding-agent subscriptions run them by hand, one after a
 - **Official CLIs only.** DALANG spawns the `claude`, `codex`, and `agy` binaries. It never calls model APIs directly and never reuses their OAuth tokens.
 - **Provider and model are separate settings.** Each agent profile sets provider, model, effort, role prompt, permission mode, timeouts, and parallelism. Routing rules map task role and complexity to a profile, with a fallback.
 - **Decisions come from files, not stdout.** Agents write JSON to `.dalang/`, validated with Zod. Invalid output is sent back for up to two retries.
-- **Sandboxed runs (Linux).** Each CLI runs inside a `bwrap` wrapper so it can only write inside the project folder, with credential folders such as `~/.ssh` hidden. macOS and Windows have no sandbox yet, so runs there are unconfined and the UI says so. The known gaps are listed in the PRD.
+- **Sandboxed runs (Linux & macOS).** Each CLI runs inside `bwrap` (Linux) or `sandbox-exec` (macOS) so it can only write inside the project folder and its own config dir, with credential folders such as `~/.ssh` hidden. Windows runs through WSL 2 in v0.5. See [docs/SANDBOX.md](docs/SANDBOX.md).
 
 Stack: TypeScript 7, Node.js 26 LTS, Fastify 5 + WebSocket, React 19 + Vite 8 + shadcn/ui on Tailwind 4, SQLite (better-sqlite3) + Drizzle, Zod 4, simple-git. The UI follows [docs/DESIGN.md](docs/DESIGN.md).
 
@@ -50,17 +50,26 @@ Stack: TypeScript 7, Node.js 26 LTS, Fastify 5 + WebSocket, React 19 + Vite 8 + 
 
 ## Run it
 
-Requires Node.js 26, pnpm 12, and at least one logged-in CLI (`claude`, `codex`, or `agy`). On Linux, install `bubblewrap` (and `xdg-dbus-proxy` if you use agy) so agent runs are confined to the project folder.
+Requires Node.js 24+ (Node.js 26 LTS recommended; checked on 24 and 26), git, and at least one logged-in CLI (`claude`, `codex`, or `agy`). On Linux, install `bubblewrap` (and `xdg-dbus-proxy` if you use agy); on macOS `/usr/bin/sandbox-exec` is used automatically; on Windows run inside WSL 2.
+
+```bash
+# Check environment, sandbox, and CLI logins
+npx dalang doctor
+
+# Start the local server (http://127.0.0.1:4173) and open the browser
+npx dalang
+```
+
+Or run from a local clone:
 
 ```bash
 pnpm install
 pnpm build
+pnpm --filter dalang doctor
 pnpm start        # serves http://127.0.0.1:4173 and opens the browser
 ```
 
-`pnpm test` runs the unit and API tests, which use scripted agents and spend no quota.
-
-Planned install for releases: `npx dalang`. The npm package is not published yet; run from a clone for now.
+`pnpm test` runs the unit, replay, browser E2E, and CLI doctor tests without spending model quota. See [docs/INSTALL.md](docs/INSTALL.md) for full platform setup.
 
 ### A first run
 
@@ -114,7 +123,7 @@ Run on 18 and 19 Nov 2026 on Linux, through the HTTP API and the real sandbox, o
 | v0.2 Jalan | Routing and dispatch, sequential execution, live logs, git checkpoints, stop, retry, resume, rollback | Released |
 | v0.3 Kawal | Reviewer and fix loop, diff view, approve merge, post-merge integration, profiles and routing in UI | Released |
 | v0.4 Paralel | Worktree per task, dependency graph, per-provider limits, quota fallback, usage stats | Released (one real two-task parallel run; quota reroute scripted only) |
-| v0.5 | `npx dalang` and `dalang doctor`, several accounts per provider, token and cost statistics, replay tests, macOS sandbox, push and pull request | Planned |
+| v0.5 | `npx dalang` and `dalang doctor`, several accounts per provider, model details, token & cost statistics, replay & browser tests, hidden checkpoint refs, macOS sandbox, push and pull request, docs | Implemented |
 | v0.6 | UI revamp: first-run wizard, guided five-step flow, wayang stage during work, Config page, Indonesian and English | Planned |
 | v0.7 | Agent delegation: a running agent splits its task into subtasks on other profiles over MCP | Planned |
 | v0.8 | Session protocols, steering, context handoff on fallback, native Windows | Planned |
@@ -122,6 +131,10 @@ Run on 18 and 19 Nov 2026 on Linux, through the HTTP API and the real sandbox, o
 
 ## Documentation
 
+- [Installation & platform setup](docs/INSTALL.md)
+- [Providers, models & multi-account setup](docs/PROVIDERS.md)
+- [Sandbox & security model](docs/SANDBOX.md)
+- [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Product requirements](docs/PRD.md)
 - [Design direction](docs/DESIGN.md)
 - [Changelog](CHANGELOG.md)

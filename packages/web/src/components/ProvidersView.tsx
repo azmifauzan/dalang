@@ -5,12 +5,13 @@ import type {
   EffortLevel,
   PermissionMode,
   ProviderId,
+  ProviderModelInfo,
   ProviderRuntimeStateDTO,
   RoutingRuleDTO,
   TaskComplexity,
   TaskRole,
 } from '@dalang/shared';
-import { splitEffortModel } from '@dalang/shared';
+import { EFFORT_LEVEL_ORDER, splitEffortModel } from '@dalang/shared';
 import { api } from '../lib/api.js';
 import { EmptyPanel, ErrorPanel, LoadingPanel, ModalDialog } from './StateViews.js';
 import { Badge } from '@/components/ui/badge';
@@ -32,6 +33,7 @@ interface ProfileFormState {
   maxParallel: number;
   maxReviewRounds: number;
   fallbackProfileId: string;
+  configDir: string;
   rolePrompt: string;
   antigravityKeyringAccess: boolean;
 }
@@ -50,10 +52,55 @@ const PROVIDER_OPTIONS: Array<{ value: ProviderId; label: string }> = [
   { value: 'antigravity', label: 'Antigravity (agy)' },
 ];
 
-const EFFORT_OPTIONS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh'];
+const EFFORT_OPTIONS: EffortLevel[] = [...EFFORT_LEVEL_ORDER];
 const PERMISSION_OPTIONS: PermissionMode[] = ['workspace-write', 'read-only', 'accept-edits'];
 const ROLE_OPTIONS: TaskRole[] = ['lead', 'planner', 'engineer', 'qa', 'reviewer'];
 const COMPLEXITY_OPTIONS: TaskComplexity[] = ['low', 'medium', 'high'];
+
+function formatTokens(count: number): string {
+  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(2)}M`;
+  if (count >= 1_000) return `${(count / 1_000).toFixed(1)}k`;
+  return String(count);
+}
+
+function formatUsd(cost: number): string {
+  if (cost <= 0) return '$0.00';
+  if (cost < 0.01) return `$${cost.toFixed(4)}`;
+  return `$${cost.toFixed(2)}`;
+}
+
+function configDirEnvHint(provider: ProviderId): string {
+  if (provider === 'claude-code') return 'Sets CLAUDE_CONFIG_DIR for a separate Claude account.';
+  if (provider === 'codex') return 'Sets CODEX_HOME for a separate Codex account.';
+  return 'Sets AGY_CONFIG_DIR for a separate Antigravity account profile.';
+}
+
+function matchProviderModel(
+  models: ProviderModelInfo[],
+  savedModel: string,
+  isAgy: boolean,
+): { modelInfo: ProviderModelInfo | null; activeVariantValue: string | null } {
+  const trimmed = savedModel.trim();
+  if (!trimmed) return { modelInfo: null, activeVariantValue: null };
+
+  if (isAgy) {
+    const split = splitEffortModel(trimmed);
+    const base = split ? split.base : trimmed;
+    const found = models.find((m) => m.id === base || m.value === base) ?? null;
+    return { modelInfo: found, activeVariantValue: null };
+  }
+
+  for (const m of models) {
+    if (m.id === trimmed || m.value === trimmed || m.resolvedModel === trimmed) {
+      return { modelInfo: m, activeVariantValue: null };
+    }
+    const variant = m.variants.find((v) => v.value === trimmed);
+    if (variant) {
+      return { modelInfo: m, activeVariantValue: variant.value };
+    }
+  }
+  return { modelInfo: null, activeVariantValue: null };
+}
 
 function formatStatsDuration(ms: number | null): string {
   if (ms === null || ms < 0) return 'n/a';
@@ -140,6 +187,7 @@ export function ProvidersView() {
     maxParallel: 1,
     maxReviewRounds: 2,
     fallbackProfileId: '',
+    configDir: '',
     rolePrompt: '',
     antigravityKeyringAccess: keyringAccess,
   });
@@ -157,43 +205,61 @@ export function ProvidersView() {
   const [routingFeedback, setRoutingFeedback] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const [routingModalError, setRoutingModalError] = useState<string | null>(null);
 
-  const modelSuggestions = useMemo(() => {
+  const providerModels = useMemo(() => {
     const provider = providers.find((p) => p.id === profileForm.provider);
     return provider?.models ?? [];
   }, [providers, profileForm.provider]);
 
-  // Antigravity model ids end in their level (gemini-4-neon-high). The model list shows the base name and the
-  // effort field picks the level, so there is one control per setting.
   const isAgy = profileForm.provider === 'antigravity';
-  const agyLevels = useMemo(() => {
-    const byBase = new Map<string, EffortLevel[]>();
-    for (const m of modelSuggestions) {
-      const parts = splitEffortModel(m);
-      if (!parts) continue;
-      byBase.set(parts.base, [...(byBase.get(parts.base) ?? []), parts.level]);
-    }
-    for (const [base, levels] of byBase) {
-      byBase.set(base, EFFORT_OPTIONS.filter((l) => levels.includes(l)));
-    }
-    return byBase;
-  }, [modelSuggestions]);
-  const modelChoices = isAgy
-    ? [...new Set(modelSuggestions.map((m) => splitEffortModel(m)?.base ?? m))]
-    : modelSuggestions;
+  const matchedModel = useMemo(
+    () => matchProviderModel(providerModels, profileForm.model, isAgy),
+    [providerModels, profileForm.model, isAgy],
+  );
+  const selectedModelInfo = matchedModel.modelInfo;
+  const activeVariantValue = matchedModel.activeVariantValue;
   const currentSplit = isAgy ? splitEffortModel(profileForm.model) : null;
-  const modelSelectValue = currentSplit ? currentSplit.base : profileForm.model;
-  const effortChoices = currentSplit ? (agyLevels.get(currentSplit.base) ?? EFFORT_OPTIONS) : EFFORT_OPTIONS;
-  const effortLocked = isAgy && profileForm.model !== '' && !currentSplit;
+  const modelSelectValue = selectedModelInfo
+    ? selectedModelInfo.id
+    : currentSplit
+      ? currentSplit.base
+      : profileForm.model;
+  const savedModelUnavailable = Boolean(
+    profileForm.model.trim() && providerModels.length > 0 && !selectedModelInfo,
+  );
+  const effortChoices: EffortLevel[] = selectedModelInfo
+    ? selectedModelInfo.supportedEffortLevels.length > 0
+      ? selectedModelInfo.supportedEffortLevels
+      : []
+    : EFFORT_OPTIONS;
+  const effortLocked = Boolean(selectedModelInfo && selectedModelInfo.supportedEffortLevels.length === 0);
 
-  const changeModel = (value: string) =>
+  const changeModel = (selectedId: string) =>
     setProfileForm((f) => {
-      const levels = isAgy ? agyLevels.get(value) : undefined;
-      if (!levels || levels.length === 0) return { ...f, model: value };
-      const level = levels.includes(f.effort) ? f.effort : levels.includes('high') ? 'high' : levels[0];
-      return { ...f, model: `${value}-${level}`, effort: level };
+      if (!selectedId) return { ...f, model: '' };
+      const info = providerModels.find((m) => m.id === selectedId);
+      if (!info) return { ...f, model: selectedId };
+      const nextEffort: EffortLevel =
+        info.defaultEffort ??
+        (info.supportedEffortLevels.includes(f.effort)
+          ? f.effort
+          : info.supportedEffortLevels[0] ?? f.effort);
+      if (isAgy && info.supportedEffortLevels.length > 0) {
+        return { ...f, model: `${info.id}-${nextEffort}`, effort: nextEffort };
+      }
+      return { ...f, model: info.value, effort: nextEffort };
     });
+
+  const toggleVariant = (variantValue: string, enabled: boolean) =>
+    setProfileForm((f) => {
+      if (!selectedModelInfo) return f;
+      return { ...f, model: enabled ? variantValue : selectedModelInfo.value };
+    });
+
   const changeEffort = (level: EffortLevel) =>
     setProfileForm((f) => {
+      if (isAgy && selectedModelInfo && selectedModelInfo.supportedEffortLevels.length > 0) {
+        return { ...f, effort: level, model: `${selectedModelInfo.id}-${level}` };
+      }
       const parts = isAgy ? splitEffortModel(f.model) : null;
       return { ...f, effort: level, model: parts ? `${parts.base}-${level}` : f.model };
     });
@@ -218,6 +284,7 @@ export function ProvidersView() {
         maxParallel: form.maxParallel,
         maxReviewRounds: form.maxReviewRounds,
         fallbackProfileId: form.fallbackProfileId || null,
+        configDir: form.configDir.trim() || null,
         rolePrompt: form.rolePrompt,
       };
       const saved = form.id
@@ -313,6 +380,7 @@ export function ProvidersView() {
       maxParallel: 1,
       maxReviewRounds: 2,
       fallbackProfileId: '',
+      configDir: '',
       rolePrompt: '',
       antigravityKeyringAccess: keyringAccess,
     });
@@ -333,6 +401,7 @@ export function ProvidersView() {
       maxParallel: prof.maxParallel,
       maxReviewRounds: prof.maxReviewRounds ?? 2,
       fallbackProfileId: prof.fallbackProfileId ?? '',
+      configDir: prof.configDir ?? '',
       rolePrompt: prof.rolePrompt,
       antigravityKeyringAccess: keyringAccess,
     });
@@ -466,12 +535,16 @@ export function ProvidersView() {
                       <dd className="text-right text-xs">{p.authSummary}</dd>
                     </div>
                     <div className="flex justify-between gap-2">
-                      <dt style={{ color: 'var(--text-secondary)' }}>bwrap sandbox</dt>
+                      <dt style={{ color: 'var(--text-secondary)' }}>Sandbox</dt>
                       <dd
                         className="text-xs font-semibold"
                         style={{ color: p.sandboxReady ? 'var(--pass)' : 'var(--error)' }}
                       >
-                        {p.sandboxReady ? 'Available' : 'Unavailable'}
+                        {p.sandboxReady
+                          ? p.sandboxEngine === 'sandbox-exec'
+                            ? 'sandbox-exec (macOS)'
+                            : 'bwrap (Linux)'
+                          : 'Unavailable'}
                       </dd>
                     </div>
                     {runtime && (
@@ -589,7 +662,13 @@ export function ProvidersView() {
                     className="mt-4 border-t pt-3 text-xs"
                     style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
                   >
-                    Suggested models: <span className="font-mono-token">{p.models.slice(0, 4).join(', ')}</span>
+                    Available models ({p.models.length}):{' '}
+                    <span className="font-mono-token">
+                      {p.models
+                        .slice(0, 4)
+                        .map((m) => m.displayName)
+                        .join(', ')}
+                    </span>
                   </div>
                 )}
               </article>
@@ -728,6 +807,9 @@ export function ProvidersView() {
                         <div className="flex flex-wrap items-center gap-2">
                           <span>{prof.name}</span>
                           {prof.isDefault && <Badge>Default</Badge>}
+                          {prof.configDir && (
+                            <Badge title={prof.configDir}>Custom account</Badge>
+                          )}
                         </div>
                       </td>
                       <td className="px-4 py-3 font-mono-token text-xs">{prof.provider}</td>
@@ -1011,7 +1093,7 @@ export function ProvidersView() {
         {statistics && (
           <div className="space-y-4">
             {/* Totals strip */}
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-6">
               <div
                 className="rounded-md border p-3"
                 style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
@@ -1056,12 +1138,28 @@ export function ProvidersView() {
                 className="rounded-md border p-3"
                 style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
               >
-                <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>Rate limit hits</div>
-                <div
-                  className="mt-1 font-mono-token text-lg font-semibold"
-                  style={{ color: statistics.totals.rateLimitEvents > 0 ? 'var(--error)' : 'inherit' }}
-                >
-                  {statistics.totals.rateLimitEvents}
+                <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>Captured tokens</div>
+                <div className="mt-1 font-mono-token text-lg font-semibold">
+                  {formatTokens(statistics.totals.totalTokens)}
+                </div>
+                <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+                  {statistics.totals.cacheHitRate !== null
+                    ? `${statistics.totals.cacheHitRate}% cache hit`
+                    : 'No token data yet'}
+                </div>
+              </div>
+              <div
+                className="rounded-md border p-3"
+                style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
+              >
+                <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+                  Est. cost (API-equiv)
+                </div>
+                <div className="mt-1 font-mono-token text-lg font-semibold">
+                  {formatUsd(statistics.totals.estimatedCostUsd)}
+                </div>
+                <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+                  Not your subscription bill
                 </div>
               </div>
             </div>
@@ -1140,6 +1238,66 @@ export function ProvidersView() {
                   ))}
                 </tbody>
               </table>
+            </div>
+
+            {/* Per-model tokens & API-equivalent cost breakdown */}
+            <div
+              className="overflow-x-auto rounded-md border"
+              style={{ borderColor: 'var(--border-subtle)', backgroundColor: 'var(--bg-surface)' }}
+            >
+              <div
+                className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3"
+                style={{ borderColor: 'var(--border-subtle)', backgroundColor: 'var(--bg-well)' }}
+              >
+                <h3 className="text-sm font-semibold">Tokens & Estimated Cost by Model</h3>
+                <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+                  API-equivalent estimate from CLI stream usage, not your subscription bill.
+                </span>
+              </div>
+              {statistics.models.length === 0 ? (
+                <p className="px-4 py-3 text-xs" style={{ color: 'var(--text-secondary)' }}>
+                  No model runs recorded in this filter window yet.
+                </p>
+              ) : (
+                <table className="w-full border-collapse text-left text-sm">
+                  <thead>
+                    <tr
+                      className="border-b"
+                      style={{ borderColor: 'var(--border-subtle)', backgroundColor: 'var(--bg-well)' }}
+                    >
+                      <th className="px-4 py-2.5 font-semibold">Model</th>
+                      <th className="px-4 py-2.5 font-semibold">Provider</th>
+                      <th className="px-4 py-2.5 font-semibold">Runs</th>
+                      <th className="px-4 py-2.5 font-semibold">Input / Output</th>
+                      <th className="px-4 py-2.5 font-semibold">Cache Read (Hit %)</th>
+                      <th className="px-4 py-2.5 font-semibold">Est. Cost (API-equiv)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {statistics.models.map((ms) => (
+                      <tr
+                        key={`${ms.provider}-${ms.model}`}
+                        className="border-b last:border-b-0"
+                        style={{ borderColor: 'var(--border-subtle)' }}
+                      >
+                        <td className="px-4 py-2.5 font-mono-token text-xs font-semibold">{ms.model}</td>
+                        <td className="px-4 py-2.5 font-mono-token text-xs">{ms.provider}</td>
+                        <td className="px-4 py-2.5 font-mono-token text-xs">{ms.totalRuns}</td>
+                        <td className="px-4 py-2.5 font-mono-token text-xs">
+                          {formatTokens(ms.inputTokens)} in / {formatTokens(ms.outputTokens)} out
+                        </td>
+                        <td className="px-4 py-2.5 font-mono-token text-xs">
+                          {formatTokens(ms.cacheReadTokens)}
+                          {ms.cacheHitRate !== null ? ` (${ms.cacheHitRate}%)` : ''}
+                        </td>
+                        <td className="px-4 py-2.5 font-mono-token text-xs">
+                          {formatUsd(ms.estimatedCostUsd)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
             </div>
 
             {/* Project breakdown & recent limit events */}
@@ -1279,15 +1437,48 @@ export function ProvidersView() {
                 onChange={(e) => changeModel(e.target.value)}
               >
                 <option value="">CLI default</option>
-                {modelSelectValue && !modelChoices.includes(modelSelectValue) && (
-                  <option value={modelSelectValue}>{modelSelectValue} (not in provider list)</option>
+                {savedModelUnavailable && (
+                  <option value={modelSelectValue}>{profileForm.model} (unavailable)</option>
                 )}
-                {modelChoices.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
+                {providerModels.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.displayName}
                   </option>
                 ))}
               </NativeSelect>
+              {savedModelUnavailable && (
+                <p className="text-xs" style={{ color: 'var(--error)' }}>
+                  Saved model &ldquo;{profileForm.model}&rdquo; is no longer listed by this CLI. Pick a current model or keep it as-is.
+                </p>
+              )}
+              {selectedModelInfo?.description && (
+                <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+                  {selectedModelInfo.description}
+                </p>
+              )}
+              {selectedModelInfo && selectedModelInfo.variants.length > 0 && (
+                <div className="pt-1 space-y-1">
+                  {selectedModelInfo.variants.map((variant) => (
+                    <label
+                      key={variant.id}
+                      className="flex min-h-11 cursor-pointer items-center gap-2 text-xs"
+                    >
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 accent-[var(--primary)]"
+                        checked={activeVariantValue === variant.value}
+                        onChange={(e) => toggleVariant(variant.value, e.target.checked)}
+                      />
+                      <span>
+                        Use {variant.label}{' '}
+                        <span className="font-mono-token" style={{ color: 'var(--text-secondary)' }}>
+                          ({variant.value})
+                        </span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className="space-y-1.5">
@@ -1316,20 +1507,34 @@ export function ProvidersView() {
               <NativeSelect
                 id="prof-effort"
                 disabled={effortLocked}
-                value={profileForm.effort}
+                value={effortChoices.includes(profileForm.effort) ? profileForm.effort : (effortChoices[0] ?? profileForm.effort)}
                 onChange={(e) => changeEffort(e.target.value as EffortLevel)}
               >
-                {effortChoices.map((eff) => (
+                {(effortChoices.length > 0 ? effortChoices : EFFORT_OPTIONS).map((eff) => (
                   <option key={eff} value={eff}>
                     {eff}
+                    {selectedModelInfo?.defaultEffort === eff ? ' (default)' : ''}
                   </option>
                 ))}
               </NativeSelect>
               {effortLocked && (
                 <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-                  This model has no effort levels.
+                  This model has no configurable effort levels.
                 </p>
               )}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="prof-config-dir">Account config directory (optional)</Label>
+              <Input
+                id="prof-config-dir"
+                value={profileForm.configDir}
+                onChange={(e) => setProfileForm((f) => ({ ...f, configDir: e.target.value }))}
+                placeholder="Default CLI config directory"
+              />
+              <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+                {configDirEnvHint(profileForm.provider)} Mounted writable in the sandbox with its own cooldown and usage cache.
+              </p>
             </div>
 
             <div className="space-y-1.5">

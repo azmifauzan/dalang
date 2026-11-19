@@ -218,7 +218,9 @@ export function DiscussView({
             />
             <datalist id="lead-model-suggestions">
               {activeProviderModels.map((m) => (
-                <option key={m} value={m} />
+                <option key={m.id} value={m.value}>
+                  {m.displayName}
+                </option>
               ))}
             </datalist>
           </div>

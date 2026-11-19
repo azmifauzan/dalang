@@ -291,6 +291,9 @@ export class ProjectService {
       leadProvider?: ProviderId;
       leadModel?: string | null;
       integrationCommand?: string | null;
+      pushAfterMerge?: boolean;
+      createPrAfterMerge?: boolean;
+      gitRemote?: string | null;
     },
   ): ProjectSummary {
     this.getProjectRow(id);
@@ -301,6 +304,15 @@ export class ProjectService {
         ...(settings.leadModel !== undefined ? { leadModel: settings.leadModel || null } : {}),
         ...(settings.integrationCommand !== undefined
           ? { integrationCommand: settings.integrationCommand?.trim() || null }
+          : {}),
+        ...(settings.pushAfterMerge !== undefined
+          ? { pushAfterMerge: settings.pushAfterMerge }
+          : {}),
+        ...(settings.createPrAfterMerge !== undefined
+          ? { createPrAfterMerge: settings.createPrAfterMerge }
+          : {}),
+        ...(settings.gitRemote !== undefined
+          ? { gitRemote: settings.gitRemote?.trim() || null }
           : {}),
         updatedAt: new Date().toISOString(),
       })
@@ -374,6 +386,9 @@ export class ProjectService {
       leadProvider: row.leadProvider as ProviderId,
       leadModel: row.leadModel,
       integrationCommand: row.integrationCommand ?? null,
+      pushAfterMerge: Boolean(row.pushAfterMerge),
+      createPrAfterMerge: Boolean(row.createPrAfterMerge),
+      gitRemote: row.gitRemote ?? null,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       hasProjectMd,

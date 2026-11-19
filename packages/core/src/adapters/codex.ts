@@ -1,9 +1,29 @@
 import fs from 'node:fs';
 import os from 'node:os';
-import type { ProviderStatus, ProviderUsage, UsageWindow } from '@dalang/shared';
+import {
+  EFFORT_LEVEL_ORDER,
+  type EffortLevel,
+  type ProviderModelInfo,
+  type ProviderStatus,
+  type ProviderUsage,
+  type UsageWindow,
+} from '@dalang/shared';
 import { createTurnLogger } from './logger.js';
-import { findBwrap, wrapWithBwrap } from './sandbox.js';
-import type { AdapterTurnOptions, AdapterTurnResult, CliAdapter, CliRunner } from './types.js';
+import {
+  buildProviderAccountEnv,
+  detectSandboxEngine,
+  findBwrap,
+  wrapWithSandbox,
+} from './sandbox.js';
+import type {
+  AdapterTurnOptions,
+  AdapterTurnResult,
+  CliAdapter,
+  CliRunner,
+  TurnTokenUsage,
+} from './types.js';
+
+const VALID_EFFORTS = new Set<string>(EFFORT_LEVEL_ORDER);
 
 interface CodexRateLimitBucket {
   usedPercent?: number;
@@ -44,15 +64,78 @@ export function parseCodexRateLimits(payload: unknown): UsageWindow[] {
   return windows;
 }
 
-export function parseCodexModelsJson(stdout: string): string[] {
+interface RawCodexModel {
+  slug?: string;
+  display_name?: string;
+  description?: string;
+  visibility?: string;
+  default_reasoning_level?: string;
+  supported_reasoning_levels?: Array<{ effort?: string; description?: string } | string>;
+}
+
+/**
+ * Parse rich model objects from `codex debug models`.
+ */
+export function parseCodexModelsJson(stdout: string): ProviderModelInfo[] {
   try {
-    const parsed = JSON.parse(stdout) as { models?: Array<{ slug?: string; visibility?: string }> };
-    return (parsed.models ?? [])
-      .filter((m) => typeof m.slug === 'string' && (m.visibility ?? 'list') === 'list')
-      .map((m) => m.slug as string);
+    const parsed = JSON.parse(stdout) as { models?: RawCodexModel[] };
+    const out: ProviderModelInfo[] = [];
+    for (const m of parsed.models ?? []) {
+      if (typeof m.slug !== 'string' || !m.slug.trim()) continue;
+      if ((m.visibility ?? 'list') !== 'list') continue;
+      const slug = m.slug.trim();
+      const rawLevels = Array.isArray(m.supported_reasoning_levels)
+        ? m.supported_reasoning_levels.map((entry) =>
+            typeof entry === 'string' ? entry : typeof entry?.effort === 'string' ? entry.effort : '',
+          )
+        : [];
+      const supportedEffortLevels = EFFORT_LEVEL_ORDER.filter((lvl) => rawLevels.includes(lvl));
+      const rawDefault = typeof m.default_reasoning_level === 'string' ? m.default_reasoning_level.trim() : '';
+      const defaultEffort: EffortLevel | null =
+        VALID_EFFORTS.has(rawDefault) && supportedEffortLevels.includes(rawDefault as EffortLevel)
+          ? (rawDefault as EffortLevel)
+          : (supportedEffortLevels[0] ?? null);
+
+      out.push({
+        id: slug,
+        value: slug,
+        resolvedModel: slug,
+        displayName:
+          typeof m.display_name === 'string' && m.display_name.trim() ? m.display_name.trim() : slug,
+        description: typeof m.description === 'string' ? m.description.trim() : '',
+        supportedEffortLevels,
+        defaultEffort,
+        supportsFastMode: false,
+        supportsThinking: supportedEffortLevels.length > 0,
+        variants: [],
+      });
+    }
+    return out;
   } catch {
     return [];
   }
+}
+
+function accumulateCodexUsage(
+  acc: TurnTokenUsage,
+  usageObj: Record<string, unknown>,
+  model?: string | null,
+): TurnTokenUsage {
+  const input = typeof usageObj.input_tokens === 'number' ? usageObj.input_tokens : 0;
+  const cached = typeof usageObj.cached_input_tokens === 'number' ? usageObj.cached_input_tokens : 0;
+  const cacheWrite =
+    typeof usageObj.cache_write_input_tokens === 'number' ? usageObj.cache_write_input_tokens : 0;
+  const output = typeof usageObj.output_tokens === 'number' ? usageObj.output_tokens : 0;
+  // Codex reports `input_tokens` inclusive of `cached_input_tokens` in turn.completed.
+  const uncachedInput = Math.max(0, input - cached);
+  return {
+    inputTokens: acc.inputTokens + uncachedInput,
+    outputTokens: acc.outputTokens + output,
+    cacheReadTokens: acc.cacheReadTokens + cached,
+    cacheWriteTokens: acc.cacheWriteTokens + cacheWrite,
+    costUsd: acc.costUsd,
+    model: model ?? acc.model,
+  };
 }
 
 export class CodexAdapter implements CliAdapter {
@@ -62,11 +145,15 @@ export class CodexAdapter implements CliAdapter {
 
   constructor(private readonly runner: CliRunner) {}
 
-  async checkStatus(): Promise<ProviderStatus> {
+  /**
+   * Side-effect-free health checks: `--version`, `login status`, `debug models`, and read-only
+   * `app-server` JSON-RPC `account/rateLimits/read` run from `os.tmpdir()` and never invoke hooks or turns.
+   */
+  async checkStatus(configDir?: string | null): Promise<ProviderStatus> {
     const checkedAt = new Date().toISOString();
     const binaryPath = await this.runner.which(this.binary);
-    const bwrapPath = await this.runner.which('bwrap');
-    const sandboxReady = Boolean(bwrapPath && process.platform === 'linux');
+    const { engine: sandboxEngine } = await detectSandboxEngine(this.runner);
+    const sandboxReady = sandboxEngine !== 'none';
 
     if (!binaryPath) {
       return {
@@ -79,17 +166,19 @@ export class CodexAdapter implements CliAdapter {
         loggedIn: false,
         authSummary: 'Binary not found in PATH',
         sandboxReady,
+        sandboxEngine,
         models: [],
         usage: { available: false, windows: [], error: 'Not installed' },
         checkedAt,
       };
     }
 
-    const cwd = os.homedir();
+    const cwd = os.tmpdir();
+    const env = buildProviderAccountEnv(this.id, configDir);
     const [verRes, authRes, modelsRes] = await Promise.all([
-      this.runner.run(binaryPath, ['--version'], { cwd, timeoutMs: 5000 }).catch(() => null),
-      this.runner.run(binaryPath, ['login', 'status'], { cwd, timeoutMs: 5000 }).catch(() => null),
-      this.runner.run(binaryPath, ['debug', 'models'], { cwd, timeoutMs: 10000 }).catch(() => null),
+      this.runner.run(binaryPath, ['--version'], { cwd, timeoutMs: 5000, env }).catch(() => null),
+      this.runner.run(binaryPath, ['login', 'status'], { cwd, timeoutMs: 5000, env }).catch(() => null),
+      this.runner.run(binaryPath, ['debug', 'models'], { cwd, timeoutMs: 10000, env }).catch(() => null),
     ]);
     const models = modelsRes ? parseCodexModelsJson(modelsRes.stdout) : [];
 
@@ -99,7 +188,7 @@ export class CodexAdapter implements CliAdapter {
     const authSummary = authOut ? authOut.split(/\r?\n/)[0].trim() : 'Unknown login status';
 
     const usage = loggedIn
-      ? await this.getUsage()
+      ? await this.getUsage(configDir)
       : { available: false, windows: [], error: 'Not logged in' };
 
     return {
@@ -112,18 +201,20 @@ export class CodexAdapter implements CliAdapter {
       loggedIn,
       authSummary,
       sandboxReady,
+      sandboxEngine,
       models,
       usage,
       checkedAt,
     };
   }
 
-  async getUsage(): Promise<ProviderUsage> {
+  async getUsage(configDir?: string | null): Promise<ProviderUsage> {
     const binaryPath = await this.runner.which(this.binary);
     if (!binaryPath) {
       return { available: false, windows: [], error: 'Binary not installed' };
     }
 
+    const env = buildProviderAccountEnv(this.id, configDir);
     try {
       let controls: {
         writeStdin: (data: string) => void;
@@ -134,10 +225,11 @@ export class CodexAdapter implements CliAdapter {
       let parsedWindows: UsageWindow[] = [];
 
       const res = await this.runner.run(binaryPath, ['app-server'], {
-        cwd: os.homedir(),
+        cwd: os.tmpdir(),
         interactiveStdin: true,
         timeoutMs: 8000,
         idleTimeoutMs: 5000,
+        env,
         onSpawn: (c) => {
           controls = c;
           c.writeStdin(
@@ -145,7 +237,7 @@ export class CodexAdapter implements CliAdapter {
               jsonrpc: '2.0',
               id: 1,
               method: 'initialize',
-              params: { clientInfo: { name: 'dalang', version: '0.2.1' } },
+              params: { clientInfo: { name: 'dalang', version: '0.5.0' } },
             }) +
               '\n' +
               JSON.stringify({ jsonrpc: '2.0', method: 'initialized', params: {} }) +
@@ -244,18 +336,28 @@ export class CodexAdapter implements CliAdapter {
     }
     args.push(options.prompt);
 
-    const invocation = await wrapWithBwrap(
+    const invocation = await wrapWithSandbox(
       this.runner,
       this.id,
       options.projectPath,
       binaryPath,
       args,
-      { readOnly: isReadOnly },
+      { readOnly: isReadOnly, configDir: options.configDir },
     );
+    const env = buildProviderAccountEnv(this.id, options.configDir);
 
     const logger = createTurnLogger(options.logFilePath);
     let sessionId: string | null = options.sessionId ?? null;
     const messages: string[] = [];
+    let usageAcc: TurnTokenUsage = {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      costUsd: null,
+      model: options.model ?? null,
+    };
+    let sawUsage = false;
 
     try {
       const res = await this.runner.run(invocation.command, invocation.args, {
@@ -263,6 +365,7 @@ export class CodexAdapter implements CliAdapter {
         timeoutMs: options.timeoutMs ?? 600_000,
         idleTimeoutMs: options.idleTimeoutMs ?? 180_000,
         signal: options.signal,
+        env,
         onStdoutLine: (line) => {
           logger.write(line);
           options.onLogLine?.(line);
@@ -277,6 +380,17 @@ export class CodexAdapter implements CliAdapter {
               const item = ev.item as { type?: string; text?: string };
               if (item.type === 'agent_message' && typeof item.text === 'string') {
                 messages.push(item.text);
+              }
+            }
+            if (ev.type === 'turn.completed' && ev.usage && typeof ev.usage === 'object') {
+              usageAcc = accumulateCodexUsage(usageAcc, ev.usage as Record<string, unknown>, options.model);
+              sawUsage = true;
+            }
+            if (ev.type === 'token_usage_record' && ev.payload && typeof ev.payload === 'object') {
+              const payload = ev.payload as { usage?: Record<string, unknown> };
+              if (payload.usage && typeof payload.usage === 'object') {
+                usageAcc = accumulateCodexUsage(usageAcc, payload.usage, options.model);
+                sawUsage = true;
               }
             }
           } catch {
@@ -316,6 +430,7 @@ export class CodexAdapter implements CliAdapter {
         stderr: res.stderr,
         logFilePath: options.logFilePath,
         aborted: Boolean(res.aborted),
+        ...(sawUsage ? { usage: usageAcc } : {}),
       };
     } finally {
       logger.close();

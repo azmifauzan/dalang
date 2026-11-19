@@ -49,7 +49,9 @@ export class ProfileService {
     return toDTO(row);
   }
 
-  createProfile(input: CreateProfileInput): AgentProfileDTO {
+  createProfile(
+    input: Omit<CreateProfileInput, 'configDir'> & { configDir?: string | null },
+  ): AgentProfileDTO {
     const existing = this.db
       .select()
       .from(agentProfiles)
@@ -76,6 +78,7 @@ export class ProfileService {
         maxParallel: input.maxParallel,
         maxReviewRounds: input.maxReviewRounds,
         fallbackProfileId: this.checkedFallbackId(input.fallbackProfileId, null),
+        configDir: input.configDir?.trim() || null,
         isDefault: false,
         createdAt: now,
       })
@@ -112,6 +115,9 @@ export class ProfileService {
         ...(input.maxReviewRounds !== undefined ? { maxReviewRounds: input.maxReviewRounds } : {}),
         ...(input.fallbackProfileId !== undefined
           ? { fallbackProfileId: this.checkedFallbackId(input.fallbackProfileId, id) }
+          : {}),
+        ...(input.configDir !== undefined
+          ? { configDir: input.configDir?.trim() || null }
           : {}),
       })
       .where(eq(agentProfiles.id, id))
@@ -469,6 +475,7 @@ function toDTO(row: typeof agentProfiles.$inferSelect): AgentProfileDTO {
     maxParallel: row.maxParallel,
     maxReviewRounds: row.maxReviewRounds ?? 2,
     fallbackProfileId: row.fallbackProfileId ?? null,
+    configDir: row.configDir ?? null,
     isDefault: Boolean(row.isDefault),
     createdAt: row.createdAt,
   };

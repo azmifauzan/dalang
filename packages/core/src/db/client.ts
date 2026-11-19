@@ -20,7 +20,7 @@ export function getDbDataDir(db: DalangDb): string | null {
   return dbDataDirs.get(db) ?? null;
 }
 
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 
 const BOOTSTRAP_SQL = `
 PRAGMA journal_mode = WAL;
@@ -34,6 +34,9 @@ CREATE TABLE IF NOT EXISTS projects (
   lead_provider TEXT NOT NULL DEFAULT 'claude-code',
   lead_model TEXT,
   integration_command TEXT,
+  push_after_merge INTEGER NOT NULL DEFAULT 0,
+  create_pr_after_merge INTEGER NOT NULL DEFAULT 0,
+  git_remote TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -102,6 +105,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   branch_name TEXT,
   merge_commit_sha TEXT,
   rejection_note TEXT,
+  pr_url TEXT,
+  pushed_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -125,6 +130,7 @@ CREATE TABLE IF NOT EXISTS agent_profiles (
   max_parallel INTEGER NOT NULL DEFAULT 1,
   max_review_rounds INTEGER NOT NULL DEFAULT 2,
   fallback_profile_id TEXT,
+  config_dir TEXT,
   is_default INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
@@ -141,6 +147,7 @@ CREATE TABLE IF NOT EXISTS routing_rules (
 CREATE TABLE IF NOT EXISTS provider_events (
   id TEXT PRIMARY KEY,
   provider TEXT NOT NULL,
+  account_key TEXT,
   type TEXT NOT NULL,
   detail TEXT,
   created_at TEXT NOT NULL
@@ -157,6 +164,7 @@ CREATE TABLE IF NOT EXISTS runs (
   task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
   profile_id TEXT NOT NULL REFERENCES agent_profiles(id),
   provider TEXT NOT NULL,
+  account_key TEXT,
   model TEXT,
   kind TEXT NOT NULL DEFAULT 'execute',
   branch_name TEXT,
@@ -171,9 +179,17 @@ CREATE TABLE IF NOT EXISTS runs (
   failure_reason TEXT,
   commit_before TEXT,
   commit_after TEXT,
+  checkpoint_before_ref TEXT,
+  checkpoint_after_ref TEXT,
   log_path TEXT NOT NULL,
   result_path TEXT,
-  scope_warnings_json TEXT NOT NULL DEFAULT '[]'
+  scope_warnings_json TEXT NOT NULL DEFAULT '[]',
+  input_tokens INTEGER,
+  output_tokens INTEGER,
+  cache_read_tokens INTEGER,
+  cache_write_tokens INTEGER,
+  estimated_cost_usd REAL,
+  cost_source TEXT
 );
 
 CREATE TABLE IF NOT EXISTS reviews (
@@ -412,6 +428,25 @@ function migrateToV6(sqlite: Database.Database): void {
   addColumnIfMissing(sqlite, 'agent_profiles', 'fallback_profile_id', 'TEXT');
 }
 
+function migrateToV7(sqlite: Database.Database): void {
+  addColumnIfMissing(sqlite, 'projects', 'push_after_merge', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing(sqlite, 'projects', 'create_pr_after_merge', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing(sqlite, 'projects', 'git_remote', 'TEXT');
+  addColumnIfMissing(sqlite, 'tasks', 'pr_url', 'TEXT');
+  addColumnIfMissing(sqlite, 'tasks', 'pushed_at', 'TEXT');
+  addColumnIfMissing(sqlite, 'agent_profiles', 'config_dir', 'TEXT');
+  addColumnIfMissing(sqlite, 'provider_events', 'account_key', 'TEXT');
+  addColumnIfMissing(sqlite, 'runs', 'account_key', 'TEXT');
+  addColumnIfMissing(sqlite, 'runs', 'checkpoint_before_ref', 'TEXT');
+  addColumnIfMissing(sqlite, 'runs', 'checkpoint_after_ref', 'TEXT');
+  addColumnIfMissing(sqlite, 'runs', 'input_tokens', 'INTEGER');
+  addColumnIfMissing(sqlite, 'runs', 'output_tokens', 'INTEGER');
+  addColumnIfMissing(sqlite, 'runs', 'cache_read_tokens', 'INTEGER');
+  addColumnIfMissing(sqlite, 'runs', 'cache_write_tokens', 'INTEGER');
+  addColumnIfMissing(sqlite, 'runs', 'estimated_cost_usd', 'REAL');
+  addColumnIfMissing(sqlite, 'runs', 'cost_source', 'TEXT');
+}
+
 export function openDatabase(dbFilePath: string = getDbPath()): DbConnection {
   const dataDir = dbFilePath !== ':memory:' ? path.dirname(dbFilePath) : null;
   if (dataDir) {
@@ -431,6 +466,7 @@ export function openDatabase(dbFilePath: string = getDbPath()): DbConnection {
   if (upgrading && storedVersion < 4) addColumnsV4(sqlite);
   if (upgrading && storedVersion < 5) migrateToV5(sqlite);
   if (upgrading && storedVersion < 6) migrateToV6(sqlite);
+  if (upgrading && storedVersion < 7) migrateToV7(sqlite);
   const db = drizzle(sqlite, { schema });
   dbDataDirs.set(db, dataDir);
   seedDefaults(db);

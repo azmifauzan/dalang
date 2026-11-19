@@ -1,7 +1,10 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { simpleGit, type SimpleGit } from 'simple-git';
 import type { TaskDiffDTO, TaskDiffFileDTO } from '@dalang/shared';
+import type { CliRunner } from '../adapters/types.js';
 import { writeArtifactFile } from '../safe-fs.js';
 
 const DALANG_COMMITTER_ARGS = ['-c', 'user.name=DALANG', '-c', 'user.email=dalang@local'];
@@ -154,8 +157,8 @@ export async function branchExists(projectPath: string, branchName: string): Pro
   await assertRepoConfigSafe(projectPath);
   const git = openSafeGit(projectPath);
   try {
-    await git.raw(['show-ref', '--verify', '--quiet', `refs/heads/${branchName}`]);
-    return true;
+    const out = await git.raw(['show-ref', '--verify', `refs/heads/${branchName}`]);
+    return out.trim().length > 0;
   } catch {
     return false;
   }
@@ -196,12 +199,95 @@ export async function createGitCheckpoint(
 }
 
 /**
+ * Create a hidden checkpoint commit anchored under `refs/dalang/checkpoints/<refId>` without
+ * moving HEAD, touching the real index, or adding noise commits to the user's branch.
+ */
+export async function createHiddenCheckpointRef(
+  projectPath: string,
+  refId: string,
+  message: string,
+  mainProjectPath?: string,
+): Promise<{ commitSha: string; refName: string }> {
+  await assertGitTargetSafe(projectPath, mainProjectPath);
+  const safeId = refId.replace(/[^A-Za-z0-9._/-]/g, '-');
+  const refName = `refs/dalang/checkpoints/${safeId}`;
+  const git = openSafeGit(projectPath);
+  const head = await getHeadCommit(projectPath);
+  const tmpIndex = path.join(os.tmpdir(), `dalang-idx-${crypto.randomUUID()}`);
+
+  try {
+    const cleanEnv: Record<string, string> = {
+      GIT_INDEX_FILE: tmpIndex,
+      GIT_AUTHOR_NAME: 'DALANG',
+      GIT_AUTHOR_EMAIL: 'dalang@local',
+      GIT_COMMITTER_NAME: 'DALANG',
+      GIT_COMMITTER_EMAIL: 'dalang@local',
+    };
+    if (process.env.PATH) cleanEnv.PATH = process.env.PATH;
+    if (process.env.HOME) cleanEnv.HOME = process.env.HOME;
+
+    const envGit = simpleGit({
+      baseDir: projectPath,
+      config: SAFE_GIT_CONFIG,
+      unsafe: { allowUnsafeHooksPath: true },
+      allowConfig: ['core.hooksPath', 'core.fsmonitor', 'commit.gpgsign'],
+      allowEnvironment: [
+        'GIT_INDEX_FILE',
+        'GIT_AUTHOR_NAME',
+        'GIT_AUTHOR_EMAIL',
+        'GIT_COMMITTER_NAME',
+        'GIT_COMMITTER_EMAIL',
+      ],
+    }).env(cleanEnv);
+
+    if (head) {
+      await envGit.raw(['read-tree', head]);
+    }
+    await envGit.raw(['add', '-A']);
+    const treeSha = (await envGit.raw(['write-tree'])).trim();
+    const commitArgs = ['commit-tree', treeSha];
+    if (head) {
+      commitArgs.push('-p', head);
+    }
+    commitArgs.push('-m', message);
+    const commitSha = (await envGit.raw(commitArgs)).trim();
+    if (!commitSha) {
+      throw new Error('Failed to create hidden checkpoint commit object.');
+    }
+    await git.raw(['update-ref', refName, commitSha]);
+    return { commitSha, refName };
+  } finally {
+    fs.rmSync(tmpIndex, { force: true });
+  }
+}
+
+export async function listHiddenCheckpointRefs(projectPath: string): Promise<Array<{ refName: string; sha: string }>> {
+  await assertRepoConfigSafe(projectPath);
+  const git = openSafeGit(projectPath);
+  try {
+    const out = await git.raw(['for-each-ref', '--format=%(refname) %(objectname)', 'refs/dalang/checkpoints']);
+    return out
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const [refName, sha] = line.split(/\s+/);
+        return { refName, sha };
+      });
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Ensure `mainBranch` exists with at least one commit and is checked out before creating a task branch.
+ * When `mainBranch` already has commits, snapshots dirty state into a hidden `refs/dalang/checkpoints/...` ref
+ * rather than polluting `mainBranch` with noisy checkpoint commits.
  */
 export async function ensureMainBaseline(
   projectPath: string,
   mainBranch: string,
-): Promise<{ mainBranch: string; baseMainSha: string }> {
+): Promise<{ mainBranch: string; baseMainSha: string; checkpointRef: string | null }> {
   await assertRepoConfigSafe(projectPath);
   const git = openSafeGit(projectPath);
   const head = await getHeadCommit(projectPath);
@@ -211,7 +297,7 @@ export async function ensureMainBaseline(
     if (current && current !== mainBranch) {
       await git.raw(['branch', '-M', current, mainBranch]);
     }
-    return { mainBranch, baseMainSha: ck.commitSha };
+    return { mainBranch, baseMainSha: ck.commitSha, checkpointRef: null };
   }
 
   const current = await getCurrentBranch(projectPath);
@@ -225,8 +311,16 @@ export async function ensureMainBaseline(
     await git.raw(['checkout', mainBranch]);
   }
 
-  const ck = await createGitCheckpoint(projectPath, 'dalang: checkpoint baseline');
-  return { mainBranch, baseMainSha: ck.commitSha };
+  const mainHead = await getHeadCommit(projectPath);
+  if (!mainHead) {
+    throw new Error(`Failed to resolve HEAD on ${mainBranch}.`);
+  }
+  const hidden = await createHiddenCheckpointRef(
+    projectPath,
+    `baseline-${Date.now()}-${crypto.randomUUID().slice(0, 6)}`,
+    'dalang: hidden baseline checkpoint',
+  );
+  return { mainBranch, baseMainSha: mainHead, checkpointRef: hidden.refName };
 }
 
 export async function checkoutTaskBranch(
@@ -645,4 +739,91 @@ export async function rollbackGitToCheckpoint(
       writeArtifactFile(projectPath, target, log.content, 'refuse');
     }
   }
+}
+
+export async function detectDefaultGitRemote(projectPath: string): Promise<string | null> {
+  await assertRepoConfigSafe(projectPath);
+  const git = openSafeGit(projectPath);
+  try {
+    const out = await git.raw(['remote']);
+    const remotes = out
+      .split(/\r?\n/)
+      .map((r) => r.trim())
+      .filter(Boolean);
+    if (remotes.length === 0) return null;
+    if (remotes.includes('origin')) return 'origin';
+    return remotes[0];
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Push a refspec (`branch` or `<commitSha>:refs/heads/<branch>`) to a configured git remote.
+ * Resolves any revision expression on the LHS of `:` (such as `<mergeSha>^2`) into a plain SHA first.
+ * Runs outside the sandbox (DALANG itself owns push credentials, never the agent).
+ */
+export async function pushRefToRemote(
+  projectPath: string,
+  remote: string,
+  refspec: string,
+): Promise<void> {
+  await assertRepoConfigSafe(projectPath);
+  const cleanRemote = remote.trim();
+  if (!/^[A-Za-z0-9._-]+$/.test(cleanRemote)) {
+    throw new Error(`Invalid git remote name "${remote}".`);
+  }
+  const git = openSafeGit(projectPath);
+  let effectiveRefspec = refspec;
+  const colonIdx = refspec.indexOf(':');
+  if (colonIdx > 0) {
+    const lhs = refspec.slice(0, colonIdx);
+    const rhs = refspec.slice(colonIdx + 1);
+    const resolved = (await git.raw(['rev-parse', '--verify', `${lhs}^{commit}`])).trim();
+    effectiveRefspec = `${resolved}:${rhs}`;
+  }
+  await git.raw(['push', cleanRemote, effectiveRefspec]);
+}
+
+/**
+ * Open a pull request via the official GitHub CLI (`gh pr create`), returning the PR URL.
+ */
+export async function createGitHubPullRequest(
+  runner: CliRunner,
+  projectPath: string,
+  opts: {
+    baseBranch: string;
+    headBranch: string;
+    title: string;
+    body: string;
+  },
+): Promise<{ prUrl: string; output: string }> {
+  await assertRepoConfigSafe(projectPath);
+  const ghPath = await runner.which('gh');
+  if (!ghPath) {
+    throw new Error('GitHub CLI (gh) is not installed. Install gh and run `gh auth login` to open pull requests.');
+  }
+  const res = await runner.run(
+    ghPath,
+    [
+      'pr',
+      'create',
+      '--base',
+      opts.baseBranch,
+      '--head',
+      opts.headBranch,
+      '--title',
+      opts.title,
+      '--body',
+      opts.body,
+    ],
+    { cwd: projectPath, timeoutMs: 60_000, idleTimeoutMs: 30_000 },
+  );
+  const combined = `${res.stdout}\n${res.stderr}`.trim();
+  if (res.exitCode !== 0) {
+    throw new Error(`gh pr create failed (exit ${res.exitCode ?? 'unknown'}): ${combined.slice(0, 400)}`);
+  }
+  const urlMatch = combined.match(/https?:\/\/\S+/);
+  const prUrl = urlMatch ? urlMatch[0] : combined.split(/\r?\n/).pop()?.trim() ?? '';
+  return { prUrl, output: combined };
 }

@@ -243,7 +243,7 @@ export function App() {
                 />
               </svg>
               <span className="text-base font-bold tracking-tight">DALANG</span>
-              <Badge>v0.4</Badge>
+              <Badge>v0.5</Badge>
             </button>
 
             {activeProject && (

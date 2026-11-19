@@ -34,12 +34,22 @@ export interface AdapterTurnOptions {
   model?: string | null;
   effort?: EffortLevel;
   permissionMode?: 'workspace-write' | 'read-only' | 'accept-edits';
+  configDir?: string | null;
   outputFilePath?: string;
   timeoutMs?: number;
   idleTimeoutMs?: number;
   signal?: AbortSignal;
   logFilePath?: string;
   onLogLine?: (line: string) => void;
+}
+
+export interface TurnTokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  costUsd: number | null;
+  model?: string | null;
 }
 
 export interface AdapterTurnResult {
@@ -52,13 +62,14 @@ export interface AdapterTurnResult {
   logFilePath?: string;
   aborted?: boolean;
   rateLimitReason?: string;
+  usage?: TurnTokenUsage;
 }
 
 export interface CliAdapter {
   readonly id: ProviderId;
   readonly displayName: string;
   readonly binary: string;
-  checkStatus(): Promise<ProviderStatus>;
-  getUsage(): Promise<ProviderUsage>;
+  checkStatus(configDir?: string | null): Promise<ProviderStatus>;
+  getUsage(configDir?: string | null): Promise<ProviderUsage>;
   runTurn(options: AdapterTurnOptions): Promise<AdapterTurnResult>;
 }

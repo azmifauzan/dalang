@@ -487,12 +487,26 @@ describe('Phase 0.4 parallel execution, worktrees, provider pool, quota fallback
 });
 
 describe('Claude model discovery', () => {
-  it('lists the models from the initialize control response, versioned ids first, without "default"', async () => {
+  it('lists structured model objects from the initialize control response, grouping [1m] variants without "default"', async () => {
     const models = [
-      { value: 'default', resolvedModel: 'claude-opus-9' },
-      { value: 'opus', resolvedModel: 'claude-opus-9' },
-      { value: 'claude-big-9[1m]', resolvedModel: 'claude-big-9' },
-      { value: 'sonnet', resolvedModel: 'claude-sonnet-9' },
+      { value: 'default', resolvedModel: 'claude-opus-9', displayName: 'Default' },
+      {
+        value: 'opus',
+        resolvedModel: 'claude-opus-9',
+        displayName: 'Opus',
+        description: 'Opus 9 · Best',
+        supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+        supportsFastMode: true,
+        supportsAdaptiveThinking: true,
+      },
+      {
+        value: 'claude-big-9[1m]',
+        resolvedModel: 'claude-big-9',
+        displayName: 'Big',
+        description: 'Big 9 · 1M context',
+        supportedEffortLevels: ['low', 'medium', 'high', 'max'],
+      },
+      { value: 'sonnet', resolvedModel: 'claude-sonnet-9', displayName: 'Sonnet' },
     ];
     let sent = '';
     const runner: CliRunner = {
@@ -513,6 +527,16 @@ describe('Claude model discovery', () => {
     };
     const status = await new ClaudeCodeAdapter(runner).checkStatus();
     expect(JSON.parse(sent).request.subtype).toBe('initialize');
-    expect(status.models).toEqual(['claude-opus-9', 'claude-big-9', 'claude-sonnet-9', 'opus', 'claude-big-9[1m]', 'sonnet']);
+    expect(status.models.map((m) => m.id)).toEqual(['claude-opus-9', 'claude-big-9', 'claude-sonnet-9']);
+    expect(status.models[0]).toMatchObject({
+      value: 'opus',
+      displayName: 'Opus',
+      supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+      supportsFastMode: true,
+      supportsThinking: true,
+    });
+    expect(status.models[1].variants).toEqual([
+      { id: '1m', label: '1M context', value: 'claude-big-9[1m]' },
+    ]);
   });
 });

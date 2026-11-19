@@ -4,6 +4,7 @@ import path from 'node:path';
 import { and, desc, eq, gte, inArray, ne, or } from 'drizzle-orm';
 import { z } from 'zod';
 import {
+  buildAccountKey,
   ReviewContractSchema,
   TaskResultContractSchema,
   type AgentProfileDTO,
@@ -15,6 +16,8 @@ import {
   type PlanDTO,
   type ProviderId,
   type ProviderRuntimeStateDTO,
+  type PushPrInput,
+  type PushPrResultDTO,
   type RejectTaskInput,
   type ReviewContract,
   type RunKind,
@@ -29,6 +32,7 @@ import {
 } from '@dalang/shared';
 import { createTurnLogger } from '../adapters/logger.js';
 import type { ProviderRegistry } from '../adapters/registry.js';
+import type { TurnTokenUsage } from '../adapters/types.js';
 import { getDbDataDir, type DalangDb } from '../db/client.js';
 import {
   agentProfiles,
@@ -51,8 +55,11 @@ import type { DalangEventBus } from './events.js';
 import {
   branchExists,
   createGitCheckpoint,
+  createGitHubPullRequest,
+  createHiddenCheckpointRef,
   createTaskWorktree,
   deleteTaskBranch,
+  detectDefaultGitRemote,
   ensureMainBaseline,
   getChangedFilesBetween,
   getHeadCommit,
@@ -60,10 +67,12 @@ import {
   getTaskDiff,
   isAncestorCommit,
   mergeTaskBranchToMain,
+  pushRefToRemote,
   removeTaskWorktree,
   rollbackGitToCheckpoint,
 } from './git.js';
 import type { LeadService } from './lead.js';
+import { estimateApiEquivalentCostUsd } from './pricing.js';
 import { ProfileService } from './profiles.js';
 import { detectIntegrationCommand } from './project.js';
 import {
@@ -194,6 +203,57 @@ function writePermission(profile: AgentProfileDTO): 'workspace-write' | 'accept-
   return profile.permissionMode === 'read-only' ? 'workspace-write' : profile.permissionMode;
 }
 
+function mergeTokenUsage(
+  base: TurnTokenUsage | undefined,
+  next: TurnTokenUsage | undefined,
+): TurnTokenUsage | undefined {
+  if (!base) return next;
+  if (!next) return base;
+  return {
+    inputTokens: base.inputTokens + next.inputTokens,
+    outputTokens: base.outputTokens + next.outputTokens,
+    cacheReadTokens: base.cacheReadTokens + next.cacheReadTokens,
+    cacheWriteTokens: base.cacheWriteTokens + next.cacheWriteTokens,
+    costUsd:
+      base.costUsd !== null || next.costUsd !== null
+        ? (base.costUsd ?? 0) + (next.costUsd ?? 0)
+        : null,
+    model: next.model ?? base.model,
+  };
+}
+
+function usageDbFields(
+  provider: ProviderId,
+  fallbackModel: string | null,
+  usage: TurnTokenUsage | undefined,
+): {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  estimatedCostUsd?: number;
+  costSource?: 'cli' | 'estimated';
+} {
+  if (!usage) return {};
+  const est = estimateApiEquivalentCostUsd({
+    provider,
+    model: usage.model ?? fallbackModel,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    cacheReadTokens: usage.cacheReadTokens,
+    cacheWriteTokens: usage.cacheWriteTokens,
+    reportedCostUsd: usage.costUsd,
+  });
+  return {
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    cacheReadTokens: usage.cacheReadTokens,
+    cacheWriteTokens: usage.cacheWriteTokens,
+    estimatedCostUsd: est.costUsd,
+    costSource: est.source,
+  };
+}
+
 export class ExecutionService {
   private readonly profiles: ProfileService;
   private readonly worktreesRoot: string;
@@ -279,12 +339,15 @@ export class ExecutionService {
     provider: ProviderId,
     type: 'rate_limit' | 'login_expired' | 'timeout' | 'error' | 'quota_fallback',
     detail: string,
+    configDir?: string | null,
   ): void {
+    const accountKey = buildAccountKey(provider, configDir);
     this.db
       .insert(providerEvents)
       .values({
         id: crypto.randomUUID(),
         provider,
+        accountKey,
         type,
         detail: detail.slice(0, 300),
         createdAt: new Date().toISOString(),
@@ -293,12 +356,16 @@ export class ExecutionService {
     this.events?.emitEvent({ type: 'provider.updated', provider });
   }
 
-  private getProviderCooldownInfo(provider: ProviderId): {
+  private getProviderCooldownInfo(
+    provider: ProviderId,
+    configDir?: string | null,
+  ): {
     inCooldown: boolean;
     reason: string | null;
     until: string | null;
   } {
-    const clearedAt = this.registry.getRateLimitClearedAt(provider);
+    const targetAccountKey = buildAccountKey(provider, configDir);
+    const clearedAt = this.registry.getRateLimitClearedAt(provider, configDir);
     const recentEvents = this.db
       .select()
       .from(providerEvents)
@@ -310,6 +377,8 @@ export class ExecutionService {
     const cutoff = Math.max(now - this.quotaCooldownMs, clearedAt);
 
     for (const ev of recentEvents) {
+      const evAccount = ev.accountKey ?? ev.provider;
+      if (evAccount !== targetAccountKey) continue;
       const evTime = new Date(ev.createdAt).getTime();
       if (Number.isNaN(evTime) || evTime <= cutoff) break;
       if (ev.type === 'rate_limit') {
@@ -335,13 +404,14 @@ export class ExecutionService {
     provider: ProviderId,
     model: string | null,
     sandboxReady: boolean,
+    configDir?: string | null,
   ): ProviderUsability {
     const blocked = this.registry.providerBlockedReason(provider, sandboxReady);
     if (blocked) {
       return { usable: false, kind: 'blocked', reason: blocked };
     }
 
-    const cachedUsage = this.registry.getCachedUsage(provider);
+    const cachedUsage = this.registry.getCachedUsage(provider, configDir);
     const exhaustedReason = this.registry.isUsageExhausted(
       cachedUsage?.usage,
       model,
@@ -351,7 +421,7 @@ export class ExecutionService {
       return { usable: false, kind: 'quota', reason: exhaustedReason };
     }
 
-    const cooldown = this.getProviderCooldownInfo(provider);
+    const cooldown = this.getProviderCooldownInfo(provider, configDir);
     if (cooldown.inCooldown) {
       return { usable: false, kind: 'cooldown', reason: cooldown.reason };
     }
@@ -362,11 +432,25 @@ export class ExecutionService {
   getProviderRuntimeStates(): ProviderRuntimeStateDTO[] {
     const allProfiles = this.profiles.listProfiles();
     const providersList: ProviderId[] = ['claude-code', 'codex', 'antigravity'];
-    return providersList.map((provider) => {
-      const matching = allProfiles.filter((p) => p.provider === provider);
+    const accounts: Array<{ provider: ProviderId; configDir: string | null; accountKey: string }> =
+      providersList.map((provider) => ({ provider, configDir: null, accountKey: provider }));
+
+    for (const prof of allProfiles) {
+      const dir = prof.configDir?.trim() || null;
+      if (!dir) continue;
+      const key = buildAccountKey(prof.provider, dir);
+      if (!accounts.some((a) => a.accountKey === key)) {
+        accounts.push({ provider: prof.provider, configDir: dir, accountKey: key });
+      }
+    }
+
+    return accounts.map(({ provider, configDir, accountKey }) => {
+      const matching = allProfiles.filter(
+        (p) => p.provider === provider && buildAccountKey(p.provider, p.configDir) === accountKey,
+      );
       const maxParallel = matching.reduce((max, p) => Math.max(max, p.maxParallel), 1);
-      const cooldown = this.getProviderCooldownInfo(provider);
-      const cachedUsage = this.registry.getCachedUsage(provider);
+      const cooldown = this.getProviderCooldownInfo(provider, configDir);
+      const cachedUsage = this.registry.getCachedUsage(provider, configDir);
       const quotaReason = this.registry.isUsageExhausted(
         cachedUsage?.usage,
         null,
@@ -374,7 +458,9 @@ export class ExecutionService {
       );
       return {
         provider,
-        activeCount: this.limiter.getActiveCount(provider),
+        accountKey,
+        configDir,
+        activeCount: this.limiter.getActiveCount(accountKey),
         maxParallel,
         inCooldown: cooldown.inCooldown,
         cooldownReason: cooldown.reason,
@@ -426,7 +512,8 @@ export class ExecutionService {
   async getExecutionState(projectId: string): Promise<ExecutionStateDTO> {
     const project = this.getProjectRow(projectId);
     const plan = this.leadService.getPlan(projectId);
-    const sandboxReady = await this.registry.isSandboxReady();
+    const sandboxEngine = await this.registry.getSandboxEngine();
+    const sandboxReady = sandboxEngine !== 'none';
 
     const dispatchPreviews = plan ? this.buildDispatchPreviews(plan, sandboxReady) : [];
     // Snapshot active tasks/queue and run rows synchronously before any await so a phase
@@ -460,6 +547,7 @@ export class ExecutionService {
       activeRuns,
       queueRunning,
       sandboxReady,
+      sandboxEngine,
       platform: process.platform,
       providerStates: this.getProviderRuntimeStates(),
       dispatchPreviews,
@@ -475,6 +563,7 @@ export class ExecutionService {
     quotaReroutedReason: string | null;
     proactiveFallback: boolean;
     skippedPrimaryProvider: ProviderId | null;
+    skippedPrimaryConfigDir: string | null;
     blocked: string | null;
   } {
     const routing = this.profiles.resolveProfileForTask({
@@ -486,6 +575,7 @@ export class ExecutionService {
       routing.primary.provider,
       routing.primary.model || null,
       sandboxReady,
+      routing.primary.configDir,
     );
     if (primaryStatus.usable) {
       return {
@@ -494,6 +584,7 @@ export class ExecutionService {
         quotaReroutedReason: null,
         proactiveFallback: false,
         skippedPrimaryProvider: null,
+        skippedPrimaryConfigDir: null,
         blocked: null,
       };
     }
@@ -504,6 +595,7 @@ export class ExecutionService {
         backup.provider,
         backup.model || null,
         sandboxReady,
+        backup.configDir,
       );
       if (backupStatus.usable) {
         if (primaryStatus.kind === 'blocked') {
@@ -515,6 +607,7 @@ export class ExecutionService {
             quotaReroutedReason: null,
             proactiveFallback: false,
             skippedPrimaryProvider: null,
+            skippedPrimaryConfigDir: null,
             blocked: null,
           };
         }
@@ -527,6 +620,7 @@ export class ExecutionService {
           quotaReroutedReason: reasonText,
           proactiveFallback: true,
           skippedPrimaryProvider: routing.primary.provider,
+          skippedPrimaryConfigDir: routing.primary.configDir ?? null,
           blocked: null,
         };
       }
@@ -538,6 +632,7 @@ export class ExecutionService {
       quotaReroutedReason: null,
       proactiveFallback: false,
       skippedPrimaryProvider: null,
+      skippedPrimaryConfigDir: null,
       blocked: primaryStatus.reason,
     };
   }
@@ -855,7 +950,8 @@ export class ExecutionService {
         const routing = this.routeTask(task, sandboxNow);
         if (routing.blocked) continue;
 
-        const lease = this.limiter.tryAcquire(routing.primary.provider, routing.primary.maxParallel);
+        const leaseKey = buildAccountKey(routing.primary.provider, routing.primary.configDir);
+        const lease = this.limiter.tryAcquire(leaseKey, routing.primary.maxParallel);
         if (!lease) {
           waitingForSlot = true;
           continue;
@@ -1079,6 +1175,7 @@ export class ExecutionService {
     taskId: string;
     profileId: string;
     provider: ProviderId;
+    accountKey: string;
     model: string | null;
     kind: RunKind;
     branchName: string;
@@ -1087,6 +1184,7 @@ export class ExecutionService {
     attempt: number;
     usedFallback: boolean;
     commitBefore: string;
+    checkpointBeforeRef?: string | null;
     logPath: string;
   }): typeof runs.$inferSelect {
     const now = new Date().toISOString();
@@ -1098,6 +1196,7 @@ export class ExecutionService {
         taskId: input.taskId,
         profileId: input.profileId,
         provider: input.provider,
+        accountKey: input.accountKey,
         model: input.model,
         kind: input.kind,
         branchName: input.branchName,
@@ -1112,9 +1211,17 @@ export class ExecutionService {
         failureReason: null,
         commitBefore: input.commitBefore,
         commitAfter: null,
+        checkpointBeforeRef: input.checkpointBeforeRef ?? null,
+        checkpointAfterRef: null,
         logPath: input.logPath,
         resultPath: null,
         scopeWarningsJson: '[]',
+        inputTokens: null,
+        outputTokens: null,
+        cacheReadTokens: null,
+        cacheWriteTokens: null,
+        estimatedCostUsd: null,
+        costSource: null,
       })
       .run();
     return this.db.select().from(runs).where(eq(runs.id, input.id)).get()!;
@@ -1150,17 +1257,20 @@ export class ExecutionService {
     const worktreePath = getTaskWorktreeDir(this.worktreesRoot, projectId, task.externalId);
     const resetToBase = !resumeSessionId || !(await branchExists(project.path, branchName));
 
-    const { baseMainSha } = await this.withProjectGitLock(projectId, async () => {
-      const baseline = await ensureMainBaseline(project.path, project.mainBranch);
-      await createTaskWorktree(
-        project.path,
-        worktreePath,
-        branchName,
-        project.mainBranch,
-        resetToBase,
-      );
-      return baseline;
-    });
+    const { baseMainSha, checkpointRef: baselineCheckpointRef } = await this.withProjectGitLock(
+      projectId,
+      async () => {
+        const baseline = await ensureMainBaseline(project.path, project.mainBranch);
+        await createTaskWorktree(
+          project.path,
+          worktreePath,
+          branchName,
+          project.mainBranch,
+          resetToBase,
+        );
+        return baseline;
+      },
+    );
 
     const logsDir = getProjectLogsDir(project.path);
     ensureProjectDir(project.path, logsDir);
@@ -1184,6 +1294,7 @@ export class ExecutionService {
         routing.skippedPrimaryProvider ?? routing.primary.provider,
         'quota_fallback',
         routing.quotaReroutedReason,
+        routing.skippedPrimaryConfigDir,
       );
     }
 
@@ -1199,6 +1310,7 @@ export class ExecutionService {
       taskId: task.id,
       profileId: routing.primary.id,
       provider: routing.primary.provider,
+      accountKey: buildAccountKey(routing.primary.provider, routing.primary.configDir),
       model: routing.primary.model || null,
       kind: 'execute',
       branchName,
@@ -1207,6 +1319,7 @@ export class ExecutionService {
       attempt,
       usedFallback: routing.proactiveFallback,
       commitBefore: baseMainSha,
+      checkpointBeforeRef: baselineCheckpointRef,
       logPath: relLogPath,
     });
     execHandle.runId = runId;
@@ -1393,6 +1506,7 @@ export class ExecutionService {
       failureReason?: string;
     }> => {
       const adapter = this.registry.getAdapter(profile.provider);
+      const profileAccountKey = buildAccountKey(profile.provider, profile.configDir);
       let capturedSessionId: string | null = sessionToResume;
       let exitCode: number | null = null;
       let stdout = '';
@@ -1400,6 +1514,7 @@ export class ExecutionService {
       let aborted = false;
       let thrownError: string | undefined;
       let rateLimitFromStream: string | undefined;
+      let capturedUsage: TurnTokenUsage | undefined;
 
       const emitDalangLine = (line: string) => {
         this.appendDalangLog(logFileAbs, line);
@@ -1429,12 +1544,14 @@ export class ExecutionService {
         result: null;
         scopeWarnings: string[];
       }> => {
-        const checkpointAfter = await createGitCheckpoint(
+        const hidden = await createHiddenCheckpointRef(
           opts.worktreePath,
-          `dalang: checkpoint stopped ${opts.task.externalId}`,
+          `stopped-${runId}`,
+          `dalang: hidden checkpoint stopped ${opts.task.externalId}`,
           opts.projectPath,
-        ).catch(() => ({ commitSha: opts.baseMainSha }));
+        ).catch(() => ({ commitSha: opts.baseMainSha, refName: null as string | null }));
         const finishedAt = new Date().toISOString();
+        const usageFields = usageDbFields(profile.provider, profile.model || null, capturedUsage);
         this.db
           .update(runs)
           .set({
@@ -1442,7 +1559,9 @@ export class ExecutionService {
             finishedAt,
             exitCode,
             failureReason: 'Stopped by user',
-            commitAfter: checkpointAfter.commitSha,
+            commitAfter: hidden.commitSha,
+            checkpointAfterRef: hidden.refName,
+            ...usageFields,
           })
           .where(eq(runs.id, runId))
           .run();
@@ -1464,7 +1583,7 @@ export class ExecutionService {
           status: 'stopped',
           canFallback: false,
           sessionId: capturedSessionId,
-          commitAfter: checkpointAfter.commitSha,
+          commitAfter: hidden.commitSha,
           result: null,
           scopeWarnings: [],
         };
@@ -1475,10 +1594,10 @@ export class ExecutionService {
       try {
         if (!lease) {
           emitDalangLine(
-            `[dalang] Waiting for parallel slot on ${profile.provider} (max ${profile.maxParallel})...`,
+            `[dalang] Waiting for parallel slot on ${profileAccountKey} (max ${profile.maxParallel})...`,
           );
           lease = await this.limiter.acquire(
-            profile.provider,
+            profileAccountKey,
             profile.maxParallel,
             opts.execHandle.controller.signal,
           );
@@ -1496,6 +1615,7 @@ export class ExecutionService {
           model: profile.model || null,
           effort: profile.effort,
           permissionMode: writePermission(profile),
+          configDir: profile.configDir,
           timeoutMs: profile.timeoutMs,
           idleTimeoutMs: profile.idleTimeoutMs,
           signal: opts.execHandle.controller.signal,
@@ -1509,6 +1629,7 @@ export class ExecutionService {
         stderr = turn.stderr;
         aborted = Boolean(turn.aborted) || opts.execHandle.controller.signal.aborted;
         rateLimitFromStream = turn.rateLimitReason;
+        capturedUsage = mergeTokenUsage(capturedUsage, turn.usage);
 
         if (capturedSessionId) {
           this.db
@@ -1544,12 +1665,14 @@ export class ExecutionService {
               model: profile.model || null,
               effort: profile.effort,
               permissionMode: writePermission(profile),
+              configDir: profile.configDir,
               timeoutMs: Math.min(profile.timeoutMs, 180_000),
               idleTimeoutMs: profile.idleTimeoutMs,
               signal: opts.execHandle.controller.signal,
               logFilePath: logFileAbs,
               onLogLine: emitAdapterLine,
             });
+            capturedUsage = mergeTokenUsage(capturedUsage, repairTurn.usage);
             if (repairTurn.sessionId) {
               capturedSessionId = repairTurn.sessionId;
               this.db
@@ -1589,14 +1712,16 @@ export class ExecutionService {
         const classified = rateLimitFromStream
           ? { eventType: 'rate_limit' as const, reason: rateLimitFromStream }
           : classifyProviderFailure(exitCode, stdout, stderr, thrownError);
-        this.recordProviderEvent(profile.provider, classified.eventType, classified.reason);
+        this.recordProviderEvent(profile.provider, classified.eventType, classified.reason, profile.configDir);
 
-        const checkpointAfter = await createGitCheckpoint(
+        const hidden = await createHiddenCheckpointRef(
           opts.worktreePath,
-          `dalang: checkpoint failed ${opts.task.externalId}`,
+          `failed-${runId}`,
+          `dalang: hidden checkpoint failed ${opts.task.externalId}`,
           opts.projectPath,
-        ).catch(() => ({ commitSha: opts.baseMainSha }));
+        ).catch(() => ({ commitSha: opts.baseMainSha, refName: null as string | null }));
         const finishedAt = new Date().toISOString();
+        const usageFields = usageDbFields(profile.provider, profile.model || null, capturedUsage);
         this.db
           .update(runs)
           .set({
@@ -1604,7 +1729,9 @@ export class ExecutionService {
             finishedAt,
             exitCode,
             failureReason: classified.reason,
-            commitAfter: checkpointAfter.commitSha,
+            commitAfter: hidden.commitSha,
+            checkpointAfterRef: hidden.refName,
+            ...usageFields,
           })
           .where(eq(runs.id, runId))
           .run();
@@ -1627,7 +1754,7 @@ export class ExecutionService {
           status: 'failed',
           canFallback: true,
           sessionId: capturedSessionId,
-          commitAfter: checkpointAfter.commitSha,
+          commitAfter: hidden.commitSha,
           result: null,
           scopeWarnings: [],
           failureReason: classified.reason,
@@ -1660,12 +1787,14 @@ export class ExecutionService {
       }
 
       if (!validation.ok) {
-        const checkpointAfter = await createGitCheckpoint(
+        const hidden = await createHiddenCheckpointRef(
           opts.worktreePath,
-          `dalang: checkpoint invalid-result ${opts.task.externalId}`,
+          `invalid-${runId}`,
+          `dalang: hidden checkpoint invalid-result ${opts.task.externalId}`,
           opts.projectPath,
-        ).catch(() => ({ commitSha: opts.baseMainSha }));
+        ).catch(() => ({ commitSha: opts.baseMainSha, refName: null as string | null }));
         const finishedAt = new Date().toISOString();
+        const usageFields = usageDbFields(profile.provider, profile.model || null, capturedUsage);
         this.db
           .update(runs)
           .set({
@@ -1673,8 +1802,10 @@ export class ExecutionService {
             finishedAt,
             exitCode,
             failureReason: validation.error,
-            commitAfter: checkpointAfter.commitSha,
+            commitAfter: hidden.commitSha,
+            checkpointAfterRef: hidden.refName,
             scopeWarningsJson: JSON.stringify(scopeWarnings),
+            ...usageFields,
           })
           .where(eq(runs.id, runId))
           .run();
@@ -1696,7 +1827,7 @@ export class ExecutionService {
           status: 'failed',
           canFallback: false,
           sessionId: capturedSessionId,
-          commitAfter: checkpointAfter.commitSha,
+          commitAfter: hidden.commitSha,
           result: null,
           scopeWarnings,
           failureReason: validation.error,
@@ -1715,7 +1846,14 @@ export class ExecutionService {
         `dalang: ${opts.task.externalId} (${opts.kind} ${succeeded ? 'completed' : 'failed'})`,
         opts.projectPath,
       );
+      const hiddenAfter = await createHiddenCheckpointRef(
+        opts.worktreePath,
+        `after-${runId}`,
+        `dalang: hidden checkpoint ${opts.task.externalId} (${opts.kind} ${finalRunStatus})`,
+        opts.projectPath,
+      ).catch(() => null);
       const finishedAt = new Date().toISOString();
+      const usageFields = usageDbFields(profile.provider, profile.model || null, capturedUsage);
 
       this.db
         .update(runs)
@@ -1725,8 +1863,10 @@ export class ExecutionService {
           exitCode,
           failureReason,
           commitAfter: checkpointAfter.commitSha,
+          checkpointAfterRef: hiddenAfter?.refName ?? null,
           resultPath: opts.relResultPath,
           scopeWarningsJson: JSON.stringify(scopeWarnings),
+          ...usageFields,
         })
         .where(eq(runs.id, runId))
         .run();
@@ -1781,6 +1921,7 @@ export class ExecutionService {
         opts.fallbackProfile.provider,
         opts.fallbackProfile.model || null,
         opts.sandboxReady,
+        opts.fallbackProfile.configDir,
       ).usable
     ) {
       const fbRunId = crypto.randomUUID();
@@ -1798,6 +1939,7 @@ export class ExecutionService {
         taskId: opts.task.id,
         profileId: opts.fallbackProfile.id,
         provider: opts.fallbackProfile.provider,
+        accountKey: buildAccountKey(opts.fallbackProfile.provider, opts.fallbackProfile.configDir),
         model: opts.fallbackProfile.model || null,
         kind: opts.kind,
         branchName: opts.branchName,
@@ -1825,7 +1967,12 @@ export class ExecutionService {
         provider: opts.fallbackProfile.provider,
       });
       const fallbackBanner = `[dalang] Fallback triggered after ${opts.initialProfile.name} failed (${primaryOutcome.failureReason ?? 'error'}). Switching to "${opts.fallbackProfile.name}" (${opts.fallbackProfile.provider}).`;
-      this.recordProviderEvent(opts.initialProfile.provider, 'quota_fallback', fallbackBanner);
+      this.recordProviderEvent(
+        opts.initialProfile.provider,
+        'quota_fallback',
+        fallbackBanner,
+        opts.initialProfile.configDir,
+      );
       this.appendDalangLog(fbAbsLog, fallbackBanner);
       this.events?.emitEvent({
         type: 'run.log',
@@ -1881,6 +2028,7 @@ export class ExecutionService {
       resolved.primary.provider,
       resolved.primary.model || null,
       sandboxReady,
+      resolved.primary.configDir,
     );
     if (primaryUsable.usable) return resolved;
 
@@ -1889,6 +2037,7 @@ export class ExecutionService {
         resolved.fallback.provider,
         resolved.fallback.model || null,
         sandboxReady,
+        resolved.fallback.configDir,
       );
       if (fbUsable.usable) {
         return {
@@ -1902,7 +2051,7 @@ export class ExecutionService {
 
     const anyUsable = this.profiles
       .listProfiles()
-      .find((p) => this.evaluateProviderUsability(p.provider, p.model || null, sandboxReady).usable);
+      .find((p) => this.evaluateProviderUsability(p.provider, p.model || null, sandboxReady, p.configDir).usable);
     if (anyUsable) {
       return {
         primary: { ...anyUsable, permissionMode: 'read-only' },
@@ -2091,6 +2240,7 @@ export class ExecutionService {
         activeCoderProfile.provider,
         activeCoderProfile.model || null,
         ctx.sandboxReady,
+        activeCoderProfile.configDir,
       );
       let usedProactiveFixFallback = false;
       let fixNote = `Fix round ${round} addressing ${reviewData.findings.length} review finding(s).`;
@@ -2099,10 +2249,16 @@ export class ExecutionService {
           activeCoderFallback.provider,
           activeCoderFallback.model || null,
           ctx.sandboxReady,
+          activeCoderFallback.configDir,
         );
         if (fbUsability.usable) {
           fixNote = `Fix round ${round}: ${activeCoderProfile.name} skipped (${coderUsability.reason}); switched to ${activeCoderFallback.name}.`;
-          this.recordProviderEvent(activeCoderProfile.provider, 'quota_fallback', fixNote);
+          this.recordProviderEvent(
+            activeCoderProfile.provider,
+            'quota_fallback',
+            fixNote,
+            activeCoderProfile.configDir,
+          );
           activeCoderProfile = activeCoderFallback;
           activeCoderFallback = null;
           activeCoderSessionId = null;
@@ -2126,6 +2282,7 @@ export class ExecutionService {
         taskId: ctx.task.id,
         profileId: activeCoderProfile.id,
         provider: activeCoderProfile.provider,
+        accountKey: buildAccountKey(activeCoderProfile.provider, activeCoderProfile.configDir),
         model: activeCoderProfile.model || null,
         kind: 'fix',
         branchName: ctx.branchName,
@@ -2256,12 +2413,14 @@ export class ExecutionService {
       const absLogPath = path.join(opts.projectPath, relLogPath);
       removeArtifactFile(opts.worktreePath, opts.absReviewPath);
 
+      const reviewerAccountKey = buildAccountKey(reviewerProfile.provider, reviewerProfile.configDir);
       this.insertRunRecord({
         id: reviewRunId,
         projectId: opts.projectId,
         taskId: opts.task.id,
         profileId: reviewerProfile.id,
         provider: reviewerProfile.provider,
+        accountKey: reviewerAccountKey,
         model: reviewerProfile.model || null,
         kind: 'review',
         branchName: opts.branchName,
@@ -2405,11 +2564,12 @@ export class ExecutionService {
       let rateLimitFromStream: string | undefined;
       let validatedContract: ReviewContract | null = null;
       let lastValidationError = 'Review output missing';
+      let capturedUsage: TurnTokenUsage | undefined;
 
       let lease: SlotLease | null = null;
       try {
         lease = await this.limiter.acquire(
-          reviewerProfile.provider,
+          reviewerAccountKey,
           reviewerProfile.maxParallel,
           opts.execHandle.controller.signal,
         );
@@ -2422,12 +2582,14 @@ export class ExecutionService {
             model: reviewerProfile.model || null,
             effort: reviewerProfile.effort,
             permissionMode: reviewerProfile.permissionMode,
+            configDir: reviewerProfile.configDir,
             timeoutMs: reviewerProfile.timeoutMs,
             idleTimeoutMs: reviewerProfile.idleTimeoutMs,
             signal: opts.execHandle.controller.signal,
             logFilePath: absLogPath,
             onLogLine: emitAdapterLine,
           });
+          capturedUsage = mergeTokenUsage(capturedUsage, turn.usage);
           currentSessionId = turn.sessionId ?? currentSessionId;
           if (currentSessionId) {
             this.db
@@ -2481,11 +2643,17 @@ export class ExecutionService {
         lease?.release();
       }
 
+      const reviewUsageFields = usageDbFields(
+        reviewerProfile.provider,
+        reviewerProfile.model || null,
+        capturedUsage,
+      );
+
       if (aborted) {
         const finishedAt = new Date().toISOString();
         this.db
           .update(runs)
-          .set({ status: 'stopped', finishedAt, exitCode, failureReason: 'Stopped by user' })
+          .set({ status: 'stopped', finishedAt, exitCode, failureReason: 'Stopped by user', ...reviewUsageFields })
           .where(eq(runs.id, reviewRunId))
           .run();
         this.db
@@ -2513,7 +2681,12 @@ export class ExecutionService {
         const classified = rateLimitFromStream
           ? { eventType: 'rate_limit' as const, reason: rateLimitFromStream }
           : classifyProviderFailure(exitCode, stdout, stderr, thrownError);
-        this.recordProviderEvent(reviewerProfile.provider, classified.eventType, classified.reason);
+        this.recordProviderEvent(
+          reviewerProfile.provider,
+          classified.eventType,
+          classified.reason,
+          reviewerProfile.configDir,
+        );
         const finishedAt = new Date().toISOString();
         this.db
           .update(runs)
@@ -2522,6 +2695,7 @@ export class ExecutionService {
             finishedAt,
             exitCode,
             failureReason: classified.reason,
+            ...reviewUsageFields,
           })
           .where(eq(runs.id, reviewRunId))
           .run();
@@ -2551,6 +2725,7 @@ export class ExecutionService {
             finishedAt,
             exitCode,
             failureReason: lastValidationError,
+            ...reviewUsageFields,
           })
           .where(eq(runs.id, reviewRunId))
           .run();
@@ -2612,6 +2787,7 @@ export class ExecutionService {
           commitAfter: checkpointAfter.commitSha,
           resultPath: relRoundReviewPath,
           scopeWarningsJson: JSON.stringify(opts.scopeWarnings),
+          ...reviewUsageFields,
         })
         .where(eq(runs.id, reviewRunId))
         .run();
@@ -2684,6 +2860,7 @@ export class ExecutionService {
         opts.fallbackReviewer.provider,
         opts.fallbackReviewer.model || null,
         opts.sandboxReady,
+        opts.fallbackReviewer.configDir,
       ).usable
     ) {
       const fbOutcome = await runAttempt(opts.fallbackReviewer, true, {
@@ -2809,8 +2986,13 @@ export class ExecutionService {
   async getGuardState(projectId: string): Promise<GuardStateDTO> {
     const project = this.getProjectRow(projectId);
     const plan = this.leadService.getPlan(projectId);
-    const sandboxReady = await this.registry.isSandboxReady();
+    const sandboxEngine = await this.registry.getSandboxEngine();
+    const sandboxReady = sandboxEngine !== 'none';
     const detectedIntegrationCommand = detectIntegrationCommand(project.path);
+    const [detectedRemote, ghPath] = await Promise.all([
+      detectDefaultGitRemote(project.path).catch(() => null),
+      this.registry.getRunner().which('gh').catch(() => null),
+    ]);
 
     const runRows = this.db
       .select()
@@ -2894,7 +3076,12 @@ export class ExecutionService {
       mainBranch: project.mainBranch,
       integrationCommand: project.integrationCommand ?? null,
       detectedIntegrationCommand,
+      pushAfterMerge: Boolean(project.pushAfterMerge),
+      createPrAfterMerge: Boolean(project.createPrAfterMerge),
+      gitRemote: project.gitRemote ?? detectedRemote ?? null,
+      ghAvailable: Boolean(ghPath),
       sandboxReady,
+      sandboxEngine,
       platform: process.platform,
       tasks: guardTasks,
       integrationRuns: integrationRows.map((row) => ({
@@ -2981,7 +3168,12 @@ export class ExecutionService {
     projectId: string,
     taskId: string,
     input: Partial<ApproveMergeInput> = {},
-  ): Promise<{ task: TaskDTO; mergeCommitSha: string; integrationRun: IntegrationRunDTO | null }> {
+  ): Promise<{
+    task: TaskDTO;
+    mergeCommitSha: string;
+    integrationRun: IntegrationRunDTO | null;
+    pushPrResult?: PushPrResultDTO | null;
+  }> {
     const project = this.getProjectRow(projectId);
     const plan = this.leadService.getPlan(projectId);
     if (!plan) throw new Error('No plan exists for this project.');
@@ -3045,8 +3237,160 @@ export class ExecutionService {
       });
     }
 
+    const shouldCreatePr = input.createPrAfterMerge ?? Boolean(project.createPrAfterMerge);
+    const shouldPush = input.pushAfterMerge ?? Boolean(project.pushAfterMerge);
+    let pushPrResult: PushPrResultDTO | null = null;
+    if (shouldCreatePr || shouldPush) {
+      try {
+        pushPrResult = await this.pushTaskBranchAndPr(projectId, task.id, {
+          remote: project.gitRemote ?? undefined,
+          createPr: shouldCreatePr,
+        });
+      } catch (err) {
+        pushPrResult = {
+          pushed: false,
+          remote: project.gitRemote ?? 'origin',
+          branch: shouldCreatePr ? branchName : project.mainBranch,
+          prUrl: null,
+          message: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+
     const updatedTask = this.leadService.getPlan(projectId)!.tasks.find((t) => t.id === task.id)!;
-    return { task: updatedTask, mergeCommitSha, integrationRun };
+    return { task: updatedTask, mergeCommitSha, integrationRun, pushPrResult };
+  }
+
+  private buildPullRequestBody(task: TaskDTO, latestReview: TaskReviewDTO | null): string {
+    const lines: string[] = [
+      `## Task ${task.externalId}: ${task.title}`,
+      '',
+      `### Goal`,
+      task.goal,
+      '',
+      `### Acceptance Criteria`,
+      ...task.acceptanceCriteria.map((c) => `- ${c}`),
+      '',
+    ];
+    if (latestReview) {
+      lines.push(
+        `### Automated Review (Round ${latestReview.round})`,
+        `- Verdict: **${latestReview.status.toUpperCase()}**`,
+        `- Reviewer: ${latestReview.reviewerProfileName} (${latestReview.reviewerProvider}${latestReview.reviewerModel ? ` / ${latestReview.reviewerModel}` : ''})`,
+        `- Verify (\`${latestReview.verifyCommand}\`): exit ${latestReview.verifyExitCode}`,
+      );
+      if (latestReview.contract.summary) {
+        lines.push('', latestReview.contract.summary);
+      }
+      if (latestReview.contract.findings.length > 0) {
+        lines.push('', '#### Findings');
+        for (const f of latestReview.contract.findings) {
+          lines.push(`- [${f.severity}] ${f.file ? `\`${f.file}\`: ` : ''}${f.note}`);
+        }
+      }
+    }
+    if (task.mergeCommitSha) {
+      lines.push('', `Merged locally on \`${task.mergeCommitSha.slice(0, 8)}\`.`);
+    }
+    return lines.join('\n');
+  }
+
+  /**
+   * Push a merged task's branch (or main branch when createPr=false) and optionally open a PR via `gh`.
+   */
+  async pushTaskBranchAndPr(
+    projectId: string,
+    taskId: string,
+    input: Partial<PushPrInput> = {},
+  ): Promise<PushPrResultDTO> {
+    const project = this.getProjectRow(projectId);
+    const plan = this.leadService.getPlan(projectId);
+    if (!plan) throw new Error('No plan exists for this project.');
+    const task = plan.tasks.find((t) => t.id === taskId || t.externalId === taskId);
+    if (!task) throw new Error(`Task not found: ${taskId}`);
+    if (task.status !== 'done' && task.status !== 'awaiting_merge') {
+      throw new Error(`Task ${task.externalId} must be awaiting merge or merged before pushing.`);
+    }
+
+    const remote =
+      input.remote?.trim() ||
+      project.gitRemote?.trim() ||
+      (await detectDefaultGitRemote(project.path));
+    if (!remote) {
+      throw new Error(
+        'No git remote is configured for this repository. Add a remote (e.g. `git remote add origin <url>`) first.',
+      );
+    }
+
+    const createPr = input.createPr !== false;
+    const taskBranch = task.branchName ?? `dalang/${task.externalId}`;
+    let pushedBranch = project.mainBranch;
+    let prUrl: string | null = task.prUrl ?? null;
+
+    await this.withProjectGitLock(projectId, async () => {
+      if (createPr) {
+        // Push the task branch tip (parent 2 of merge commit if already merged, else the live branch).
+        const hasLocalBranch = await branchExists(project.path, taskBranch);
+        const refspec = hasLocalBranch
+          ? taskBranch
+          : task.mergeCommitSha
+            ? `${task.mergeCommitSha}^2:refs/heads/${taskBranch}`
+            : taskBranch;
+        await pushRefToRemote(project.path, remote, refspec);
+        pushedBranch = taskBranch;
+      } else {
+        await pushRefToRemote(project.path, remote, project.mainBranch);
+        pushedBranch = project.mainBranch;
+      }
+    });
+
+    if (createPr) {
+      const reviewRows = this.db
+        .select()
+        .from(reviews)
+        .where(eq(reviews.taskId, task.id))
+        .orderBy(desc(reviews.round))
+        .all();
+      const profileById = new Map(this.profiles.listProfiles().map((p) => [p.id, p]));
+      const latestReview = reviewRows[0]
+        ? await this.toReviewDTO(
+            project.path,
+            reviewRows[0],
+            task,
+            profileById.get(reviewRows[0].reviewerProfileId),
+          )
+        : null;
+      const body = this.buildPullRequestBody(task, latestReview);
+      const pr = await createGitHubPullRequest(this.registry.getRunner(), project.path, {
+        baseBranch: project.mainBranch,
+        headBranch: taskBranch,
+        title: `${task.externalId}: ${task.title}`,
+        body,
+      });
+      prUrl = pr.prUrl || prUrl;
+    }
+
+    const pushedAt = new Date().toISOString();
+    this.db
+      .update(tasks)
+      .set({
+        ...(prUrl ? { prUrl } : {}),
+        pushedAt,
+        updatedAt: pushedAt,
+      })
+      .where(eq(tasks.id, task.id))
+      .run();
+    this.events?.emitEvent({ type: 'plan.updated', projectId });
+
+    return {
+      pushed: true,
+      remote,
+      branch: pushedBranch,
+      prUrl,
+      message: prUrl
+        ? `Pushed ${pushedBranch} to ${remote} and opened PR: ${prUrl}`
+        : `Pushed ${pushedBranch} to ${remote}.`,
+    };
   }
 
   async rejectTask(
@@ -3502,6 +3846,7 @@ export class ExecutionService {
       profileId: row.profileId,
       profileName: profile?.name ?? row.profileId,
       provider: row.provider as ProviderId,
+      accountKey: row.accountKey ?? row.provider,
       model: row.model,
       kind: (row.kind as RunKind) ?? 'execute',
       branchName: row.branchName ?? null,
@@ -3517,10 +3862,18 @@ export class ExecutionService {
       failureReason: row.failureReason,
       commitBefore: row.commitBefore,
       commitAfter: row.commitAfter,
+      checkpointBeforeRef: row.checkpointBeforeRef ?? null,
+      checkpointAfterRef: row.checkpointAfterRef ?? null,
       logPath: row.logPath,
       resultPath: row.resultPath,
       result,
       scopeWarnings,
+      inputTokens: row.inputTokens ?? null,
+      outputTokens: row.outputTokens ?? null,
+      cacheReadTokens: row.cacheReadTokens ?? null,
+      cacheWriteTokens: row.cacheWriteTokens ?? null,
+      estimatedCostUsd: row.estimatedCostUsd ?? null,
+      costSource: (row.costSource as 'cli' | 'estimated' | null) ?? null,
     };
   }
 

@@ -54,8 +54,19 @@ describe('Provider adapters & bwrap wrapper', () => {
       resetsAt: '2026-11-18T06:15:41Z',
     });
 
-    expect(parseAgyModelsOutput('Fetching available models...\ngemini-4-hydrogen-high\tGemini 4\n')).toEqual([
-      'gemini-4-hydrogen-high',
+    expect(parseAgyModelsOutput('Fetching available models...\ngemini-4-hydrogen-high\tGemini 4 (High)\n')).toEqual([
+      {
+        id: 'gemini-4-hydrogen',
+        value: 'gemini-4-hydrogen',
+        resolvedModel: 'gemini-4-hydrogen',
+        displayName: 'Gemini 4',
+        description: '',
+        supportedEffortLevels: ['high'],
+        defaultEffort: 'high',
+        supportsFastMode: false,
+        supportsThinking: true,
+        variants: [],
+      },
     ]);
 
     const codexWindows = parseCodexRateLimits({

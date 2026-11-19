@@ -3,8 +3,18 @@ import { z } from 'zod';
 export const ProviderIdSchema = z.enum(['claude-code', 'codex', 'antigravity']);
 export type ProviderId = z.infer<typeof ProviderIdSchema>;
 
-export const EffortLevelSchema = z.enum(['low', 'medium', 'high', 'xhigh']);
+export const SandboxEngineSchema = z.enum(['bwrap', 'sandbox-exec', 'none']);
+export type SandboxEngine = z.infer<typeof SandboxEngineSchema>;
+
+export const EFFORT_LEVEL_ORDER = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export const EffortLevelSchema = z.enum(EFFORT_LEVEL_ORDER);
 export type EffortLevel = z.infer<typeof EffortLevelSchema>;
+
+/** Stable per-account key: `<provider>` for the default account or `<provider>:<normalizedDir>`. */
+export function buildAccountKey(provider: ProviderId, configDir?: string | null): string {
+  const cleaned = configDir?.trim().replace(/\/+$/, '') ?? '';
+  return cleaned ? `${provider}:${cleaned}` : provider;
+}
 
 export const TaskRoleSchema = z.enum(['lead', 'planner', 'engineer', 'qa', 'reviewer']);
 export type TaskRole = z.infer<typeof TaskRoleSchema>;
@@ -225,6 +235,27 @@ export const ProviderUsageSchema = z.object({
 });
 export type ProviderUsage = z.infer<typeof ProviderUsageSchema>;
 
+export const ProviderModelVariantSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  value: z.string().min(1),
+});
+export type ProviderModelVariant = z.infer<typeof ProviderModelVariantSchema>;
+
+export const ProviderModelInfoSchema = z.object({
+  id: z.string().min(1),
+  value: z.string().min(1),
+  resolvedModel: z.string().nullable().default(null),
+  displayName: z.string().min(1),
+  description: z.string().default(''),
+  supportedEffortLevels: z.array(EffortLevelSchema).default([]),
+  defaultEffort: EffortLevelSchema.nullable().default(null),
+  supportsFastMode: z.boolean().default(false),
+  supportsThinking: z.boolean().default(false),
+  variants: z.array(ProviderModelVariantSchema).default([]),
+});
+export type ProviderModelInfo = z.infer<typeof ProviderModelInfoSchema>;
+
 export const ProviderStatusSchema = z.object({
   id: ProviderIdSchema,
   displayName: z.string(),
@@ -235,7 +266,8 @@ export const ProviderStatusSchema = z.object({
   loggedIn: z.boolean(),
   authSummary: z.string(),
   sandboxReady: z.boolean(),
-  models: z.array(z.string()),
+  sandboxEngine: SandboxEngineSchema.default('none'),
+  models: z.array(ProviderModelInfoSchema),
   usage: ProviderUsageSchema,
   checkedAt: z.string(),
 });
@@ -333,6 +365,9 @@ export interface ProjectSummary {
   leadProvider: ProviderId;
   leadModel: string | null;
   integrationCommand: string | null;
+  pushAfterMerge: boolean;
+  createPrAfterMerge: boolean;
+  gitRemote: string | null;
   createdAt: string;
   updatedAt: string;
   hasProjectMd: boolean;
@@ -389,6 +424,8 @@ export interface TaskDTO {
   branchName: string | null;
   mergeCommitSha: string | null;
   rejectionNote: string | null;
+  prUrl: string | null;
+  pushedAt: string | null;
   dependsOn: string[];
   createdAt: string;
   updatedAt: string;
@@ -423,13 +460,14 @@ export interface AgentProfileDTO {
   maxParallel: number;
   maxReviewRounds: number;
   fallbackProfileId: string | null;
+  configDir: string | null;
   isDefault: boolean;
   createdAt: string;
 }
 
 /** `gemini-4-neon-high` becomes `{ base: 'gemini-4-neon', level: 'high' }`; null when the id has no level suffix. */
 export function splitEffortModel(model: string): { base: string; level: EffortLevel } | null {
-  const m = model.trim().match(/^(.+)-(low|medium|high|xhigh)$/i);
+  const m = model.trim().match(/^(.+)-(low|medium|high|xhigh|max)$/i);
   return m ? { base: m[1], level: m[2].toLowerCase() as EffortLevel } : null;
 }
 
@@ -450,6 +488,7 @@ const ProfileBaseFieldsSchema = z.object({
   maxParallel: z.number().int().min(1).max(16),
   maxReviewRounds: z.number().int().min(1).max(3),
   fallbackProfileId: z.string().min(1).nullable(),
+  configDir: z.string().trim().max(500).nullable(),
 });
 
 export const CreateProfileInputSchema = z.object({
@@ -464,6 +503,7 @@ export const CreateProfileInputSchema = z.object({
   maxParallel: ProfileBaseFieldsSchema.shape.maxParallel.default(1),
   maxReviewRounds: ProfileBaseFieldsSchema.shape.maxReviewRounds.default(2),
   fallbackProfileId: ProfileBaseFieldsSchema.shape.fallbackProfileId.default(null),
+  configDir: ProfileBaseFieldsSchema.shape.configDir.default(null),
 });
 export type CreateProfileInput = z.infer<typeof CreateProfileInputSchema>;
 
@@ -528,8 +568,24 @@ export type RejectTaskInput = z.infer<typeof RejectTaskInputSchema>;
 export const ApproveMergeInputSchema = z.object({
   runIntegration: z.boolean().default(true),
   allowFailedReview: z.boolean().default(false),
+  pushAfterMerge: z.boolean().optional(),
+  createPrAfterMerge: z.boolean().optional(),
 });
 export type ApproveMergeInput = z.infer<typeof ApproveMergeInputSchema>;
+
+export const PushPrInputSchema = z.object({
+  remote: z.string().trim().min(1).max(100).optional(),
+  createPr: z.boolean().default(true),
+});
+export type PushPrInput = z.infer<typeof PushPrInputSchema>;
+
+export interface PushPrResultDTO {
+  pushed: boolean;
+  remote: string;
+  branch: string;
+  prUrl: string | null;
+  message: string;
+}
 
 export const RunIntegrationInputSchema = z.object({
   command: z.string().trim().min(1).max(500).optional(),
@@ -594,6 +650,7 @@ export interface TaskRunDTO {
   profileId: string;
   profileName: string;
   provider: ProviderId;
+  accountKey: string;
   model: string | null;
   kind: RunKind;
   branchName: string | null;
@@ -609,10 +666,18 @@ export interface TaskRunDTO {
   failureReason: string | null;
   commitBefore: string | null;
   commitAfter: string | null;
+  checkpointBeforeRef: string | null;
+  checkpointAfterRef: string | null;
   logPath: string;
   resultPath: string | null;
   result: TaskResultContract | null;
   scopeWarnings: string[];
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
+  estimatedCostUsd: number | null;
+  costSource: 'cli' | 'estimated' | null;
 }
 
 export interface TaskReviewDTO {
@@ -691,7 +756,12 @@ export interface GuardStateDTO {
   mainBranch: string;
   integrationCommand: string | null;
   detectedIntegrationCommand: string | null;
+  pushAfterMerge: boolean;
+  createPrAfterMerge: boolean;
+  gitRemote: string | null;
+  ghAvailable: boolean;
   sandboxReady: boolean;
+  sandboxEngine: SandboxEngine;
   platform: string;
   tasks: GuardTaskEntryDTO[];
   integrationRuns: IntegrationRunDTO[];
@@ -699,6 +769,8 @@ export interface GuardStateDTO {
 
 export interface ProviderRuntimeStateDTO {
   provider: ProviderId;
+  accountKey: string;
+  configDir: string | null;
   activeCount: number;
   maxParallel: number;
   inCooldown: boolean;
@@ -711,9 +783,24 @@ export interface ProviderRuntimeStateDTO {
 export interface ProviderEventDTO {
   id: string;
   provider: ProviderId;
+  accountKey: string;
   type: ProviderEventType;
   detail: string | null;
   createdAt: string;
+}
+
+export interface ModelUsageStatisticsDTO {
+  provider: ProviderId;
+  model: string;
+  totalRuns: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  totalTokens: number;
+  cacheHitRate: number | null;
+  estimatedCostUsd: number;
+  costIsEstimated: boolean;
 }
 
 export interface ProviderStatisticsDTO {
@@ -733,6 +820,13 @@ export interface ProviderStatisticsDTO {
   };
   totalDurationMs: number;
   avgDurationMs: number | null;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  totalTokens: number;
+  cacheHitRate: number | null;
+  estimatedCostUsd: number;
   rateLimitEvents: number;
   timeoutEvents: number;
   loginExpiredEvents: number;
@@ -757,6 +851,8 @@ export interface ProjectUsageStatisticsDTO {
   failedRuns: number;
   fallbackRuns: number;
   totalDurationMs: number;
+  totalTokens: number;
+  estimatedCostUsd: number;
 }
 
 export interface UsageStatisticsResponseDTO {
@@ -770,8 +866,16 @@ export interface UsageStatisticsResponseDTO {
     fallbackRuns: number;
     totalDurationMs: number;
     rateLimitEvents: number;
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
+    totalTokens: number;
+    cacheHitRate: number | null;
+    estimatedCostUsd: number;
   };
   providers: ProviderStatisticsDTO[];
+  models: ModelUsageStatisticsDTO[];
   projects: ProjectUsageStatisticsDTO[];
   recentEvents: ProviderEventDTO[];
 }
@@ -783,6 +887,7 @@ export interface ExecutionStateDTO {
   activeRuns: TaskRunDTO[];
   queueRunning: boolean;
   sandboxReady: boolean;
+  sandboxEngine: SandboxEngine;
   platform: string;
   providerStates: ProviderRuntimeStateDTO[];
   dispatchPreviews: TaskDispatchPreviewDTO[];

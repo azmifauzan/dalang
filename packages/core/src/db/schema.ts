@@ -1,4 +1,4 @@
-import { integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { integer, primaryKey, real, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 export const projects = sqliteTable('projects', {
   id: text('id').primaryKey(),
@@ -8,6 +8,9 @@ export const projects = sqliteTable('projects', {
   leadProvider: text('lead_provider').notNull().default('claude-code'),
   leadModel: text('lead_model'),
   integrationCommand: text('integration_command'),
+  pushAfterMerge: integer('push_after_merge', { mode: 'boolean' }).notNull().default(false),
+  createPrAfterMerge: integer('create_pr_after_merge', { mode: 'boolean' }).notNull().default(false),
+  gitRemote: text('git_remote'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });
@@ -88,6 +91,8 @@ export const tasks = sqliteTable('tasks', {
   branchName: text('branch_name'),
   mergeCommitSha: text('merge_commit_sha'),
   rejectionNote: text('rejection_note'),
+  prUrl: text('pr_url'),
+  pushedAt: text('pushed_at'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });
@@ -118,6 +123,7 @@ export const agentProfiles = sqliteTable('agent_profiles', {
   maxParallel: integer('max_parallel').notNull().default(1),
   maxReviewRounds: integer('max_review_rounds').notNull().default(2),
   fallbackProfileId: text('fallback_profile_id'),
+  configDir: text('config_dir'),
   isDefault: integer('is_default', { mode: 'boolean' }).notNull().default(false),
   createdAt: text('created_at').notNull(),
 });
@@ -138,6 +144,7 @@ export const routingRules = sqliteTable('routing_rules', {
 export const providerEvents = sqliteTable('provider_events', {
   id: text('id').primaryKey(),
   provider: text('provider').notNull(),
+  accountKey: text('account_key'),
   type: text('type').notNull(),
   detail: text('detail'),
   createdAt: text('created_at').notNull(),
@@ -155,6 +162,7 @@ export const runs = sqliteTable('runs', {
     .notNull()
     .references(() => agentProfiles.id),
   provider: text('provider').notNull(),
+  accountKey: text('account_key'),
   model: text('model'),
   kind: text('kind').notNull().default('execute'),
   branchName: text('branch_name'),
@@ -169,9 +177,17 @@ export const runs = sqliteTable('runs', {
   failureReason: text('failure_reason'),
   commitBefore: text('commit_before'),
   commitAfter: text('commit_after'),
+  checkpointBeforeRef: text('checkpoint_before_ref'),
+  checkpointAfterRef: text('checkpoint_after_ref'),
   logPath: text('log_path').notNull(),
   resultPath: text('result_path'),
   scopeWarningsJson: text('scope_warnings_json').notNull().default('[]'),
+  inputTokens: integer('input_tokens'),
+  outputTokens: integer('output_tokens'),
+  cacheReadTokens: integer('cache_read_tokens'),
+  cacheWriteTokens: integer('cache_write_tokens'),
+  estimatedCostUsd: real('estimated_cost_usd'),
+  costSource: text('cost_source'),
 });
 
 export const reviews = sqliteTable('reviews', {

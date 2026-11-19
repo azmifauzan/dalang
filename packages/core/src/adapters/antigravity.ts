@@ -1,8 +1,28 @@
 import os from 'node:os';
-import type { ProviderStatus, ProviderUsage, UsageWindow } from '@dalang/shared';
+import {
+  EFFORT_LEVEL_ORDER,
+  splitEffortModel,
+  type EffortLevel,
+  type ProviderModelInfo,
+  type ProviderStatus,
+  type ProviderUsage,
+  type UsageWindow,
+} from '@dalang/shared';
 import { createTurnLogger } from './logger.js';
-import { findBwrap, startDbusProxy, wrapWithBwrap } from './sandbox.js';
-import type { AdapterTurnOptions, AdapterTurnResult, CliAdapter, CliRunner } from './types.js';
+import {
+  buildProviderAccountEnv,
+  detectSandboxEngine,
+  findBwrap,
+  startDbusProxy,
+  wrapWithSandbox,
+} from './sandbox.js';
+import type {
+  AdapterTurnOptions,
+  AdapterTurnResult,
+  CliAdapter,
+  CliRunner,
+  TurnTokenUsage,
+} from './types.js';
 
 interface AgyUsageJson {
   status?: string;
@@ -23,17 +43,76 @@ interface AgyUsageJson {
   };
 }
 
-export function parseAgyModelsOutput(stdout: string): string[] {
-  const models: string[] = [];
+/**
+ * Parse `agy models` output (`<id>\t<Display Name>`) into structured model objects.
+ * Effort levels remain encoded in the CLI id (`gemini-4-neon-high`); this groups them by base model
+ * and preserves the display name from `agy models`.
+ */
+export function parseAgyModelsOutput(stdout: string): ProviderModelInfo[] {
+  const byBase = new Map<
+    string,
+    { base: string; displayName: string; levels: Set<EffortLevel>; rawId: string }
+  >();
+  const order: string[] = [];
+
   for (const line of stdout.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('Fetching')) continue;
-    const id = trimmed.split(/\s+/)[0];
-    if (id && /^[a-z0-9][a-z0-9._-]+$/i.test(id)) {
-      models.push(id);
+    const tabIdx = trimmed.indexOf('\t');
+    const id = (tabIdx >= 0 ? trimmed.slice(0, tabIdx) : trimmed.split(/\s+/)[0]).trim();
+    const rawLabel = tabIdx >= 0 ? trimmed.slice(tabIdx + 1).trim() : '';
+    if (!id || !/^[a-z0-9][a-z0-9._-]+$/i.test(id)) continue;
+
+    const split = splitEffortModel(id);
+    if (split) {
+      const cleanLabel = rawLabel.replace(/\s*\((low|medium|high|xhigh|max)\)\s*$/i, '').trim() || split.base;
+      const existing = byBase.get(split.base);
+      if (existing) {
+        existing.levels.add(split.level);
+        if (existing.displayName === existing.base && cleanLabel !== split.base) {
+          existing.displayName = cleanLabel;
+        }
+      } else {
+        byBase.set(split.base, {
+          base: split.base,
+          displayName: cleanLabel,
+          levels: new Set<EffortLevel>([split.level]),
+          rawId: id,
+        });
+        order.push(split.base);
+      }
+    } else if (!byBase.has(id)) {
+      byBase.set(id, {
+        base: id,
+        displayName: rawLabel || id,
+        levels: new Set<EffortLevel>(),
+        rawId: id,
+      });
+      order.push(id);
     }
   }
-  return models;
+
+  return order.map((key) => {
+    const entry = byBase.get(key)!;
+    const supportedEffortLevels = EFFORT_LEVEL_ORDER.filter((lvl) => entry.levels.has(lvl));
+    const defaultEffort: EffortLevel | null = supportedEffortLevels.includes('high')
+      ? 'high'
+      : supportedEffortLevels.includes('medium')
+        ? 'medium'
+        : (supportedEffortLevels[0] ?? null);
+    return {
+      id: entry.base,
+      value: entry.base,
+      resolvedModel: entry.base,
+      displayName: entry.displayName,
+      description: '',
+      supportedEffortLevels,
+      defaultEffort,
+      supportsFastMode: false,
+      supportsThinking: supportedEffortLevels.length > 0,
+      variants: [],
+    };
+  });
 }
 
 export function parseAgyUsageJson(raw: string): { ok: boolean; windows: UsageWindow[] } {
@@ -65,6 +144,54 @@ export function parseAgyUsageJson(raw: string): { ok: boolean; windows: UsageWin
   }
 }
 
+function extractAgyUsage(ev: Record<string, unknown>, fallbackModel?: string | null): TurnTokenUsage | undefined {
+  const containers: Array<Record<string, unknown>> = [];
+  if (ev.usage && typeof ev.usage === 'object') containers.push(ev.usage as Record<string, unknown>);
+  if (ev.stats && typeof ev.stats === 'object') containers.push(ev.stats as Record<string, unknown>);
+  if (ev.result && typeof ev.result === 'object') {
+    const inner = ev.result as Record<string, unknown>;
+    if (inner.usage && typeof inner.usage === 'object') containers.push(inner.usage as Record<string, unknown>);
+    if (inner.stats && typeof inner.stats === 'object') containers.push(inner.stats as Record<string, unknown>);
+  }
+
+  for (const u of containers) {
+    const input =
+      (typeof u.input_tokens === 'number' ? u.input_tokens : undefined) ??
+      (typeof u.prompt_tokens === 'number' ? u.prompt_tokens : undefined) ??
+      (typeof u.inputTokens === 'number' ? u.inputTokens : 0);
+    const output =
+      (typeof u.output_tokens === 'number' ? u.output_tokens : undefined) ??
+      (typeof u.completion_tokens === 'number' ? u.completion_tokens : undefined) ??
+      (typeof u.outputTokens === 'number' ? u.outputTokens : 0);
+    const cacheRead =
+      (typeof u.cache_read_input_tokens === 'number' ? u.cache_read_input_tokens : undefined) ??
+      (typeof u.cached_input_tokens === 'number' ? u.cached_input_tokens : undefined) ??
+      (typeof u.cached_tokens === 'number' ? u.cached_tokens : undefined) ??
+      (typeof u.cacheReadInputTokens === 'number' ? u.cacheReadInputTokens : 0);
+    const cacheWrite =
+      (typeof u.cache_creation_input_tokens === 'number' ? u.cache_creation_input_tokens : undefined) ??
+      (typeof u.cacheWriteInputTokens === 'number' ? u.cacheWriteInputTokens : 0);
+    const costUsd =
+      typeof u.total_cost_usd === 'number'
+        ? u.total_cost_usd
+        : typeof u.cost_usd === 'number'
+          ? u.cost_usd
+          : null;
+
+    if (input > 0 || output > 0 || cacheRead > 0 || cacheWrite > 0 || costUsd !== null) {
+      return {
+        inputTokens: input,
+        outputTokens: output,
+        cacheReadTokens: cacheRead,
+        cacheWriteTokens: cacheWrite,
+        costUsd,
+        model: fallbackModel ?? null,
+      };
+    }
+  }
+  return undefined;
+}
+
 export const KEYRING_OFF_MESSAGE =
   'Antigravity signs in through the desktop keyring, so a sandboxed run can read every secret stored there. It is off by default: enable "Allow Antigravity to read the desktop keyring" on the Providers page to use it.';
 
@@ -80,11 +207,15 @@ export class AntigravityAdapter implements CliAdapter {
     },
   ) {}
 
-  async checkStatus(): Promise<ProviderStatus> {
+  /**
+   * Side-effect-free health checks: `--version`, `models`, and `-p=/usage --output-format json`
+   * run from `os.tmpdir()` without mutating any workspace or triggering project hooks.
+   */
+  async checkStatus(configDir?: string | null): Promise<ProviderStatus> {
     const checkedAt = new Date().toISOString();
     const binaryPath = await this.runner.which(this.binary);
-    const bwrapPath = await this.runner.which('bwrap');
-    const sandboxReady = Boolean(bwrapPath && process.platform === 'linux');
+    const { engine: sandboxEngine } = await detectSandboxEngine(this.runner);
+    const sandboxReady = sandboxEngine !== 'none';
 
     if (!binaryPath) {
       return {
@@ -97,17 +228,19 @@ export class AntigravityAdapter implements CliAdapter {
         loggedIn: false,
         authSummary: 'Binary not found in PATH',
         sandboxReady,
+        sandboxEngine,
         models: [],
         usage: { available: false, windows: [], error: 'Not installed' },
         checkedAt,
       };
     }
 
-    const cwd = os.homedir();
+    const cwd = os.tmpdir();
+    const env = buildProviderAccountEnv(this.id, configDir);
     const [verRes, modelsRes, usage] = await Promise.all([
-      this.runner.run(binaryPath, ['--version'], { cwd, timeoutMs: 5000 }).catch(() => null),
-      this.runner.run(binaryPath, ['models'], { cwd, timeoutMs: 10000 }).catch(() => null),
-      this.getUsage(),
+      this.runner.run(binaryPath, ['--version'], { cwd, timeoutMs: 5000, env }).catch(() => null),
+      this.runner.run(binaryPath, ['models'], { cwd, timeoutMs: 10000, env }).catch(() => null),
+      this.getUsage(configDir),
     ]);
 
     const version = verRes?.stdout.trim() || null;
@@ -129,22 +262,24 @@ export class AntigravityAdapter implements CliAdapter {
       loggedIn,
       authSummary,
       sandboxReady,
+      sandboxEngine,
       models,
       usage,
       checkedAt,
     };
   }
 
-  async getUsage(): Promise<ProviderUsage> {
+  async getUsage(configDir?: string | null): Promise<ProviderUsage> {
     const binaryPath = await this.runner.which(this.binary);
     if (!binaryPath) {
       return { available: false, windows: [], error: 'Binary not installed' };
     }
+    const env = buildProviderAccountEnv(this.id, configDir);
     try {
       const res = await this.runner.run(
         binaryPath,
         ['-p=/usage', '--output-format', 'json'],
-        { cwd: os.homedir(), timeoutMs: 10000, idleTimeoutMs: 8000 },
+        { cwd: os.tmpdir(), timeoutMs: 10000, idleTimeoutMs: 8000, env },
       );
       const parsed = parseAgyUsageJson(res.stdout);
       if (parsed.ok && parsed.windows.length > 0) {
@@ -172,6 +307,8 @@ export class AntigravityAdapter implements CliAdapter {
     }
 
     const bwrapAvailable = Boolean(await findBwrap(this.runner));
+    const { engine: sandboxEngine } = await detectSandboxEngine(this.runner);
+    const sandboxAvailable = sandboxEngine !== 'none';
     const modeFlag = options.permissionMode === 'read-only' ? 'plan' : 'accept-edits';
     const args: string[] = [
       '--output-format',
@@ -179,7 +316,7 @@ export class AntigravityAdapter implements CliAdapter {
       '--mode',
       modeFlag,
     ];
-    if (options.permissionMode === 'workspace-write' && bwrapAvailable) {
+    if (options.permissionMode === 'workspace-write' && sandboxAvailable) {
       args.push('--dangerously-skip-permissions');
     }
 
@@ -204,19 +341,25 @@ export class AntigravityAdapter implements CliAdapter {
         'Antigravity signs in through the desktop session bus, and a sandboxed run only gets a filtered one. Install xdg-dbus-proxy and run DALANG from a desktop session.',
       );
     }
-    const invocation = await wrapWithBwrap(
+    const invocation = await wrapWithSandbox(
       this.runner,
       this.id,
       options.projectPath,
       binaryPath,
       args,
-      { dbusSocket: dbusProxy?.socketPath, readOnly: options.permissionMode === 'read-only' },
+      {
+        dbusSocket: dbusProxy?.socketPath,
+        readOnly: options.permissionMode === 'read-only',
+        configDir: options.configDir,
+      },
     );
+    const env = buildProviderAccountEnv(this.id, options.configDir);
 
     const logger = createTurnLogger(options.logFilePath);
     let sessionId: string | null = options.sessionId ?? null;
     let responseText = '';
     let structuredOutput: unknown = undefined;
+    let usage: TurnTokenUsage | undefined;
     const textChunks: string[] = [];
 
     try {
@@ -225,6 +368,7 @@ export class AntigravityAdapter implements CliAdapter {
         timeoutMs: options.timeoutMs ?? 600_000,
         idleTimeoutMs: options.idleTimeoutMs ?? 180_000,
         signal: options.signal,
+        env,
         onStdoutLine: (line) => {
           logger.write(line);
           options.onLogLine?.(line);
@@ -249,6 +393,8 @@ export class AntigravityAdapter implements CliAdapter {
               if (typeof inner.response === 'string') responseText = inner.response;
               if (inner.structured_output !== undefined) structuredOutput = inner.structured_output;
             }
+            const parsedUsage = extractAgyUsage(ev, options.model);
+            if (parsedUsage) usage = parsedUsage;
             if (typeof ev.text === 'string' && ev.type !== 'thinking') {
               textChunks.push(ev.text);
             }
@@ -275,6 +421,7 @@ export class AntigravityAdapter implements CliAdapter {
         stderr: res.stderr,
         logFilePath: options.logFilePath,
         aborted: Boolean(res.aborted),
+        ...(usage ? { usage } : {}),
       };
     } finally {
       logger.close();

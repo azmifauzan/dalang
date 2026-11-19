@@ -987,6 +987,8 @@ export class LeadService {
       branchName: row.branchName ?? null,
       mergeCommitSha: row.mergeCommitSha ?? null,
       rejectionNote: row.rejectionNote ?? null,
+      prUrl: row.prUrl ?? null,
+      pushedAt: row.pushedAt ?? null,
       dependsOn: depsByTaskId.get(row.id) ?? [],
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
