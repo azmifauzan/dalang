@@ -71,11 +71,13 @@ function createScriptedLeadRunner(
         return { exitCode: 0, stdout: `${line}\n`, stderr: '', timedOut: false, idleTimedOut: false };
       };
 
-      const splitMatch = promptArg.match(/\.dalang\/tmp\/split-([A-Za-z0-9-]+)-d(\d+)\.json/);
+      const splitMatch = promptArg.match(
+        /(\.dalang\/(?:sessions\/[A-Za-z0-9_-]+\/)?tmp\/split-([A-Za-z0-9-]+)-d(\d+)\.json)/,
+      );
       if (splitMatch) {
-        const parentId = splitMatch[1];
-        const depth = Number(splitMatch[2]);
-        const target = path.join(projectPath, '.dalang', 'tmp', `split-${parentId}-d${depth}.json`);
+        const parentId = splitMatch[2];
+        const depth = Number(splitMatch[3]);
+        const target = path.join(projectPath, splitMatch[1]);
         fs.mkdirSync(path.dirname(target), { recursive: true });
         fs.writeFileSync(
           target,
@@ -116,11 +118,13 @@ function createScriptedLeadRunner(
         return emitClaudeResult('sess-lead-1', `Split ${parentId}`);
       }
 
-      const roundMatch = promptArg.match(/\.dalang\/discuss\/round-(\d+)\.json/);
+      const roundMatch = promptArg.match(
+        /(\.dalang\/(?:sessions\/[A-Za-z0-9_-]+\/)?discuss\/round-(\d+)\.json)/,
+      );
       if (roundMatch) {
         discussCalls += 1;
-        const roundNum = Number(roundMatch[1]);
-        const target = path.join(projectPath, '.dalang', 'discuss', `round-${roundNum}.json`);
+        const roundNum = Number(roundMatch[2]);
+        const target = path.join(projectPath, roundMatch[1]);
         fs.mkdirSync(path.dirname(target), { recursive: true });
         if (discussCalls <= (opts?.invalidDiscussAttempts ?? 0)) {
           // Intentionally write invalid schema to verify retry mechanism!
@@ -148,10 +152,12 @@ function createScriptedLeadRunner(
         return emitClaudeResult('sess-lead-1', 'Asked round questions');
       }
 
-      const briefMatch = promptArg.match(/\.dalang\/brief\.v(\d+)\.json/);
+      const briefMatch = promptArg.match(
+        /(\.dalang\/(?:sessions\/[A-Za-z0-9_-]+\/)?brief\.v(\d+)\.json)/,
+      );
       if (briefMatch) {
-        const ver = Number(briefMatch[1]);
-        const target = path.join(projectPath, '.dalang', `brief.v${ver}.json`);
+        const ver = Number(briefMatch[2]);
+        const target = path.join(projectPath, briefMatch[1]);
         fs.mkdirSync(path.dirname(target), { recursive: true });
         fs.writeFileSync(
           target,
@@ -170,9 +176,12 @@ function createScriptedLeadRunner(
         return emitClaudeResult('sess-lead-1', `Wrote brief v${ver}`);
       }
 
-      if (promptArg.includes('.dalang/tmp/plan-v')) {
+      const planMatch = promptArg.match(
+        /(\.dalang\/(?:sessions\/[A-Za-z0-9_-]+\/)?tmp\/plan-v\d+\.json)/,
+      );
+      if (planMatch) {
         planDrafts += 1;
-        const target = path.join(projectPath, '.dalang', 'tmp', 'plan-v1.json');
+        const target = path.join(projectPath, planMatch[1]);
         if (opts?.badPlanDrafts && planDrafts <= opts.badPlanDrafts) {
           fs.mkdirSync(path.dirname(target), { recursive: true });
           fs.writeFileSync(target, JSON.stringify(brokenPlan));
@@ -318,8 +327,8 @@ describe('LeadService end-to-end Rembuk flow (F-03 to F-10)', () => {
     expect(approvedPlan.status).toBe('approved');
     expect(approvedPlan.tasks.every((t) => t.status === 'approved')).toBe(true);
 
-    // Verify .dalang/plan.json on disk matches
-    const onDiskPlan = JSON.parse(fs.readFileSync(path.join(repoDir, '.dalang', 'plan.json'), 'utf8'));
+    // Verify session plan.json on disk matches
+    const onDiskPlan = JSON.parse(fs.readFileSync(path.join(repoDir, approvedPlan.filePath), 'utf8'));
     expect(onDiskPlan.tasks).toHaveLength(5);
 
     conn.close();
@@ -354,8 +363,8 @@ describe('Lead hardening', () => {
 
   it('keeps the current plan.json when a regeneration attempt fails', async () => {
     const { conn, lead, proj, repoDir } = await bootstrapApprovedBrief();
-    await lead.generatePlan(proj.id);
-    const planPath = path.join(repoDir, '.dalang', 'plan.json');
+    const generated = await lead.generatePlan(proj.id);
+    const planPath = path.join(repoDir, generated.filePath);
     const before = fs.readFileSync(planPath, 'utf8');
 
     // A second draft that is invalid must leave the saved plan untouched.

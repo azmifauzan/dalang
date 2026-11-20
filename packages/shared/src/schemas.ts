@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const DALANG_VERSION = '0.6.0';
+export const DALANG_VERSION = '0.7.0';
 
 export const UiLanguageSchema = z.enum(['en', 'id']);
 export type UiLanguage = z.infer<typeof UiLanguageSchema>;
@@ -58,6 +58,25 @@ export type PlanTaskRole = z.infer<typeof PlanTaskRoleSchema>;
 
 export const SessionPhaseSchema = z.enum(['discuss', 'agree', 'list', 'run']);
 export type SessionPhase = z.infer<typeof SessionPhaseSchema>;
+
+export const SessionModeSchema = z.enum(['ask', 'quick', 'full']);
+export type SessionMode = z.infer<typeof SessionModeSchema>;
+
+export const SessionWorkStateSchema = z.enum(['idle', 'working']);
+export type SessionWorkState = z.infer<typeof SessionWorkStateSchema>;
+
+export const ModeSuggestionSchema = z.object({
+  targetMode: z.enum(['quick', 'full']),
+  reason: z.string().min(1),
+});
+export type ModeSuggestion = z.infer<typeof ModeSuggestionSchema>;
+
+export const AskReplyContractSchema = z.object({
+  answer: z.string().min(1),
+  suggested_mode: z.enum(['quick', 'full']).nullable().optional(),
+  suggestion_reason: z.string().nullable().optional(),
+});
+export type AskReplyContract = z.infer<typeof AskReplyContractSchema>;
 
 /**
  * Structured question round written by Lead to `.dalang/discuss/round-N.json`.
@@ -220,6 +239,41 @@ export const TaskSplitOutputSchema = z.object({
 export type TaskSplitOutput = z.infer<typeof TaskSplitOutputSchema>;
 
 /**
+ * Quick-mode mini-plan written by Lead to `.dalang/sessions/<id>/tmp/quick-plan-v{n}.json`.
+ * Either a single concrete task ready to run, or a `too_large` judgment suggesting Full mode.
+ */
+export const QuickPlanContractSchema = z
+  .object({
+    verdict: z.enum(['ready', 'too_large']),
+    summary: z.string().min(1),
+    reason: z.string().optional(),
+    findings: z.array(z.string()).default([]),
+    task: PlanTaskContractSchema.optional(),
+  })
+  .superRefine((val, ctx) => {
+    if (val.verdict === 'ready') {
+      if (!val.task) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'A "ready" quick plan must include a single "task" object.',
+        });
+      } else if (val.task.needs_split) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'If the work needs splitting into multiple tasks, set verdict to "too_large".',
+        });
+      }
+    }
+    if (val.verdict === 'too_large' && !val.reason?.trim()) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'A "too_large" verdict must include a non-empty "reason".',
+      });
+    }
+  });
+export type QuickPlanContract = z.infer<typeof QuickPlanContractSchema>;
+
+/**
  * Provider status and usage window shapes.
  */
 export const UsageWindowSchema = z.object({
@@ -293,6 +347,7 @@ export const CreateOrOpenProjectInputSchema = z.object({
 export type CreateOrOpenProjectInput = z.infer<typeof CreateOrOpenProjectInputSchema>;
 
 export const DiscussMessageInputSchema = z.object({
+  sessionId: z.string().min(1).optional(),
   message: z.string().min(1),
   answers: z
     .array(
@@ -306,8 +361,57 @@ export const DiscussMessageInputSchema = z.object({
     .optional(),
   provider: ProviderIdSchema.optional(),
   model: z.string().optional(),
+  /** Reasoning effort for this turn; the Lead's usual effort applies when omitted. */
+  effort: EffortLevelSchema.optional(),
 });
 export type DiscussMessageInput = z.infer<typeof DiscussMessageInputSchema>;
+
+export const CreateSessionInputSchema = z.object({
+  mode: SessionModeSchema.default('ask'),
+  title: z.string().trim().max(160).optional(),
+  provider: ProviderIdSchema.optional(),
+  model: z.string().nullable().optional(),
+});
+export type CreateSessionInput = z.infer<typeof CreateSessionInputSchema>;
+
+export const UpdateSessionInputSchema = z.object({
+  title: z.string().trim().min(1).max(160).optional(),
+  archived: z.boolean().optional(),
+  provider: ProviderIdSchema.optional(),
+  model: z.string().nullable().optional(),
+});
+export type UpdateSessionInput = z.infer<typeof UpdateSessionInputSchema>;
+
+export const SwitchSessionModeInputSchema = z.object({
+  mode: SessionModeSchema,
+});
+export type SwitchSessionModeInput = z.infer<typeof SwitchSessionModeInputSchema>;
+
+export const ChatMessageInputSchema = z.object({
+  sessionId: z.string().min(1).optional(),
+  mode: SessionModeSchema.default('ask'),
+  message: z.string().min(1),
+  answers: z
+    .array(
+      z.object({
+        questionId: z.string(),
+        question: z.string(),
+        selectedOptions: z.array(z.string()).default([]),
+        customText: z.string().default(''),
+      }),
+    )
+    .optional(),
+  provider: ProviderIdSchema.optional(),
+  model: z.string().nullable().optional(),
+  /** Reasoning effort for this turn; the Lead's usual effort applies when omitted. */
+  effort: EffortLevelSchema.optional(),
+});
+export type ChatMessageInput = z.infer<typeof ChatMessageInputSchema>;
+
+export const QuickRunInputSchema = z.object({
+  allowUnconfined: z.boolean().default(false),
+});
+export type QuickRunInput = z.infer<typeof QuickRunInputSchema>;
 
 export const BriefReviseInputSchema = z.object({
   note: z.string().min(1),
@@ -362,6 +466,36 @@ export const ReorderTasksInputSchema = z.object({
 });
 export type ReorderTasksInput = z.infer<typeof ReorderTasksInputSchema>;
 
+/** A Lead turn that is running right now, so any client that opens the chat can show it. */
+export interface SessionTurnDTO {
+  phase: string;
+  provider: ProviderId;
+  startedAt: string;
+}
+
+export interface SessionSummaryDTO {
+  id: string;
+  projectId: string;
+  title: string;
+  mode: SessionMode;
+  workState: SessionWorkState;
+  phase: SessionPhase;
+  provider: ProviderId;
+  model: string | null;
+  cliSessionId: string | null;
+  archivedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  latestBriefStatus: 'none' | 'draft' | 'approved';
+  latestBriefVersion: number | null;
+  planStatus: 'none' | 'draft' | 'approved';
+  taskCount: number;
+  doneTaskCount: number;
+  messageCount: number;
+  /** Set while the Lead is answering in this session, otherwise null. */
+  turn: SessionTurnDTO | null;
+}
+
 export interface ProjectSummary {
   id: string;
   name: string;
@@ -384,13 +518,41 @@ export interface ProjectSummary {
   latestBriefVersion: number | null;
   taskCount: number;
   planStatus: 'none' | 'draft' | 'approved';
+  sessionCount: number;
+  workingSessionId: string | null;
+  workingSessionTitle: string | null;
+}
+
+export type SessionMessageType =
+  | 'text'
+  | 'ask'
+  | 'questions'
+  | 'quick_plan'
+  | 'brief'
+  | 'plan'
+  | 'error';
+
+export interface AskMessageContent {
+  text: string;
+  suggestion: ModeSuggestion | null;
+}
+
+export interface QuickPlanMessageContent {
+  verdict: 'ready' | 'too_large';
+  summary: string;
+  reason?: string;
+  findings?: string[];
+  planId?: string;
+  planVersion?: number;
+  task?: PlanTaskContract;
+  taskId?: string;
 }
 
 export interface DiscussMessageDTO {
   id: string;
   sessionId: string;
   role: 'user' | 'lead' | 'system';
-  type: 'text' | 'questions' | 'brief' | 'plan' | 'error';
+  type: SessionMessageType;
   content: unknown;
   createdAt: string;
 }
@@ -398,6 +560,7 @@ export interface DiscussMessageDTO {
 export interface BriefDTO {
   id: string;
   projectId: string;
+  sessionId: string;
   version: number;
   status: 'draft' | 'approved';
   filePath: string;
@@ -439,7 +602,8 @@ export interface TaskDTO {
 export interface PlanDTO {
   id: string;
   projectId: string;
-  briefId: string;
+  sessionId: string;
+  briefId: string | null;
   version: number;
   status: 'draft' | 'approved';
   filePath: string;
@@ -447,6 +611,14 @@ export interface PlanDTO {
   tasks: TaskDTO[];
   createdAt: string;
   approvedAt: string | null;
+}
+
+export interface SessionDetailDTO {
+  session: SessionSummaryDTO;
+  messages: DiscussMessageDTO[];
+  currentRound: number;
+  briefs: BriefDTO[];
+  plan: PlanDTO | null;
 }
 
 export const PermissionModeSchema = z.enum(['workspace-write', 'read-only', 'accept-edits']);
@@ -552,6 +724,7 @@ export const ReorderRoutingRulesInputSchema = z.object({
 export type ReorderRoutingRulesInput = z.infer<typeof ReorderRoutingRulesInputSchema>;
 
 export const StartExecutionInputSchema = z.object({
+  sessionId: z.string().min(1).optional(),
   taskId: z.string().min(1).optional(),
   allowUnconfined: z.boolean().default(false),
   resumeSession: z.boolean().default(false),
@@ -559,6 +732,7 @@ export const StartExecutionInputSchema = z.object({
 export type StartExecutionInput = z.infer<typeof StartExecutionInputSchema>;
 
 export const StopExecutionInputSchema = z.object({
+  sessionId: z.string().min(1).optional(),
   taskId: z.string().min(1).optional(),
 });
 export type StopExecutionInput = z.infer<typeof StopExecutionInputSchema>;
@@ -611,10 +785,17 @@ export const RunIntegrationInputSchema = z.object({
 });
 export type RunIntegrationInput = z.infer<typeof RunIntegrationInputSchema>;
 
+/** How often the provider limits bar asks the CLIs for fresh numbers, in minutes. */
+export const USAGE_REFRESH_OPTIONS = [3, 5, 10] as const;
+export const DEFAULT_USAGE_REFRESH_MINUTES = 5;
+export const UsageRefreshMinutesSchema = z.union([z.literal(3), z.literal(5), z.literal(10)]);
+export type UsageRefreshMinutes = z.infer<typeof UsageRefreshMinutesSchema>;
+
 export const UpdateSettingsInputSchema = z.object({
   antigravityKeyringAccess: z.boolean().optional(),
   language: UiLanguageSchema.optional(),
   checkForUpdates: z.boolean().optional(),
+  usageRefreshMinutes: UsageRefreshMinutesSchema.optional(),
 });
 export type UpdateSettingsInput = z.infer<typeof UpdateSettingsInputSchema>;
 
@@ -625,6 +806,8 @@ export interface SettingsDTO {
   language: UiLanguage | null;
   /** Whether DALANG checks npm registry once per 24h for a newer version. On by default. */
   checkForUpdates: boolean;
+  /** Minutes between automatic refreshes of the provider limits while the page is open. Default 5. */
+  usageRefreshMinutes: UsageRefreshMinutes;
 }
 
 export interface UpdateStatusDTO {
@@ -785,6 +968,7 @@ export interface GuardTaskEntryDTO {
 
 export interface GuardStateDTO {
   projectId: string;
+  sessionId: string | null;
   mainBranch: string;
   integrationCommand: string | null;
   detectedIntegrationCommand: string | null;
@@ -914,6 +1098,7 @@ export interface UsageStatisticsResponseDTO {
 
 export interface ExecutionStateDTO {
   projectId: string;
+  sessionId: string | null;
   planStatus: 'none' | 'draft' | 'approved';
   activeRun: TaskRunDTO | null;
   activeRuns: TaskRunDTO[];

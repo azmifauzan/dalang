@@ -476,7 +476,14 @@ export async function getTaskDiff(
   await assertRepoConfigSafe(projectPath);
   const git = openSafeGit(projectPath);
 
-  const pathExcludes = ['--', '.', ':(exclude).dalang/logs', ':(exclude).dalang/tmp'];
+  const pathExcludes = [
+    '--',
+    '.',
+    ':(exclude).dalang/logs',
+    ':(exclude).dalang/tmp',
+    ':(glob,exclude).dalang/sessions/*/logs/**',
+    ':(glob,exclude).dalang/sessions/*/tmp/**',
+  ];
   const [nameStatusOut, diffOut] = await Promise.all([
     git.raw(['diff', '--name-status', baseRef, headRef, ...pathExcludes]).catch(() => ''),
     git.raw(['diff', '--unified=3', baseRef, headRef, ...pathExcludes]).catch(() => ''),
@@ -714,16 +721,26 @@ export async function rollbackGitToCheckpoint(
     throw new Error(`Checkpoint commit "${targetCommitSha}" no longer exists in this repository.`);
   }
 
-  // Preserve `.dalang/logs/` across the reset so run logs remain readable for post-rollback inspection.
-  const logsDir = path.join(projectPath, '.dalang', 'logs');
-  const savedLogs: Array<{ name: string; content: string }> = [];
-  if (fs.existsSync(logsDir) && !fs.lstatSync(logsDir).isSymbolicLink()) {
-    for (const entry of fs.readdirSync(logsDir, { withFileTypes: true })) {
+  // Preserve `.dalang/logs/` and `.dalang/sessions/*/logs/` across the reset so run logs remain readable.
+  const savedLogs: Array<{ relPath: string; content: string }> = [];
+  const collectLogsFromDir = (dir: string) => {
+    if (!fs.existsSync(dir) || fs.lstatSync(dir).isSymbolicLink()) return;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       if (entry.isFile()) {
+        const abs = path.join(dir, entry.name);
         savedLogs.push({
-          name: entry.name,
-          content: fs.readFileSync(path.join(logsDir, entry.name), 'utf8'),
+          relPath: path.relative(projectPath, abs),
+          content: fs.readFileSync(abs, 'utf8'),
         });
+      }
+    }
+  };
+  collectLogsFromDir(path.join(projectPath, '.dalang', 'logs'));
+  const sessionsRoot = path.join(projectPath, '.dalang', 'sessions');
+  if (fs.existsSync(sessionsRoot) && !fs.lstatSync(sessionsRoot).isSymbolicLink()) {
+    for (const entry of fs.readdirSync(sessionsRoot, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        collectLogsFromDir(path.join(sessionsRoot, entry.name, 'logs'));
       }
     }
   }
@@ -734,7 +751,7 @@ export async function rollbackGitToCheckpoint(
   await git.raw(['clean', '-fd', '-e', '.dalang']);
 
   for (const log of savedLogs) {
-    const target = path.join(logsDir, log.name);
+    const target = path.join(projectPath, log.relPath);
     if (!fs.existsSync(target)) {
       writeArtifactFile(projectPath, target, log.content, 'refuse');
     }

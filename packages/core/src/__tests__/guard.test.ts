@@ -58,9 +58,9 @@ describe('v0.3 Kawal: Reviewer, Fix Loop, Guard Diff/Merge, Integration, Profile
           return { exitCode: 0, stdout: `${line}\n`, stderr: '', timedOut: false, idleTimedOut: false };
         }
 
-        const taskMatch = joined.match(/\.dalang\/tasks\/([A-Za-z0-9_-]+)\/result\.json/);
+        const taskMatch = joined.match(/(\.dalang\/(?:sessions\/[A-Za-z0-9_-]+\/)?tasks\/([A-Za-z0-9_-]+)\/result\.json)/);
         if (taskMatch) {
-          const extId = taskMatch[1];
+          const extId = taskMatch[2];
           const isFix = joined.includes('Review round 1 FAILED');
           if (isFix) {
             fixPromptSeen = joined;
@@ -71,7 +71,7 @@ describe('v0.3 Kawal: Reviewer, Fix Loop, Guard Diff/Merge, Integration, Profile
             path.join(cwd, 'src', 'store.ts'),
             bugFixed ? 'export const status = 400;\n' : 'export const status = 500;\n',
           );
-          const resultFile = path.join(cwd, '.dalang', 'tasks', extId, 'result.json');
+          const resultFile = path.join(cwd, taskMatch[1]);
           fs.mkdirSync(path.dirname(resultFile), { recursive: true });
           fs.writeFileSync(
             resultFile,
@@ -177,16 +177,16 @@ describe('v0.3 Kawal: Reviewer, Fix Loop, Guard Diff/Merge, Integration, Profile
           return { exitCode: 0, stdout: `${line}\n`, stderr: '', timedOut: false, idleTimedOut: false };
         }
 
-        const taskMatch = joined.match(/\.dalang\/tasks\/([A-Za-z0-9_-]+)\/result\.json/);
+        const taskMatch = joined.match(/(\.dalang\/(?:sessions\/[A-Za-z0-9_-]+\/)?tasks\/([A-Za-z0-9_-]+)\/result\.json)/);
         if (taskMatch) {
           fs.mkdirSync(path.join(cwd, 'src'), { recursive: true });
           fs.writeFileSync(path.join(cwd, 'src', 'store.ts'), 'export const bad = true;\n');
-          const resFile = path.join(cwd, '.dalang', 'tasks', taskMatch[1], 'result.json');
+          const resFile = path.join(cwd, taskMatch[1]);
           fs.mkdirSync(path.dirname(resFile), { recursive: true });
           fs.writeFileSync(
             resFile,
             JSON.stringify({
-              task_id: taskMatch[1],
+              task_id: taskMatch[2],
               status: 'completed',
               changed_files: ['src/store.ts'],
               summary: 'done',
@@ -237,16 +237,16 @@ describe('v0.3 Kawal: Reviewer, Fix Loop, Guard Diff/Merge, Integration, Profile
           opts.onStdoutLine?.(line);
           return { exitCode: 0, stdout: `${line}\n`, stderr: '', timedOut: false, idleTimedOut: false };
         }
-        const taskMatch = joined.match(/\.dalang\/tasks\/([A-Za-z0-9_-]+)\/result\.json/);
+        const taskMatch = joined.match(/(\.dalang\/(?:sessions\/[A-Za-z0-9_-]+\/)?tasks\/([A-Za-z0-9_-]+)\/result\.json)/);
         if (taskMatch) {
           fs.mkdirSync(path.join(cwd, 'src'), { recursive: true });
           fs.writeFileSync(path.join(cwd, 'src', 'ok.ts'), 'export {};\n');
           fs.writeFileSync(path.join(cwd, 'stray.txt'), 'outside scope\n');
-          const resFile = path.join(cwd, '.dalang', 'tasks', taskMatch[1], 'result.json');
+          const resFile = path.join(cwd, taskMatch[1]);
           fs.mkdirSync(path.dirname(resFile), { recursive: true });
           fs.writeFileSync(
             resFile,
-            JSON.stringify({ task_id: taskMatch[1], status: 'completed', changed_files: [], summary: 'done', notes: [], blockers: [] }),
+            JSON.stringify({ task_id: taskMatch[2], status: 'completed', changed_files: [], summary: 'done', notes: [], blockers: [] }),
           );
         }
         return { exitCode: 0, stdout: '', stderr: '', timedOut: false, idleTimedOut: false };
@@ -295,15 +295,15 @@ describe('v0.3 Kawal: Reviewer, Fix Loop, Guard Diff/Merge, Integration, Profile
           opts.onStdoutLine?.(line);
           return { exitCode: 0, stdout: `${line}\n`, stderr: '', timedOut: false, idleTimedOut: false };
         }
-        const taskMatch = joined.match(/\.dalang\/tasks\/([A-Za-z0-9_-]+)\/result\.json/);
+        const taskMatch = joined.match(/(\.dalang\/(?:sessions\/[A-Za-z0-9_-]+\/)?tasks\/([A-Za-z0-9_-]+)\/result\.json)/);
         if (taskMatch) {
           fs.mkdirSync(path.join(cwd, 'src'), { recursive: true });
           fs.writeFileSync(path.join(cwd, 'src', 'a.ts'), 'export {};\n');
-          const resFile = path.join(cwd, '.dalang', 'tasks', taskMatch[1], 'result.json');
+          const resFile = path.join(cwd, taskMatch[1]);
           fs.mkdirSync(path.dirname(resFile), { recursive: true });
           fs.writeFileSync(
             resFile,
-            JSON.stringify({ task_id: taskMatch[1], status: 'completed', changed_files: [], summary: 'done', notes: [], blockers: [] }),
+            JSON.stringify({ task_id: taskMatch[2], status: 'completed', changed_files: [], summary: 'done', notes: [], blockers: [] }),
           );
         }
         return { exitCode: 0, stdout: '', stderr: '', timedOut: false, idleTimedOut: false };
@@ -348,17 +348,17 @@ describe('v0.3 Kawal: Reviewer, Fix Loop, Guard Diff/Merge, Integration, Profile
           return { exitCode: 0, stdout: `${line}\n`, stderr: '', timedOut: false, idleTimedOut: false };
         }
 
-        const taskMatch = joined.match(/\.dalang\/tasks\/([A-Za-z0-9_-]+)\/result\.json/);
+        const taskMatch = joined.match(/(\.dalang\/(?:sessions\/[A-Za-z0-9_-]+\/)?tasks\/([A-Za-z0-9_-]+)\/result\.json)/);
         if (taskMatch) {
           prompts.push(joined);
           fs.mkdirSync(path.join(cwd, 'src'), { recursive: true });
           fs.writeFileSync(path.join(cwd, 'src', 'store.ts'), 'export const v = 1;\n');
-          const resFile = path.join(cwd, '.dalang', 'tasks', taskMatch[1], 'result.json');
+          const resFile = path.join(cwd, taskMatch[1]);
           fs.mkdirSync(path.dirname(resFile), { recursive: true });
           fs.writeFileSync(
             resFile,
             JSON.stringify({
-              task_id: taskMatch[1],
+              task_id: taskMatch[2],
               status: 'completed',
               changed_files: ['src/store.ts'],
               summary: 'coded',
@@ -413,10 +413,11 @@ describe('v0.3 Kawal: Reviewer, Fix Loop, Guard Diff/Merge, Integration, Profile
           opts.onStdoutLine?.(line);
           return { exitCode: 0, stdout: `${line}\n`, stderr: '', timedOut: false, idleTimedOut: false };
         }
-        if (joined.includes('/result.json')) {
+        const conflictMatch = joined.match(/(\.dalang\/(?:sessions\/[A-Za-z0-9_-]+\/)?tasks\/([A-Za-z0-9_-]+)\/result\.json)/);
+        if (conflictMatch) {
           fs.mkdirSync(path.join(cwd, 'src'), { recursive: true });
           fs.writeFileSync(path.join(cwd, 'src', 'conflict.ts'), 'export const val = "from-task";\n');
-          const resFile = path.join(cwd, '.dalang', 'tasks', 'T-001', 'result.json');
+          const resFile = path.join(cwd, conflictMatch[1]);
           fs.mkdirSync(path.dirname(resFile), { recursive: true });
           fs.writeFileSync(
             resFile,

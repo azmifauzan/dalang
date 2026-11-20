@@ -4,7 +4,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
-import { ReplayCliRunner, type ReplayTranscript } from '@dalang/core';
+import {
+  ReplayCliRunner,
+  type CliRunner,
+  type ReplayTranscript,
+  type RunCommandOptions,
+  type RunCommandResult,
+} from '@dalang/core';
 import { startDalangServer } from '../app.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -179,7 +185,7 @@ async function launchHeadlessChrome(binary: string, startUrl: string): Promise<{
   };
 }
 
-describe('v0.6 browser scenarios on a real server with the replay runner', () => {
+describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner', () => {
   it('runs upgrade path (existing project), 5-step shell, Config 6 tabs, Statistics, Work stage, i18n, theme, update notice, and mobile drawer', async () => {
     const transcript: ReplayTranscript = {
       name: 'browser-e2e',
@@ -312,7 +318,7 @@ describe('v0.6 browser scenarios on a real server with the replay runner', () =>
       dbPath: dbFile,
       staticDir: WEB_DIST_DIR,
       runner,
-      updateFetcher: async () => '0.7.0',
+      updateFetcher: async () => '0.8.0',
     });
 
     try {
@@ -399,14 +405,27 @@ describe('v0.6 browser scenarios on a real server with the replay runner', () =>
             }
           };
 
-          // Upgrade path: existing project skips wizard and opens straight into workspace + 5-step stepper + update notice.
+          // Upgrade path: existing project skips wizard and opens straight into Ask chat with its
+          // existing Full session listed in the sidebar + update notice.
           const homeText = await waitForText('Browser Replay App');
           expect(homeText).not.toContain('Welcome to DALANG');
-          expect(homeText.toLowerCase()).toContain('next step');
-          expect(homeText).toContain('Review & merge');
-          await waitForText('Version 0.7.0 is available');
+          expect(homeText).toContain('Ask anything about this repository');
+          await waitForText('Version 0.8.0 is available');
 
-          // Work stage (Step 4 is default for approved plan): verify stage pause toggle & visibilitychange pause.
+          // Open the existing Full session from the sidebar to enter the 5-step stepper.
+          await browser.cdp.evalJs(`(() => {
+            const hit = [...document.querySelectorAll('aside button')].find(
+              (b) => (b.textContent || '').includes('FULL'),
+            );
+            hit?.click();
+          })()`);
+          const fullText = await waitForText('Review & merge');
+          // The five-step stepper is the only place that shows where the Full flow stands.
+          expect(fullText).toContain('Discuss');
+          expect(fullText.toLowerCase()).not.toContain('next step');
+
+          // Step 4 (Work): verify stage pause toggle & visibilitychange pause.
+          await clickButton('Work');
           await waitForText('Wayang stage');
           expect(
             await browser.cdp.evalJs<string>(`document.querySelector('[data-stage-paused]')?.getAttribute('data-stage-paused')`),
@@ -500,27 +519,32 @@ describe('v0.6 browser scenarios on a real server with the replay runner', () =>
           await browser.cdp.evalJs(`document.querySelector('main input[type="checkbox"]')?.click()`);
           await new Promise((r) => setTimeout(r, 300));
           expect(await browser.cdp.evalJs<string>('document.body.innerText')).not.toContain(
-            'Version 0.7.0 is available',
+            'Version 0.8.0 is available',
           );
           await browser.cdp.evalJs(`document.querySelector('main input[type="checkbox"]')?.click()`);
-          await waitForText('Version 0.7.0 is available');
+          await waitForText('Version 0.8.0 is available');
 
-          // Back from Config returns to previous section (Statistics); click project in sidebar to return to workspace.
+          // Back from Config returns to previous section (Statistics); click the Full session in sidebar to return to workspace.
           await clickButton('Back');
           await waitForText('Tokens & Estimated Cost by Model');
-          await clickButton('Browser Replay App');
+          await browser.cdp.evalJs(`(() => {
+            const hit = [...document.querySelectorAll('aside button')].find(
+              (b) => (b.textContent || '').includes('FULL'),
+            );
+            hit?.click();
+          })()`);
           await waitForText('Review & merge');
 
           // Language switcher ID <-> EN and server persistence.
           await clickButton('id', true);
           const idText = await waitForText('Tinjau & gabung');
-          expect(idText.toLowerCase()).toContain('langkah berikutnya');
+          expect(idText).toContain('Diskusi');
           // Statistics and Config are icon buttons: check their accessible names.
           const iconLabels = await browser.cdp.evalJs<string[]>(
             `[...document.querySelectorAll('aside button[aria-label]')].map(b => b.getAttribute('aria-label'))`,
           );
           expect(iconLabels).toEqual(expect.arrayContaining(['Statistik', 'Pengaturan']));
-          expect(idText).toContain('Versi 0.7.0 tersedia');
+          expect(idText).toContain('Versi 0.8.0 tersedia');
           const settingsAfterId = await apiJson<{ settings: { language: string | null } }>('/api/settings');
           expect(settingsAfterId.settings.language).toBe('id');
 
@@ -584,7 +608,12 @@ describe('v0.6 browser scenarios on a real server with the replay runner', () =>
           expect(leaks).toEqual([]);
 
           await clickButton('Kembali');
-          await clickButton('Browser Replay App');
+          await browser.cdp.evalJs(`(() => {
+            const hit = [...document.querySelectorAll('aside button')].find(
+              (b) => (b.textContent || '').includes('PENUH') || (b.textContent || '').includes('FULL'),
+            );
+            hit?.click();
+          })()`);
           await clickButton('en', true);
           await waitForText('Review & merge');
 
@@ -756,9 +785,10 @@ describe('v0.6 browser scenarios on a real server with the replay runner', () =>
 
           await clickButton('Create project & start Discuss');
 
-          // Lands directly in Step 1 (Discuss) with the goal prefilled in the composer!
+          // Lands directly in the project's Ask chat (no session created yet) with the goal prefilled in the composer!
           await waitForText('Wizard Starter App');
-          await waitForText('Start with one clear goal');
+          await waitForText('Ask anything about this repository');
+          await waitForText('No saved sessions yet');
           const composerVal = await browser.cdp.evalJs<string>(
             `document.querySelector('textarea')?.value ?? ''`,
           );
@@ -774,4 +804,475 @@ describe('v0.6 browser scenarios on a real server with the replay runner', () =>
       await server.close();
     }
   }, 45_000);
+
+  it('drives all three v0.7 session modes (Ask, Quick, Full) in headless Chromium with clean Ask git status, Quick bug fix merge, too_large -> Full switch, working-session lock, and Indonesian i18n scan', async () => {
+    const dbFile = path.join(makeTempDir('dalang-v07-e2e-db-'), 'dalang.db');
+    const projDir = path.join(makeTempDir('dalang-v07-e2e-proj-'), 'math-app');
+    fs.mkdirSync(path.join(projDir, 'src'), { recursive: true });
+    fs.writeFileSync(
+      path.join(projDir, 'package.json'),
+      JSON.stringify({ name: 'math-app', version: '1.0.0', type: 'module' }, null, 2) + '\n',
+    );
+    fs.writeFileSync(
+      path.join(projDir, 'src', 'math.mjs'),
+      'export function add(a, b) {\n  return a - b;\n}\n',
+    );
+    fs.writeFileSync(
+      path.join(projDir, 'src', 'math.test.mjs'),
+      "import assert from 'node:assert/strict';\nimport { add } from './math.mjs';\nassert.equal(add(2, 3), 5);\nconsole.log('math tests passed');\n",
+    );
+    execFileSync('git', ['init', '-b', 'main'], { cwd: projDir, stdio: 'pipe' });
+    execFileSync('git', ['config', 'user.email', 'test@dalang.local'], { cwd: projDir, stdio: 'pipe' });
+    execFileSync('git', ['config', 'user.name', 'Dalang Test'], { cwd: projDir, stdio: 'pipe' });
+    execFileSync('git', ['add', '-A'], { cwd: projDir, stdio: 'pipe' });
+    execFileSync('git', ['commit', '-m', 'Initial commit with seeded bug'], { cwd: projDir, stdio: 'pipe' });
+
+    const runner: CliRunner = {
+      async which(bin) {
+        if (['claude', 'codex', 'agy', 'git', 'bwrap'].includes(bin)) {
+          return `/usr/bin/${bin}`;
+        }
+        return null;
+      },
+      async run(command: string, args: string[], options: RunCommandOptions): Promise<RunCommandResult> {
+        // Unwrap bwrap sandbox prefix if present so the fake runner inspects the actual command + args
+        let actualCmd = command;
+        let actualArgs = args;
+        if (command.includes('bwrap')) {
+          const sep = args.indexOf('--');
+          if (sep >= 0 && sep + 1 < args.length) {
+            actualCmd = args[sep + 1];
+            actualArgs = args.slice(sep + 2);
+          }
+        }
+        const joined = actualArgs.join(' ');
+        const pIdx = actualArgs.indexOf('-p');
+        const prompt =
+          options.stdinData ??
+          (pIdx >= 0 && pIdx + 1 < actualArgs.length ? actualArgs[pIdx + 1] : joined);
+
+        const ok = (stdout = '', stderr = ''): RunCommandResult => ({
+          exitCode: 0,
+          stdout,
+          stderr,
+          timedOut: false,
+          idleTimedOut: false,
+          aborted: false,
+        });
+
+        if (actualArgs.includes('--version')) return ok('2.1.0\n');
+        if (joined.includes('auth status') || joined.includes('login status')) {
+          return ok('{"loggedIn":true}\n');
+        }
+        if (joined.includes('models')) return ok('claude-sonnet-4-6\n');
+
+        // 1. Ask mode (read-only)
+        if (prompt.includes('Ask mode (read-only')) {
+          const payload = JSON.stringify({
+            answer: 'In src/math.mjs, add(a, b) currently returns a - b instead of a + b.',
+            suggested_mode: 'quick',
+            suggestion_reason: 'Single-line bug fix in src/math.mjs.',
+          });
+          const out = JSON.stringify({ type: 'result', session_id: 'e2e-ask-1', result: payload }) + '\n';
+          options.onStdoutLine?.(out.trim());
+          return ok(out);
+        }
+
+        // 2. Quick mode mini-plan (ready vs too_large)
+        const quickPlanMatch = prompt.match(/(\.dalang\/(?:sessions\/[A-Za-z0-9_-]+\/)?(?:tmp\/)?quick-plan[-.]v\d+\.json)/);
+        if (quickPlanMatch) {
+          const target = path.join(options.cwd, quickPlanMatch[1]);
+          fs.mkdirSync(path.dirname(target), { recursive: true });
+          const isTooLarge = prompt.toLowerCase().includes('rewrite authentication');
+          if (isTooLarge) {
+            fs.writeFileSync(
+              target,
+              JSON.stringify(
+                {
+                  verdict: 'too_large',
+                  summary: 'Rewriting auth and billing spans multiple subsystems.',
+                  reason: 'Needs schema migration, auth middleware, and billing endpoints across many files.',
+                  findings: ['Repo currently has only src/math.mjs', 'Needs full architecture brief before coding'],
+                },
+                null,
+                2,
+              ),
+            );
+          } else {
+            fs.writeFileSync(
+              target,
+              JSON.stringify(
+                {
+                  verdict: 'ready',
+                  summary: 'Fix add(a, b) operator in src/math.mjs.',
+                  task: {
+                    id: 'T-001',
+                    title: 'Fix add() operator in src/math.mjs',
+                    milestone: 'Quick',
+                    role: 'engineer',
+                    complexity: 'low',
+                    depends_on: [],
+                    goal: 'Change return a - b to return a + b in src/math.mjs.',
+                    files_allowed: ['src/math.mjs'],
+                    files_reference: ['src/math.test.mjs'],
+                    acceptance_criteria: ['add(2, 3) returns 5', 'node src/math.test.mjs passes'],
+                    verify: 'node src/math.test.mjs',
+                    needs_split: false,
+                  },
+                },
+                null,
+                2,
+              ),
+            );
+          }
+          const out = JSON.stringify({ type: 'result', session_id: 'e2e-quick-1', result: 'ok' }) + '\n';
+          options.onStdoutLine?.(out.trim());
+          return ok(out);
+        }
+
+        // 3. Reviewer turn
+        if (prompt.includes('Review requirements:') || prompt.includes('code review round')) {
+          const extId = prompt.match(/for task ([A-Za-z0-9_-]+)/)?.[1] ?? 'T-001';
+          const reviewStr = JSON.stringify({
+            task_id: extId,
+            status: 'pass',
+            verify_exit_code: 0,
+            summary: 'add(a, b) is fixed and math.test.mjs passes.',
+            findings: [],
+          });
+          const out = actualCmd.includes('codex')
+            ? JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: reviewStr } }) + '\n'
+            : actualCmd.includes('agy')
+              ? JSON.stringify({ conversation_id: 'agy-rev', response: reviewStr }) + '\n'
+              : JSON.stringify({ type: 'result', session_id: 'e2e-rev', result: reviewStr }) + '\n';
+          options.onStdoutLine?.(out.trim());
+          return ok(out);
+        }
+
+        // 4. Coder turn
+        const resultMatch = prompt.match(/(\.dalang\/(?:sessions\/[A-Za-z0-9_-]+\/)?tasks\/([A-Za-z0-9_-]+)\/result\.json)/);
+        if (resultMatch) {
+          fs.writeFileSync(
+            path.join(options.cwd, 'src', 'math.mjs'),
+            'export function add(a, b) {\n  return a + b;\n}\n',
+          );
+          const target = path.join(options.cwd, resultMatch[1]);
+          fs.mkdirSync(path.dirname(target), { recursive: true });
+          fs.writeFileSync(
+            target,
+            JSON.stringify({
+              task_id: resultMatch[2],
+              status: 'completed',
+              changed_files: ['src/math.mjs'],
+              summary: 'Fixed add() operator in src/math.mjs.',
+              notes: [],
+              blockers: [],
+              verify_command: 'node src/math.test.mjs',
+              verify_exit_code: 0,
+            }),
+          );
+          const out = actualCmd.includes('codex')
+            ? JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'coded' } }) + '\n'
+            : JSON.stringify({ type: 'result', session_id: 'e2e-code', result: 'ok' }) + '\n';
+          options.onStdoutLine?.(out.trim());
+          return ok(out);
+        }
+
+        // 5. Shell verify command
+        if ((actualCmd === '/bin/sh' || actualCmd === 'sh') && actualArgs.includes('-c')) {
+          const cmd = actualArgs[actualArgs.indexOf('-c') + 1] ?? '';
+          try {
+            const stdout = execFileSync('sh', ['-c', cmd], { cwd: options.cwd, encoding: 'utf8', stdio: 'pipe' });
+            return ok(stdout);
+          } catch (err) {
+            const e = err as { status?: number; stdout?: string; stderr?: string };
+            return {
+              exitCode: e.status ?? 1,
+              stdout: String(e.stdout ?? ''),
+              stderr: String(e.stderr ?? ''),
+              timedOut: false,
+              idleTimedOut: false,
+              aborted: false,
+            };
+          }
+        }
+
+        return ok();
+      },
+    };
+
+    const server = await startDalangServer({
+      port: 0,
+      dbPath: dbFile,
+      staticDir: WEB_DIST_DIR,
+      runner,
+      updateFetcher: async () => '0.7.0',
+    });
+
+    try {
+      const apiJson = async <T>(p: string, init?: RequestInit): Promise<T> => {
+        const res = await fetch(`${server.url}${p}`, {
+          ...init,
+          headers: { ...(init?.body ? { 'Content-Type': 'application/json' } : {}), ...init?.headers },
+        });
+        const data = (await res.json()) as T;
+        if (!res.ok) throw new Error(`HTTP ${res.status} on ${p}: ${JSON.stringify(data)}`);
+        return data;
+      };
+
+      // Open our real git repo via API and commit the DALANG scaffold so we can strictly assert git status stays clean during Ask.
+      const { project } = await apiJson<{ project: { id: string } }>('/api/projects', {
+        method: 'POST',
+        body: JSON.stringify({ mode: 'open', name: 'Math Repo', path: projDir }),
+      });
+      execFileSync('git', ['add', '-A'], { cwd: projDir, stdio: 'pipe' });
+      execFileSync('git', ['commit', '-m', 'Add DALANG scaffold'], { cwd: projDir, stdio: 'pipe' });
+
+      // Opening a project must create 0 sessions
+      const initialSessions = await apiJson<{ sessions: unknown[] }>(`/api/projects/${project.id}/sessions`);
+      expect(initialSessions.sessions).toHaveLength(0);
+
+      const chromeBin = findChromeBinary();
+      if (chromeBin && fs.existsSync(path.join(WEB_DIST_DIR, 'index.html'))) {
+        const browser = await launchHeadlessChrome(chromeBin, server.url);
+        try {
+          const waitForText = async (needle: string, timeoutSteps = 80) => {
+            for (let i = 0; i < timeoutSteps; i++) {
+              const text = await browser.cdp.evalJs<string>('document.body.innerText');
+              if (text.includes(needle)) return text;
+              await new Promise((r) => setTimeout(r, 100));
+            }
+            const last = await browser.cdp.evalJs<string>('document.body.innerText');
+            throw new Error(`Timed out waiting for text "${needle}". Body: ${last.slice(0, 600)}`);
+          };
+
+          const clickButton = async (label: string, exact = false) => {
+            const pred = exact
+              ? `(b.textContent?.trim() || b.getAttribute('aria-label')) === ${JSON.stringify(label)}`
+              : `(b.textContent?.trim() || b.getAttribute('aria-label') || '').includes(${JSON.stringify(label)})`;
+            const clicked = await browser.cdp.evalJs<boolean>(`(() => {
+              const btns = [...document.querySelectorAll('button')].filter(b => b.offsetParent !== null && !b.disabled);
+              const hit = btns.find(b => ${pred});
+              if (!hit) return false;
+              hit.click();
+              return true;
+            })()`);
+            if (!clicked) {
+              const avail = await browser.cdp.evalJs<string[]>(
+                `[...document.querySelectorAll('button')].filter(b => b.offsetParent !== null).map(b => (b.disabled ? '[DIS]' : '') + (b.textContent?.trim() || b.getAttribute('aria-label')))`,
+              );
+              throw new Error(`Button "${label}" not found. Visible buttons: ${JSON.stringify(avail)}`);
+            }
+          };
+
+          const setComposer = async (text: string) => {
+            await browser.cdp.evalJs(`(() => {
+              const el = document.querySelector('main textarea');
+              if (!el) throw new Error('No composer textarea found');
+              Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set.call(el, ${JSON.stringify(text)});
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+            })()`);
+          };
+
+          // 1. Project opens straight into Ask chat with 0 sessions created, no stepper, no timeline
+          const openText = await waitForText('Ask anything about this repository');
+          expect(openText).toContain('No saved sessions yet');
+          expect(openText).not.toContain('Review & merge');
+          const stillZero = await apiJson<{ sessions: unknown[] }>(`/api/projects/${project.id}/sessions`);
+          expect(stillZero.sessions).toHaveLength(0);
+
+          // 2. Ask mode: send question -> creates Ask session in sidebar, shows answer + Lead suggestion, leaves git status clean!
+          await setComposer('Why does add(2, 3) fail in src/math.mjs?');
+          await browser.cdp.evalJs(`document.querySelector('main form button[type="submit"]')?.click()`);
+          // Wait for the suggestion button: the answer text also shows briefly in the live log panel.
+          const askDone = await waitForText('Switch to Quick');
+          expect(askDone).toContain('add(a, b) currently returns a - b');
+          expect(askDone).not.toContain('Review & merge');
+          expect(execFileSync('git', ['status', '--porcelain'], { cwd: projDir, encoding: 'utf8' }).trim()).toBe('');
+
+          // 3. Quick mode: click + New chat -> pick Quick in composer -> fix seeded bug in one screen!
+          await clickButton('+ New chat');
+          await waitForText('Ask anything about this repository');
+          await browser.cdp.evalJs(`(() => {
+            const btn = [...document.querySelectorAll('main [role="group"] button')].find(b => b.textContent?.trim() === 'Quick');
+            btn?.click();
+          })()`);
+          await setComposer('Fix the add() operator bug in src/math.mjs');
+          await browser.cdp.evalJs(`document.querySelector('main form button[type="submit"]')?.click()`);
+
+          // Mini-plan card appears with Quick timeline (Request -> Work -> Review -> Merge) and Run button
+          const quickPlanText = await waitForText('Fix add() operator in src/math.mjs');
+          expect(quickPlanText).toContain('Request');
+          expect(quickPlanText).toContain('Merge');
+          expect(quickPlanText).toContain('src/math.mjs');
+
+          // Click Run -> coder + verify + review run -> inline Approve & merge appears
+          await clickButton('Run', true);
+          await waitForText('Approve & merge', 120);
+
+          // A question can always be asked, even while work is running; the session mode does not change.
+          const askRadioDisabled = await browser.cdp.evalJs<boolean>(`(() => {
+            const btn = [...document.querySelectorAll('main [role="group"] button')].find(b => b.textContent?.trim() === 'Ask');
+            return Boolean(btn?.disabled);
+          })()`);
+          expect(askRadioDisabled).toBe(false);
+
+          // Inspect inline branch diff before merging
+          await clickButton('Show diff', true);
+          await waitForText('return a + b;');
+
+          // While Quick session is working, open + New chat: selecting Quick shows lock banner naming the working session, while Ask still works!
+          await clickButton('+ New chat');
+          await waitForText('Ask anything about this repository');
+          await browser.cdp.evalJs(`(() => {
+            const btn = [...document.querySelectorAll('main [role="group"] button')].find(b => b.textContent?.trim() === 'Quick');
+            btn?.click();
+          })()`);
+          await waitForText('Fix the add() operator bug');
+          await browser.cdp.evalJs(`(() => {
+            const btn = [...document.querySelectorAll('main [role="group"] button')].find(b => b.textContent?.trim() === 'Ask');
+            btn?.click();
+          })()`);
+          await setComposer('Quick read-only check while another session works');
+          await browser.cdp.evalJs(`document.querySelector('main form button[type="submit"]')?.click()`);
+          await waitForText('add(a, b) currently returns a - b');
+
+          // Reopen the working Quick session from sidebar and click Approve & merge
+          await browser.cdp.evalJs(`(() => {
+            const btn = [...document.querySelectorAll('aside button')].find(b => (b.textContent || '').includes('QUICK'));
+            btn?.click();
+          })()`);
+          await waitForText('Approve & merge');
+          await clickButton('Approve & merge', true);
+          await waitForText('Merged onto main', 80);
+
+          // Verify seeded bug is genuinely fixed on main AND no brief was written for the Quick session!
+          expect(execFileSync('node', ['src/math.test.mjs'], { cwd: projDir, encoding: 'utf8' })).toContain(
+            'math tests passed',
+          );
+          const sessionsAfterMerge = await apiJson<{
+            sessions: Array<{ id: string; mode: string; workState: string }>;
+          }>(`/api/projects/${project.id}/sessions`);
+          const quickSess = sessionsAfterMerge.sessions.find((s) => s.mode === 'quick');
+          expect(quickSess).toBeDefined();
+          expect(quickSess!.workState).toBe('idle');
+          const quickBriefs = await apiJson<{ briefs: unknown[] }>(
+            `/api/projects/${project.id}/briefs?sessionId=${encodeURIComponent(quickSess!.id)}`,
+          );
+          expect(quickBriefs.briefs).toHaveLength(0);
+
+          // 4. Quick too_large -> one-click Switch to Full -> lands in Full 5-step stepper (Discuss) with findings!
+          await clickButton('+ New chat');
+          await waitForText('Ask anything about this repository');
+          await browser.cdp.evalJs(`(() => {
+            const btn = [...document.querySelectorAll('main [role="group"] button')].find(b => b.textContent?.trim() === 'Quick');
+            btn?.click();
+          })()`);
+          await setComposer('Rewrite authentication and multi-tenant billing');
+          await browser.cdp.evalJs(`document.querySelector('main form button[type="submit"]')?.click()`);
+          const tooLargeText = await waitForText('Switch to Full (keeps findings)');
+          expect(tooLargeText).toContain('Needs full architecture brief before coding');
+
+          await clickButton('Switch to Full (keeps findings)', true);
+          await waitForText('Review & merge');
+          const promotedFullText = await waitForText('Needs full architecture brief before coding');
+          expect(promotedFullText).toContain('Rewrite authentication and multi-tenant billing');
+
+          // 5. Switch to Indonesian (id) and run the i18n leak scan across Ask, Quick, and Full sessions!
+          await clickButton('id', true);
+          await waitForText('Tinjau & gabung');
+
+          const enDict = (await import(pathToFileURL(path.resolve(here, '../../../web/src/i18n/en.ts')).href))
+            .en as Record<string, string>;
+          const idDict = (await import(pathToFileURL(path.resolve(here, '../../../web/src/i18n/id.ts')).href))
+            .id as Record<string, string>;
+          const leakable = Object.entries(enDict).filter(
+            ([k, v]) =>
+              v.length >= 6 &&
+              !v.includes('{') &&
+              idDict[k] !== v &&
+              !Object.values(idDict).some((iv) => iv.includes(v)),
+          );
+
+          const seen: string[] = [];
+          const collect = async (label: string) => {
+            const text = await browser.cdp.evalJs<string>(`(() => {
+              const root = document.body.cloneNode(true);
+              root.querySelectorAll('pre, code').forEach((n) => n.remove());
+              document.body.appendChild(root);
+              root.style.cssText = 'position:absolute;left:-99999px';
+              const out = root.innerText;
+              root.remove();
+              return out;
+            })()`);
+            seen.push(`## ${label}\n${text}`);
+          };
+
+          // Collect Full session in id
+          await collect('Sesi-Penuh-ID');
+
+          // Visit Quick session in id
+          await browser.cdp.evalJs(`(() => {
+            const btn = [...document.querySelectorAll('aside button')].find(b => (b.textContent || '').includes('CEPAT'));
+            btn?.click();
+          })()`);
+          await new Promise((r) => setTimeout(r, 300));
+          await collect('Sesi-Cepat-ID');
+
+          // Visit Ask session in id
+          await browser.cdp.evalJs(`(() => {
+            const btn = [...document.querySelectorAll('aside button')].find(b => (b.textContent || '').includes('TANYA'));
+            btn?.click();
+          })()`);
+          await new Promise((r) => setTimeout(r, 300));
+          await collect('Sesi-Tanya-ID');
+
+          // Visit + Obrolan baru (empty Ask composer) in id
+          await clickButton('+ Obrolan baru');
+          await new Promise((r) => setTimeout(r, 250));
+          await collect('Obrolan-Baru-ID');
+
+          const leaks: string[] = [];
+          for (const block of seen) {
+            const nl = block.indexOf('\n');
+            const head = nl >= 0 ? block.slice(0, nl) : block;
+            const body = nl >= 0 ? block.slice(nl + 1) : block;
+            for (const [k, v] of leakable) {
+              const at = body.indexOf(v);
+              if (at >= 0) {
+                leaks.push(
+                  `${head}: "${v}" (${k}) in «${body.slice(Math.max(0, at - 40), at + v.length + 30).replace(/\n/g, ' | ')}»`,
+                );
+              }
+            }
+            for (const m of body.match(/\b(awaiting_merge|review_failed|needs_split|rolled_back|too_large)\b/g) ?? []) {
+              leaks.push(`${head}: raw enum ${m}`);
+            }
+          }
+          expect(leaks).toEqual([]);
+
+          // Mobile 390px overflow check on session view
+          await browser.cdp.send('Emulation.setDeviceMetricsOverride', {
+            width: 390,
+            height: 844,
+            deviceScaleFactor: 1,
+            mobile: true,
+          });
+          await new Promise((r) => setTimeout(r, 150));
+          const overflowPx = await browser.cdp.evalJs<number>(
+            'document.documentElement.scrollWidth - document.documentElement.clientWidth',
+          );
+          expect(overflowPx).toBeLessThanOrEqual(1);
+
+          expect(browser.cdp.consoleErrors).toEqual([]);
+          expect(browser.cdp.pageErrors).toEqual([]);
+        } finally {
+          await browser.close();
+        }
+      }
+    } finally {
+      await server.close();
+    }
+  }, 60_000);
 });

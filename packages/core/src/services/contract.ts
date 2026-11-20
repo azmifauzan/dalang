@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { z, type ZodType } from 'zod';
+import type { EffortLevel } from '@dalang/shared';
 import type { AdapterTurnResult, CliAdapter } from '../adapters/types.js';
 import { getProjectLogsDir, getProjectTmpDir } from '../paths.js';
 import { ensureProjectDir, readArtifactFile, removeArtifactFile } from '../safe-fs.js';
@@ -10,12 +11,14 @@ export interface RunContractOptions<T> {
   projectPath: string;
   sessionId?: string | null;
   model?: string | null;
-  effort?: 'low' | 'medium' | 'high';
+  effort?: EffortLevel;
   prompt: string;
   targetFilePath: string;
   schema: ZodType<T>;
   schemaName: string;
   maxRetries?: number;
+  logsDir?: string;
+  tmpDir?: string;
   onLogLine?: (line: string) => void;
 }
 
@@ -76,8 +79,8 @@ export async function runContractTurn<T>(
   options: RunContractOptions<T>,
 ): Promise<RunContractResult<T>> {
   const maxRetries = options.maxRetries ?? 2;
-  const tmpDir = getProjectTmpDir(options.projectPath);
-  const logsDir = getProjectLogsDir(options.projectPath);
+  const tmpDir = options.tmpDir ?? getProjectTmpDir(options.projectPath);
+  const logsDir = options.logsDir ?? getProjectLogsDir(options.projectPath);
   ensureProjectDir(options.projectPath, tmpDir);
   ensureProjectDir(options.projectPath, logsDir);
   ensureProjectDir(options.projectPath, path.dirname(options.targetFilePath));

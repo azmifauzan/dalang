@@ -1,36 +1,31 @@
-import { useState } from 'react';
-import type { ProjectSummary } from '@dalang/shared';
+import type { ProjectSummary, SessionSummaryDTO } from '@dalang/shared';
 import { useI18n } from '../i18n/index.js';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
 
 export type ProjectStepId = 'discuss' | 'brief' | 'plan' | 'work' | 'review';
 
 export interface ProjectStepperProps {
   project: ProjectSummary;
+  session?: SessionSummaryDTO | null;
   currentStep: ProjectStepId;
   onSelectStep: (step: ProjectStepId) => void;
-  onEditProjectMd: () => void;
-  onRemoveProject: () => void;
-  removingProject?: boolean;
   allTasksDone?: boolean;
 }
 
 export function ProjectStepper({
   project,
+  session,
   currentStep,
   onSelectStep,
-  onEditProjectMd,
-  onRemoveProject,
-  removingProject = false,
   allTasksDone = false,
 }: ProjectStepperProps) {
   const { t } = useI18n();
-  const [confirmingRemove, setConfirmingRemove] = useState(false);
 
-  const hasBrief = project.latestBriefStatus !== 'none';
-  const briefApproved = project.latestBriefStatus === 'approved';
-  const planApproved = project.planStatus === 'approved';
+  const latestBriefStatus = session ? session.latestBriefStatus : project.latestBriefStatus;
+  const planStatus = session ? session.planStatus : project.planStatus;
+
+  const hasBrief = latestBriefStatus !== 'none';
+  const briefApproved = latestBriefStatus === 'approved';
+  const planApproved = planStatus === 'approved';
 
   const steps: Array<{
     id: ProjectStepId;
@@ -84,73 +79,14 @@ export function ProjectStepper({
 
   return (
     <div
-      className="space-y-3 rounded-[8px] border p-4"
+      className="rounded-[8px] border p-3"
       style={{
         backgroundColor: 'var(--bg-surface)',
         borderColor: 'var(--border-subtle)',
       }}
     >
-      {/* Project identity bar */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <h1 className="truncate text-lg font-semibold tracking-tight">{project.name}</h1>
-            <Badge>{project.mainBranch}</Badge>
-            <Badge>{project.leadProvider}</Badge>
-          </div>
-          <p
-            className="mt-0.5 truncate font-mono-token text-xs"
-            style={{ color: 'var(--text-secondary)' }}
-            title={project.path}
-          >
-            {project.path}
-          </p>
-          {!(project.symlinksValid.claudeMd && project.symlinksValid.agentsMd) && (
-            <p className="mt-1 text-xs font-semibold" style={{ color: 'var(--error)' }}>
-              {t('projects.symlinksWarn')}
-            </p>
-          )}
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <Button type="button" variant="outline" onClick={onEditProjectMd}>
-            {t('project.editProjectMd')}
-          </Button>
-          {confirmingRemove ? (
-            <div className="flex items-center gap-1.5">
-              <Button
-                type="button"
-                variant="destructive"
-                disabled={removingProject}
-                onClick={() => {
-                  setConfirmingRemove(false);
-                  onRemoveProject();
-                }}
-              >
-                {t('project.confirmRemove')}
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setConfirmingRemove(false)}
-              >
-                {t('common.cancel')}
-              </Button>
-            </div>
-          ) : (
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setConfirmingRemove(true)}
-            >
-              {t('project.removeProject')}
-            </Button>
-          )}
-        </div>
-      </div>
-
       {/* 5-step guided stepper */}
-      <nav aria-label={t('nav.projectStepsAria')} className="border-t pt-3" style={{ borderColor: 'var(--border-subtle)' }}>
+      <nav aria-label={t('nav.projectStepsAria')}>
         <ol className="grid grid-cols-1 gap-2 sm:grid-cols-2 md:grid-cols-5">
           {steps.map((step) => {
             const isCurrent = currentStep === step.id;

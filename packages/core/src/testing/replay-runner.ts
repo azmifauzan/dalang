@@ -428,7 +428,15 @@ export class ReplayCliRunner implements CliRunner {
     }
 
     if (turn.files) {
-      for (const [relPath, content] of Object.entries(turn.files)) {
+      const sessionMatch = prompt.match(/\.dalang\/sessions\/([A-Za-z0-9_-]+)\//);
+      const sessionIdFromPrompt = sessionMatch?.[1] ?? null;
+      for (const [rawRelPath, content] of Object.entries(turn.files)) {
+        const relPath =
+          sessionIdFromPrompt &&
+          rawRelPath.startsWith('.dalang/') &&
+          !rawRelPath.startsWith('.dalang/sessions/')
+            ? `.dalang/sessions/${sessionIdFromPrompt}/${rawRelPath.slice('.dalang/'.length)}`
+            : rawRelPath;
         const abs = path.resolve(options.cwd, relPath);
         fs.mkdirSync(path.dirname(abs), { recursive: true });
         fs.writeFileSync(abs, content, 'utf8');

@@ -20,10 +20,14 @@ export const sessions = sqliteTable('sessions', {
   projectId: text('project_id')
     .notNull()
     .references(() => projects.id, { onDelete: 'cascade' }),
-  phase: text('phase').notNull(),
+  title: text('title').notNull().default(''),
+  mode: text('mode').notNull().default('ask'),
+  workState: text('work_state').notNull().default('idle'),
+  phase: text('phase').notNull().default('discuss'),
   provider: text('provider').notNull(),
   model: text('model'),
   cliSessionId: text('cli_session_id'),
+  archivedAt: text('archived_at'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });
@@ -44,6 +48,7 @@ export const briefs = sqliteTable('briefs', {
   projectId: text('project_id')
     .notNull()
     .references(() => projects.id, { onDelete: 'cascade' }),
+  sessionId: text('session_id').references(() => sessions.id, { onDelete: 'cascade' }),
   version: integer('version').notNull(),
   status: text('status').notNull().default('draft'),
   filePath: text('file_path').notNull(),
@@ -56,9 +61,8 @@ export const plans = sqliteTable('plans', {
   projectId: text('project_id')
     .notNull()
     .references(() => projects.id, { onDelete: 'cascade' }),
-  briefId: text('brief_id')
-    .notNull()
-    .references(() => briefs.id, { onDelete: 'cascade' }),
+  sessionId: text('session_id').references(() => sessions.id, { onDelete: 'cascade' }),
+  briefId: text('brief_id').references(() => briefs.id, { onDelete: 'cascade' }),
   version: integer('version').notNull(),
   status: text('status').notNull().default('draft'),
   filePath: text('file_path').notNull(),

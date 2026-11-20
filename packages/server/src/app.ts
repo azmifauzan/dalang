@@ -9,22 +9,27 @@ import {
   AssignTaskProfileInputSchema,
   BriefContentSchema,
   BriefReviseInputSchema,
+  ChatMessageInputSchema,
   CreateOrOpenProjectInputSchema,
   CreateProfileInputSchema,
   CreateRoutingRuleInputSchema,
+  CreateSessionInputSchema,
   CreateTaskInputSchema,
   DALANG_VERSION,
   DiscussMessageInputSchema,
   ProviderIdSchema,
   PushPrInputSchema,
+  QuickRunInputSchema,
   RejectTaskInputSchema,
   ReorderRoutingRulesInputSchema,
   ReorderTasksInputSchema,
   RunIntegrationInputSchema,
   StartExecutionInputSchema,
   StopExecutionInputSchema,
+  SwitchSessionModeInputSchema,
   UpdateProfileInputSchema,
   UpdateRoutingRuleInputSchema,
+  UpdateSessionInputSchema,
   UpdateSettingsInputSchema,
   UpdateTaskInputSchema,
   type ProviderStatus,
@@ -210,24 +215,130 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     return projectService.writeProjectMd(req.params.id, body.content, body.repairSymlinks);
   });
 
+  const readSessionId = (req: { query?: unknown; body?: unknown }): string | undefined => {
+    const q = req.query as { sessionId?: unknown } | undefined;
+    if (typeof q?.sessionId === 'string' && q.sessionId.trim()) return q.sessionId.trim();
+    const b = req.body as { sessionId?: unknown } | undefined;
+    if (typeof b?.sessionId === 'string' && b.sessionId.trim()) return b.sessionId.trim();
+    return undefined;
+  };
+
+  // Sessions & Chat (v0.7 Session Modes)
+  app.get<{ Params: { id: string } }>('/api/projects/:id/sessions', async (req) => {
+    const query = z
+      .object({
+        includeArchived: z.enum(['0', '1', 'true', 'false']).optional(),
+      })
+      .parse(req.query ?? {});
+    const includeArchived = query.includeArchived === '1' || query.includeArchived === 'true';
+    const sessionList = leadService.listSessions(req.params.id, { includeArchived });
+    const working = leadService.getWorkingSession(req.params.id);
+    return {
+      sessions: sessionList,
+      workingSessionId: working?.id ?? null,
+    };
+  });
+
+  app.post<{ Params: { id: string } }>('/api/projects/:id/sessions', async (req, reply) => {
+    const body = CreateSessionInputSchema.parse(req.body ?? {});
+    const session = leadService.createSession(req.params.id, body);
+    return reply.status(201).send({ session });
+  });
+
+  app.get<{ Params: { id: string; sessionId: string } }>(
+    '/api/projects/:id/sessions/:sessionId',
+    async (req) => {
+      return leadService.getSessionDetail(req.params.id, req.params.sessionId);
+    },
+  );
+
+  app.patch<{ Params: { id: string; sessionId: string } }>(
+    '/api/projects/:id/sessions/:sessionId',
+    async (req) => {
+      const body = UpdateSessionInputSchema.parse(req.body ?? {});
+      return { session: leadService.updateSession(req.params.id, req.params.sessionId, body) };
+    },
+  );
+
+  app.delete<{ Params: { id: string; sessionId: string } }>(
+    '/api/projects/:id/sessions/:sessionId',
+    async (req) => {
+      // Stop running work and clean unmerged branches/worktrees without touching merged code.
+      await executionService.discardSessionWork(req.params.id, req.params.sessionId);
+      leadService.deleteSession(req.params.id, req.params.sessionId);
+      return { ok: true };
+    },
+  );
+
+  app.post<{ Params: { id: string; sessionId: string } }>(
+    '/api/projects/:id/sessions/:sessionId/mode',
+    async (req) => {
+      const body = SwitchSessionModeInputSchema.parse(req.body ?? {});
+      return {
+        session: leadService.switchSessionMode(req.params.id, req.params.sessionId, body.mode),
+      };
+    },
+  );
+
+  app.post<{ Params: { id: string; sessionId: string } }>(
+    '/api/projects/:id/sessions/:sessionId/discard',
+    async (req) => {
+      return executionService.discardSessionWork(req.params.id, req.params.sessionId);
+    },
+  );
+
+  app.post<{ Params: { id: string; sessionId: string } }>(
+    '/api/projects/:id/sessions/:sessionId/quick/run',
+    async (req, reply) => {
+      const body = QuickRunInputSchema.parse(req.body ?? {});
+      const plan = leadService.approveQuickPlan(req.params.id, req.params.sessionId);
+      const execResult = await executionService.startExecution(req.params.id, {
+        sessionId: req.params.sessionId,
+        allowUnconfined: body.allowUnconfined,
+      });
+      return reply.status(202).send({
+        ...execResult,
+        plan,
+        session: leadService.getSession(req.params.id, req.params.sessionId),
+      });
+    },
+  );
+
+  app.post<{ Params: { id: string } }>('/api/projects/:id/chat', async (req) => {
+    const body = ChatMessageInputSchema.parse(req.body ?? {});
+    return leadService.sendChatMessage(req.params.id, body);
+  });
+
+  app.post<{ Params: { id: string; sessionId: string } }>(
+    '/api/projects/:id/sessions/:sessionId/messages',
+    async (req) => {
+      const raw = (req.body ?? {}) as Record<string, unknown>;
+      const body = ChatMessageInputSchema.parse({ ...raw, sessionId: req.params.sessionId });
+      return leadService.sendChatMessage(req.params.id, body);
+    },
+  );
+
   // Discuss (F-03, F-04, F-05)
   app.get<{ Params: { id: string } }>('/api/projects/:id/discuss', async (req) => {
-    return leadService.getDiscussState(req.params.id);
+    return leadService.getDiscussState(req.params.id, readSessionId(req));
   });
 
   app.post<{ Params: { id: string } }>('/api/projects/:id/discuss/message', async (req) => {
     const body = DiscussMessageInputSchema.parse(req.body);
-    return leadService.sendDiscussMessage(req.params.id, body);
+    return leadService.sendDiscussMessage(req.params.id, {
+      ...body,
+      sessionId: body.sessionId ?? readSessionId(req),
+    });
   });
 
   app.post<{ Params: { id: string } }>('/api/projects/:id/discuss/finish', async (req) => {
-    const brief = await leadService.finishDiscussAndWriteBrief(req.params.id);
+    const brief = await leadService.finishDiscussAndWriteBrief(req.params.id, readSessionId(req));
     return { brief };
   });
 
   // Agree / Briefs (F-06, F-07)
   app.get<{ Params: { id: string } }>('/api/projects/:id/briefs', async (req) => {
-    return { briefs: leadService.listBriefs(req.params.id) };
+    return { briefs: leadService.listBriefs(req.params.id, readSessionId(req)) };
   });
 
   app.put<{ Params: { id: string; version: string } }>(
@@ -235,7 +346,7 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     async (req) => {
       const version = Number(req.params.version);
       const body = BriefContentSchema.parse(req.body);
-      return { brief: leadService.updateBrief(req.params.id, version, body) };
+      return { brief: leadService.updateBrief(req.params.id, version, body, readSessionId(req)) };
     },
   );
 
@@ -244,7 +355,9 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     async (req) => {
       const version = Number(req.params.version);
       const body = BriefReviseInputSchema.parse(req.body);
-      return { brief: await leadService.reviseBrief(req.params.id, version, body.note) };
+      return {
+        brief: await leadService.reviseBrief(req.params.id, version, body.note, readSessionId(req)),
+      };
     },
   );
 
@@ -252,26 +365,26 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     '/api/projects/:id/briefs/:version/approve',
     async (req) => {
       const version = Number(req.params.version);
-      return { brief: leadService.approveBrief(req.params.id, version) };
+      return { brief: leadService.approveBrief(req.params.id, version, readSessionId(req)) };
     },
   );
 
   // List / Plan & Kanban (F-08, F-09, F-10)
   app.get<{ Params: { id: string } }>('/api/projects/:id/plan', async (req) => {
-    return { plan: leadService.getPlan(req.params.id) };
+    return { plan: leadService.getPlan(req.params.id, readSessionId(req)) };
   });
 
   app.post<{ Params: { id: string } }>('/api/projects/:id/plan/generate', async (req) => {
-    return { plan: await leadService.generatePlan(req.params.id) };
+    return { plan: await leadService.generatePlan(req.params.id, readSessionId(req)) };
   });
 
   app.post<{ Params: { id: string } }>('/api/projects/:id/plan/approve', async (req) => {
-    return { plan: leadService.approvePlan(req.params.id) };
+    return { plan: leadService.approvePlan(req.params.id, readSessionId(req)) };
   });
 
   app.post<{ Params: { id: string } }>('/api/projects/:id/tasks', async (req, reply) => {
     const body = CreateTaskInputSchema.parse(req.body);
-    const task = leadService.createTask(req.params.id, body);
+    const task = leadService.createTask(req.params.id, body, readSessionId(req));
     return reply.status(201).send({ task });
   });
 
@@ -279,37 +392,46 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     '/api/projects/:id/tasks/:taskId',
     async (req) => {
       const body = UpdateTaskInputSchema.parse(req.body);
-      return { task: leadService.updateTask(req.params.id, req.params.taskId, body) };
+      return {
+        task: leadService.updateTask(req.params.id, req.params.taskId, body, readSessionId(req)),
+      };
     },
   );
 
   app.delete<{ Params: { id: string; taskId: string } }>(
     '/api/projects/:id/tasks/:taskId',
     async (req) => {
-      leadService.deleteTask(req.params.id, req.params.taskId);
+      leadService.deleteTask(req.params.id, req.params.taskId, readSessionId(req));
       return { ok: true };
     },
   );
 
   app.post<{ Params: { id: string } }>('/api/projects/:id/tasks/reorder', async (req) => {
     const body = ReorderTasksInputSchema.parse(req.body);
-    return { plan: leadService.reorderTasks(req.params.id, body) };
+    return { plan: leadService.reorderTasks(req.params.id, body, readSessionId(req)) };
   });
 
   // Assign & Navigate (v0.2 Jalan: F-11, F-12, F-13, F-14, F-15, F-17, F-23)
   app.get<{ Params: { id: string } }>('/api/projects/:id/execution', async (req) => {
-    return { execution: await executionService.getExecutionState(req.params.id) };
+    return { execution: await executionService.getExecutionState(req.params.id, readSessionId(req)) };
   });
 
   app.post<{ Params: { id: string } }>('/api/projects/:id/execution/start', async (req, reply) => {
     const body = StartExecutionInputSchema.parse(req.body ?? {});
-    const result = await executionService.startExecution(req.params.id, body);
+    const result = await executionService.startExecution(req.params.id, {
+      ...body,
+      sessionId: body.sessionId ?? readSessionId(req),
+    });
     return reply.status(202).send(result);
   });
 
   app.post<{ Params: { id: string } }>('/api/projects/:id/execution/stop', async (req) => {
     const body = StopExecutionInputSchema.parse(req.body ?? {});
-    return executionService.stopExecution(req.params.id, body.taskId);
+    return executionService.stopExecution(
+      req.params.id,
+      body.taskId,
+      body.sessionId ?? readSessionId(req),
+    );
   });
 
   app.post<{ Params: { id: string; taskId: string } }>(
@@ -361,7 +483,7 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
 
   // Guard (v0.3 Kawal: F-18, F-19, F-20)
   app.get<{ Params: { id: string } }>('/api/projects/:id/guard', async (req) => {
-    return { guard: await executionService.getGuardState(req.params.id) };
+    return { guard: await executionService.getGuardState(req.params.id, readSessionId(req)) };
   });
 
   app.get<{ Params: { id: string; taskId: string } }>(

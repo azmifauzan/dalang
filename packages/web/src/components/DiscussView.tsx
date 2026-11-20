@@ -1,15 +1,29 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useState, type FormEvent, type KeyboardEvent } from 'react';
-import type { DiscussRound, ProjectSummary, ProviderId, QuestionItem } from '@dalang/shared';
+import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
+import type {
+  DiscussMessageDTO,
+  DiscussRound,
+  ProjectSummary,
+  ProviderId,
+  QuestionItem,
+  QuickPlanMessageContent,
+  SessionMode,
+  SessionSummaryDTO,
+} from '@dalang/shared';
 import { useI18n } from '../i18n/index.js';
 import { api } from '../lib/api.js';
+import { ChatTranscript } from './chat/ChatTranscript.js';
+import { ComposerDock } from './chat/ComposerDock.js';
+import { RunningTurn, type LiveSessionState } from './chat/RunningTurn.js';
+import { useChatScroll } from './chat/useChatScroll.js';
+import { useComposerChoice } from './chat/useComposerChoice.js';
+import { ModeComposer } from './ModeComposer.js';
 import { EmptyPanel, ErrorPanel, LoadingPanel } from './StateViews.js';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { NativeSelect } from '@/components/ui/native-select';
-import { Textarea } from '@/components/ui/textarea';
 
 interface AnswerDraft {
   selectedOptions: string[];
@@ -18,23 +32,40 @@ interface AnswerDraft {
 
 export function DiscussView({
   project,
-  liveLogs,
+  session,
+  live,
+  onProviderChange,
   initialGoal,
   onConsumeInitialGoal,
   onGoToAgree,
 }: {
   project: ProjectSummary;
-  liveLogs: string[];
+  session: SessionSummaryDTO;
+  /** What the CLI is doing for this chat, kept by the page so it survives switching chats. */
+  live: LiveSessionState | undefined;
+  /** Reports the CLI chosen in the composer so the page header can name it. */
+  onProviderChange: (provider: ProviderId) => void;
   initialGoal?: string;
   onConsumeInitialGoal?: () => void;
   onGoToAgree: () => void;
 }) {
   const qc = useQueryClient();
   const { t, formatTime } = useI18n();
+  const sessionId = session.id;
+  const isFinished =
+    session.workState === 'idle' &&
+    session.planStatus === 'approved' &&
+    session.taskCount > 0 &&
+    session.doneTaskCount === session.taskCount;
+
   const [message, setMessage] = useState(initialGoal ?? '');
+  const [composerMode, setComposerMode] = useState<SessionMode>(isFinished ? 'ask' : 'full');
+  // A question can be asked at any time. Quick is only offered once the work is finished.
+  const activeComposerMode: SessionMode =
+    composerMode === 'quick' && !isFinished ? 'full' : composerMode;
   const [answersByQid, setAnswersByQid] = useState<Record<string, AnswerDraft>>({});
-  const [leadProvider, setLeadProvider] = useState<ProviderId>(project.leadProvider);
-  const [leadModel, setLeadModel] = useState(project.leadModel ?? '');
+  const [requestStartedAt, setRequestStartedAt] = useState(() => Date.now());
+  const choice = useComposerChoice(project, session, onProviderChange);
 
   useEffect(() => {
     if (initialGoal) {
@@ -44,25 +75,12 @@ export function DiscussView({
   }, [initialGoal, onConsumeInitialGoal]);
 
   const discussQuery = useQuery({
-    queryKey: ['discuss', project.id],
-    queryFn: () => api.getDiscussState(project.id),
-  });
-
-  const providersQuery = useQuery({
-    queryKey: ['providers-status'],
-    queryFn: () => api.getProvidersStatus(),
-  });
-
-  const settingsMutation = useMutation({
-    mutationFn: (vars: { leadProvider: ProviderId; leadModel: string | null }) =>
-      api.updateProjectSettings(project.id, vars),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['projects'] });
-    },
+    queryKey: ['discuss', project.id, sessionId],
+    queryFn: () => api.getDiscussState(project.id, sessionId),
   });
 
   const sendMutation = useMutation({
-    mutationFn: (vars: { text: string; questions?: QuestionItem[] }) => {
+    mutationFn: (vars: { text: string; questions?: QuestionItem[]; mode: SessionMode }) => {
       const structuredAnswers = (vars.questions ?? []).map((q) => {
         const draft = answersByQid[q.id] ?? { selectedOptions: [], customText: '' };
         return {
@@ -72,26 +90,30 @@ export function DiscussView({
           customText: draft.customText,
         };
       });
-      return api.sendDiscussMessage(project.id, {
+      return api.sendChatMessage(project.id, {
+        sessionId,
+        mode: vars.mode,
         message: vars.text,
-        answers: structuredAnswers.length > 0 ? structuredAnswers : undefined,
-        provider: leadProvider,
-        model: leadModel.trim() || undefined,
+        answers:
+          vars.mode === 'full' && structuredAnswers.length > 0 ? structuredAnswers : undefined,
+        ...choice.payload,
       });
     },
     onSuccess: () => {
       setMessage('');
       setAnswersByQid({});
-      qc.invalidateQueries({ queryKey: ['discuss', project.id] });
+      qc.invalidateQueries({ queryKey: ['discuss', project.id, sessionId] });
+      qc.invalidateQueries({ queryKey: ['sessions', project.id] });
       qc.invalidateQueries({ queryKey: ['projects'] });
     },
   });
 
   const finishMutation = useMutation({
-    mutationFn: () => api.finishDiscuss(project.id),
+    mutationFn: () => api.finishDiscuss(project.id, sessionId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['briefs', project.id] });
       qc.invalidateQueries({ queryKey: ['discuss', project.id] });
+      qc.invalidateQueries({ queryKey: ['sessions', project.id] });
       qc.invalidateQueries({ queryKey: ['projects'] });
       onGoToAgree();
     },
@@ -131,34 +153,85 @@ export function DiscussView({
     });
   };
 
+  // The server knows when a turn is running, so the panel also shows after leaving the chat and coming back.
+  const turnRunning = sendMutation.isPending || finishMutation.isPending || Boolean(session.turn);
+  const lastReplyRef = useChatScroll(messages, turnRunning, live?.turn);
+
+  // What a bubble holds for the messages only the guided flow writes.
+  const renderBody = (msg: DiscussMessageDTO): ReactNode | null => {
+    if (msg.type === 'questions') {
+      const round = msg.content as DiscussRound;
+      return (
+        <div className="space-y-2 text-sm">
+          <p className="font-medium">
+            {t('discuss.roundHeading', {
+              round: round.round,
+              summary: round.summary || t('discuss.clarificationQuestions'),
+            })}
+          </p>
+          <ul className="list-disc space-y-1 pl-5" style={{ color: 'var(--text-secondary)' }}>
+            {round.questions.map((q) => (
+              <li key={q.id}>{q.question}</li>
+            ))}
+          </ul>
+          {round.ready_for_brief && (
+            <p className="font-medium" style={{ color: 'var(--pass)' }}>
+              {t('discuss.readyForBrief')}
+            </p>
+          )}
+        </div>
+      );
+    }
+    if (msg.type === 'brief') {
+      const brief = msg.content as { version: number; title: string };
+      return (
+        <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
+          <span>
+            {t('discuss.draftedBrief', { version: brief.version })} <strong>{brief.title}</strong>
+          </span>
+          <Button type="button" onClick={onGoToAgree} variant="outline">
+            {t('discuss.openBrief')}
+          </Button>
+        </div>
+      );
+    }
+    if (msg.type === 'quick_plan' && msg.content && typeof msg.content === 'object') {
+      const plan = msg.content as QuickPlanMessageContent;
+      return (
+        <div className="space-y-2 text-sm">
+          <p className="font-medium">{plan.summary}</p>
+          {plan.reason && <p style={{ color: 'var(--text-secondary)' }}>{plan.reason}</p>}
+          {plan.findings && plan.findings.length > 0 && (
+            <ul className="list-disc space-y-1 pl-5" style={{ color: 'var(--text-secondary)' }}>
+              {plan.findings.map((f, i) => (
+                <li key={i}>{f}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      );
+    }
+    return null;
+  };
+
+  const hasAnswers = Object.values(answersByQid).some(
+    (a) => a.selectedOptions.length > 0 || a.customText.trim().length > 0,
+  );
+
   const handleComposerSubmit = (e: FormEvent) => {
     e.preventDefault();
-    const hasAnswers = Object.values(answersByQid).some(
-      (a) => a.selectedOptions.length > 0 || a.customText.trim().length > 0,
-    );
     const trimmed = message.trim();
     if (!trimmed && !hasAnswers) return;
+    setRequestStartedAt(Date.now());
     sendMutation.mutate({
       text: trimmed || t('discuss.defaultAnswersText'),
       questions: activeQuestions.length > 0 ? activeQuestions : undefined,
+      mode: activeComposerMode,
     });
   };
 
-  const handleTextareaKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      if (e.nativeEvent.isComposing || e.keyCode === 229) {
-        return;
-      }
-      e.currentTarget.form?.requestSubmit();
-    }
-  };
-
-  const activeProviderModels =
-    providersQuery.data?.providers.find((p) => p.id === leadProvider)?.models ?? [];
-
   return (
-    <div className="space-y-5">
+    <div className="flex flex-1 flex-col gap-5">
       {/* Stage header + Lead selector */}
       <div
         className="flex flex-wrap items-end justify-between gap-4 rounded-[8px] border p-4"
@@ -182,51 +255,6 @@ export function DiscussView({
         </div>
 
         <div className="flex flex-wrap items-end gap-3">
-          <div>
-            <Label htmlFor="discuss-provider" className="block text-xs font-medium">
-              {t('discuss.leadCli')}
-            </Label>
-            <NativeSelect
-              id="discuss-provider"
-              value={leadProvider}
-              onChange={(e) => {
-                const next = e.target.value as ProviderId;
-                setLeadProvider(next);
-                settingsMutation.mutate({ leadProvider: next, leadModel: leadModel.trim() || null });
-              }}
-              className="mt-1"
-            >
-              <option value="claude-code">Claude Code</option>
-              <option value="codex">Codex CLI</option>
-              <option value="antigravity">Antigravity CLI</option>
-            </NativeSelect>
-          </div>
-
-          <div>
-            <Label htmlFor="discuss-model" className="block text-xs font-medium">
-              {t('discuss.modelOptional')}
-            </Label>
-            <Input
-              id="discuss-model"
-              type="text"
-              list="lead-model-suggestions"
-              value={leadModel}
-              onChange={(e) => setLeadModel(e.target.value)}
-              onBlur={() =>
-                settingsMutation.mutate({ leadProvider, leadModel: leadModel.trim() || null })
-              }
-              placeholder={t('common.cliDefault')}
-              className="mt-1 font-mono-token text-sm"
-            />
-            <datalist id="lead-model-suggestions">
-              {activeProviderModels.map((m) => (
-                <option key={m.id} value={m.value}>
-                  {m.displayName}
-                </option>
-              ))}
-            </datalist>
-          </div>
-
           <Button
             type="button"
             onClick={() => finishMutation.mutate()}
@@ -247,110 +275,30 @@ export function DiscussView({
       )}
 
       {!discussQuery.isLoading && !discussQuery.isError && (
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+        <div className="grid flex-1 grid-cols-1 gap-6 lg:grid-cols-12">
           {/* Conversation stream */}
-          <section aria-label={t('discuss.title')} className="space-y-4 lg:col-span-7">
+          <section aria-label={t('discuss.title')} className="flex flex-col gap-4 lg:col-span-7">
             {messages.length === 0 ? (
               <EmptyPanel title={t('discuss.emptyTitle')} description={t('discuss.emptyDesc')} />
             ) : (
-              <div className="space-y-3">
-                {messages.map((msg) => {
-                  const isUser = msg.role === 'user';
-                  const isError = msg.type === 'error';
-                  return (
-                    <article
-                      key={msg.id}
-                      className="rounded-[6px] border p-4"
-                      style={{
-                        backgroundColor: isError
-                          ? 'var(--error-tint)'
-                          : isUser
-                            ? 'var(--bg-well)'
-                            : 'var(--bg-surface)',
-                        borderColor: isError ? 'var(--error)' : 'var(--border-subtle)',
-                      }}
-                    >
-                      <div className="flex items-center justify-between gap-2 text-xs">
-                        <span className="font-semibold uppercase tracking-wide">
-                          {msg.role === 'user'
-                            ? t('discuss.roleUser')
-                            : msg.role === 'lead'
-                              ? t('discuss.roleLead')
-                              : t('discuss.roleSystem')}
-                        </span>
-                        <span style={{ color: 'var(--text-secondary)' }}>
-                          {formatTime(msg.createdAt)}
-                        </span>
-                      </div>
-
-                      {msg.type === 'questions' ? (
-                        <div className="mt-2 space-y-2 text-sm">
-                          <p className="font-medium">
-                            {t('discuss.roundHeading', {
-                              round: (msg.content as DiscussRound).round,
-                              summary:
-                                (msg.content as DiscussRound).summary ||
-                                t('discuss.clarificationQuestions'),
-                            })}
-                          </p>
-                          <ul
-                            className="list-disc space-y-1 pl-5"
-                            style={{ color: 'var(--text-secondary)' }}
-                          >
-                            {(msg.content as DiscussRound).questions.map((q) => (
-                              <li key={q.id}>{q.question}</li>
-                            ))}
-                          </ul>
-                          {(msg.content as DiscussRound).ready_for_brief && (
-                            <p className="font-medium" style={{ color: 'var(--pass)' }}>
-                              {t('discuss.readyForBrief')}
-                            </p>
-                          )}
-                        </div>
-                      ) : msg.type === 'brief' ? (
-                        <div className="mt-2 flex flex-wrap items-center justify-between gap-3 text-sm">
-                          <span>
-                            {t('discuss.draftedBrief', {
-                              version: (msg.content as { version: number; title: string }).version,
-                            })}{' '}
-                            <strong>{(msg.content as { version: number; title: string }).title}</strong>
-                          </span>
-                          <Button type="button" onClick={onGoToAgree} variant="outline">
-                            {t('discuss.openBrief')}
-                          </Button>
-                        </div>
-                      ) : (
-                        <p className="mt-2 whitespace-pre-wrap text-sm">
-                          {typeof msg.content === 'string'
-                            ? msg.content
-                            : JSON.stringify(msg.content, null, 2)}
-                        </p>
-                      )}
-                    </article>
-                  );
-                })}
-              </div>
+              <ChatTranscript
+                messages={messages}
+                session={session}
+                lastReplyRef={lastReplyRef}
+                renderBody={renderBody}
+              />
             )}
 
-            {(sendMutation.isPending || finishMutation.isPending) && (
-              <div
-                role="status"
-                aria-live="polite"
-                className="rounded-[6px] border p-4"
-                style={{ backgroundColor: 'var(--bg-well)', borderColor: 'var(--border-control)' }}
-              >
-                <p className="text-sm font-medium">
-                  {t('discuss.leadRunning', { provider: leadProvider })}
-                </p>
-                {liveLogs.length > 0 && (
-                  <pre
-                    className="mt-2 max-h-28 overflow-y-auto font-mono-token text-xs"
-                    style={{ color: 'var(--text-secondary)' }}
-                  >
-                    {liveLogs.slice(-6).join('\n')}
-                  </pre>
-                )}
-              </div>
+            {turnRunning && (
+              <RunningTurn
+                project={project}
+                session={session}
+                messages={messages}
+                pendingMessage={sendMutation.isPending ? sendMutation.variables?.text : undefined}
+                fallbackProvider={choice.provider}
+                requestStartedAt={requestStartedAt}
+                live={live}
+              />
             )}
 
             {(sendMutation.isError || finishMutation.isError) && (
@@ -364,41 +312,37 @@ export function DiscussView({
               />
             )}
 
-            <form
-              onSubmit={handleComposerSubmit}
-              className="rounded-[6px] border p-4"
-              style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
-            >
-              <Label htmlFor="discuss-composer" className="block text-sm font-medium">
-                {activeQuestions.length > 0
-                  ? t('discuss.composerWithQuestions')
-                  : t('discuss.composerDefault')}
-              </Label>
-              <Textarea
+            <div className="mt-auto">
+            <ComposerDock bleed={false}>
+              <ModeComposer
                 id="discuss-composer"
-                rows={3}
+                modelPicker={choice.picker}
+                session={session}
+                selectedMode={activeComposerMode}
+                onSelectMode={setComposerMode}
                 value={message}
-                onChange={(e) => setMessage(e.target.value)}
-                onKeyDown={handleTextareaKeyDown}
-                placeholder={t('discuss.composerPlaceholder')}
-                className="mt-2"
-              />
-              <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-                <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-                  {t('discuss.enterHint')}
-                </span>
-                <Button
-                  type="submit"
-                  disabled={sendMutation.isPending || finishMutation.isPending}
-                >
-                  {sendMutation.isPending
+                onChange={setMessage}
+                onSubmit={handleComposerSubmit}
+                busy={turnRunning}
+                canSubmitEmpty={hasAnswers}
+                isFinishedSession={isFinished}
+                label={
+                  activeQuestions.length > 0
+                    ? t('discuss.composerWithQuestions')
+                    : t('discuss.composerDefault')
+                }
+                submitLabel={
+                  sendMutation.isPending
                     ? t('discuss.sending')
-                    : activeQuestions.length > 0
-                      ? t('discuss.submitAnswers')
-                      : t('discuss.sendToLead')}
-                </Button>
-              </div>
-            </form>
+                    : activeComposerMode === 'ask'
+                      ? t('sessions.sendAsk')
+                      : activeQuestions.length > 0
+                        ? t('discuss.submitAnswers')
+                        : t('discuss.sendToLead')
+                }
+              />
+            </ComposerDock>
+            </div>
           </section>
 
           {/* Structured Question Deck */}

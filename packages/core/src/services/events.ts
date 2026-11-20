@@ -2,24 +2,27 @@ import { EventEmitter } from 'node:events';
 import type { RunStatus } from '@dalang/shared';
 
 export type DalangEvent =
-  | { type: 'lead.turn_started'; projectId: string; phase: string; provider: string }
-  | { type: 'lead.log'; projectId: string; phase: string; line: string }
-  | { type: 'lead.turn_finished'; projectId: string; phase: string; ok: boolean; error?: string }
-  | { type: 'discuss.updated'; projectId: string }
-  | { type: 'brief.updated'; projectId: string; version: number }
-  | { type: 'plan.updated'; projectId: string }
+  | { type: 'lead.turn_started'; projectId: string; sessionId?: string; phase: string; provider: string }
+  | { type: 'lead.log'; projectId: string; sessionId?: string; phase: string; line: string }
+  | { type: 'lead.turn_finished'; projectId: string; sessionId?: string; phase: string; ok: boolean; error?: string }
+  | { type: 'sessions.updated'; projectId: string; sessionId?: string }
+  | { type: 'discuss.updated'; projectId: string; sessionId?: string }
+  | { type: 'brief.updated'; projectId: string; sessionId?: string; version: number }
+  | { type: 'plan.updated'; projectId: string; sessionId?: string }
   | {
       type: 'run.started';
       projectId: string;
+      sessionId?: string;
       taskId: string;
       runId: string;
       profileName: string;
       provider: string;
     }
-  | { type: 'run.log'; projectId: string; taskId: string; runId: string; line: string }
+  | { type: 'run.log'; projectId: string; sessionId?: string; taskId: string; runId: string; line: string }
   | {
       type: 'run.finished';
       projectId: string;
+      sessionId?: string;
       taskId: string;
       runId: string;
       status: RunStatus;
@@ -28,6 +31,7 @@ export type DalangEvent =
   | {
       type: 'review.finished';
       projectId: string;
+      sessionId?: string;
       taskId: string;
       round: number;
       status: 'pass' | 'fail';
@@ -35,6 +39,7 @@ export type DalangEvent =
   | {
       type: 'integration.finished';
       projectId: string;
+      sessionId?: string;
       taskId: string | null;
       status: 'passed' | 'failed' | 'skipped';
     }

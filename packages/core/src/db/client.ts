@@ -1,9 +1,11 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { and, eq } from 'drizzle-orm';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { ensureDir, getDbPath } from '../paths.js';
+import { ensureDalangIgnore } from '../safe-fs.js';
 import * as schema from './schema.js';
 
 export type DalangDb = BetterSQLite3Database<typeof schema>;
@@ -21,7 +23,7 @@ export function getDbDataDir(db: DalangDb): string | null {
   return dbDataDirs.get(db) ?? null;
 }
 
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 
 const BOOTSTRAP_SQL = `
 PRAGMA journal_mode = WAL;
@@ -45,10 +47,14 @@ CREATE TABLE IF NOT EXISTS projects (
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  phase TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  mode TEXT NOT NULL DEFAULT 'ask',
+  work_state TEXT NOT NULL DEFAULT 'idle',
+  phase TEXT NOT NULL DEFAULT 'discuss',
   provider TEXT NOT NULL,
   model TEXT,
   cli_session_id TEXT,
+  archived_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -65,6 +71,7 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE TABLE IF NOT EXISTS briefs (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
   version INTEGER NOT NULL,
   status TEXT NOT NULL DEFAULT 'draft',
   file_path TEXT NOT NULL,
@@ -75,7 +82,8 @@ CREATE TABLE IF NOT EXISTS briefs (
 CREATE TABLE IF NOT EXISTS plans (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  brief_id TEXT NOT NULL REFERENCES briefs(id) ON DELETE CASCADE,
+  session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
+  brief_id TEXT REFERENCES briefs(id) ON DELETE CASCADE,
   version INTEGER NOT NULL,
   status TEXT NOT NULL DEFAULT 'draft',
   file_path TEXT NOT NULL,
@@ -544,6 +552,331 @@ function migrateToV8(sqlite: Database.Database): void {
   all.forEach((r, i) => update.run(i + 1, r.id));
 }
 
+function moveFileSafe(src: string, dest: string): void {
+  if (!fs.existsSync(src)) return;
+  try {
+    if (fs.lstatSync(src).isSymbolicLink()) return;
+  } catch {
+    return;
+  }
+  if (fs.existsSync(dest)) return;
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  try {
+    fs.renameSync(src, dest);
+  } catch {
+    fs.copyFileSync(src, dest);
+    try {
+      fs.unlinkSync(src);
+    } catch {
+      // keep copy if unlink fails
+    }
+  }
+}
+
+function moveDirFilesRecursive(srcDir: string, destDir: string): void {
+  if (!fs.existsSync(srcDir)) return;
+  try {
+    if (fs.lstatSync(srcDir).isSymbolicLink()) return;
+  } catch {
+    return;
+  }
+  for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
+    const srcPath = path.join(srcDir, entry.name);
+    const destPath = path.join(destDir, entry.name);
+    if (entry.isSymbolicLink()) continue;
+    if (entry.isDirectory()) {
+      moveDirFilesRecursive(srcPath, destPath);
+    } else if (entry.isFile()) {
+      moveFileSafe(srcPath, destPath);
+    }
+  }
+}
+
+function rewriteLegacyDalangPath(relPath: string, sessionId: string): string {
+  const norm = relPath.replace(/\\/g, '/');
+  if (norm.startsWith('.dalang/sessions/')) return norm;
+  if (norm.startsWith('.dalang/')) {
+    return `.dalang/sessions/${sessionId}/${norm.slice('.dalang/'.length)}`;
+  }
+  return norm;
+}
+
+function deriveTitleFromText(raw: string, fallback: string): string {
+  const cleaned = raw.replace(/\s+/g, ' ').trim();
+  if (!cleaned) return fallback;
+  return cleaned.length > 64 ? `${cleaned.slice(0, 61)}...` : cleaned;
+}
+
+/**
+ * v9: session modes (ask / quick / full), per-session briefs/plans/artifacts under
+ * `.dalang/sessions/<sessionId>/`, nullable `plans.brief_id` for Quick mode, and a partial unique
+ * index allowing at most one `working` session per project.
+ */
+function migrateToV9(sqlite: Database.Database): void {
+  addColumnIfMissing(sqlite, 'sessions', 'title', "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(sqlite, 'sessions', 'mode', "TEXT NOT NULL DEFAULT 'ask'");
+  addColumnIfMissing(sqlite, 'sessions', 'work_state', "TEXT NOT NULL DEFAULT 'idle'");
+  addColumnIfMissing(sqlite, 'sessions', 'archived_at', 'TEXT');
+  addColumnIfMissing(sqlite, 'briefs', 'session_id', 'TEXT REFERENCES sessions(id) ON DELETE CASCADE');
+
+  const planCols = sqlite.pragma('table_info(plans)') as Array<{ name: string; notnull: number }>;
+  const hasSessionId = planCols.some((c) => c.name === 'session_id');
+  const briefNotNull = planCols.some((c) => c.name === 'brief_id' && c.notnull === 1);
+  if (!hasSessionId || briefNotNull) {
+    sqlite.pragma('foreign_keys = OFF');
+    try {
+      sqlite.exec(`
+        BEGIN;
+        CREATE TABLE plans_v9 (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
+          brief_id TEXT REFERENCES briefs(id) ON DELETE CASCADE,
+          version INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'draft',
+          file_path TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          approved_at TEXT
+        );
+        INSERT INTO plans_v9 (id, project_id, session_id, brief_id, version, status, file_path, created_at, approved_at)
+        SELECT id, project_id, ${hasSessionId ? 'session_id' : 'NULL'}, brief_id, version, status, file_path, created_at, approved_at
+        FROM plans;
+        DROP TABLE plans;
+        ALTER TABLE plans_v9 RENAME TO plans;
+        COMMIT;
+      `);
+    } catch (err) {
+      try {
+        sqlite.exec('ROLLBACK;');
+      } catch {
+        // ignore rollback error
+      }
+      throw err;
+    } finally {
+      sqlite.pragma('foreign_keys = ON');
+    }
+  }
+
+  // Migrate every project's existing stage, messages, briefs, plans, and `.dalang/` artifacts into
+  // one Full session; empty projects start with no sessions so their chat opens empty.
+  const projectRows = sqlite
+    .prepare('SELECT id, name, path, lead_provider, lead_model, created_at, updated_at FROM projects')
+    .all() as Array<{
+    id: string;
+    name: string;
+    path: string;
+    lead_provider: string;
+    lead_model: string | null;
+    created_at: string;
+    updated_at: string;
+  }>;
+
+  for (const proj of projectRows) {
+    // v0.6 and earlier wrote `.dalang/.gitignore` with only `tmp/`; session logs would show up as untracked.
+    // Best effort: a missing project folder or a refused symlink must not block the upgrade.
+    if (fs.existsSync(path.join(proj.path, '.dalang'))) {
+      try {
+        ensureDalangIgnore(proj.path);
+      } catch {
+        // leave the file as it is
+      }
+    }
+
+    const sessRows = sqlite
+      .prepare('SELECT id, phase, provider, model, cli_session_id, created_at, updated_at FROM sessions WHERE project_id = ? ORDER BY updated_at DESC')
+      .all(proj.id) as Array<{
+      id: string;
+      phase: string;
+      provider: string;
+      model: string | null;
+      cli_session_id: string | null;
+      created_at: string;
+      updated_at: string;
+    }>;
+
+    const briefRows = sqlite
+      .prepare('SELECT id, version, status, file_path, created_at FROM briefs WHERE project_id = ? ORDER BY version DESC')
+      .all(proj.id) as Array<{
+      id: string;
+      version: number;
+      status: string;
+      file_path: string;
+      created_at: string;
+    }>;
+
+    const planRows = sqlite
+      .prepare('SELECT id, version, status, file_path, created_at FROM plans WHERE project_id = ? ORDER BY version DESC')
+      .all(proj.id) as Array<{
+      id: string;
+      version: number;
+      status: string;
+      file_path: string;
+      created_at: string;
+    }>;
+
+    const msgCountRow = sqlite
+      .prepare(
+        `SELECT COUNT(*) AS n FROM messages m INNER JOIN sessions s ON s.id = m.session_id WHERE s.project_id = ?`,
+      )
+      .get(proj.id) as { n: number };
+    const hasActivity = briefRows.length > 0 || planRows.length > 0 || msgCountRow.n > 0;
+
+    if (!hasActivity) {
+      // Remove empty legacy sessions so the project starts with no session and opens an empty chat.
+      sqlite.prepare('DELETE FROM sessions WHERE project_id = ?').run(proj.id);
+      continue;
+    }
+
+    let primarySessionId: string;
+    if (sessRows.length > 0) {
+      primarySessionId = sessRows[0].id;
+      if (sessRows.length > 1) {
+        const extraIds = sessRows.slice(1).map((s) => s.id);
+        for (const extraId of extraIds) {
+          sqlite.prepare('UPDATE messages SET session_id = ? WHERE session_id = ?').run(primarySessionId, extraId);
+          sqlite.prepare('DELETE FROM sessions WHERE id = ?').run(extraId);
+        }
+      }
+    } else {
+      primarySessionId = crypto.randomUUID();
+      sqlite
+        .prepare(
+          `INSERT INTO sessions (id, project_id, title, mode, work_state, phase, provider, model, cli_session_id, archived_at, created_at, updated_at)
+           VALUES (?, ?, '', 'full', 'idle', 'discuss', ?, ?, NULL, NULL, ?, ?)`,
+        )
+        .run(
+          primarySessionId,
+          proj.id,
+          proj.lead_provider,
+          proj.lead_model,
+          proj.created_at,
+          proj.updated_at,
+        );
+    }
+
+    // Derive title from latest brief JSON, else first user message, else project name.
+    let title = '';
+    if (briefRows.length > 0 && fs.existsSync(proj.path)) {
+      const briefAbs = path.join(proj.path, briefRows[0].file_path);
+      if (fs.existsSync(briefAbs)) {
+        try {
+          const parsed = JSON.parse(fs.readFileSync(briefAbs, 'utf8')) as { title?: string };
+          if (parsed.title?.trim()) {
+            title = deriveTitleFromText(parsed.title, proj.name);
+          }
+        } catch {
+          // ignore unreadable brief file
+        }
+      }
+    }
+    if (!title) {
+      const firstUserMsg = sqlite
+        .prepare(
+          `SELECT content FROM messages WHERE session_id = ? AND role = 'user' ORDER BY created_at ASC LIMIT 1`,
+        )
+        .get(primarySessionId) as { content: string } | undefined;
+      if (firstUserMsg?.content) {
+        title = deriveTitleFromText(firstUserMsg.content, proj.name);
+      }
+    }
+    if (!title) {
+      title = proj.name;
+    }
+
+    // Derive phase and work_state.
+    let phase = 'discuss';
+    if (planRows.some((p) => p.status === 'approved')) phase = 'run';
+    else if (planRows.length > 0) phase = 'list';
+    else if (briefRows.length > 0) phase = 'agree';
+
+    const unfinishedRow = sqlite
+      .prepare(
+        `SELECT COUNT(*) AS n
+         FROM tasks t
+         INNER JOIN plans p ON p.id = t.plan_id
+         WHERE p.project_id = ?
+           AND (
+             t.status IN ('running', 'reviewing', 'awaiting_merge', 'review_failed')
+             OR (t.branch_name IS NOT NULL AND t.branch_name != '' AND t.status != 'done')
+           )`,
+      )
+      .get(proj.id) as { n: number };
+    const workState = unfinishedRow.n > 0 ? 'working' : 'idle';
+
+    sqlite
+      .prepare(`UPDATE sessions SET title = ?, mode = 'full', work_state = ?, phase = ? WHERE id = ?`)
+      .run(title, workState, phase, primarySessionId);
+
+    sqlite.prepare('UPDATE briefs SET session_id = ? WHERE project_id = ?').run(primarySessionId, proj.id);
+    sqlite.prepare('UPDATE plans SET session_id = ? WHERE project_id = ?').run(primarySessionId, proj.id);
+
+    // Move legacy `.dalang/` artifacts into `.dalang/sessions/<sessionId>/` and rewrite DB paths.
+    const projectExists = fs.existsSync(proj.path);
+    const sessionDirAbs = path.join(proj.path, '.dalang', 'sessions', primarySessionId);
+
+    for (const b of briefRows) {
+      const nextPath = rewriteLegacyDalangPath(b.file_path, primarySessionId);
+      if (nextPath !== b.file_path) {
+        if (projectExists) {
+          moveFileSafe(path.join(proj.path, b.file_path), path.join(proj.path, nextPath));
+        }
+        sqlite.prepare('UPDATE briefs SET file_path = ? WHERE id = ?').run(nextPath, b.id);
+      }
+    }
+
+    for (const p of planRows) {
+      const nextPath = rewriteLegacyDalangPath(p.file_path, primarySessionId);
+      if (nextPath !== p.file_path) {
+        if (projectExists) {
+          moveFileSafe(path.join(proj.path, p.file_path), path.join(proj.path, nextPath));
+        }
+        sqlite.prepare('UPDATE plans SET file_path = ? WHERE id = ?').run(nextPath, p.id);
+      }
+    }
+
+    const runRows = sqlite
+      .prepare('SELECT id, log_path, result_path FROM runs WHERE project_id = ?')
+      .all(proj.id) as Array<{ id: string; log_path: string; result_path: string | null }>;
+    for (const r of runRows) {
+      const nextLog = rewriteLegacyDalangPath(r.log_path, primarySessionId);
+      const nextResult = r.result_path ? rewriteLegacyDalangPath(r.result_path, primarySessionId) : null;
+      if (projectExists) {
+        if (nextLog !== r.log_path) {
+          moveFileSafe(path.join(proj.path, r.log_path), path.join(proj.path, nextLog));
+        }
+        if (r.result_path && nextResult && nextResult !== r.result_path) {
+          moveFileSafe(path.join(proj.path, r.result_path), path.join(proj.path, nextResult));
+        }
+      }
+      if (nextLog !== r.log_path || nextResult !== r.result_path) {
+        sqlite
+          .prepare('UPDATE runs SET log_path = ?, result_path = ? WHERE id = ?')
+          .run(nextLog, nextResult, r.id);
+      }
+    }
+
+    const reviewRows = sqlite
+      .prepare('SELECT id, file_path FROM reviews WHERE project_id = ?')
+      .all(proj.id) as Array<{ id: string; file_path: string }>;
+    for (const rev of reviewRows) {
+      const nextPath = rewriteLegacyDalangPath(rev.file_path, primarySessionId);
+      if (nextPath !== rev.file_path) {
+        if (projectExists) {
+          moveFileSafe(path.join(proj.path, rev.file_path), path.join(proj.path, nextPath));
+        }
+        sqlite.prepare('UPDATE reviews SET file_path = ? WHERE id = ?').run(nextPath, rev.id);
+      }
+    }
+
+    // Move remaining legacy discuss/tasks/logs files under `.dalang/sessions/<sessionId>/`.
+    if (projectExists) {
+      for (const sub of ['discuss', 'tasks', 'logs']) {
+        moveDirFilesRecursive(path.join(proj.path, '.dalang', sub), path.join(sessionDirAbs, sub));
+      }
+    }
+  }
+}
+
 export function openDatabase(dbFilePath: string = getDbPath()): DbConnection {
   const dataDir = dbFilePath !== ':memory:' ? path.dirname(dbFilePath) : null;
   if (dataDir) {
@@ -565,6 +898,12 @@ export function openDatabase(dbFilePath: string = getDbPath()): DbConnection {
   if (upgrading && storedVersion < 6) migrateToV6(sqlite);
   if (upgrading && storedVersion < 7) migrateToV7(sqlite);
   if (upgrading && storedVersion < 8) migrateToV8(sqlite);
+  if (upgrading && storedVersion < 9) migrateToV9(sqlite);
+  sqlite.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_one_working_per_project
+      ON sessions(project_id)
+      WHERE work_state = 'working';
+  `);
   const db = drizzle(sqlite, { schema });
   dbDataDirs.set(db, dataDir);
   seedDefaults(db);

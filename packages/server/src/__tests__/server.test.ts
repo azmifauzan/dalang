@@ -124,10 +124,10 @@ function createMultiProjectFakeRunner(projectSpecs: Record<string, { title: stri
         return { exitCode: 0, stdout: `${line}\n`, stderr: '', timedOut: false, idleTimedOut: false };
       }
 
-      const roundMatch = promptArg.match(/\.dalang\/discuss\/round-(\d+)\.json/);
+      const roundMatch = promptArg.match(/(\.dalang\/(?:sessions\/[A-Za-z0-9_-]+\/)?discuss\/round-(\d+)\.json)/);
       if (roundMatch) {
-        const round = Number(roundMatch[1]);
-        const target = path.join(cwd, '.dalang', 'discuss', `round-${round}.json`);
+        const round = Number(roundMatch[2]);
+        const target = path.join(cwd, roundMatch[1]);
         fs.mkdirSync(path.dirname(target), { recursive: true });
         fs.writeFileSync(
           target,
@@ -150,10 +150,11 @@ function createMultiProjectFakeRunner(projectSpecs: Record<string, { title: stri
         return emit(`sess-${path.basename(cwd)}`, 'Round done');
       }
 
-      const briefMatch = promptArg.match(/\.dalang\/brief\.v(\d+)\.json/);
+      const briefMatch = promptArg.match(/(\.dalang\/(?:sessions\/[A-Za-z0-9_-]+\/)?brief\.v(\d+)\.json)/);
       if (briefMatch) {
-        const ver = Number(briefMatch[1]);
-        const target = path.join(cwd, '.dalang', `brief.v${ver}.json`);
+        const ver = Number(briefMatch[2]);
+        const target = path.join(cwd, briefMatch[1]);
+        fs.mkdirSync(path.dirname(target), { recursive: true });
         fs.writeFileSync(
           target,
           JSON.stringify({
@@ -171,8 +172,9 @@ function createMultiProjectFakeRunner(projectSpecs: Record<string, { title: stri
         return emit(`sess-${path.basename(cwd)}`, 'Brief done');
       }
 
-      if (promptArg.includes('.dalang/tmp/plan-v')) {
-        const target = path.join(cwd, '.dalang', 'tmp', 'plan-v1.json');
+      const planMatch = promptArg.match(/(\.dalang\/(?:sessions\/[A-Za-z0-9_-]+\/)?tmp\/plan-v\d+\.json)/);
+      if (planMatch) {
+        const target = path.join(cwd, planMatch[1]);
         fs.mkdirSync(path.dirname(target), { recursive: true });
         fs.writeFileSync(
           target,
@@ -201,10 +203,10 @@ function createMultiProjectFakeRunner(projectSpecs: Record<string, { title: stri
         return emit(`sess-${path.basename(cwd)}`, 'Plan done');
       }
 
-      const taskMatch = promptArg.match(/\.dalang\/tasks\/([A-Za-z0-9_-]+)\/result\.json/);
+      const taskMatch = promptArg.match(/(\.dalang\/(?:sessions\/[A-Za-z0-9_-]+\/)?tasks\/([A-Za-z0-9_-]+)\/result\.json)/);
       if (taskMatch) {
-        const extId = taskMatch[1];
-        const target = path.join(cwd, '.dalang', 'tasks', extId, 'result.json');
+        const extId = taskMatch[2];
+        const target = path.join(cwd, taskMatch[1]);
         fs.mkdirSync(path.dirname(target), { recursive: true });
         fs.mkdirSync(path.join(cwd, 'src'), { recursive: true });
         fs.writeFileSync(path.join(cwd, 'src', 'index.ts'), 'export const ok = true;\n');
@@ -252,7 +254,7 @@ describe('@dalang/server API (v0.1 Rembuk)', () => {
     try {
       const health = await app.inject({ method: 'GET', url: '/api/health' });
       expect(health.statusCode).toBe(200);
-      expect(health.json()).toEqual({ ok: true, version: '0.6.0' });
+      expect(health.json()).toEqual({ ok: true, version: '0.7.0' });
 
       const providersRes = await app.inject({ method: 'GET', url: '/api/providers/status' });
       expect(providersRes.statusCode).toBe(200);
@@ -310,7 +312,7 @@ describe('@dalang/server API (v0.1 Rembuk)', () => {
         expect(planRes.json().plan.tasks).toHaveLength(1);
 
         const onDiskPlan = JSON.parse(
-          fs.readFileSync(path.join(sample.path, '.dalang', 'plan.json'), 'utf8'),
+          fs.readFileSync(path.join(sample.path, planRes.json().plan.filePath), 'utf8'),
         );
         expect(() => PlanContractSchema.parse(onDiskPlan)).not.toThrow();
       }
@@ -628,7 +630,7 @@ describe('@dalang/server API (v0.1 Rembuk)', () => {
     const dbDir = makeTempDir('dalang-db-');
     const { app, close } = await createDalangServer({
       dbPath: path.join(dbDir, 'dalang.db'),
-      updateFetcher: async () => '0.7.0',
+      updateFetcher: async () => '0.8.0',
     });
     try {
       const before = await app.inject({ method: 'GET', url: '/api/settings' });
@@ -637,6 +639,7 @@ describe('@dalang/server API (v0.1 Rembuk)', () => {
           antigravityKeyringAccess: false,
           language: null,
           checkForUpdates: true,
+          usageRefreshMinutes: 5,
         },
       });
 
@@ -650,19 +653,21 @@ describe('@dalang/server API (v0.1 Rembuk)', () => {
           antigravityKeyringAccess: true,
           language: 'id',
           checkForUpdates: true,
+          usageRefreshMinutes: 5,
         },
       });
       expect((await app.inject({ method: 'GET', url: '/api/settings' })).json().settings).toEqual({
         antigravityKeyringAccess: true,
         language: 'id',
         checkForUpdates: true,
+        usageRefreshMinutes: 5,
       });
 
       const updateRes = await app.inject({ method: 'GET', url: '/api/update-status' });
       expect(updateRes.statusCode).toBe(200);
       expect(updateRes.json().update).toMatchObject({
-        currentVersion: '0.6.0',
-        latestVersion: '0.7.0',
+        currentVersion: '0.7.0',
+        latestVersion: '0.8.0',
         updateAvailable: true,
         checkEnabled: true,
       });
@@ -680,6 +685,12 @@ describe('@dalang/server API (v0.1 Rembuk)', () => {
 
       const bad = await app.inject({ method: 'PATCH', url: '/api/settings', payload: { antigravityKeyringAccess: 'yes' } });
       expect(bad.statusCode).toBe(400);
+
+      // The limits bar refresh interval: 5 minutes by default, and only 3, 5, or 10 are accepted.
+      const every3 = await app.inject({ method: 'PATCH', url: '/api/settings', payload: { usageRefreshMinutes: 3 } });
+      expect(every3.json().settings.usageRefreshMinutes).toBe(3);
+      const badInterval = await app.inject({ method: 'PATCH', url: '/api/settings', payload: { usageRefreshMinutes: 1 } });
+      expect(badInterval.statusCode).toBe(400);
     } finally {
       await close();
     }
@@ -707,11 +718,11 @@ describe('@dalang/server API (v0.1 Rembuk)', () => {
       which: baseRunner.which,
       async run(cmd, args, opts: RunCommandOptions): Promise<RunCommandResult> {
         const joined = `${cmd} ${args.join(' ')}`;
-        const taskMatch = joined.match(/\.dalang\/tasks\/([A-Za-z0-9_-]+)\/result\.json/);
+        const taskMatch = joined.match(/(\.dalang\/(?:sessions\/[A-Za-z0-9_-]+\/)?tasks\/([A-Za-z0-9_-]+)\/result\.json)/);
         const isCoderPrompt = taskMatch && !joined.match(/code review round \d+ of \d+ for task/i);
 
         if (isCoderPrompt) {
-          const extId = taskMatch[1];
+          const extId = taskMatch[2];
           activeTasks.add(extId);
           if (activeTasks.size === 2) {
             bothStarted();
@@ -721,9 +732,10 @@ describe('@dalang/server API (v0.1 Rembuk)', () => {
             await t1Gate;
             fs.mkdirSync(path.join(opts.cwd, 'src', 'alpha'), { recursive: true });
             fs.writeFileSync(path.join(opts.cwd, 'src', 'alpha', 'a.ts'), 'export const alpha = 1;\n');
-            fs.mkdirSync(path.dirname(path.join(opts.cwd, '.dalang', 'tasks', 'T-001', 'result.json')), { recursive: true });
+            const resPath = path.join(opts.cwd, taskMatch[1]);
+            fs.mkdirSync(path.dirname(resPath), { recursive: true });
             fs.writeFileSync(
-              path.join(opts.cwd, '.dalang', 'tasks', 'T-001', 'result.json'),
+              resPath,
               JSON.stringify({
                 task_id: 'T-001',
                 status: 'completed',

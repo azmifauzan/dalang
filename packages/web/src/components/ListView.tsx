@@ -103,10 +103,12 @@ function taskToForm(task: TaskDTO, profiles: AgentProfileDTO[]): TaskFormState {
 
 export function ListView({
   project,
+  sessionId,
   onGoToAgree,
   onGoToWork,
 }: {
   project: ProjectSummary;
+  sessionId?: string;
   onGoToAgree: () => void;
   onGoToWork?: () => void;
 }) {
@@ -129,8 +131,8 @@ export function ListView({
   ];
 
   const planQuery = useQuery({
-    queryKey: ['plan', project.id],
-    queryFn: () => api.getPlan(project.id),
+    queryKey: ['plan', project.id, sessionId ?? 'default'],
+    queryFn: () => api.getPlan(project.id, sessionId),
   });
 
   const profilesQuery = useQuery({
@@ -139,34 +141,37 @@ export function ListView({
   });
 
   const generateMutation = useMutation({
-    mutationFn: () => api.generatePlan(project.id),
+    mutationFn: () => api.generatePlan(project.id, sessionId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['plan', project.id] });
+      qc.invalidateQueries({ queryKey: ['sessions', project.id] });
       qc.invalidateQueries({ queryKey: ['projects'] });
     },
   });
 
   const approvePlanMutation = useMutation({
-    mutationFn: () => api.approvePlan(project.id),
+    mutationFn: () => api.approvePlan(project.id, sessionId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['plan', project.id] });
       qc.invalidateQueries({ queryKey: ['execution', project.id] });
+      qc.invalidateQueries({ queryKey: ['sessions', project.id] });
       qc.invalidateQueries({ queryKey: ['projects'] });
     },
   });
 
   const createTaskMutation = useMutation({
-    mutationFn: (body: CreateTaskInput) => api.createTask(project.id, body),
+    mutationFn: (body: CreateTaskInput) => api.createTask(project.id, body, sessionId),
     onSuccess: () => {
       setModalOpen(false);
       qc.invalidateQueries({ queryKey: ['plan', project.id] });
+      qc.invalidateQueries({ queryKey: ['sessions', project.id] });
       qc.invalidateQueries({ queryKey: ['projects'] });
     },
   });
 
   const updateTaskMutation = useMutation({
     mutationFn: ({ taskId, body }: { taskId: string; body: Partial<CreateTaskInput> }) =>
-      api.updateTask(project.id, taskId, body),
+      api.updateTask(project.id, taskId, body, sessionId),
     onSuccess: () => {
       setModalOpen(false);
       qc.invalidateQueries({ queryKey: ['plan', project.id] });
@@ -174,17 +179,18 @@ export function ListView({
   });
 
   const deleteTaskMutation = useMutation({
-    mutationFn: (taskId: string) => api.deleteTask(project.id, taskId),
+    mutationFn: (taskId: string) => api.deleteTask(project.id, taskId, sessionId),
     onSuccess: () => {
       setModalOpen(false);
       qc.invalidateQueries({ queryKey: ['plan', project.id] });
+      qc.invalidateQueries({ queryKey: ['sessions', project.id] });
       qc.invalidateQueries({ queryKey: ['projects'] });
     },
   });
 
   const reorderMutation = useMutation({
     mutationFn: (updates: Array<{ id: string; status?: EditableTaskStatus; position: number }>) =>
-      api.reorderTasks(project.id, { updates }),
+      api.reorderTasks(project.id, { updates }, sessionId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['plan', project.id] });
     },
@@ -360,18 +366,15 @@ export function ListView({
             </div>
           )}
 
-          {!isLocked && (
+          {/* With no plan yet, the single "make the plan" button is in the panel below. */}
+          {plan && !isLocked && (
             <Button
               type="button"
               onClick={() => generateMutation.mutate()}
               disabled={generateMutation.isPending || !hasApprovedBrief}
               variant="outline"
             >
-              {generateMutation.isPending
-                ? t('plan.generating')
-                : plan
-                  ? t('plan.regenerate')
-                  : t('plan.generateFromBrief')}
+              {generateMutation.isPending ? t('plan.generating') : t('plan.regenerate')}
             </Button>
           )}
 

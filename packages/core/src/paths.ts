@@ -37,6 +37,38 @@ export function getTaskArtifactDir(projectPath: string, taskExternalId: string):
   return path.join(getProjectTasksDir(projectPath), taskExternalId);
 }
 
+export function getProjectSessionsDir(projectPath: string): string {
+  return path.join(getProjectDalangDir(projectPath), 'sessions');
+}
+
+export function getSessionDir(projectPath: string, sessionId: string): string {
+  return path.join(getProjectSessionsDir(projectPath), sessionId);
+}
+
+export function getSessionDiscussDir(projectPath: string, sessionId: string): string {
+  return path.join(getSessionDir(projectPath, sessionId), 'discuss');
+}
+
+export function getSessionLogsDir(projectPath: string, sessionId: string): string {
+  return path.join(getSessionDir(projectPath, sessionId), 'logs');
+}
+
+export function getSessionTmpDir(projectPath: string, sessionId: string): string {
+  return path.join(getSessionDir(projectPath, sessionId), 'tmp');
+}
+
+export function getSessionTasksDir(projectPath: string, sessionId: string): string {
+  return path.join(getSessionDir(projectPath, sessionId), 'tasks');
+}
+
+export function getSessionTaskArtifactDir(
+  projectPath: string,
+  sessionId: string,
+  taskExternalId: string,
+): string {
+  return path.join(getSessionTasksDir(projectPath, sessionId), taskExternalId);
+}
+
 export function getWorktreesRoot(dataDir?: string | null): string {
   return path.join(dataDir?.trim() || getDalangHome(), 'worktrees');
 }

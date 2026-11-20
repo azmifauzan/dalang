@@ -24,10 +24,12 @@ function arrayToLines(items: string[]): string {
 
 export function AgreeView({
   project,
+  sessionId,
   onGoToDiscuss,
   onGoToList,
 }: {
   project: ProjectSummary;
+  sessionId?: string;
   onGoToDiscuss: () => void;
   onGoToList: () => void;
 }) {
@@ -40,8 +42,8 @@ export function AgreeView({
   const [saveNotice, setSaveNotice] = useState<string | null>(null);
 
   const briefsQuery = useQuery({
-    queryKey: ['briefs', project.id],
-    queryFn: () => api.listBriefs(project.id),
+    queryKey: ['briefs', project.id, sessionId ?? 'default'],
+    queryFn: () => api.listBriefs(project.id, sessionId),
   });
 
   const briefs = briefsQuery.data?.briefs ?? [];
@@ -59,7 +61,7 @@ export function AgreeView({
 
   const saveMutation = useMutation({
     mutationFn: (content: BriefContent) =>
-      api.updateBrief(project.id, activeBrief!.version, content),
+      api.updateBrief(project.id, activeBrief!.version, content, sessionId),
     onSuccess: () => {
       setSaveNotice(t('brief.savedNotice'));
       qc.invalidateQueries({ queryKey: ['briefs', project.id] });
@@ -68,29 +70,32 @@ export function AgreeView({
 
   const reviseMutation = useMutation({
     mutationFn: (note: string) =>
-      api.reviseBrief(project.id, activeBrief!.version, note),
+      api.reviseBrief(project.id, activeBrief!.version, note, sessionId),
     onSuccess: ({ brief }) => {
       setReviseOpen(false);
       setReviseNote('');
       setSelectedVersion(brief.version);
       setDraft(brief.content);
       qc.invalidateQueries({ queryKey: ['briefs', project.id] });
+      qc.invalidateQueries({ queryKey: ['sessions', project.id] });
       qc.invalidateQueries({ queryKey: ['projects'] });
     },
   });
 
   const approveMutation = useMutation({
-    mutationFn: () => api.approveBrief(project.id, activeBrief!.version),
+    mutationFn: () => api.approveBrief(project.id, activeBrief!.version, sessionId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['briefs', project.id] });
+      qc.invalidateQueries({ queryKey: ['sessions', project.id] });
       qc.invalidateQueries({ queryKey: ['projects'] });
     },
   });
 
   const generatePlanMutation = useMutation({
-    mutationFn: () => api.generatePlan(project.id),
+    mutationFn: () => api.generatePlan(project.id, sessionId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['plan', project.id] });
+      qc.invalidateQueries({ queryKey: ['sessions', project.id] });
       qc.invalidateQueries({ queryKey: ['projects'] });
       onGoToList();
     },

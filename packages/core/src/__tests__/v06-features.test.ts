@@ -39,6 +39,7 @@ describe('v0.6 backend: settings, language prompts, and update check', () => {
         antigravityKeyringAccess: false,
         language: null,
         checkForUpdates: true,
+        usageRefreshMinutes: 5,
       });
       expect(settings.resolvedLanguage()).toBe('en');
 
@@ -47,8 +48,12 @@ describe('v0.6 backend: settings, language prompts, and update check', () => {
         antigravityKeyringAccess: false,
         language: 'id',
         checkForUpdates: false,
+        usageRefreshMinutes: 5,
       });
       expect(settings.resolvedLanguage()).toBe('id');
+
+      // The limits bar interval: 5 minutes by default, and a stored value that is not 3, 5, or 10 falls back.
+      expect(settings.update({ usageRefreshMinutes: 10 }).usageRefreshMinutes).toBe(10);
     } finally {
       conn.close();
     }
@@ -155,8 +160,10 @@ describe('v0.6 backend: settings, language prompts, and update check', () => {
       async run(command, args, opts) {
         const promptArg = args.find((a) => a.includes('Language:')) ?? '';
         capturedPrompts.push(promptArg);
-        if (promptArg.includes('round-1.json')) {
-          const p = path.join(opts.cwd, '.dalang/discuss/round-1.json');
+        const roundMatch = promptArg.match(/(\.dalang\/(?:sessions\/[A-Za-z0-9_-]+\/)?discuss\/round-1\.json)/);
+        const briefMatch = promptArg.match(/(\.dalang\/(?:sessions\/[A-Za-z0-9_-]+\/)?brief\.v1\.json)/);
+        if (roundMatch) {
+          const p = path.join(opts.cwd, roundMatch[1]);
           fs.mkdirSync(path.dirname(p), { recursive: true });
           fs.writeFileSync(
             p,
@@ -176,8 +183,8 @@ describe('v0.6 backend: settings, language prompts, and update check', () => {
               ],
             }),
           );
-        } else if (promptArg.includes('brief.v1.json')) {
-          const p = path.join(opts.cwd, '.dalang/brief.v1.json');
+        } else if (briefMatch) {
+          const p = path.join(opts.cwd, briefMatch[1]);
           fs.mkdirSync(path.dirname(p), { recursive: true });
           fs.writeFileSync(
             p,

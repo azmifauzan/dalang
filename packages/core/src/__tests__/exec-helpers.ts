@@ -94,11 +94,14 @@ export function handleLeadCalls(cwd: string, args: string[], opts: RunCommandOpt
     return { exitCode: 0, stdout: `${line}\n`, stderr: '', timedOut: false, idleTimedOut: false };
   };
 
-  const briefMatch = promptArg.match(/\.dalang\/brief\.v(\d+)\.json/);
+  const briefMatch = promptArg.match(/(\.dalang\/(?:sessions\/[A-Za-z0-9_-]+\/)?brief\.v(\d+)\.json)/);
   if (briefMatch) {
-    const ver = Number(briefMatch[1]);
+    const relPath = briefMatch[1];
+    const ver = Number(briefMatch[2]);
+    const target = path.join(cwd, relPath);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(
-      path.join(cwd, '.dalang', `brief.v${ver}.json`),
+      target,
       JSON.stringify({
         version: ver,
         title: 'CRUD App',
@@ -114,8 +117,9 @@ export function handleLeadCalls(cwd: string, args: string[], opts: RunCommandOpt
     return emitClaude('lead-1', 'Brief ready');
   }
 
-  if (promptArg.includes('.dalang/tmp/plan-v')) {
-    const target = path.join(cwd, '.dalang', 'tmp', 'plan-v1.json');
+  const planMatch = promptArg.match(/(\.dalang\/(?:sessions\/[A-Za-z0-9_-]+\/)?tmp\/plan-v\d+\.json)/);
+  if (planMatch) {
+    const target = path.join(cwd, planMatch[1]);
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(
       target,

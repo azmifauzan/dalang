@@ -33,12 +33,12 @@ describe('ExecutionService (v0.2 Jalan + v0.3 Kawal)', () => {
         const reviewRes = handleVerifyAndReviewCalls(cmd, args, opts, 'pass');
         if (reviewRes) return reviewRes;
 
-        const promptArg = args.find((a) => a.includes('.dalang/tasks/')) ?? args.join(' ');
-        const taskMatch = promptArg.match(/\.dalang\/tasks\/([A-Za-z0-9_-]+)\/result\.json/);
+        const promptArg = args.find((a) => a.includes('/result.json')) ?? args.join(' ');
+        const taskMatch = promptArg.match(/(\.dalang\/(?:sessions\/[A-Za-z0-9_-]+\/)?tasks\/([A-Za-z0-9_-]+)\/result\.json)/);
         if (taskMatch) {
-          const extId = taskMatch[1];
+          const extId = taskMatch[2];
           executionOrder.push(extId);
-          const resultFile = path.join(cwd, '.dalang', 'tasks', extId, 'result.json');
+          const resultFile = path.join(cwd, taskMatch[1]);
           fs.mkdirSync(path.dirname(resultFile), { recursive: true });
           fs.mkdirSync(path.join(cwd, 'src'), { recursive: true });
 
@@ -164,9 +164,9 @@ describe('ExecutionService (v0.2 Jalan + v0.3 Kawal)', () => {
           };
         }
 
-        const taskMatch = joined.match(/\.dalang\/tasks\/([A-Za-z0-9_-]+)\/result\.json/);
-        const extId = taskMatch ? taskMatch[1] : 'T-001';
-        const resultFile = path.join(cwd, '.dalang', 'tasks', extId, 'result.json');
+        const taskMatch = joined.match(/(\.dalang\/(?:sessions\/[A-Za-z0-9_-]+\/)?tasks\/([A-Za-z0-9_-]+)\/result\.json)/);
+        const extId = taskMatch ? taskMatch[2] : 'T-001';
+        const resultFile = taskMatch ? path.join(cwd, taskMatch[1]) : path.join(cwd, '.dalang', 'tasks', extId, 'result.json');
         fs.mkdirSync(path.dirname(resultFile), { recursive: true });
         fs.writeFileSync(
           resultFile,
@@ -261,7 +261,10 @@ describe('ExecutionService (v0.2 Jalan + v0.3 Kawal)', () => {
 
         const resumeMatch = joined.match(/exec resume ([^\s]+)/);
         resumeReceivedSession = resumeMatch ? resumeMatch[1] : null;
-        const resultFile = path.join(cwd, '.dalang', 'tasks', 'T-001', 'result.json');
+        const resMatch = joined.match(/(\.dalang\/(?:sessions\/[A-Za-z0-9_-]+\/)?tasks\/[A-Za-z0-9_-]+\/result\.json)/);
+        const resultFile = resMatch
+          ? path.join(cwd, resMatch[1])
+          : path.join(cwd, '.dalang', 'tasks', 'T-001', 'result.json');
         fs.mkdirSync(path.dirname(resultFile), { recursive: true });
         fs.writeFileSync(path.join(cwd, 'src', 'store.ts'), 'export const ready = true;\n');
         fs.writeFileSync(
@@ -341,11 +344,11 @@ describe('ExecutionService (v0.2 Jalan + v0.3 Kawal)', () => {
         const reviewRes = handleVerifyAndReviewCalls(cmd, args, opts, 'pass');
         if (reviewRes) return reviewRes;
 
-        const promptArg = args.find((a) => a.includes('.dalang/tasks/')) ?? args.join(' ');
-        const taskMatch = promptArg.match(/\.dalang\/tasks\/([A-Za-z0-9_-]+)\/result\.json/);
+        const promptArg = args.find((a) => a.includes('/result.json')) ?? args.join(' ');
+        const taskMatch = promptArg.match(/(\.dalang\/(?:sessions\/[A-Za-z0-9_-]+\/)?tasks\/([A-Za-z0-9_-]+)\/result\.json)/);
         if (taskMatch) {
-          const extId = taskMatch[1];
-          const resFile = path.join(cwd, '.dalang', 'tasks', extId, 'result.json');
+          const extId = taskMatch[2];
+          const resFile = path.join(cwd, taskMatch[1]);
           fs.mkdirSync(path.dirname(resFile), { recursive: true });
           fs.mkdirSync(path.join(cwd, 'src'), { recursive: true });
           fs.writeFileSync(path.join(cwd, 'src', `${extId}.ts`), `export const id = "${extId}";\n`);

@@ -2,7 +2,9 @@ import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   DALANG_VERSION,
+  DEFAULT_USAGE_REFRESH_MINUTES,
   EFFORT_LEVEL_ORDER,
+  USAGE_REFRESH_OPTIONS,
   splitEffortModel,
   type AgentProfileDTO,
   type EffortLevel,
@@ -516,6 +518,33 @@ export function ConfigView({
                     {opt.label}
                   </Button>
                 ))}
+              </div>
+            </div>
+
+            {/* Provider limits refresh */}
+            <div className="space-y-2 border-t pt-5" style={{ borderColor: 'var(--border-subtle)' }}>
+              <h2 className="text-base font-semibold">{t('config.general.usageTitle')}</h2>
+              <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+                {t('config.general.usageDesc')}
+              </p>
+              <div className="flex flex-wrap gap-2 pt-1">
+                {USAGE_REFRESH_OPTIONS.map((minutes) => {
+                  const current =
+                    (settingsQuery.data?.settings.usageRefreshMinutes ?? DEFAULT_USAGE_REFRESH_MINUTES) ===
+                    minutes;
+                  return (
+                    <Button
+                      key={minutes}
+                      type="button"
+                      variant={current ? 'default' : 'outline'}
+                      aria-pressed={current}
+                      disabled={updateSettingsMutation.isPending}
+                      onClick={() => updateSettingsMutation.mutate({ usageRefreshMinutes: minutes })}
+                    >
+                      {t('config.general.usageOption', { minutes })}
+                    </Button>
+                  );
+                })}
               </div>
             </div>
 

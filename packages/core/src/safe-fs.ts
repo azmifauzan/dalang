@@ -117,3 +117,20 @@ export function removeArtifactFile(projectPath: string, target: string): void {
   ensureProjectDir(projectPath, path.dirname(target));
   fs.rmSync(target, { force: true });
 }
+
+/** Entries `.dalang/.gitignore` needs so run logs and scratch files never show up as untracked. */
+export const DALANG_IGNORE_ENTRIES = ['tmp/', 'sessions/*/tmp/', 'sessions/*/logs/'];
+
+/**
+ * Create `.dalang/.gitignore`, or append the entries an older DALANG wrote without (v0.6 and earlier
+ * only ignored `tmp/`). Lines the user added are kept.
+ */
+export function ensureDalangIgnore(projectPath: string): void {
+  const target = path.join(projectPath, '.dalang', '.gitignore');
+  const existing = fs.existsSync(target) ? readArtifactFile(projectPath, target) : '';
+  const have = new Set(existing.split(/\r?\n/).map((l) => l.trim()));
+  const missing = DALANG_IGNORE_ENTRIES.filter((e) => !have.has(e));
+  if (missing.length === 0) return;
+  const base = existing && !existing.endsWith('\n') ? `${existing}\n` : existing;
+  writeArtifactFile(projectPath, target, `${base}${missing.join('\n')}\n`, 'refuse');
+}

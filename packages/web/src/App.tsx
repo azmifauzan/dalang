@@ -1,16 +1,24 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
-import type { ProjectSummary, ProviderId } from '@dalang/shared';
+import type {
+  ProjectSummary,
+  ProviderId,
+  SessionMode,
+  SessionSummaryDTO,
+} from '@dalang/shared';
 import { GununganMark } from './assets/wayang/Gunungan.js';
 import { characterForProfile } from './assets/wayang/WayangFigure.js';
 import { AgreeView } from './components/AgreeView.js';
+import { AskSessionView } from './components/AskSessionView.js';
 import { ConfigView } from './components/ConfigView.js';
 import { DiscussView } from './components/DiscussView.js';
 import { GuardView } from './components/GuardView.js';
 import { ListView } from './components/ListView.js';
-import { NextStepCard } from './components/NextStepCard.js';
 import { ProjectStepper, type ProjectStepId } from './components/ProjectStepper.js';
 import { ProjectsView } from './components/ProjectsView.js';
+import { ProviderUsageBar } from './components/ProviderUsageBar.js';
+import { QuickSessionView } from './components/QuickSessionView.js';
+import { SessionHeader } from './components/SessionHeader.js';
 import { Sidebar, type ConfigTabId } from './components/Sidebar.js';
 import { EmptyPanel, ErrorPanel, LoadingPanel, ModalDialog } from './components/StateViews.js';
 import { StatisticsView } from './components/StatisticsView.js';
@@ -19,6 +27,12 @@ import { WorkView } from './components/WorkView.js';
 import { I18nProvider, useI18n } from './i18n/index.js';
 import { parseRunLogActivity, type ActivityFeedItem } from './lib/activity.js';
 import { api } from './lib/api.js';
+import { applyLogLine, EMPTY_LIVE_TURN, type LiveTurn } from './lib/liveTurn.js';
+
+interface LiveSession {
+  logs: string[];
+  turn: LiveTurn;
+}
 import { ThemeProvider } from './lib/theme.js';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
@@ -43,10 +57,18 @@ function writeStored(key: string, value: string | null): void {
   }
 }
 
-function defaultStepForProject(project: ProjectSummary): ProjectStepId {
-  if (project.planStatus === 'approved') return 'work';
-  if (project.latestBriefStatus === 'approved') return 'plan';
-  if (project.latestBriefStatus === 'draft') return 'brief';
+function defaultStepForSession(session: SessionSummaryDTO | null): ProjectStepId {
+  if (!session) return 'discuss';
+  if (
+    session.workState === 'idle' &&
+    session.taskCount > 0 &&
+    session.doneTaskCount >= session.taskCount
+  ) {
+    return 'discuss';
+  }
+  if (session.planStatus === 'approved') return 'work';
+  if (session.latestBriefStatus === 'approved') return 'plan';
+  if (session.latestBriefStatus === 'draft') return 'brief';
   return 'discuss';
 }
 
@@ -58,9 +80,17 @@ function AppShell() {
   const [configTab, setConfigTab] = useState<ConfigTabId>('general');
   const previousSectionRef = useRef<'project' | 'new-project' | 'statistics'>('project');
 
-  const [activeProjectId, setActiveProjectId] = useState<string | null>(() => {
-    return readStored('dalang.activeProjectId');
-  });
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(() =>
+    readStored('dalang.activeProjectId'),
+  );
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(() =>
+    readStored('dalang.activeSessionId'),
+  );
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(
+    () => readStored('dalang.sidebarCollapsed') === '1',
+  );
+  const [draftMode, setDraftMode] = useState<SessionMode>('ask');
+  const [showArchivedSessions, setShowArchivedSessions] = useState(false);
   const [projectStep, setProjectStep] = useState<ProjectStepId>('discuss');
   const [initialGoal, setInitialGoal] = useState<string>('');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -70,7 +100,12 @@ function AppShell() {
   );
   const initializedFromProjectsRef = useRef(false);
 
-  const [liveLogs, setLiveLogs] = useState<string[]>([]);
+  // What each chat's CLI is doing right now. Kept here, not in the chat view, so it survives switching chats.
+  const [liveBySession, setLiveBySession] = useState<Record<string, LiveSession>>({});
+  // A new chat has no session in the page until its first answer returns, so follow the newest turn.
+  const [newestLiveSessionId, setNewestLiveSessionId] = useState<string | null>(null);
+  // The CLI picked in the chat composer, so the header names the one that will answer.
+  const [chatProvider, setChatProvider] = useState<ProviderId | null>(null);
   const [runLogsByRunId, setRunLogsByRunId] = useState<Record<string, string[]>>({});
   const [liveActivityByProject, setLiveActivityByProject] = useState<
     Record<string, ActivityFeedItem[]>
@@ -86,6 +121,14 @@ function AppShell() {
   useEffect(() => {
     writeStored('dalang.activeProjectId', activeProjectId);
   }, [activeProjectId]);
+
+  useEffect(() => {
+    writeStored('dalang.activeSessionId', activeSessionId);
+  }, [activeSessionId]);
+
+  useEffect(() => {
+    writeStored('dalang.sidebarCollapsed', sidebarCollapsed ? '1' : null);
+  }, [sidebarCollapsed]);
 
   const projectsQuery = useQuery({
     queryKey: ['projects'],
@@ -103,9 +146,22 @@ function AppShell() {
   const activeProject: ProjectSummary | null =
     projects.find((p) => p.id === activeProjectId) ?? projects[0] ?? null;
 
+  const sessionsQuery = useQuery({
+    queryKey: ['sessions', activeProject?.id],
+    queryFn: () => api.listSessions(activeProject!.id, true),
+    enabled: Boolean(activeProject),
+  });
+
+  const allProjectSessions = sessionsQuery.data?.sessions ?? [];
+  const activeProjectSessions = allProjectSessions.filter((s) => !s.archivedAt);
+  const archivedProjectSessions = allProjectSessions.filter((s) => Boolean(s.archivedAt));
+  const activeSession: SessionSummaryDTO | null = activeSessionId
+    ? (allProjectSessions.find((s) => s.id === activeSessionId) ?? null)
+    : null;
+
   // Decide initial destination once projects load:
   // - 0 projects & wizard not dismissed -> open first-run wizard
-  // - >= 1 projects (existing install / upgrade path) -> skip wizard and open most recent project
+  // - >= 1 projects -> skip wizard and open most recent project
   useEffect(() => {
     if (!projectsQuery.isSuccess || initializedFromProjectsRef.current) return;
     initializedFromProjectsRef.current = true;
@@ -121,34 +177,60 @@ function AppShell() {
 
     const chosen = projects.find((p) => p.id === activeProjectId) ?? projects[0];
     setActiveProjectId(chosen.id);
-    setProjectStep(defaultStepForProject(chosen));
+    if (!activeSessionId && chosen.workingSessionId) {
+      setActiveSessionId(chosen.workingSessionId);
+    }
     setSection('project');
-  }, [projectsQuery.isSuccess, projects, activeProjectId, wizardDismissed]);
+  }, [projectsQuery.isSuccess, projects, activeProjectId, activeSessionId, wizardDismissed]);
 
   // Keep activeProjectId valid if the current project is removed
   useEffect(() => {
     if (!projectsQuery.isSuccess) return;
     if (projects.length === 0) {
       if (activeProjectId !== null) setActiveProjectId(null);
+      if (activeSessionId !== null) setActiveSessionId(null);
       return;
     }
     if (!activeProjectId || !projects.some((p) => p.id === activeProjectId)) {
       setActiveProjectId(projects[0].id);
-      setProjectStep(defaultStepForProject(projects[0]));
+      setActiveSessionId(projects[0].workingSessionId ?? null);
+      setDraftMode('ask');
     }
-  }, [projectsQuery.isSuccess, projects, activeProjectId]);
+  }, [projectsQuery.isSuccess, projects, activeProjectId, activeSessionId]);
+
+  const upsertSessionCache = (projectId: string, sess: SessionSummaryDTO) => {
+    qc.setQueryData<{ sessions: SessionSummaryDTO[] }>(['sessions', projectId], (prev) => {
+      const list = prev?.sessions ?? [];
+      const rest = list.filter((s) => s.id !== sess.id);
+      return { sessions: [sess, ...rest] };
+    });
+  };
+
+  // Keep activeSessionId valid for the active project once its sessions load
+  useEffect(() => {
+    if (!sessionsQuery.isSuccess || sessionsQuery.isFetching || !activeProject) return;
+    if (activeSessionId && !allProjectSessions.some((s) => s.id === activeSessionId)) {
+      setActiveSessionId(activeProject.workingSessionId ?? null);
+    }
+  }, [sessionsQuery.isSuccess, sessionsQuery.isFetching, activeProject, activeSessionId, allProjectSessions]);
 
   const discussQuery = useQuery({
-    queryKey: ['discuss', activeProject?.id],
-    queryFn: () => api.getDiscussState(activeProject!.id),
-    enabled: Boolean(activeProject && section === 'project'),
+    queryKey: ['discuss', activeProject?.id, activeSession?.id],
+    queryFn: () => api.getDiscussState(activeProject!.id, activeSession!.id),
+    enabled: Boolean(
+      activeProject && activeSession && activeSession.mode === 'full' && section === 'project',
+    ),
   });
 
   const executionQuery = useQuery({
-    queryKey: ['execution', activeProject?.id],
-    queryFn: () => api.getExecutionState(activeProject!.id),
+    queryKey: ['execution', activeProject?.id, activeSession?.id],
+    queryFn: () => api.getExecutionState(activeProject!.id, activeSession!.id),
     enabled: Boolean(
-      activeProject && section === 'project' && activeProject.planStatus === 'approved',
+      activeProject &&
+        activeSession &&
+        activeSession.mode === 'full' &&
+        section === 'project' &&
+        activeSession.planStatus === 'approved',
     ),
     refetchInterval: (query) => {
       const exec = query.state.data?.execution;
@@ -188,55 +270,124 @@ function AppShell() {
       const remaining = projects.filter((p) => p.id !== deletedId);
       if (remaining.length > 0) {
         setActiveProjectId(remaining[0].id);
-        setProjectStep(defaultStepForProject(remaining[0]));
+        setActiveSessionId(remaining[0].workingSessionId ?? null);
+        setDraftMode('ask');
         setSection('project');
       } else {
         setActiveProjectId(null);
+        setActiveSessionId(null);
         setSection('new-project');
       }
     },
   });
 
-  const quickFinishDiscussMutation = useMutation({
-    mutationFn: (projectId: string) => api.finishDiscuss(projectId),
-    onMutate: () => setQuickError(null),
-    onSuccess: (_data, projectId) => {
-      qc.invalidateQueries({ queryKey: ['briefs', projectId] });
-      qc.invalidateQueries({ queryKey: ['discuss', projectId] });
+  const renameSessionMutation = useMutation({
+    mutationFn: ({ projectId, sessionId, title }: { projectId: string; sessionId: string; title: string }) =>
+      api.updateSession(projectId, sessionId, { title }),
+    onSuccess: (_res, vars) => {
+      qc.invalidateQueries({ queryKey: ['sessions', vars.projectId] });
+      qc.invalidateQueries({ queryKey: ['session-detail', vars.projectId, vars.sessionId] });
       qc.invalidateQueries({ queryKey: ['projects'] });
-      setProjectStep('brief');
     },
     onError: (err) => setQuickError((err as Error).message),
   });
 
-  const quickGeneratePlanMutation = useMutation({
-    mutationFn: (projectId: string) => api.generatePlan(projectId),
+  const archiveSessionMutation = useMutation({
+    mutationFn: ({
+      projectId,
+      sessionId,
+      archived,
+    }: {
+      projectId: string;
+      sessionId: string;
+      archived: boolean;
+    }) => api.updateSession(projectId, sessionId, { archived }),
     onMutate: () => setQuickError(null),
-    onSuccess: (_data, projectId) => {
-      qc.invalidateQueries({ queryKey: ['plan', projectId] });
+    onSuccess: (_res, vars) => {
+      qc.invalidateQueries({ queryKey: ['sessions', vars.projectId] });
       qc.invalidateQueries({ queryKey: ['projects'] });
-      setProjectStep('plan');
     },
     onError: (err) => setQuickError((err as Error).message),
   });
 
-  const quickStartWorkMutation = useMutation({
-    mutationFn: (projectId: string) => api.startExecution(projectId, {}),
+  const deleteSessionMutation = useMutation({
+    mutationFn: ({ projectId, sessionId }: { projectId: string; sessionId: string }) =>
+      api.deleteSession(projectId, sessionId),
     onMutate: () => setQuickError(null),
-    onSuccess: (_data, projectId) => {
-      qc.invalidateQueries({ queryKey: ['execution', projectId] });
-      qc.invalidateQueries({ queryKey: ['plan', projectId] });
+    onSuccess: (_res, vars) => {
+      if (activeSessionId === vars.sessionId) {
+        setActiveSessionId(null);
+        setDraftMode('ask');
+      }
+      qc.invalidateQueries({ queryKey: ['sessions', vars.projectId] });
       qc.invalidateQueries({ queryKey: ['projects'] });
-      setProjectStep('work');
     },
     onError: (err) => setQuickError((err as Error).message),
   });
+
+  const discardWorkMutation = useMutation({
+    mutationFn: ({ projectId, sessionId }: { projectId: string; sessionId: string }) =>
+      api.discardSessionWork(projectId, sessionId),
+    onMutate: () => setQuickError(null),
+    onSuccess: (_res, vars) => {
+      qc.invalidateQueries({ queryKey: ['sessions', vars.projectId] });
+      qc.invalidateQueries({ queryKey: ['session-detail', vars.projectId, vars.sessionId] });
+      qc.invalidateQueries({ queryKey: ['execution', vars.projectId] });
+      qc.invalidateQueries({ queryKey: ['guard', vars.projectId] });
+      qc.invalidateQueries({ queryKey: ['plan', vars.projectId] });
+      qc.invalidateQueries({ queryKey: ['projects'] });
+    },
+    onError: (err) => setQuickError((err as Error).message),
+  });
+
+  const promoteSessionMutation = useMutation({
+    mutationFn: ({
+      projectId,
+      sessionId,
+      mode,
+    }: {
+      projectId: string;
+      sessionId: string;
+      mode: SessionMode;
+    }) => api.switchSessionMode(projectId, sessionId, mode),
+    onMutate: () => setQuickError(null),
+    onSuccess: ({ session: updated }, vars) => {
+      upsertSessionCache(vars.projectId, updated);
+      qc.invalidateQueries({ queryKey: ['sessions', vars.projectId] });
+      qc.invalidateQueries({ queryKey: ['session-detail', vars.projectId, vars.sessionId] });
+      qc.invalidateQueries({ queryKey: ['discuss', vars.projectId] });
+      qc.invalidateQueries({ queryKey: ['plan', vars.projectId] });
+      qc.invalidateQueries({ queryKey: ['projects'] });
+      if (updated.mode === 'full') {
+        setProjectStep('discuss');
+      }
+    },
+    onError: (err) => setQuickError((err as Error).message),
+  });
+
 
   const pushActivity = (projectId: string, item: ActivityFeedItem) => {
     setLiveActivityByProject((prev) => ({
       ...prev,
       [projectId]: [item, ...(prev[projectId] ?? [])].slice(0, 80),
     }));
+  };
+
+  // A finished run has used some of the limits, so refresh them soon. Runs often end in bursts, so at most
+  // one refresh per 30 seconds, and none while one is already running.
+  const usageRefreshRef = useRef({ at: 0, busy: false });
+  const refreshUsageAfterRun = () => {
+    const state = usageRefreshRef.current;
+    if (state.busy || Date.now() - state.at < 30_000) return;
+    state.busy = true;
+    api
+      .refreshProvidersStatus()
+      .then((data) => qc.setQueryData(['providers-status'], data))
+      .catch(() => undefined)
+      .finally(() => {
+        state.busy = false;
+        state.at = Date.now();
+      });
   };
 
   // WebSocket live updates
@@ -253,6 +404,7 @@ function AppShell() {
           const msg = JSON.parse(ev.data as string) as {
             type: string;
             projectId?: string;
+            sessionId?: string;
             taskId?: string;
             runId?: string;
             profileName?: string;
@@ -264,18 +416,43 @@ function AppShell() {
           };
 
           if (msg.type === 'lead.turn_started' && msg.projectId === activeProjectId) {
-            setLiveLogs([]);
+            if (msg.sessionId) {
+              setNewestLiveSessionId(msg.sessionId);
+              setLiveBySession((prev) => ({
+                ...prev,
+                [msg.sessionId!]: { logs: [], turn: EMPTY_LIVE_TURN },
+              }));
+            }
           } else if (msg.type === 'lead.log' && msg.projectId === activeProjectId && msg.line) {
-            setLiveLogs((prev) => [...prev.slice(-40), msg.line!]);
+            if (msg.sessionId) {
+              setLiveBySession((prev) => {
+                const current = prev[msg.sessionId!] ?? { logs: [], turn: EMPTY_LIVE_TURN };
+                return {
+                  ...prev,
+                  [msg.sessionId!]: {
+                    logs: [...current.logs.slice(-40), msg.line!],
+                    turn: applyLogLine(current.turn, msg.line!),
+                  },
+                };
+              });
+            }
+          } else if (msg.type === 'sessions.updated' && msg.projectId) {
+            qc.invalidateQueries({ queryKey: ['sessions', msg.projectId] });
+            qc.invalidateQueries({ queryKey: ['session-detail', msg.projectId] });
+            qc.invalidateQueries({ queryKey: ['projects'] });
           } else if (msg.type === 'discuss.updated' && msg.projectId) {
             qc.invalidateQueries({ queryKey: ['discuss', msg.projectId] });
+            qc.invalidateQueries({ queryKey: ['session-detail', msg.projectId] });
           } else if (msg.type === 'brief.updated' && msg.projectId) {
             qc.invalidateQueries({ queryKey: ['briefs', msg.projectId] });
+            qc.invalidateQueries({ queryKey: ['sessions', msg.projectId] });
             qc.invalidateQueries({ queryKey: ['projects'] });
           } else if (msg.type === 'plan.updated' && msg.projectId) {
             qc.invalidateQueries({ queryKey: ['plan', msg.projectId] });
+            qc.invalidateQueries({ queryKey: ['session-detail', msg.projectId] });
             qc.invalidateQueries({ queryKey: ['execution', msg.projectId] });
             qc.invalidateQueries({ queryKey: ['guard', msg.projectId] });
+            qc.invalidateQueries({ queryKey: ['sessions', msg.projectId] });
             qc.invalidateQueries({ queryKey: ['projects'] });
           } else if (msg.type === 'run.started' && msg.projectId && msg.runId) {
             const provider = msg.provider as ProviderId | undefined;
@@ -297,6 +474,8 @@ function AppShell() {
               title: profileName,
             });
             qc.invalidateQueries({ queryKey: ['execution', msg.projectId] });
+            qc.invalidateQueries({ queryKey: ['session-detail', msg.projectId] });
+            qc.invalidateQueries({ queryKey: ['sessions', msg.projectId] });
             qc.invalidateQueries({ queryKey: ['providers-status'] });
             qc.invalidateQueries({ queryKey: ['statistics'] });
           } else if (msg.type === 'run.log' && msg.projectId && msg.runId && msg.line) {
@@ -315,6 +494,7 @@ function AppShell() {
               pushActivity(msg.projectId, parsed);
             }
           } else if (msg.type === 'run.finished' && msg.projectId) {
+            refreshUsageAfterRun();
             const meta = msg.runId ? runMetaByRunIdRef.current[msg.runId] : undefined;
             const ok = msg.status === 'completed';
             pushActivity(msg.projectId, {
@@ -328,8 +508,10 @@ function AppShell() {
               reason: msg.error ?? msg.status,
             });
             qc.invalidateQueries({ queryKey: ['execution', msg.projectId] });
+            qc.invalidateQueries({ queryKey: ['session-detail', msg.projectId] });
             qc.invalidateQueries({ queryKey: ['plan', msg.projectId] });
             qc.invalidateQueries({ queryKey: ['guard', msg.projectId] });
+            qc.invalidateQueries({ queryKey: ['sessions', msg.projectId] });
             qc.invalidateQueries({ queryKey: ['providers-status'] });
             qc.invalidateQueries({ queryKey: ['statistics'] });
             if (msg.runId) {
@@ -352,9 +534,11 @@ function AppShell() {
               round: msg.round ?? 1,
             });
             qc.invalidateQueries({ queryKey: ['guard', msg.projectId] });
+            qc.invalidateQueries({ queryKey: ['session-detail', msg.projectId] });
             qc.invalidateQueries({ queryKey: ['execution', msg.projectId] });
             qc.invalidateQueries({ queryKey: ['plan', msg.projectId] });
             qc.invalidateQueries({ queryKey: ['task-diff', msg.projectId] });
+            qc.invalidateQueries({ queryKey: ['sessions', msg.projectId] });
             qc.invalidateQueries({ queryKey: ['projects'] });
           } else if (msg.type === 'integration.finished' && msg.projectId) {
             pushActivity(msg.projectId, {
@@ -367,9 +551,11 @@ function AppShell() {
               status: msg.status ?? 'passed',
             });
             qc.invalidateQueries({ queryKey: ['guard', msg.projectId] });
+            qc.invalidateQueries({ queryKey: ['session-detail', msg.projectId] });
             qc.invalidateQueries({ queryKey: ['execution', msg.projectId] });
             qc.invalidateQueries({ queryKey: ['plan', msg.projectId] });
             qc.invalidateQueries({ queryKey: ['task-diff', msg.projectId] });
+            qc.invalidateQueries({ queryKey: ['sessions', msg.projectId] });
             qc.invalidateQueries({ queryKey: ['projects'] });
           }
         } catch {
@@ -388,9 +574,31 @@ function AppShell() {
     };
   }, [activeProjectId, qc]);
 
-  const handleSelectProject = (project: ProjectSummary, explicitStep?: ProjectStepId) => {
+  const handleSelectProject = (project: ProjectSummary) => {
     setActiveProjectId(project.id);
-    setProjectStep(explicitStep ?? defaultStepForProject(project));
+    // Opening a project shows its active working session if one exists, otherwise straight into an empty Ask chat (creates no session).
+    setActiveSessionId(project.workingSessionId ?? null);
+    setDraftMode('ask');
+    setSection('project');
+    previousSectionRef.current = 'project';
+    setQuickError(null);
+    setMobileMenuOpen(false);
+  };
+
+  const handleNewChat = (project: ProjectSummary) => {
+    setActiveProjectId(project.id);
+    setActiveSessionId(null);
+    setDraftMode('ask');
+    setSection('project');
+    previousSectionRef.current = 'project';
+    setQuickError(null);
+    setMobileMenuOpen(false);
+  };
+
+  const handleSelectSession = (project: ProjectSummary, session: SessionSummaryDTO) => {
+    setActiveProjectId(project.id);
+    setActiveSessionId(session.id);
+    setProjectStep(defaultStepForSession(session));
     setSection('project');
     previousSectionRef.current = 'project';
     setQuickError(null);
@@ -441,6 +649,8 @@ function AppShell() {
     setWizardDismissed(true);
     writeStored('dalang.wizardDismissed', '1');
     setActiveProjectId(project.id);
+    setActiveSessionId(null);
+    setDraftMode(goalText.trim() ? 'full' : 'ask');
     setInitialGoal(goalText);
     setProjectStep('discuss');
     setSection('project');
@@ -455,21 +665,23 @@ function AppShell() {
   const executionState = executionQuery.data?.execution ?? null;
   const previews = executionState?.dispatchPreviews ?? [];
   const allTasksDone =
-    Boolean(activeProject?.planStatus === 'approved') &&
+    Boolean(activeSession?.planStatus === 'approved') &&
     previews.length > 0 &&
     previews.every((p) => p.status === 'done');
 
-  const hasDiscussMessages = (discussQuery.data?.messages.length ?? 0) > 0;
-  const quickBusy =
-    quickFinishDiscussMutation.isPending ||
-    quickGeneratePlanMutation.isPending ||
-    quickStartWorkMutation.isPending;
+
+  const sessionMutating =
+    renameSessionMutation.isPending ||
+    archiveSessionMutation.isPending ||
+    deleteSessionMutation.isPending ||
+    discardWorkMutation.isPending ||
+    promoteSessionMutation.isPending;
 
   return (
-    <div className="flex min-h-dvh flex-col md:flex-row">
+    <div className="flex min-h-dvh flex-col lg:flex-row">
       {/* Mobile top bar */}
       <header
-        className="flex items-center justify-between gap-3 border-b px-4 py-2.5 md:hidden"
+        className="flex items-center justify-between gap-3 border-b px-4 py-2.5 lg:hidden"
         style={{
           backgroundColor: 'var(--bg-surface)',
           borderColor: 'var(--border-subtle)',
@@ -495,13 +707,22 @@ function AppShell() {
         mode={section === 'config' ? 'config' : 'workspace'}
         projects={projects}
         activeProjectId={activeProject?.id ?? null}
+        activeSessionId={activeSession?.id ?? null}
+        activeProjectSessions={activeProjectSessions}
+        archivedProjectSessions={archivedProjectSessions}
+        showArchivedSessions={showArchivedSessions}
         activeSection={section}
         configTab={configTab}
         updateStatus={updateStatusQuery.data?.update ?? null}
         mobileOpen={mobileMenuOpen}
+        collapsed={sidebarCollapsed}
+        onToggleCollapsed={() => setSidebarCollapsed((v) => !v)}
         onCloseMobile={() => setMobileMenuOpen(false)}
         onNewProject={handleNewProject}
-        onSelectProject={(project) => handleSelectProject(project)}
+        onSelectProject={handleSelectProject}
+        onNewChat={handleNewChat}
+        onSelectSession={handleSelectSession}
+        onToggleShowArchived={() => setShowArchivedSessions((v) => !v)}
         onOpenStatistics={handleOpenStatistics}
         onOpenConfig={handleOpenConfig}
         onBackFromConfig={handleBackFromConfig}
@@ -509,8 +730,14 @@ function AppShell() {
       />
 
       {/* Main workspace */}
-      <main className="min-w-0 flex-1 overflow-x-clip px-4 py-5 sm:px-6 lg:px-8">
-        <div className="mx-auto w-full max-w-6xl space-y-5">
+      <main className="flex min-w-0 flex-1 flex-col overflow-x-clip px-4 py-5 sm:px-6 lg:px-8">
+        <div
+          className={
+            section === 'project'
+              ? 'flex w-full flex-1 flex-col gap-4'
+              : 'mx-auto w-full max-w-6xl space-y-4'
+          }
+        >
           {section === 'wizard' && (
             <WizardView
               onSkip={handleSkipWizard}
@@ -519,9 +746,7 @@ function AppShell() {
           )}
 
           {section === 'new-project' && (
-            <ProjectsView
-              onSelectProject={(project) => handleSelectProject(project, 'discuss')}
-            />
+            <ProjectsView onSelectProject={handleSelectProject} />
           )}
 
           {section === 'statistics' && <StatisticsView />}
@@ -567,92 +792,183 @@ function AppShell() {
             )}
 
           {section === 'project' && activeProject && (
-            <>
-              <ProjectStepper
+            <div className="flex flex-1 flex-col gap-4">
+              <ProviderUsageBar />
+              <SessionHeader
                 project={activeProject}
-                currentStep={projectStep}
-                onSelectStep={(step) => {
-                  setProjectStep(step);
-                  setQuickError(null);
+                session={activeSession}
+                draftMode={draftMode}
+                provider={chatProvider ?? activeSession?.provider ?? activeProject.leadProvider}
+                onRenameSession={(title) => {
+                  if (!activeSession) return;
+                  renameSessionMutation.mutate({
+                    projectId: activeProject.id,
+                    sessionId: activeSession.id,
+                    title,
+                  });
+                }}
+                onToggleArchiveSession={(archived) => {
+                  if (!activeSession) return;
+                  archiveSessionMutation.mutate({
+                    projectId: activeProject.id,
+                    sessionId: activeSession.id,
+                    archived,
+                  });
+                }}
+                onDeleteSession={() => {
+                  if (!activeSession) return;
+                  deleteSessionMutation.mutate({
+                    projectId: activeProject.id,
+                    sessionId: activeSession.id,
+                  });
+                }}
+                onDiscardWork={() => {
+                  if (!activeSession) return;
+                  discardWorkMutation.mutate({
+                    projectId: activeProject.id,
+                    sessionId: activeSession.id,
+                  });
                 }}
                 onEditProjectMd={() => setEditingMdProjectId(activeProject.id)}
                 onRemoveProject={() => deleteProjectMutation.mutate(activeProject.id)}
+                busy={sessionMutating}
                 removingProject={deleteProjectMutation.isPending}
-                allTasksDone={allTasksDone}
-              />
-
-              <NextStepCard
-                project={activeProject}
-                currentStep={projectStep}
-                execution={executionState}
-                hasDiscussMessages={hasDiscussMessages}
-                onNavigateStep={(step) => {
-                  setProjectStep(step);
-                  setQuickError(null);
-                }}
-                onQuickWriteBrief={() => quickFinishDiscussMutation.mutate(activeProject.id)}
-                onQuickGeneratePlan={() => quickGeneratePlanMutation.mutate(activeProject.id)}
-                onQuickStartWork={() => quickStartWorkMutation.mutate(activeProject.id)}
-                busy={quickBusy}
               />
 
               {quickError && (
                 <ErrorPanel title={t('plan.actionFailed')} detail={quickError} />
               )}
 
-              {projectStep === 'discuss' && (
-                <DiscussView
-                  key={activeProject.id}
+              {/* Empty chat or Ask session: NO stepper, NO timeline */}
+              {(!activeSession || activeSession.mode === 'ask') && (
+                <AskSessionView
+                  key={`${activeProject.id}:${activeSession?.id ?? 'new'}`}
                   project={activeProject}
-                  liveLogs={liveLogs}
-                  initialGoal={initialGoal}
-                  onConsumeInitialGoal={() => setInitialGoal('')}
-                  onGoToAgree={() => setProjectStep('brief')}
+                  session={activeSession}
+                  draftMode={draftMode}
+                  onChangeDraftMode={setDraftMode}
+                  live={liveBySession[activeSession?.id ?? newestLiveSessionId ?? '']}
+                  onProviderChange={setChatProvider}
+                  initialPrompt={initialGoal}
+                  onConsumeInitialPrompt={() => setInitialGoal('')}
+                  onSessionCreatedOrUpdated={(sess) => {
+                    upsertSessionCache(activeProject.id, sess);
+                    setActiveSessionId(sess.id);
+                    if (sess.mode === 'full') {
+                      setProjectStep('discuss');
+                    }
+                  }}
+                  onPromoteSession={(sessionId, mode) => {
+                    promoteSessionMutation.mutate({
+                      projectId: activeProject.id,
+                      sessionId,
+                      mode,
+                    });
+                  }}
                 />
               )}
 
-              {projectStep === 'brief' && (
-                <AgreeView
-                  key={activeProject.id}
+              {/* Quick session: short 4-stage timeline + one-screen flow */}
+              {activeSession && activeSession.mode === 'quick' && (
+                <QuickSessionView
+                  key={`${activeProject.id}:${activeSession.id}`}
                   project={activeProject}
-                  onGoToDiscuss={() => setProjectStep('discuss')}
-                  onGoToList={() => setProjectStep('plan')}
-                />
-              )}
-
-              {projectStep === 'plan' && (
-                <ListView
-                  key={activeProject.id}
-                  project={activeProject}
-                  onGoToAgree={() => setProjectStep('brief')}
-                  onGoToWork={() => setProjectStep('work')}
-                />
-              )}
-
-              {projectStep === 'work' && (
-                <WorkView
-                  key={activeProject.id}
-                  project={activeProject}
+                  session={activeSession}
+                  live={liveBySession[activeSession.id]}
+                  onProviderChange={setChatProvider}
                   liveLogsByRunId={runLogsByRunId}
-                  liveActivity={liveActivityByProject[activeProject.id] ?? []}
-                  onGoToPlan={() => setProjectStep('plan')}
-                  onGoToReview={() => setProjectStep('review')}
+                  onSessionUpdated={(sess) => {
+                    upsertSessionCache(activeProject.id, sess);
+                    setActiveSessionId(sess.id);
+                    if (sess.mode === 'full') {
+                      setProjectStep('discuss');
+                    }
+                  }}
+                  onPromoteToFull={() => {
+                    promoteSessionMutation.mutate({
+                      projectId: activeProject.id,
+                      sessionId: activeSession.id,
+                      mode: 'full',
+                    });
+                  }}
                 />
               )}
 
-              {projectStep === 'review' && (
-                <GuardView
-                  key={activeProject.id}
-                  project={activeProject}
-                  onGoToWork={() => setProjectStep('work')}
-                />
+              {/* Full session: v0.6 five-step guided workflow */}
+              {activeSession && activeSession.mode === 'full' && (
+                <>
+                  <ProjectStepper
+                    project={activeProject}
+                    session={activeSession}
+                    currentStep={projectStep}
+                    onSelectStep={(step) => {
+                      setProjectStep(step);
+                      setQuickError(null);
+                    }}
+                    allTasksDone={allTasksDone}
+                  />
+
+                  {projectStep === 'discuss' && (
+                    <DiscussView
+                      key={`${activeProject.id}:${activeSession.id}`}
+                      project={activeProject}
+                      session={activeSession}
+                      live={liveBySession[activeSession.id]}
+                      onProviderChange={setChatProvider}
+                      initialGoal={initialGoal}
+                      onConsumeInitialGoal={() => setInitialGoal('')}
+                      onGoToAgree={() => setProjectStep('brief')}
+                    />
+                  )}
+
+                  {projectStep === 'brief' && (
+                    <AgreeView
+                      key={`${activeProject.id}:${activeSession.id}`}
+                      project={activeProject}
+                      sessionId={activeSession.id}
+                      onGoToDiscuss={() => setProjectStep('discuss')}
+                      onGoToList={() => setProjectStep('plan')}
+                    />
+                  )}
+
+                  {projectStep === 'plan' && (
+                    <ListView
+                      key={`${activeProject.id}:${activeSession.id}`}
+                      project={activeProject}
+                      sessionId={activeSession.id}
+                      onGoToAgree={() => setProjectStep('brief')}
+                      onGoToWork={() => setProjectStep('work')}
+                    />
+                  )}
+
+                  {projectStep === 'work' && (
+                    <WorkView
+                      key={`${activeProject.id}:${activeSession.id}`}
+                      project={activeProject}
+                      sessionId={activeSession.id}
+                      liveLogsByRunId={runLogsByRunId}
+                      liveActivity={liveActivityByProject[activeProject.id] ?? []}
+                      onGoToPlan={() => setProjectStep('plan')}
+                      onGoToReview={() => setProjectStep('review')}
+                    />
+                  )}
+
+                  {projectStep === 'review' && (
+                    <GuardView
+                      key={`${activeProject.id}:${activeSession.id}`}
+                      project={activeProject}
+                      sessionId={activeSession.id}
+                      onGoToWork={() => setProjectStep('work')}
+                    />
+                  )}
+                </>
               )}
-            </>
+            </div>
           )}
         </div>
       </main>
 
-      {/* PROJECT.md editor modal launched from ProjectStepper */}
+      {/* PROJECT.md editor modal */}
       <ModalDialog
         open={Boolean(editingMdProjectId)}
         title={t('projects.mdModalTitle')}

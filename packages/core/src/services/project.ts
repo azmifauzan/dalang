@@ -5,7 +5,7 @@ import { eq, desc } from 'drizzle-orm';
 import { simpleGit } from 'simple-git';
 import type { CreateOrOpenProjectInput, ProjectSummary, ProviderId } from '@dalang/shared';
 import { getDbDataDir, type DalangDb } from '../db/client.js';
-import { agentProfiles, briefs, plans, projects, routingRules, tasks } from '../db/schema.js';
+import { agentProfiles, briefs, plans, projects, routingRules, sessions, tasks } from '../db/schema.js';
 import {
   ensureDir,
   getProjectDalangDir,
@@ -15,7 +15,7 @@ import {
   getProjectWorktreesDir,
   getWorktreesRoot,
 } from '../paths.js';
-import { readArtifactFile, writeArtifactFile } from '../safe-fs.js';
+import { ensureDalangIgnore, readArtifactFile, writeArtifactFile } from '../safe-fs.js';
 import { removeTaskWorktree } from './git.js';
 
 function checkSymlinkPointsTo(linkPath: string, targetName: string): boolean {
@@ -102,10 +102,7 @@ export function ensureProjectScaffold(
   ensureDir(getProjectLogsDir(projectPath));
   ensureDir(getProjectTmpDir(projectPath));
 
-  const dalangIgnore = path.join(getProjectDalangDir(projectPath), '.gitignore');
-  if (!fs.existsSync(dalangIgnore)) {
-    writeArtifactFile(projectPath, dalangIgnore, 'tmp/\n', 'refuse');
-  }
+  ensureDalangIgnore(projectPath);
 
   // Checkpoints run `git add -A`; without an ignore file an agent's `npm install` would be committed.
   const rootIgnore = path.join(projectPath, '.gitignore');
@@ -371,6 +368,15 @@ export class ProjectService {
       agentsMd: checkSymlinkPointsTo(path.join(row.path, 'AGENTS.md'), 'PROJECT.md'),
     };
 
+    const projectSessions = this.db
+      .select()
+      .from(sessions)
+      .where(eq(sessions.projectId, row.id))
+      .orderBy(desc(sessions.updatedAt))
+      .all();
+    const activeSessions = projectSessions.filter((s) => !s.archivedAt);
+    const workingSession = projectSessions.find((s) => s.workState === 'working') ?? null;
+
     const projectBriefs = this.db
       .select()
       .from(briefs)
@@ -410,6 +416,9 @@ export class ProjectService {
       latestBriefVersion: latestBrief ? latestBrief.version : null,
       taskCount,
       planStatus: latestPlan ? (latestPlan.status as 'draft' | 'approved') : 'none',
+      sessionCount: activeSessions.length,
+      workingSessionId: workingSession?.id ?? null,
+      workingSessionTitle: workingSession?.title || null,
     };
   }
 }

@@ -20,8 +20,16 @@ import {
 
 afterEach(cleanupTempDirs);
 
-function completeTaskInWorktree(cwd: string, extId: string, relFile: string, opts: RunCommandOptions): RunCommandResult {
-  const resultFile = path.join(cwd, '.dalang', 'tasks', extId, 'result.json');
+function completeTaskInWorktree(
+  cwd: string,
+  extId: string,
+  relFile: string,
+  opts: RunCommandOptions,
+  relResultPath?: string,
+): RunCommandResult {
+  const resultFile = relResultPath
+    ? path.join(cwd, relResultPath)
+    : path.join(cwd, '.dalang', 'tasks', extId, 'result.json');
   fs.mkdirSync(path.dirname(resultFile), { recursive: true });
   const absFile = path.join(cwd, relFile);
   fs.mkdirSync(path.dirname(absFile), { recursive: true });
@@ -170,10 +178,10 @@ describe('Phase 0.4 parallel execution, worktrees, provider pool, quota fallback
         const reviewRes = handleVerifyAndReviewCalls(cmd, args, opts, 'pass');
         if (reviewRes) return reviewRes;
 
-        const promptArg = args.find((a) => a.includes('.dalang/tasks/')) ?? args.join(' ');
-        const match = promptArg.match(/\.dalang\/tasks\/([A-Za-z0-9_-]+)\/result\.json/);
+        const promptArg = args.find((a) => a.includes('/result.json')) ?? args.join(' ');
+        const match = promptArg.match(/(\.dalang\/(?:sessions\/[A-Za-z0-9_-]+\/)?tasks\/([A-Za-z0-9_-]+)\/result\.json)/);
         if (match) {
-          const extId = match[1];
+          const extId = match[2];
           observedCwds.set(extId, opts.cwd);
           activeCoders.add(extId);
           if (activeCoders.size === 2 && !bothEntered) {
@@ -182,7 +190,7 @@ describe('Phase 0.4 parallel execution, worktrees, provider pool, quota fallback
           }
           await bothEnteredPromise;
           activeCoders.delete(extId);
-          return completeTaskInWorktree(opts.cwd, extId, `src/${extId.toLowerCase()}/index.ts`, opts);
+          return completeTaskInWorktree(opts.cwd, extId, `src/${extId.toLowerCase()}/index.ts`, opts, match[1]);
         }
         return { exitCode: 0, stdout: '', stderr: '', timedOut: false, idleTimedOut: false };
       },
@@ -246,15 +254,15 @@ describe('Phase 0.4 parallel execution, worktrees, provider pool, quota fallback
         const reviewRes = handleVerifyAndReviewCalls(cmd, args, opts, 'pass');
         if (reviewRes) return reviewRes;
 
-        const promptArg = args.find((a) => a.includes('.dalang/tasks/')) ?? args.join(' ');
-        const match = promptArg.match(/\.dalang\/tasks\/([A-Za-z0-9_-]+)\/result\.json/);
+        const promptArg = args.find((a) => a.includes('/result.json')) ?? args.join(' ');
+        const match = promptArg.match(/(\.dalang\/(?:sessions\/[A-Za-z0-9_-]+\/)?tasks\/([A-Za-z0-9_-]+)\/result\.json)/);
         if (match) {
-          const extId = match[1];
+          const extId = match[2];
           activeCoders.add(extId);
           expect(activeCoders.size).toBe(1);
           if (extId === 'T-001') await gate;
           activeCoders.delete(extId);
-          return completeTaskInWorktree(opts.cwd, extId, `src/${extId.toLowerCase()}.ts`, opts);
+          return completeTaskInWorktree(opts.cwd, extId, `src/${extId.toLowerCase()}.ts`, opts, match[1]);
         }
         return { exitCode: 0, stdout: '', stderr: '', timedOut: false, idleTimedOut: false };
       },
@@ -309,10 +317,10 @@ describe('Phase 0.4 parallel execution, worktrees, provider pool, quota fallback
         const reviewRes = handleVerifyAndReviewCalls(cmd, args, opts, 'pass');
         if (reviewRes) return reviewRes;
 
-        const promptArg = args.find((a) => a.includes('.dalang/tasks/')) ?? args.join(' ');
-        const match = promptArg.match(/\.dalang\/tasks\/([A-Za-z0-9_-]+)\/result\.json/);
+        const promptArg = args.find((a) => a.includes('/result.json')) ?? args.join(' ');
+        const match = promptArg.match(/(\.dalang\/(?:sessions\/[A-Za-z0-9_-]+\/)?tasks\/([A-Za-z0-9_-]+)\/result\.json)/);
         if (match) {
-          const extId = match[1];
+          const extId = match[2];
           activeCodex += 1;
           peakCodex = Math.max(peakCodex, activeCodex);
           seenTasks.push(extId);
@@ -323,7 +331,7 @@ describe('Phase 0.4 parallel execution, worktrees, provider pool, quota fallback
             await firstTwoGate;
           }
           activeCodex -= 1;
-          return completeTaskInWorktree(opts.cwd, extId, `src/${extId.toLowerCase()}/mod.ts`, opts);
+          return completeTaskInWorktree(opts.cwd, extId, `src/${extId.toLowerCase()}/mod.ts`, opts, match[1]);
         }
         return { exitCode: 0, stdout: '', stderr: '', timedOut: false, idleTimedOut: false };
       },
@@ -379,12 +387,12 @@ describe('Phase 0.4 parallel execution, worktrees, provider pool, quota fallback
         if (reviewRes) return reviewRes;
 
         const joined = `${cmd} ${args.join(' ')}`;
-        const promptArg = args.find((a) => a.includes('.dalang/tasks/')) ?? args.join(' ');
-        const match = promptArg.match(/\.dalang\/tasks\/([A-Za-z0-9_-]+)\/result\.json/);
+        const promptArg = args.find((a) => a.includes('/result.json')) ?? args.join(' ');
+        const match = promptArg.match(/(\.dalang\/(?:sessions\/[A-Za-z0-9_-]+\/)?tasks\/([A-Za-z0-9_-]+)\/result\.json)/);
         if (!match) {
           return { exitCode: 0, stdout: '', stderr: '', timedOut: false, idleTimedOut: false };
         }
-        const extId = match[1];
+        const extId = match[2];
         const invokedProvider = joined.includes('codex')
           ? 'codex'
           : joined.includes('agy')
@@ -395,7 +403,7 @@ describe('Phase 0.4 parallel execution, worktrees, provider pool, quota fallback
         if (extId === 'T-001') {
           claudeBusyStarted();
           await busyPrimaryGate;
-          return completeTaskInWorktree(opts.cwd, extId, 'src/t-001/index.ts', opts);
+          return completeTaskInWorktree(opts.cwd, extId, 'src/t-001/index.ts', opts, match[1]);
         }
 
         if (invokedProvider === 'codex' && extId === 'T-002') {
@@ -408,7 +416,7 @@ describe('Phase 0.4 parallel execution, worktrees, provider pool, quota fallback
           };
         }
 
-        return completeTaskInWorktree(opts.cwd, extId, `src/${extId.toLowerCase()}/index.ts`, opts);
+        return completeTaskInWorktree(opts.cwd, extId, `src/${extId.toLowerCase()}/index.ts`, opts, match[1]);
       },
     };
 

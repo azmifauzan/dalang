@@ -1,11 +1,14 @@
 import type {
   AgentProfileDTO,
   ApproveMergeInput,
+  AskMessageContent,
   BriefContent,
   BriefDTO,
+  ChatMessageInput,
   CreateOrOpenProjectInput,
   CreateProfileInput,
   CreateRoutingRuleInput,
+  CreateSessionInput,
   CreateTaskInput,
   DiscussMessageDTO,
   DiscussMessageInput,
@@ -20,10 +23,17 @@ import type {
   ProviderStatus,
   PushPrInput,
   PushPrResultDTO,
+  QuickPlanContract,
+  QuickRunInput,
   RejectTaskInput,
   ReorderTasksInput,
   RoutingRuleDTO,
   RunIntegrationInput,
+  SessionDetailDTO,
+  SessionMode,
+  SessionPhase,
+  SessionSummaryDTO,
+  SessionWorkState,
   SettingsDTO,
   StartExecutionInput,
   StopExecutionInput,
@@ -32,11 +42,18 @@ import type {
   TaskRunDTO,
   UpdateProfileInput,
   UpdateRoutingRuleInput,
+  UpdateSessionInput,
   UpdateSettingsInput,
   UpdateStatusDTO,
   UpdateTaskInput,
   UsageStatisticsResponseDTO,
 } from '@dalang/shared';
+
+function withSessionQuery(url: string, sessionId?: string | null): string {
+  if (!sessionId) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}sessionId=${encodeURIComponent(sessionId)}`;
+}
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -95,76 +112,162 @@ export const api = {
       },
     ),
 
+  // Sessions & Chat (v0.7 Session Modes)
+  listSessions: (projectId: string, includeArchived = false) =>
+    request<{ sessions: SessionSummaryDTO[]; workingSessionId: string | null }>(
+      `/api/projects/${projectId}/sessions${includeArchived ? '?includeArchived=1' : ''}`,
+    ),
+  createSession: (projectId: string, body: Partial<CreateSessionInput> = {}) =>
+    request<{ session: SessionSummaryDTO }>(`/api/projects/${projectId}/sessions`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  getSessionDetail: (projectId: string, sessionId: string) =>
+    request<SessionDetailDTO>(`/api/projects/${projectId}/sessions/${sessionId}`),
+  updateSession: (projectId: string, sessionId: string, body: UpdateSessionInput) =>
+    request<{ session: SessionSummaryDTO }>(`/api/projects/${projectId}/sessions/${sessionId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  deleteSession: (projectId: string, sessionId: string) =>
+    request<{ ok: boolean }>(`/api/projects/${projectId}/sessions/${sessionId}`, {
+      method: 'DELETE',
+    }),
+  switchSessionMode: (projectId: string, sessionId: string, mode: SessionMode) =>
+    request<{ session: SessionSummaryDTO }>(
+      `/api/projects/${projectId}/sessions/${sessionId}/mode`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ mode }),
+      },
+    ),
+  discardSessionWork: (projectId: string, sessionId: string) =>
+    request<{ session: SessionSummaryDTO; discardedTasks: number }>(
+      `/api/projects/${projectId}/sessions/${sessionId}/discard`,
+      { method: 'POST' },
+    ),
+  runQuickSession: (projectId: string, sessionId: string, body: Partial<QuickRunInput> = {}) =>
+    request<{
+      started: boolean;
+      run: TaskRunDTO | null;
+      runs?: TaskRunDTO[];
+      queueMode: boolean;
+      plan: PlanDTO;
+      session: SessionSummaryDTO;
+    }>(`/api/projects/${projectId}/sessions/${sessionId}/quick/run`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  sendChatMessage: (projectId: string, body: ChatMessageInput) =>
+    request<{
+      session: SessionSummaryDTO;
+      mode: SessionMode;
+      askReply?: AskMessageContent;
+      quickPlan?: QuickPlanContract;
+      plan?: PlanDTO | null;
+      round?: DiscussRound;
+      messages: DiscussMessageDTO[];
+    }>(`/api/projects/${projectId}/chat`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
   // Discuss
-  getDiscussState: (id: string) =>
+  getDiscussState: (id: string, sessionId?: string | null) =>
     request<{
       session: {
         id: string;
+        title?: string;
+        mode?: SessionMode;
+        workState?: SessionWorkState;
+        phase?: SessionPhase;
         provider: ProviderId;
         model: string | null;
         cliSessionId: string | null;
       } | null;
       messages: DiscussMessageDTO[];
       currentRound: number;
-    }>(`/api/projects/${id}/discuss`),
+    }>(withSessionQuery(`/api/projects/${id}/discuss`, sessionId)),
   sendDiscussMessage: (id: string, body: DiscussMessageInput) =>
-    request<{ round: DiscussRound; messages: DiscussMessageDTO[] }>(
+    request<{ round: DiscussRound; messages: DiscussMessageDTO[]; sessionId?: string }>(
       `/api/projects/${id}/discuss/message`,
       {
         method: 'POST',
         body: JSON.stringify(body),
       },
     ),
-  finishDiscuss: (id: string) =>
-    request<{ brief: BriefDTO }>(`/api/projects/${id}/discuss/finish`, {
+  finishDiscuss: (id: string, sessionId?: string | null) =>
+    request<{ brief: BriefDTO }>(withSessionQuery(`/api/projects/${id}/discuss/finish`, sessionId), {
       method: 'POST',
     }),
 
   // Agree / Briefs
-  listBriefs: (id: string) => request<{ briefs: BriefDTO[] }>(`/api/projects/${id}/briefs`),
-  updateBrief: (id: string, version: number, body: BriefContent) =>
-    request<{ brief: BriefDTO }>(`/api/projects/${id}/briefs/${version}`, {
-      method: 'PUT',
-      body: JSON.stringify(body),
-    }),
-  reviseBrief: (id: string, version: number, note: string) =>
-    request<{ brief: BriefDTO }>(`/api/projects/${id}/briefs/${version}/revise`, {
-      method: 'POST',
-      body: JSON.stringify({ note }),
-    }),
-  approveBrief: (id: string, version: number) =>
-    request<{ brief: BriefDTO }>(`/api/projects/${id}/briefs/${version}/approve`, {
-      method: 'POST',
-    }),
+  listBriefs: (id: string, sessionId?: string | null) =>
+    request<{ briefs: BriefDTO[] }>(withSessionQuery(`/api/projects/${id}/briefs`, sessionId)),
+  updateBrief: (id: string, version: number, body: BriefContent, sessionId?: string | null) =>
+    request<{ brief: BriefDTO }>(
+      withSessionQuery(`/api/projects/${id}/briefs/${version}`, sessionId),
+      {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      },
+    ),
+  reviseBrief: (id: string, version: number, note: string, sessionId?: string | null) =>
+    request<{ brief: BriefDTO }>(
+      withSessionQuery(`/api/projects/${id}/briefs/${version}/revise`, sessionId),
+      {
+        method: 'POST',
+        body: JSON.stringify({ note }),
+      },
+    ),
+  approveBrief: (id: string, version: number, sessionId?: string | null) =>
+    request<{ brief: BriefDTO }>(
+      withSessionQuery(`/api/projects/${id}/briefs/${version}/approve`, sessionId),
+      {
+        method: 'POST',
+      },
+    ),
 
   // List / Plan & Tasks
-  getPlan: (id: string) => request<{ plan: PlanDTO | null }>(`/api/projects/${id}/plan`),
-  generatePlan: (id: string) =>
-    request<{ plan: PlanDTO }>(`/api/projects/${id}/plan/generate`, { method: 'POST' }),
-  approvePlan: (id: string) =>
-    request<{ plan: PlanDTO }>(`/api/projects/${id}/plan/approve`, { method: 'POST' }),
-  createTask: (id: string, body: CreateTaskInput) =>
-    request<{ task: TaskDTO }>(`/api/projects/${id}/tasks`, {
+  getPlan: (id: string, sessionId?: string | null) =>
+    request<{ plan: PlanDTO | null }>(withSessionQuery(`/api/projects/${id}/plan`, sessionId)),
+  generatePlan: (id: string, sessionId?: string | null) =>
+    request<{ plan: PlanDTO }>(withSessionQuery(`/api/projects/${id}/plan/generate`, sessionId), {
+      method: 'POST',
+    }),
+  approvePlan: (id: string, sessionId?: string | null) =>
+    request<{ plan: PlanDTO }>(withSessionQuery(`/api/projects/${id}/plan/approve`, sessionId), {
+      method: 'POST',
+    }),
+  createTask: (id: string, body: CreateTaskInput, sessionId?: string | null) =>
+    request<{ task: TaskDTO }>(withSessionQuery(`/api/projects/${id}/tasks`, sessionId), {
       method: 'POST',
       body: JSON.stringify(body),
     }),
-  updateTask: (id: string, taskId: string, body: UpdateTaskInput) =>
-    request<{ task: TaskDTO }>(`/api/projects/${id}/tasks/${taskId}`, {
-      method: 'PATCH',
-      body: JSON.stringify(body),
+  updateTask: (id: string, taskId: string, body: UpdateTaskInput, sessionId?: string | null) =>
+    request<{ task: TaskDTO }>(
+      withSessionQuery(`/api/projects/${id}/tasks/${taskId}`, sessionId),
+      {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      },
+    ),
+  deleteTask: (id: string, taskId: string, sessionId?: string | null) =>
+    request<{ ok: boolean }>(withSessionQuery(`/api/projects/${id}/tasks/${taskId}`, sessionId), {
+      method: 'DELETE',
     }),
-  deleteTask: (id: string, taskId: string) =>
-    request<{ ok: boolean }>(`/api/projects/${id}/tasks/${taskId}`, { method: 'DELETE' }),
-  reorderTasks: (id: string, body: ReorderTasksInput) =>
-    request<{ plan: PlanDTO }>(`/api/projects/${id}/tasks/reorder`, {
+  reorderTasks: (id: string, body: ReorderTasksInput, sessionId?: string | null) =>
+    request<{ plan: PlanDTO }>(withSessionQuery(`/api/projects/${id}/tasks/reorder`, sessionId), {
       method: 'POST',
       body: JSON.stringify(body),
     }),
 
   // Assign & Navigate (v0.2 Jalan, v0.4 Paralel)
   listRoutingRules: () => request<{ rules: RoutingRuleDTO[] }>('/api/routing'),
-  getExecutionState: (id: string) =>
-    request<{ execution: ExecutionStateDTO }>(`/api/projects/${id}/execution`),
+  getExecutionState: (id: string, sessionId?: string | null) =>
+    request<{ execution: ExecutionStateDTO }>(
+      withSessionQuery(`/api/projects/${id}/execution`, sessionId),
+    ),
   startExecution: (id: string, body: Partial<StartExecutionInput> = {}) =>
     request<{ started: boolean; run: TaskRunDTO | null; runs?: TaskRunDTO[]; queueMode: boolean }>(
       `/api/projects/${id}/execution/start`,
@@ -209,8 +312,8 @@ export const api = {
     }),
 
   // Guard (v0.3 Kawal)
-  getGuardState: (id: string) =>
-    request<{ guard: GuardStateDTO }>(`/api/projects/${id}/guard`),
+  getGuardState: (id: string, sessionId?: string | null) =>
+    request<{ guard: GuardStateDTO }>(withSessionQuery(`/api/projects/${id}/guard`, sessionId)),
   getTaskDiff: (id: string, taskId: string) =>
     request<{ diff: TaskDiffDTO }>(`/api/projects/${id}/tasks/${taskId}/diff`),
   approveMergeTask: (id: string, taskId: string, body: Partial<ApproveMergeInput> = {}) =>

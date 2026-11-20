@@ -38,12 +38,14 @@ function statusColors(status: string): { color: string; borderColor: string } {
 
 export function WorkView({
   project,
+  sessionId,
   liveLogsByRunId,
   liveActivity,
   onGoToPlan,
   onGoToReview,
 }: {
   project: ProjectSummary;
+  sessionId?: string;
   liveLogsByRunId: Record<string, string[]>;
   liveActivity: ActivityFeedItem[];
   onGoToPlan: () => void;
@@ -60,8 +62,8 @@ export function WorkView({
   const inspectorRef = useRef<HTMLElement | null>(null);
 
   const executionQuery = useQuery({
-    queryKey: ['execution', project.id],
-    queryFn: () => api.getExecutionState(project.id),
+    queryKey: ['execution', project.id, sessionId ?? 'default'],
+    queryFn: () => api.getExecutionState(project.id, sessionId),
     refetchInterval: (query) => {
       const ex = query.state.data?.execution;
       if (!ex) return false;
@@ -126,7 +128,7 @@ export function WorkView({
   });
 
   const startQueueMutation = useMutation({
-    mutationFn: () => api.startExecution(project.id, { allowUnconfined }),
+    mutationFn: () => api.startExecution(project.id, { sessionId, allowUnconfined }),
     onSuccess: (res) => {
       if (res.run) {
         setSelectedTaskId(res.run.taskId);
@@ -134,6 +136,8 @@ export function WorkView({
       }
       qc.invalidateQueries({ queryKey: ['execution', project.id] });
       qc.invalidateQueries({ queryKey: ['plan', project.id] });
+      qc.invalidateQueries({ queryKey: ['sessions', project.id] });
+      qc.invalidateQueries({ queryKey: ['projects'] });
     },
   });
 
@@ -147,15 +151,18 @@ export function WorkView({
       }
       qc.invalidateQueries({ queryKey: ['execution', project.id] });
       qc.invalidateQueries({ queryKey: ['plan', project.id] });
+      qc.invalidateQueries({ queryKey: ['sessions', project.id] });
+      qc.invalidateQueries({ queryKey: ['projects'] });
     },
   });
 
   const stopMutation = useMutation({
     mutationFn: (taskId?: string) =>
-      api.stopExecution(project.id, taskId ? { taskId } : {}),
+      api.stopExecution(project.id, taskId ? { taskId, sessionId } : { sessionId }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['execution', project.id] });
       qc.invalidateQueries({ queryKey: ['plan', project.id] });
+      qc.invalidateQueries({ queryKey: ['sessions', project.id] });
     },
   });
 
@@ -165,6 +172,7 @@ export function WorkView({
       setConfirmRollbackRunId(null);
       qc.invalidateQueries({ queryKey: ['execution', project.id] });
       qc.invalidateQueries({ queryKey: ['plan', project.id] });
+      qc.invalidateQueries({ queryKey: ['sessions', project.id] });
     },
   });
 

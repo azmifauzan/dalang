@@ -1,5 +1,10 @@
 import { useEffect } from 'react';
-import { DALANG_VERSION, type ProjectSummary, type UpdateStatusDTO } from '@dalang/shared';
+import {
+  DALANG_VERSION,
+  type ProjectSummary,
+  type SessionSummaryDTO,
+  type UpdateStatusDTO,
+} from '@dalang/shared';
 import { GununganMark } from '../assets/wayang/Gunungan.js';
 import { useI18n } from '../i18n/index.js';
 import { useTheme } from '../lib/theme.js';
@@ -12,13 +17,23 @@ export interface SidebarProps {
   mode: 'workspace' | 'config';
   projects: ProjectSummary[];
   activeProjectId: string | null;
+  activeSessionId: string | null;
+  activeProjectSessions: SessionSummaryDTO[];
+  archivedProjectSessions: SessionSummaryDTO[];
+  showArchivedSessions: boolean;
   activeSection: 'project' | 'new-project' | 'statistics' | 'config' | 'wizard';
   configTab: ConfigTabId;
   updateStatus: UpdateStatusDTO | null;
   mobileOpen: boolean;
+  /** Desktop only: the sidebar is shrunk to a rail of icon buttons. */
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
   onCloseMobile: () => void;
   onNewProject: () => void;
   onSelectProject: (project: ProjectSummary) => void;
+  onNewChat: (project: ProjectSummary) => void;
+  onSelectSession: (project: ProjectSummary, session: SessionSummaryDTO) => void;
+  onToggleShowArchived: () => void;
   onOpenStatistics: () => void;
   onOpenConfig: (tab?: ConfigTabId) => void;
   onBackFromConfig: () => void;
@@ -34,16 +49,152 @@ const CONFIG_TABS: Array<{ id: ConfigTabId; key: `config.tab.${ConfigTabId}` }> 
   { id: 'about', key: 'config.tab.about' },
 ];
 
+function SidebarToggleIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M9 4v16" />
+    </svg>
+  );
+}
+
+/** The minimized sidebar: the toggle and the actions that need no project list. */
+function SidebarRail({
+  activeSection,
+  onToggleCollapsed,
+  onNewProject,
+  onOpenStatistics,
+  onOpenConfig,
+}: Pick<
+  SidebarProps,
+  'activeSection' | 'onToggleCollapsed' | 'onNewProject' | 'onOpenStatistics' | 'onOpenConfig'
+>) {
+  const { t } = useI18n();
+  const { resolved, toggleLightDark } = useTheme();
+  const button =
+    'inline-flex min-h-11 min-w-11 cursor-pointer items-center justify-center rounded-[6px] border';
+  const svgProps = {
+    width: 18,
+    height: 18,
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 1.9,
+    'aria-hidden': true,
+  } as const;
+  const style = (active: boolean) => ({
+    backgroundColor: active ? 'var(--accent-tint)' : 'var(--bg-well)',
+    borderColor: active ? 'var(--accent)' : 'var(--border-control)',
+    color: active ? 'var(--accent)' : 'var(--text-primary)',
+  });
+
+  return (
+    <div
+      className="flex h-full flex-col items-center justify-between border-r py-3"
+      style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
+    >
+      <div className="flex flex-col items-center gap-2">
+        <button
+          type="button"
+          aria-label={t('nav.expandSidebar')}
+          title={t('nav.expandSidebar')}
+          aria-expanded={false}
+          onClick={onToggleCollapsed}
+          className={button}
+          style={style(false)}
+        >
+          <SidebarToggleIcon />
+        </button>
+        <button
+          type="button"
+          aria-label={t('nav.newProject')}
+          title={t('nav.newProject')}
+          onClick={onNewProject}
+          className={button}
+          style={{
+            backgroundColor: 'var(--accent)',
+            borderColor: 'var(--accent)',
+            color: 'var(--accent-ink)',
+          }}
+        >
+          <svg {...svgProps}>
+            <path d="M12 5v14M5 12h14" strokeLinecap="round" />
+          </svg>
+        </button>
+      </div>
+
+      <div className="flex flex-col items-center gap-2">
+        <button
+          type="button"
+          aria-label={t('nav.statistics')}
+          title={t('nav.statistics')}
+          aria-current={activeSection === 'statistics' ? 'page' : undefined}
+          onClick={onOpenStatistics}
+          className={button}
+          style={style(activeSection === 'statistics')}
+        >
+          <svg {...svgProps}>
+            <path d="M4 20V10M10 20V4M16 20v-7M22 20H2" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          aria-label={t('nav.config')}
+          title={t('nav.config')}
+          aria-current={activeSection === 'config' ? 'page' : undefined}
+          onClick={() => onOpenConfig('general')}
+          className={button}
+          style={style(activeSection === 'config')}
+        >
+          <svg {...svgProps}>
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={resolved === 'dark'}
+          aria-label={t('nav.themeSwitchLabel')}
+          title={resolved === 'dark' ? t('nav.themeDark') : t('nav.themeLight')}
+          onClick={toggleLightDark}
+          className={button}
+          style={style(false)}
+        >
+          <svg {...svgProps}>
+            {resolved === 'dark' ? (
+              <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z" strokeLinecap="round" strokeLinejoin="round" />
+            ) : (
+              <>
+                <circle cx="12" cy="12" r="4" />
+                <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" strokeLinecap="round" />
+              </>
+            )}
+          </svg>
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function SidebarContent({
   mode,
   projects,
   activeProjectId,
+  activeSessionId,
+  activeProjectSessions,
+  archivedProjectSessions,
+  showArchivedSessions,
   activeSection,
   configTab,
   updateStatus,
+  onToggleCollapsed,
   onCloseMobile,
   onNewProject,
   onSelectProject,
+  onNewChat,
+  onSelectSession,
+  onToggleShowArchived,
   onOpenStatistics,
   onOpenConfig,
   onBackFromConfig,
@@ -76,7 +227,7 @@ function SidebarContent({
             <span className="text-base font-bold tracking-tight">DALANG</span>
             <Badge>v{DALANG_VERSION.split('.').slice(0, 2).join('.')}</Badge>
           </div>
-          {isMobileDrawer && (
+          {isMobileDrawer ? (
             <Button
               type="button"
               variant="outline"
@@ -85,6 +236,18 @@ function SidebarContent({
             >
               {t('common.close')}
             </Button>
+          ) : (
+            <button
+              type="button"
+              aria-label={t('nav.collapseSidebar')}
+              title={t('nav.collapseSidebar')}
+              aria-expanded={true}
+              onClick={onToggleCollapsed}
+              className="inline-flex min-h-11 min-w-11 cursor-pointer items-center justify-center rounded-[6px] border"
+              style={{ borderColor: 'var(--border-control)', backgroundColor: 'var(--bg-well)' }}
+            >
+              <SidebarToggleIcon />
+            </button>
           )}
         </div>
 
@@ -160,40 +323,205 @@ function SidebarContent({
                   {t('nav.noProjectsYet')}
                 </p>
               ) : (
-                <nav aria-label={t('nav.projects')} className="space-y-1">
+                <nav aria-label={t('nav.projects')} className="space-y-1.5">
                   {projects.map((proj) => {
-                    const isActive =
+                    const isProjectActive =
                       activeSection === 'project' && proj.id === activeProjectId;
-                    const progressTag =
-                      proj.planStatus === 'approved'
-                        ? `${proj.taskCount}t`
-                        : proj.latestBriefStatus === 'approved'
-                          ? 'brief'
-                          : 'discuss';
+                    const isExpanded = proj.id === activeProjectId;
+                    const isNewChatSelected = isProjectActive && activeSessionId === null;
+
                     return (
-                      <button
-                        key={proj.id}
-                        type="button"
-                        aria-current={isActive ? 'page' : undefined}
-                        onClick={() => {
-                          onSelectProject(proj);
-                          closeIfMobile();
-                        }}
-                        className="flex min-h-[44px] w-full cursor-pointer items-center justify-between gap-2 rounded-[6px] border px-3 py-2 text-left text-sm transition-colors duration-150"
-                        style={{
-                          backgroundColor: isActive ? 'var(--accent-tint)' : 'transparent',
-                          borderColor: isActive ? 'var(--accent)' : 'transparent',
-                          color: isActive ? 'var(--accent)' : 'var(--text-primary)',
-                        }}
-                      >
-                        <span className="truncate font-medium">{proj.name}</span>
-                        <span
-                          className="shrink-0 font-mono-token text-[11px]"
-                          style={{ color: 'var(--text-secondary)' }}
+                      <div key={proj.id} className="space-y-1">
+                        <button
+                          type="button"
+                          aria-expanded={isExpanded}
+                          aria-current={isProjectActive ? 'true' : undefined}
+                          onClick={() => {
+                            onSelectProject(proj);
+                            closeIfMobile();
+                          }}
+                          className="flex min-h-[44px] w-full cursor-pointer items-center justify-between gap-2 rounded-[6px] border px-3 py-2 text-left text-sm transition-colors duration-150"
+                          style={{
+                            backgroundColor: isProjectActive
+                              ? 'var(--bg-well)'
+                              : 'transparent',
+                            borderColor: isProjectActive
+                              ? 'var(--border-control)'
+                              : 'transparent',
+                            color: 'var(--text-primary)',
+                          }}
                         >
-                          {progressTag}
-                        </span>
-                      </button>
+                          <span className="flex min-w-0 items-center gap-2">
+                            {proj.workingSessionId && (
+                              <span
+                                aria-label={t('sessions.workingDotLabel')}
+                                title={t('sessions.workingDotLabel')}
+                                className="inline-block h-2 w-2 shrink-0 rounded-full"
+                                style={{ backgroundColor: 'var(--accent)' }}
+                              />
+                            )}
+                            <span className="truncate font-semibold">{proj.name}</span>
+                          </span>
+                          <span
+                            className="shrink-0 font-mono-token text-[11px]"
+                            style={{ color: 'var(--text-secondary)' }}
+                          >
+                            {proj.sessionCount > 0 ? proj.sessionCount : ''}
+                          </span>
+                        </button>
+
+                        {/* Expanded sessions list beneath the selected project */}
+                        {isExpanded && (
+                          <div
+                            aria-label={t('sessions.listAria')}
+                            className="ml-2.5 space-y-1 border-l pl-2.5"
+                            style={{ borderColor: 'var(--border-subtle)' }}
+                          >
+                            <button
+                              type="button"
+                              aria-current={isNewChatSelected ? 'page' : undefined}
+                              onClick={() => {
+                                onNewChat(proj);
+                                closeIfMobile();
+                              }}
+                              className="flex min-h-[44px] w-full cursor-pointer items-center justify-between gap-2 rounded-[6px] border px-2.5 py-1.5 text-left text-xs font-semibold transition-colors duration-150"
+                              style={{
+                                backgroundColor: isNewChatSelected
+                                  ? 'var(--accent-tint)'
+                                  : 'transparent',
+                                borderColor: isNewChatSelected
+                                  ? 'var(--accent)'
+                                  : 'var(--border-subtle)',
+                                color: isNewChatSelected
+                                  ? 'var(--accent)'
+                                  : 'var(--text-primary)',
+                              }}
+                            >
+                              <span>+ {t('sessions.newChat')}</span>
+                            </button>
+
+                            {activeProjectSessions.length === 0 ? (
+                              <p
+                                className="px-2 py-1 text-[11px]"
+                                style={{ color: 'var(--text-secondary)' }}
+                              >
+                                {t('sessions.emptySidebar')}
+                              </p>
+                            ) : (
+                              activeProjectSessions.map((sess) => {
+                                const isSessActive =
+                                  isProjectActive && activeSessionId === sess.id;
+                                return (
+                                  <button
+                                    key={sess.id}
+                                    type="button"
+                                    data-session-id={sess.id}
+                                    aria-current={isSessActive ? 'page' : undefined}
+                                    onClick={() => {
+                                      onSelectSession(proj, sess);
+                                      closeIfMobile();
+                                    }}
+                                    className="flex min-h-[44px] w-full cursor-pointer items-center justify-between gap-1.5 rounded-[6px] border px-2.5 py-1.5 text-left text-xs transition-colors duration-150"
+                                    style={{
+                                      backgroundColor: isSessActive
+                                        ? 'var(--accent-tint)'
+                                        : 'transparent',
+                                      borderColor: isSessActive
+                                        ? 'var(--accent)'
+                                        : 'transparent',
+                                      color: isSessActive
+                                        ? 'var(--accent)'
+                                        : 'var(--text-primary)',
+                                    }}
+                                  >
+                                    <span className="flex min-w-0 items-center gap-1.5">
+                                      {sess.turn && (
+                                        <span
+                                          data-running-dot="true"
+                                          role="img"
+                                          aria-label={t('sessions.runningDotLabel')}
+                                          title={t('sessions.runningDotLabel')}
+                                          className="inline-block h-2 w-2 shrink-0 rounded-full border-2 motion-safe:animate-pulse"
+                                          style={{ borderColor: 'var(--accent)' }}
+                                        />
+                                      )}
+                                      {sess.workState === 'working' && (
+                                        <span
+                                          data-working-dot="true"
+                                          aria-label={t('sessions.workingDotLabel')}
+                                          title={t('sessions.workingDotLabel')}
+                                          className="inline-block h-2 w-2 shrink-0 rounded-full"
+                                          style={{ backgroundColor: 'var(--accent)' }}
+                                        />
+                                      )}
+                                      <span className="truncate font-medium">{sess.title}</span>
+                                    </span>
+                                    <span
+                                      className="shrink-0 rounded-[4px] border px-1.5 py-0.5 font-mono-token text-[10px]"
+                                      style={{
+                                        borderColor: 'var(--border-subtle)',
+                                        color: 'var(--text-secondary)',
+                                      }}
+                                    >
+                                      {t(`sessions.mode.${sess.mode}Badge`)}
+                                    </span>
+                                  </button>
+                                );
+                              })
+                            )}
+
+                            {archivedProjectSessions.length > 0 && (
+                              <div className="pt-1">
+                                <button
+                                  type="button"
+                                  onClick={onToggleShowArchived}
+                                  className="min-h-[44px] w-full cursor-pointer px-2 text-left text-[11px] font-medium hover:underline"
+                                  style={{ color: 'var(--text-secondary)' }}
+                                >
+                                  {t('sessions.archivedToggle', {
+                                    count: archivedProjectSessions.length,
+                                  })}
+                                </button>
+                                {showArchivedSessions && (
+                                  <div className="mt-1 space-y-1">
+                                    {archivedProjectSessions.map((sess) => {
+                                      const isSessActive =
+                                        isProjectActive && activeSessionId === sess.id;
+                                      return (
+                                        <button
+                                          key={sess.id}
+                                          type="button"
+                                          data-session-id={sess.id}
+                                          aria-current={isSessActive ? 'page' : undefined}
+                                          onClick={() => {
+                                            onSelectSession(proj, sess);
+                                            closeIfMobile();
+                                          }}
+                                          className="flex min-h-[44px] w-full cursor-pointer items-center justify-between gap-1.5 rounded-[6px] border px-2.5 py-1.5 text-left text-xs opacity-75 transition-colors duration-150"
+                                          style={{
+                                            backgroundColor: isSessActive
+                                              ? 'var(--accent-tint)'
+                                              : 'transparent',
+                                            borderColor: isSessActive
+                                              ? 'var(--accent)'
+                                              : 'transparent',
+                                            color: 'var(--text-secondary)',
+                                          }}
+                                        >
+                                          <span className="truncate">{sess.title}</span>
+                                          <span className="shrink-0 font-mono-token text-[10px]">
+                                            {t(`sessions.mode.${sess.mode}Badge`)}
+                                          </span>
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     );
                   })}
                 </nav>
@@ -203,7 +531,7 @@ function SidebarContent({
         )}
       </div>
 
-      {/* Footer: Update notice + ID|EN language switch + Sun/Moon theme switch */}
+      {/* Footer: Update notice + Statistics + Config + ID|EN + Sun/Moon */}
       <div
         className="space-y-2.5 border-t p-3"
         style={{ borderColor: 'var(--border-subtle)' }}
@@ -228,7 +556,6 @@ function SidebarContent({
         )}
 
         <div className="flex items-center justify-between gap-1.5">
-          {/* Statistics and Config as icon buttons */}
           {([
             {
               key: 'statistics',
@@ -302,7 +629,7 @@ function SidebarContent({
             })}
           </div>
 
-          {/* Theme toggle: one icon showing the mode a click switches to */}
+          {/* Theme toggle */}
           <button
             type="button"
             role="switch"
@@ -352,9 +679,21 @@ export function Sidebar(props: SidebarProps) {
       {/* Desktop persistent sidebar */}
       <aside
         aria-label={t('nav.sidebarAria')}
-        className="hidden lg:sticky lg:top-0 lg:block lg:h-dvh lg:w-[264px] lg:shrink-0"
+        className={`hidden lg:sticky lg:top-0 lg:block lg:h-dvh lg:shrink-0 ${
+          props.collapsed ? 'lg:w-16' : 'lg:w-[272px]'
+        }`}
       >
-        <SidebarContent {...props} isMobileDrawer={false} />
+        {props.collapsed ? (
+          <SidebarRail
+            activeSection={props.activeSection}
+            onToggleCollapsed={props.onToggleCollapsed}
+            onNewProject={props.onNewProject}
+            onOpenStatistics={props.onOpenStatistics}
+            onOpenConfig={props.onOpenConfig}
+          />
+        ) : (
+          <SidebarContent {...props} isMobileDrawer={false} />
+        )}
       </aside>
 
       {/* Mobile / tablet modal drawer */}
@@ -365,7 +704,7 @@ export function Sidebar(props: SidebarProps) {
           aria-label={t('nav.sidebarAria')}
           className="fixed inset-0 z-50 flex lg:hidden"
         >
-          <div className="relative z-10 h-dvh w-[min(290px,84vw)] shrink-0 shadow-lg">
+          <div className="relative z-10 h-dvh w-[min(296px,86vw)] shrink-0 shadow-lg">
             <SidebarContent {...props} isMobileDrawer={true} />
           </div>
           <button

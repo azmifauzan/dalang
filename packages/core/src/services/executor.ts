@@ -22,6 +22,7 @@ import {
   type ReviewContract,
   type RunKind,
   type RunStatus,
+  type SessionSummaryDTO,
   type StartExecutionInput,
   type TaskDiffDTO,
   type TaskDispatchPreviewDTO,
@@ -38,13 +39,22 @@ import { getDbDataDir, type DalangDb } from '../db/client.js';
 import {
   agentProfiles,
   integrationRuns,
+  plans,
   projects,
   providerEvents,
   reviews,
   runs,
+  sessions,
   tasks,
 } from '../db/schema.js';
-import { getProjectLogsDir, getTaskArtifactDir, getTaskWorktreeDir, getWorktreesRoot } from '../paths.js';
+import {
+  getProjectLogsDir,
+  getSessionLogsDir,
+  getSessionTaskArtifactDir,
+  getTaskArtifactDir,
+  getTaskWorktreeDir,
+  getWorktreesRoot,
+} from '../paths.js';
 import {
   ensureProjectDir,
   readArtifactFile,
@@ -98,6 +108,7 @@ export interface ExecutionServiceOptions {
 
 interface ActiveTaskExecution {
   projectId: string;
+  sessionId: string;
   taskId: string;
   runId: string;
   controller: AbortController;
@@ -106,6 +117,7 @@ interface ActiveTaskExecution {
 
 interface ProjectQueueExecution {
   projectId: string;
+  sessionId: string;
   cancelled: boolean;
   controller: AbortController;
   inFlightTaskIds: Set<string>;
@@ -307,6 +319,11 @@ export class ExecutionService {
       .set({ status: 'stopped', updatedAt: now })
       .where(inArray(tasks.status, ['running', 'reviewing']))
       .run();
+
+    const allSessions = this.db.select({ id: sessions.id }).from(sessions).all();
+    for (const s of allSessions) {
+      this.leadService.reconcileSessionWorkState(s.id, false);
+    }
   }
 
   private async withProjectGitLock<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
@@ -494,9 +511,15 @@ export class ExecutionService {
     return [...this.activeTasks.values()].some((t) => t.projectId === projectId);
   }
 
-  assignTaskProfile(projectId: string, taskId: string, profileOverride: string | null): TaskDTO {
-    const plan = this.leadService.getPlan(projectId);
-    if (!plan) throw new Error('No plan exists for this project.');
+  assignTaskProfile(
+    projectId: string,
+    taskId: string,
+    profileOverride: string | null,
+    explicitSessionId?: string,
+  ): TaskDTO {
+    const sid = this.leadService.resolveSessionIdForTask(projectId, taskId, explicitSessionId);
+    const plan = sid ? this.leadService.getPlan(projectId, sid) : null;
+    if (!plan || !sid) throw new Error('No plan exists for this project.');
     const target = plan.tasks.find((t) => t.id === taskId || t.externalId === taskId);
     if (!target) throw new Error(`Task not found: ${taskId}`);
     if (target.status === 'running' || target.status === 'reviewing' || this.activeTasks.has(target.id)) {
@@ -520,29 +543,56 @@ export class ExecutionService {
       .where(eq(tasks.id, target.id))
       .run();
 
-    this.events?.emitEvent({ type: 'plan.updated', projectId });
-    return this.leadService.getPlan(projectId)!.tasks.find((t) => t.id === target.id)!;
+    this.events?.emitEvent({ type: 'plan.updated', projectId, sessionId: sid });
+    return this.leadService.getPlan(projectId, sid)!.tasks.find((t) => t.id === target.id)!;
   }
 
-  async getExecutionState(projectId: string): Promise<ExecutionStateDTO> {
+  private getTaskIdsForSession(sessionId: string): string[] {
+    const sessionPlans = this.db
+      .select({ id: plans.id })
+      .from(plans)
+      .where(eq(plans.sessionId, sessionId))
+      .all();
+    if (sessionPlans.length === 0) return [];
+    return this.db
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(inArray(tasks.planId, sessionPlans.map((p) => p.id)))
+      .all()
+      .map((t) => t.id);
+  }
+
+  async getExecutionState(
+    projectId: string,
+    explicitSessionId?: string,
+  ): Promise<ExecutionStateDTO> {
     const project = this.getProjectRow(projectId);
-    const plan = this.leadService.getPlan(projectId);
+    const sessionId = this.leadService.resolveSessionIdForRead(projectId, explicitSessionId);
+    const plan = sessionId ? this.leadService.getPlan(projectId, sessionId) : null;
     const sandboxEngine = await this.registry.getSandboxEngine();
     const sandboxReady = sandboxEngine !== 'none';
 
     const dispatchPreviews = plan ? this.buildDispatchPreviews(plan, sandboxReady) : [];
+    const sessionTaskIds = sessionId ? this.getTaskIdsForSession(sessionId) : [];
     // Snapshot active tasks/queue and run rows synchronously before any await so a phase
     // transition (e.g. coder -> review) cannot mutate execHandle.runId after runRows was read.
-    const activeTaskList = this.getActiveTasksForProject(projectId);
+    const activeTaskList = this.getActiveTasksForProject(projectId).filter(
+      (a) => !sessionId || a.sessionId === sessionId,
+    );
     const activeRunIds = new Set(activeTaskList.map((a) => a.runId).filter(Boolean));
     const queue = this.projectQueues.get(projectId);
-    const queueRunning = Boolean(queue && !queue.cancelled);
-    const runRows = this.db
-      .select()
-      .from(runs)
-      .where(eq(runs.projectId, projectId))
-      .orderBy(desc(runs.startedAt), desc(runs.attempt))
-      .all();
+    const queueRunning = Boolean(
+      queue && !queue.cancelled && (!sessionId || queue.sessionId === sessionId),
+    );
+    const runRows =
+      sessionTaskIds.length === 0
+        ? []
+        : this.db
+            .select()
+            .from(runs)
+            .where(and(eq(runs.projectId, projectId), inArray(runs.taskId, sessionTaskIds)))
+            .orderBy(desc(runs.startedAt), desc(runs.attempt))
+            .all();
 
     const taskById = new Map((plan?.tasks ?? []).map((t) => [t.id, t]));
     const profileById = new Map(this.profiles.listProfiles().map((p) => [p.id, p]));
@@ -557,6 +607,7 @@ export class ExecutionService {
 
     return {
       projectId,
+      sessionId,
       planStatus: plan ? plan.status : 'none',
       activeRun: activeRuns[0] ?? null,
       activeRuns,
@@ -761,8 +812,20 @@ export class ExecutionService {
   ): Promise<{ started: boolean; run: TaskRunDTO | null; runs?: TaskRunDTO[]; queueMode: boolean }> {
     this.getProjectRow(projectId);
 
+    const sessionId = input.taskId
+      ? this.leadService.resolveSessionIdForTask(projectId, input.taskId, input.sessionId)
+      : this.leadService.resolveSessionIdForRead(projectId, input.sessionId);
+
+    if (sessionId) {
+      try {
+        this.leadService.assertCanStartWorkInSession(projectId, sessionId);
+      } catch (err) {
+        return Promise.reject(err);
+      }
+    }
+
     if (input.taskId) {
-      const plan = this.leadService.getPlan(projectId);
+      const plan = sessionId ? this.leadService.getPlan(projectId, sessionId) : null;
       const target = plan?.tasks.find((t) => t.id === input.taskId || t.externalId === input.taskId);
       if (target && this.activeTasks.has(target.id)) {
         return Promise.reject(new Error(`Task ${target.externalId} is already running.`));
@@ -772,6 +835,7 @@ export class ExecutionService {
       const reservationKey = target?.id ?? `${projectId}:${input.taskId}`;
       const reservation: ActiveTaskExecution = {
         projectId,
+        sessionId: sessionId ?? '',
         taskId: reservationKey,
         runId: '',
         controller: new AbortController(),
@@ -779,9 +843,18 @@ export class ExecutionService {
       };
       this.activeTasks.set(reservationKey, reservation);
 
-      return this.startSingleTaskReserved(projectId, input, reservationKey, reservation).catch((err) => {
+      return this.startSingleTaskReserved(
+        projectId,
+        sessionId,
+        input,
+        reservationKey,
+        reservation,
+      ).catch((err) => {
         if (this.activeTasks.get(reservationKey) === reservation) {
           this.activeTasks.delete(reservationKey);
+        }
+        if (sessionId) {
+          this.leadService.reconcileSessionWorkState(sessionId, false);
         }
         throw err;
       });
@@ -794,6 +867,7 @@ export class ExecutionService {
     let wakeFn = () => {};
     const queueHandle: ProjectQueueExecution = {
       projectId,
+      sessionId: sessionId ?? '',
       cancelled: false,
       controller: new AbortController(),
       inFlightTaskIds: new Set(),
@@ -802,11 +876,14 @@ export class ExecutionService {
     };
     this.projectQueues.set(projectId, queueHandle);
 
-    return this.startQueueReserved(projectId, input, queueHandle, (fn) => {
+    return this.startQueueReserved(projectId, sessionId, input, queueHandle, (fn) => {
       wakeFn = fn;
     }).catch((err) => {
       if (this.projectQueues.get(projectId) === queueHandle) {
         this.projectQueues.delete(projectId);
+      }
+      if (sessionId) {
+        this.leadService.reconcileSessionWorkState(sessionId, false);
       }
       throw err;
     });
@@ -814,6 +891,7 @@ export class ExecutionService {
 
   private async startSingleTaskReserved(
     projectId: string,
+    explicitSessionId: string | null,
     input: Partial<StartExecutionInput>,
     reservationKey: string,
     reservation: ActiveTaskExecution,
@@ -827,11 +905,18 @@ export class ExecutionService {
       );
     }
 
-    const plan = this.leadService.getPlan(projectId);
-    if (!plan) throw new Error('No plan exists yet. Generate and approve a plan in List first.');
+    const sessionId =
+      explicitSessionId ??
+      this.leadService.resolveSessionIdForTask(projectId, input.taskId ?? '', input.sessionId);
+    const plan = sessionId ? this.leadService.getPlan(projectId, sessionId) : null;
+    if (!plan || !sessionId) {
+      throw new Error('No plan exists yet. Generate and approve a plan in List first.');
+    }
     if (plan.status !== 'approved') {
       throw new Error('Plan must be approved in List before execution can start.');
     }
+    this.leadService.markSessionWorking(projectId, sessionId);
+    reservation.sessionId = sessionId;
 
     const target = plan.tasks.find((t) => t.id === input.taskId || t.externalId === input.taskId);
     if (!target) throw new Error(`Task not found: ${input.taskId}`);
@@ -887,7 +972,7 @@ export class ExecutionService {
       resumeSessionId = sameProviderRun.cliSessionId!;
     }
 
-    const launched = await this.launchTaskExecution(projectId, target, reservation, {
+    const launched = await this.launchTaskExecution(projectId, sessionId, target, reservation, {
       resumeSessionId,
       preAcquiredLease: null,
     });
@@ -896,6 +981,7 @@ export class ExecutionService {
 
   private async startQueueReserved(
     projectId: string,
+    explicitSessionId: string | null,
     input: Partial<StartExecutionInput>,
     queueHandle: ProjectQueueExecution,
     bindWake: (fn: () => void) => void,
@@ -908,8 +994,12 @@ export class ExecutionService {
       );
     }
 
-    const plan = this.leadService.getPlan(projectId);
-    if (!plan) throw new Error('No plan exists yet. Generate and approve a plan in List first.');
+    const sessionId =
+      explicitSessionId ?? this.leadService.resolveSessionIdForRead(projectId, input.sessionId);
+    const plan = sessionId ? this.leadService.getPlan(projectId, sessionId) : null;
+    if (!plan || !sessionId) {
+      throw new Error('No plan exists yet. Generate and approve a plan in List first.');
+    }
     if (plan.status !== 'approved') {
       throw new Error('Plan must be approved in List before execution can start.');
     }
@@ -934,6 +1024,9 @@ export class ExecutionService {
       );
     }
 
+    this.leadService.markSessionWorking(projectId, sessionId);
+    queueHandle.sessionId = sessionId;
+
     // Synchronously dispatch the initial parallel batch of non-overlapping tasks up to provider limits.
     const initialRuns: TaskRunDTO[] = [];
     const startedNow: TaskDTO[] = [];
@@ -942,7 +1035,7 @@ export class ExecutionService {
       waitingForSlot: boolean;
       firstError: Error | null;
     }> => {
-      const latestPlan = this.leadService.getPlan(projectId);
+      const latestPlan = this.leadService.getPlan(projectId, sessionId);
       if (!latestPlan || queueHandle.cancelled) {
         return { launched: [], waitingForSlot: false, firstError: null };
       }
@@ -980,6 +1073,7 @@ export class ExecutionService {
 
         const taskHandle: ActiveTaskExecution = {
           projectId,
+          sessionId,
           taskId: task.id,
           runId: '',
           controller: new AbortController(),
@@ -995,7 +1089,7 @@ export class ExecutionService {
       await Promise.all(
         batchPicked.map(async ({ task, lease, taskHandle }) => {
           try {
-            const launched = await this.launchTaskExecution(projectId, task, taskHandle, {
+            const launched = await this.launchTaskExecution(projectId, sessionId, task, taskHandle, {
               resumeSessionId: null,
               preAcquiredLease: lease,
             });
@@ -1016,6 +1110,7 @@ export class ExecutionService {
             this.events?.emitEvent({
               type: 'run.finished',
               projectId,
+              sessionId,
               taskId: task.id,
               runId: taskHandle.runId,
               status: 'failed',
@@ -1086,6 +1181,8 @@ export class ExecutionService {
         if (this.projectQueues.get(projectId) === queueHandle) {
           this.projectQueues.delete(projectId);
         }
+        const stillActive = [...this.activeTasks.values()].some((a) => a.sessionId === sessionId);
+        this.leadService.reconcileSessionWorkState(sessionId, stillActive);
       }
     })();
 
@@ -1109,9 +1206,14 @@ export class ExecutionService {
     }
   }
 
-  async stopExecution(projectId: string, taskId?: string): Promise<{ stopped: boolean }> {
+  async stopExecution(
+    projectId: string,
+    taskId?: string,
+    sessionId?: string,
+  ): Promise<{ stopped: boolean }> {
     if (taskId) {
-      const plan = this.leadService.getPlan(projectId);
+      const sid = this.leadService.resolveSessionIdForTask(projectId, taskId, sessionId);
+      const plan = sid ? this.leadService.getPlan(projectId, sid) : null;
       const matched = plan?.tasks.find((t) => t.id === taskId || t.externalId === taskId);
       const targetId = matched?.id ?? taskId;
       const active = this.activeTasks.get(targetId);
@@ -1124,21 +1226,31 @@ export class ExecutionService {
     }
 
     const queue = this.projectQueues.get(projectId);
-    const activeList = this.getActiveTasksForProject(projectId);
-    if (!queue && activeList.length === 0) {
+    const matchingQueue = queue && (!sessionId || queue.sessionId === sessionId) ? queue : undefined;
+    const activeList = this.getActiveTasksForProject(projectId).filter(
+      (a) => !sessionId || a.sessionId === sessionId,
+    );
+    if (!matchingQueue && activeList.length === 0) {
       return { stopped: false };
     }
 
-    if (queue) {
-      queue.cancelled = true;
-      queue.controller.abort();
-      queue.wake();
+    if (matchingQueue) {
+      matchingQueue.cancelled = true;
+      matchingQueue.controller.abort();
+      matchingQueue.wake();
     }
     for (const active of activeList) {
       active.controller.abort();
     }
 
-    await this.waitForProjectExecution(projectId);
+    if (!sessionId) {
+      await this.waitForProjectExecution(projectId);
+    } else {
+      await Promise.all([
+        matchingQueue?.promise.catch(() => undefined),
+        ...activeList.map((t) => t.promise.catch(() => undefined)),
+      ]);
+    }
     return { stopped: true };
   }
 
@@ -1152,12 +1264,14 @@ export class ExecutionService {
 
   private async launchTaskExecution(
     projectId: string,
+    sessionId: string,
     task: TaskDTO,
     execHandle: ActiveTaskExecution,
     opts: { resumeSessionId: string | null; preAcquiredLease: SlotLease | null },
   ): Promise<{ initialRun: TaskRunDTO; completionPromise: Promise<RunStatus> }> {
     const { runId, initialRun, executeFn } = await this.prepareTaskExecution(
       projectId,
+      sessionId,
       task,
       execHandle,
       opts.resumeSessionId,
@@ -1165,6 +1279,7 @@ export class ExecutionService {
     );
     execHandle.runId = runId;
     execHandle.taskId = task.id;
+    execHandle.sessionId = sessionId;
 
     const completionPromise = (async (): Promise<RunStatus> => {
       try {
@@ -1173,6 +1288,7 @@ export class ExecutionService {
         this.events?.emitEvent({
           type: 'run.finished',
           projectId,
+          sessionId,
           taskId: execHandle.taskId,
           runId: execHandle.runId,
           status: 'failed',
@@ -1183,6 +1299,13 @@ export class ExecutionService {
         if (this.activeTasks.get(task.id) === execHandle) {
           this.activeTasks.delete(task.id);
         }
+        const stillActive =
+          [...this.activeTasks.values()].some((a) => a.sessionId === sessionId) ||
+          Boolean(
+            this.projectQueues.get(projectId)?.sessionId === sessionId &&
+              !this.projectQueues.get(projectId)?.cancelled,
+          );
+        this.leadService.reconcileSessionWorkState(sessionId, stillActive);
       }
     })();
 
@@ -1260,6 +1383,7 @@ export class ExecutionService {
 
   private async prepareTaskExecution(
     projectId: string,
+    sessionId: string,
     task: TaskDTO,
     execHandle: ActiveTaskExecution,
     resumeSessionId: string | null,
@@ -1293,15 +1417,26 @@ export class ExecutionService {
       },
     );
 
-    const logsDir = getProjectLogsDir(project.path);
+    const logsDir = sessionId
+      ? getSessionLogsDir(project.path, sessionId)
+      : getProjectLogsDir(project.path);
     ensureProjectDir(project.path, logsDir);
 
-    const taskArtDir = getTaskArtifactDir(worktreePath, task.externalId);
+    const taskArtDir = sessionId
+      ? getSessionTaskArtifactDir(worktreePath, sessionId, task.externalId)
+      : getTaskArtifactDir(worktreePath, task.externalId);
     ensureProjectDir(worktreePath, taskArtDir);
 
-    const relResultPath = path.join('.dalang', 'tasks', task.externalId, 'result.json');
+    const relTaskDir = sessionId
+      ? path.join('.dalang', 'sessions', sessionId, 'tasks', task.externalId)
+      : path.join('.dalang', 'tasks', task.externalId);
+    const relLogsDir = sessionId
+      ? path.join('.dalang', 'sessions', sessionId, 'logs')
+      : path.join('.dalang', 'logs');
+
+    const relResultPath = path.join(relTaskDir, 'result.json');
     const absResultPath = path.join(worktreePath, relResultPath);
-    const relReviewPath = path.join('.dalang', 'tasks', task.externalId, 'review.json');
+    const relReviewPath = path.join(relTaskDir, 'review.json');
     const absReviewPath = path.join(worktreePath, relReviewPath);
 
     // Clear stale outputs before running so only files written in this execution count.
@@ -1322,7 +1457,7 @@ export class ExecutionService {
     const priorRejectionNote = task.rejectionNote ?? null;
     const runId = crypto.randomUUID();
     const attempt = this.nextAttemptForTask(task.id);
-    const relLogPath = path.join('.dalang', 'logs', `run-${task.externalId}-${Date.now()}.log`);
+    const relLogPath = path.join(relLogsDir, `run-${task.externalId}-${Date.now()}.log`);
     const absLogPath = path.join(project.path, relLogPath);
 
     const row = this.insertRunRecord({
@@ -1345,6 +1480,7 @@ export class ExecutionService {
     });
     execHandle.runId = runId;
     execHandle.taskId = task.id;
+    execHandle.sessionId = sessionId;
 
     const now = new Date().toISOString();
     this.db
@@ -1362,18 +1498,20 @@ export class ExecutionService {
     this.events?.emitEvent({
       type: 'run.started',
       projectId,
+      sessionId,
       taskId: task.id,
       runId,
       profileName: routing.primary.name,
       provider: routing.primary.provider,
     });
-    this.events?.emitEvent({ type: 'plan.updated', projectId });
+    this.events?.emitEvent({ type: 'plan.updated', projectId, sessionId });
 
     const initialRun = await this.toRunDTO(project.path, row, task, routing.primary);
 
     const executeFn = async (): Promise<RunStatus> => {
       return this.executePreparedRun({
         projectId,
+        sessionId,
         projectPath: project.path,
         worktreePath,
         mainBranch: project.mainBranch,
@@ -1391,6 +1529,8 @@ export class ExecutionService {
         attempt,
         absLogPath,
         relLogPath,
+        relLogsDir,
+        relTaskDir,
         absResultPath,
         relResultPath,
         absReviewPath,
@@ -1404,6 +1544,7 @@ export class ExecutionService {
 
   private async executePreparedRun(ctx: {
     projectId: string;
+    sessionId: string;
     projectPath: string;
     worktreePath: string;
     mainBranch: string;
@@ -1421,6 +1562,8 @@ export class ExecutionService {
     attempt: number;
     absLogPath: string;
     relLogPath: string;
+    relLogsDir: string;
+    relTaskDir: string;
     absResultPath: string;
     relResultPath: string;
     absReviewPath: string;
@@ -1429,6 +1572,7 @@ export class ExecutionService {
   }): Promise<RunStatus> {
     const coderOutcome = await this.runCoderPhaseWithFallback({
       projectId: ctx.projectId,
+      sessionId: ctx.sessionId,
       projectPath: ctx.projectPath,
       worktreePath: ctx.worktreePath,
       branchName: ctx.branchName,
@@ -1442,6 +1586,7 @@ export class ExecutionService {
       sandboxReady: ctx.sandboxReady,
       routeNote: ctx.routeNote,
       absLogPath: ctx.absLogPath,
+      relLogsDir: ctx.relLogsDir,
       absResultPath: ctx.absResultPath,
       relResultPath: ctx.relResultPath,
       sessionToResume: ctx.resumeSessionId,
@@ -1460,6 +1605,7 @@ export class ExecutionService {
     // Enter v0.3 Kawal review + fix loop inside the task's isolated worktree.
     return this.runReviewAndFixLoop({
       projectId: ctx.projectId,
+      sessionId: ctx.sessionId,
       projectPath: ctx.projectPath,
       worktreePath: ctx.worktreePath,
       mainBranch: ctx.mainBranch,
@@ -1473,6 +1619,8 @@ export class ExecutionService {
       coderSessionId: coderOutcome.sessionId,
       coderResult: coderOutcome.result,
       scopeWarnings: coderOutcome.scopeWarnings,
+      relLogsDir: ctx.relLogsDir,
+      relTaskDir: ctx.relTaskDir,
       absResultPath: ctx.absResultPath,
       relResultPath: ctx.relResultPath,
       absReviewPath: ctx.absReviewPath,
@@ -1482,6 +1630,7 @@ export class ExecutionService {
 
   private async runCoderPhaseWithFallback(opts: {
     projectId: string;
+    sessionId: string;
     projectPath: string;
     worktreePath: string;
     branchName: string;
@@ -1495,6 +1644,7 @@ export class ExecutionService {
     sandboxReady: boolean;
     routeNote: string | null;
     absLogPath: string;
+    relLogsDir: string;
     absResultPath: string;
     relResultPath: string;
     sessionToResume: string | null;
@@ -1947,8 +2097,7 @@ export class ExecutionService {
     ) {
       const fbRunId = crypto.randomUUID();
       const fbRelLog = path.join(
-        '.dalang',
-        'logs',
+        opts.relLogsDir,
         `run-${opts.task.externalId}-fb-${Date.now()}.log`,
       );
       const fbAbsLog = path.join(opts.projectPath, fbRelLog);
@@ -2090,6 +2239,7 @@ export class ExecutionService {
 
   private async runReviewAndFixLoop(ctx: {
     projectId: string;
+    sessionId: string;
     projectPath: string;
     worktreePath: string;
     mainBranch: string;
@@ -2103,6 +2253,8 @@ export class ExecutionService {
     coderSessionId: string | null;
     coderResult: TaskResultContract | null;
     scopeWarnings: string[];
+    relLogsDir: string;
+    relTaskDir: string;
     absResultPath: string;
     relResultPath: string;
     absReviewPath: string;
@@ -2185,6 +2337,7 @@ export class ExecutionService {
 
       const reviewOutcome = await this.executeSingleReviewRound({
         projectId: ctx.projectId,
+        sessionId: ctx.sessionId,
         projectPath: ctx.projectPath,
         worktreePath: ctx.worktreePath,
         branchName: ctx.branchName,
@@ -2202,6 +2355,8 @@ export class ExecutionService {
         scopeWarnings: activeScopeWarnings,
         rawDiff: diffData?.rawDiff ?? '',
         coderResult: activeCoderResult,
+        relLogsDir: ctx.relLogsDir,
+        relTaskDir: ctx.relTaskDir,
         absReviewPath: ctx.absReviewPath,
         relReviewPath: ctx.relReviewPath,
       });
@@ -2291,8 +2446,7 @@ export class ExecutionService {
       removeArtifactFile(ctx.worktreePath, ctx.absResultPath);
       const fixRunId = crypto.randomUUID();
       const fixRelLog = path.join(
-        '.dalang',
-        'logs',
+        ctx.relLogsDir,
         `fix-${ctx.task.externalId}-r${round}-${Date.now()}.log`,
       );
       const fixAbsLog = path.join(ctx.projectPath, fixRelLog);
@@ -2325,15 +2479,17 @@ export class ExecutionService {
       this.events?.emitEvent({
         type: 'run.started',
         projectId: ctx.projectId,
+        sessionId: ctx.sessionId,
         taskId: ctx.task.id,
         runId: fixRunId,
         profileName: activeCoderProfile.name,
         provider: activeCoderProfile.provider,
       });
-      this.events?.emitEvent({ type: 'plan.updated', projectId: ctx.projectId });
+      this.events?.emitEvent({ type: 'plan.updated', projectId: ctx.projectId, sessionId: ctx.sessionId });
 
       const fixOutcome = await this.runCoderPhaseWithFallback({
         projectId: ctx.projectId,
+        sessionId: ctx.sessionId,
         projectPath: ctx.projectPath,
         worktreePath: ctx.worktreePath,
         branchName: ctx.branchName,
@@ -2347,6 +2503,7 @@ export class ExecutionService {
         sandboxReady: ctx.sandboxReady,
         routeNote: fixNote,
         absLogPath: fixAbsLog,
+        relLogsDir: ctx.relLogsDir,
         absResultPath: ctx.absResultPath,
         relResultPath: ctx.relResultPath,
         sessionToResume: activeCoderSessionId,
@@ -2388,6 +2545,7 @@ export class ExecutionService {
 
   private async executeSingleReviewRound(opts: {
     projectId: string;
+    sessionId: string;
     projectPath: string;
     worktreePath: string;
     branchName: string;
@@ -2405,6 +2563,8 @@ export class ExecutionService {
     scopeWarnings: string[];
     rawDiff: string;
     coderResult: TaskResultContract | null;
+    relLogsDir: string;
+    relTaskDir: string;
     absReviewPath: string;
     relReviewPath: string;
   }): Promise<{
@@ -2427,8 +2587,7 @@ export class ExecutionService {
     }> => {
       const reviewRunId = crypto.randomUUID();
       const relLogPath = path.join(
-        '.dalang',
-        'logs',
+        opts.relLogsDir,
         `review-${opts.task.externalId}-r${opts.round}-${Date.now()}.log`,
       );
       const absLogPath = path.join(opts.projectPath, relLogPath);
@@ -2784,9 +2943,7 @@ export class ExecutionService {
       // Persist both canonical review.json and per-round archive safely inside the worktree.
       const serialized = JSON.stringify(finalContract, null, 2);
       const relRoundReviewPath = path.join(
-        '.dalang',
-        'tasks',
-        opts.task.externalId,
+        opts.relTaskDir,
         `review-round-${opts.round}.json`,
       );
       const absRoundReviewPath = path.join(opts.worktreePath, relRoundReviewPath);
@@ -3005,9 +3162,13 @@ export class ExecutionService {
     return { runId: row.id, logPath: row.logPath, content: content ?? '' };
   }
 
-  async getGuardState(projectId: string): Promise<GuardStateDTO> {
+  async getGuardState(
+    projectId: string,
+    explicitSessionId?: string,
+  ): Promise<GuardStateDTO> {
     const project = this.getProjectRow(projectId);
-    const plan = this.leadService.getPlan(projectId);
+    const sessionId = this.leadService.resolveSessionIdForRead(projectId, explicitSessionId);
+    const plan = sessionId ? this.leadService.getPlan(projectId, sessionId) : null;
     const sandboxEngine = await this.registry.getSandboxEngine();
     const sandboxReady = sandboxEngine !== 'none';
     const detectedIntegrationCommand = detectIntegrationCommand(project.path);
@@ -3016,18 +3177,25 @@ export class ExecutionService {
       this.registry.getRunner().which('gh').catch(() => null),
     ]);
 
-    const runRows = this.db
-      .select()
-      .from(runs)
-      .where(eq(runs.projectId, projectId))
-      .orderBy(desc(runs.startedAt), desc(runs.attempt))
-      .all();
-    const reviewRows = this.db
-      .select()
-      .from(reviews)
-      .where(eq(reviews.projectId, projectId))
-      .orderBy(desc(reviews.createdAt), desc(reviews.round))
-      .all();
+    const sessionTaskIds = sessionId ? this.getTaskIdsForSession(sessionId) : [];
+    const runRows =
+      sessionTaskIds.length === 0
+        ? []
+        : this.db
+            .select()
+            .from(runs)
+            .where(and(eq(runs.projectId, projectId), inArray(runs.taskId, sessionTaskIds)))
+            .orderBy(desc(runs.startedAt), desc(runs.attempt))
+            .all();
+    const reviewRows =
+      sessionTaskIds.length === 0
+        ? []
+        : this.db
+            .select()
+            .from(reviews)
+            .where(and(eq(reviews.projectId, projectId), inArray(reviews.taskId, sessionTaskIds)))
+            .orderBy(desc(reviews.createdAt), desc(reviews.round))
+            .all();
     const integrationRows = this.db
       .select()
       .from(integrationRuns)
@@ -3095,6 +3263,7 @@ export class ExecutionService {
 
     return {
       projectId,
+      sessionId,
       mainBranch: project.mainBranch,
       integrationCommand: project.integrationCommand ?? null,
       detectedIntegrationCommand,
@@ -3122,9 +3291,14 @@ export class ExecutionService {
     };
   }
 
-  async getTaskDiffForTask(projectId: string, taskId: string): Promise<TaskDiffDTO> {
+  async getTaskDiffForTask(
+    projectId: string,
+    taskId: string,
+    explicitSessionId?: string,
+  ): Promise<TaskDiffDTO> {
     const project = this.getProjectRow(projectId);
-    const plan = this.leadService.getPlan(projectId);
+    const sid = this.leadService.resolveSessionIdForTask(projectId, taskId, explicitSessionId);
+    const plan = sid ? this.leadService.getPlan(projectId, sid) : null;
     if (!plan) throw new Error('No plan exists for this project.');
     const task = plan.tasks.find((t) => t.id === taskId || t.externalId === taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
@@ -3190,6 +3364,7 @@ export class ExecutionService {
     projectId: string,
     taskId: string,
     input: Partial<ApproveMergeInput> = {},
+    explicitSessionId?: string,
   ): Promise<{
     task: TaskDTO;
     mergeCommitSha: string;
@@ -3197,8 +3372,9 @@ export class ExecutionService {
     pushPrResult?: PushPrResultDTO | null;
   }> {
     const project = this.getProjectRow(projectId);
-    const plan = this.leadService.getPlan(projectId);
-    if (!plan) throw new Error('No plan exists for this project.');
+    const sid = this.leadService.resolveSessionIdForTask(projectId, taskId, explicitSessionId);
+    const plan = sid ? this.leadService.getPlan(projectId, sid) : null;
+    if (!plan || !sid) throw new Error('No plan exists for this project.');
     const task = plan.tasks.find((t) => t.id === taskId || t.externalId === taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
     if (this.activeTasks.has(task.id) || task.status === 'running' || task.status === 'reviewing') {
@@ -3248,7 +3424,9 @@ export class ExecutionService {
       .where(eq(tasks.id, task.id))
       .run();
 
-    this.events?.emitEvent({ type: 'plan.updated', projectId });
+    const stillActive = [...this.activeTasks.values()].some((a) => a.sessionId === sid);
+    this.leadService.reconcileSessionWorkState(sid, stillActive);
+    this.events?.emitEvent({ type: 'plan.updated', projectId, sessionId: sid });
 
     let integrationRun: IntegrationRunDTO | null = null;
     if (input.runIntegration !== false) {
@@ -3264,10 +3442,15 @@ export class ExecutionService {
     let pushPrResult: PushPrResultDTO | null = null;
     if (shouldCreatePr || shouldPush) {
       try {
-        pushPrResult = await this.pushTaskBranchAndPr(projectId, task.id, {
-          remote: project.gitRemote ?? undefined,
-          createPr: shouldCreatePr,
-        });
+        pushPrResult = await this.pushTaskBranchAndPr(
+          projectId,
+          task.id,
+          {
+            remote: project.gitRemote ?? undefined,
+            createPr: shouldCreatePr,
+          },
+          sid,
+        );
       } catch (err) {
         pushPrResult = {
           pushed: false,
@@ -3279,7 +3462,7 @@ export class ExecutionService {
       }
     }
 
-    const updatedTask = this.leadService.getPlan(projectId)!.tasks.find((t) => t.id === task.id)!;
+    const updatedTask = this.leadService.getPlan(projectId, sid)!.tasks.find((t) => t.id === task.id)!;
     return { task: updatedTask, mergeCommitSha, integrationRun, pushPrResult };
   }
 
@@ -3324,9 +3507,11 @@ export class ExecutionService {
     projectId: string,
     taskId: string,
     input: Partial<PushPrInput> = {},
+    explicitSessionId?: string,
   ): Promise<PushPrResultDTO> {
     const project = this.getProjectRow(projectId);
-    const plan = this.leadService.getPlan(projectId);
+    const sid = this.leadService.resolveSessionIdForTask(projectId, taskId, explicitSessionId);
+    const plan = sid ? this.leadService.getPlan(projectId, sid) : null;
     if (!plan) throw new Error('No plan exists for this project.');
     const task = plan.tasks.find((t) => t.id === taskId || t.externalId === taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
@@ -3419,10 +3604,12 @@ export class ExecutionService {
     projectId: string,
     taskId: string,
     input: Partial<RejectTaskInput> = {},
+    explicitSessionId?: string,
   ): Promise<TaskDTO> {
     const project = this.getProjectRow(projectId);
-    const plan = this.leadService.getPlan(projectId);
-    if (!plan) throw new Error('No plan exists for this project.');
+    const sid = this.leadService.resolveSessionIdForTask(projectId, taskId, explicitSessionId);
+    const plan = sid ? this.leadService.getPlan(projectId, sid) : null;
+    if (!plan || !sid) throw new Error('No plan exists for this project.');
     const task = plan.tasks.find((t) => t.id === taskId || t.externalId === taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
     if (this.activeTasks.has(task.id) || task.status === 'running' || task.status === 'reviewing') {
@@ -3478,8 +3665,103 @@ export class ExecutionService {
       .where(eq(tasks.id, task.id))
       .run();
 
-    this.events?.emitEvent({ type: 'plan.updated', projectId });
-    return this.leadService.getPlan(projectId)!.tasks.find((t) => t.id === task.id)!;
+    const stillActive = [...this.activeTasks.values()].some((a) => a.sessionId === sid);
+    this.leadService.reconcileSessionWorkState(sid, stillActive);
+    this.events?.emitEvent({ type: 'plan.updated', projectId, sessionId: sid });
+    return this.leadService.getPlan(projectId, sid)!.tasks.find((t) => t.id === task.id)!;
+  }
+
+  /**
+   * Discard all unfinished/unmerged work in a session: stops active runs, removes unmerged
+   * worktrees and branches, never touches merged code, and returns the session to `idle`.
+   */
+  async discardSessionWork(
+    projectId: string,
+    sessionId: string,
+  ): Promise<{ session: SessionSummaryDTO; discardedTasks: number }> {
+    const project = this.getProjectRow(projectId);
+    this.leadService.getSessionRow(projectId, sessionId);
+
+    await this.stopExecution(projectId, undefined, sessionId);
+
+    const sessionPlans = this.db
+      .select({ id: plans.id })
+      .from(plans)
+      .where(eq(plans.sessionId, sessionId))
+      .all();
+
+    let discardedTasks = 0;
+    if (sessionPlans.length > 0) {
+      const allTasks = this.db
+        .select()
+        .from(tasks)
+        .where(inArray(tasks.planId, sessionPlans.map((p) => p.id)))
+        .all();
+
+      const unfinished = allTasks.filter(
+        (t) =>
+          t.status !== 'done' &&
+          (Boolean(t.branchName) ||
+            t.status === 'running' ||
+            t.status === 'reviewing' ||
+            t.status === 'awaiting_merge' ||
+            t.status === 'review_failed' ||
+            t.status === 'stopped'),
+      );
+
+      const now = new Date().toISOString();
+      for (const task of unfinished) {
+        const taskRuns = this.db.select().from(runs).where(eq(runs.taskId, task.id)).all();
+        for (const r of taskRuns) {
+          const content = await readArtifactWithGitFallback(project.path, r.logPath, r.commitAfter);
+          if (content !== null) {
+            const abs = path.join(project.path, r.logPath);
+            if (!fs.existsSync(abs)) {
+              writeArtifactFile(project.path, abs, content, 'refuse');
+            }
+          }
+        }
+
+        const branchName = task.branchName ?? `dalang/${task.externalId}`;
+        const worktreePath = getTaskWorktreeDir(this.worktreesRoot, projectId, task.externalId);
+        await this.withProjectGitLock(projectId, async () => {
+          await removeTaskWorktree(project.path, worktreePath).catch(() => undefined);
+          if (await branchExists(project.path, branchName)) {
+            await deleteTaskBranch(project.path, project.mainBranch, branchName).catch(() => undefined);
+          }
+        });
+
+        this.db
+          .update(reviews)
+          .set({
+            humanDecision: 'rejected',
+            humanNote: 'Discarded by user',
+            decidedAt: now,
+          })
+          .where(and(eq(reviews.taskId, task.id), eq(reviews.humanDecision, 'pending')))
+          .run();
+
+        this.db
+          .update(tasks)
+          .set({
+            status: 'failed',
+            branchName: null,
+            rejectionNote: 'Discarded by user',
+            updatedAt: now,
+          })
+          .where(eq(tasks.id, task.id))
+          .run();
+
+        discardedTasks += 1;
+      }
+    }
+
+    this.leadService.reconcileSessionWorkState(sessionId, false);
+    this.events?.emitEvent({ type: 'plan.updated', projectId, sessionId });
+    return {
+      session: this.leadService.getSession(projectId, sessionId),
+      discardedTasks,
+    };
   }
 
   async runIntegrationTests(
@@ -3805,10 +4087,16 @@ export class ExecutionService {
         .run();
     }
 
-    this.events?.emitEvent({ type: 'plan.updated', projectId });
+    const sid = this.leadService.resolveSessionIdForTask(projectId, row.taskId);
+    if (sid) {
+      const stillActive = [...this.activeTasks.values()].some((a) => a.sessionId === sid);
+      this.leadService.reconcileSessionWorkState(sid, stillActive);
+    }
+
+    this.events?.emitEvent({ type: 'plan.updated', projectId, sessionId: sid ?? undefined });
 
     const updatedRow = this.db.select().from(runs).where(eq(runs.id, row.id)).get()!;
-    const latestPlan = this.leadService.getPlan(projectId);
+    const latestPlan = sid ? this.leadService.getPlan(projectId, sid) : this.leadService.getPlan(projectId);
     const task = latestPlan?.tasks.find((t) => t.id === row.taskId);
     const profile = this.db
       .select()

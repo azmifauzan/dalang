@@ -19,6 +19,7 @@ import { EmptyPanel, ErrorPanel, LoadingPanel, ModalDialog } from '@/components/
 
 interface GuardViewProps {
   project: ProjectSummary;
+  sessionId?: string;
   onGoToWork?: () => void;
 }
 
@@ -69,7 +70,7 @@ function diffLineClasses(line: string): string {
   return 'text-foreground';
 }
 
-export function GuardView({ project, onGoToWork }: GuardViewProps) {
+export function GuardView({ project, sessionId, onGoToWork }: GuardViewProps) {
   const qc = useQueryClient();
   const { t, te } = useI18n();
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
@@ -108,8 +109,8 @@ export function GuardView({ project, onGoToWork }: GuardViewProps) {
   };
 
   const guardQuery = useQuery({
-    queryKey: ['guard', project.id],
-    queryFn: () => api.getGuardState(project.id),
+    queryKey: ['guard', project.id, sessionId ?? 'default'],
+    queryFn: () => api.getGuardState(project.id, sessionId),
   });
 
   const guard = guardQuery.data?.guard;
@@ -201,6 +202,7 @@ export function GuardView({ project, onGoToWork }: GuardViewProps) {
     qc.invalidateQueries({ queryKey: ['execution', project.id] });
     qc.invalidateQueries({ queryKey: ['plan', project.id] });
     qc.invalidateQueries({ queryKey: ['task-diff', project.id] });
+    qc.invalidateQueries({ queryKey: ['sessions', project.id] });
     qc.invalidateQueries({ queryKey: ['projects'] });
   };
 

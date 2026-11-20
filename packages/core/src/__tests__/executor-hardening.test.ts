@@ -34,8 +34,9 @@ function agentRunner(outcome: Outcome, seen: string[] = []): CliRunner {
 
       const joined = `${cmd} ${args.join(' ')}`;
       seen.push(joined);
-      const extId = joined.match(/\.dalang\/tasks\/([A-Za-z0-9_-]+)\/result\.json/)?.[1] ?? 'T-001';
-      const file = path.join(opts.cwd, '.dalang', 'tasks', extId, 'result.json');
+      const m = joined.match(/(\.dalang\/(?:sessions\/[A-Za-z0-9_-]+\/)?tasks\/([A-Za-z0-9_-]+)\/result\.json)/);
+      const extId = m?.[2] ?? 'T-001';
+      const file = m ? path.join(opts.cwd, m[1]) : path.join(opts.cwd, '.dalang', 'tasks', extId, 'result.json');
       fs.mkdirSync(path.dirname(file), { recursive: true });
       fs.writeFileSync(
         file,

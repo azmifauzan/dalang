@@ -1,8 +1,11 @@
 import { eq } from 'drizzle-orm';
 import {
+  DEFAULT_USAGE_REFRESH_MINUTES,
   UiLanguageSchema,
+  UsageRefreshMinutesSchema,
   type SettingsDTO,
   type UiLanguage,
+  type UsageRefreshMinutes,
   type UpdateSettingsInput,
 } from '@dalang/shared';
 import type { DalangDb } from '../db/client.js';
@@ -11,6 +14,7 @@ import { settings } from '../db/schema.js';
 const AGY_KEYRING_KEY = 'antigravity_keyring_access';
 const LANGUAGE_KEY = 'ui_language';
 const CHECK_UPDATES_KEY = 'check_for_updates';
+const USAGE_REFRESH_KEY = 'usage_refresh_minutes';
 const UPDATE_LATEST_KEY = 'update_check_latest';
 const UPDATE_CHECKED_AT_KEY = 'update_check_at';
 
@@ -61,6 +65,11 @@ export class SettingsService {
     return this.getBool(CHECK_UPDATES_KEY, true);
   }
 
+  usageRefreshMinutes(): UsageRefreshMinutes {
+    const parsed = UsageRefreshMinutesSchema.safeParse(Number(this.getValue(USAGE_REFRESH_KEY)));
+    return parsed.success ? parsed.data : DEFAULT_USAGE_REFRESH_MINUTES;
+  }
+
   getUpdateCache(): { latestVersion: string | null; checkedAt: string | null } {
     return {
       latestVersion: this.getValue(UPDATE_LATEST_KEY),
@@ -79,6 +88,7 @@ export class SettingsService {
       antigravityKeyringAccess: this.antigravityKeyringAccess(),
       language: this.language(),
       checkForUpdates: this.checkForUpdates(),
+      usageRefreshMinutes: this.usageRefreshMinutes(),
     };
   }
 
@@ -91,6 +101,9 @@ export class SettingsService {
     }
     if (input.checkForUpdates !== undefined) {
       this.setBool(CHECK_UPDATES_KEY, input.checkForUpdates);
+    }
+    if (input.usageRefreshMinutes !== undefined) {
+      this.setValue(USAGE_REFRESH_KEY, String(input.usageRefreshMinutes));
     }
     return this.getAll();
   }
