@@ -43,4 +43,6 @@ Dalang keeps quota readings, cooldowns, and parallel slots separate for each pro
 
 Open **Details** on the project limits bar to see quota windows and any reset times reported by the CLIs. Open **Config → Agents** to refresh a CLI's login and model status or clear a cooldown. [Settings and statistics](USAGE.md#settings-and-statistics)
 
-Open **Statistics** to compare providers and projects by run time, failures, fallbacks, and captured tokens. The CLI may omit some usage fields. Dalang shows costs on an API-equivalent basis using reported amounts or reference model rates. Check your provider account for actual subscription charges.
+Open **Statistics** to compare providers and projects by runtime, failures, fallbacks, and captured tokens. **Runs (L / E / F / R)** breaks the total down into Lead, execution, fix, and review runs. Lead turns include Ask, Quick planning, and Full discussion and planning. Dalang can recover historical Lead usage from saved technical logs when those logs are available and readable. The CLI may omit some usage fields.
+
+Dalang shows costs on an API-equivalent basis using reported amounts or reference model rates. Check your provider account for actual subscription charges.

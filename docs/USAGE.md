@@ -109,6 +109,8 @@ In **Remote push and pull request**, select the Git remote (usually `origin`). A
 | **Config → Task routing** | Order rules by role and task complexity. The first matching rule selects the primary and can set a fallback. |
 | **Config → Security** | Check sandbox status and manage the Linux Antigravity keyring opt-in. |
 | **Config → About** | Check your version, look for updates, and open support docs. |
-| **Statistics** | Filter runs by project and time window. See duration, failures, fallback events, token counts when available, and API-equivalent cost estimates. |
+| **Statistics** | Filter Lead, execution, fix, and review runs by project and time window. See duration, failures, fallback events, reported tokens, and API-equivalent cost estimates. |
+
+![Statistics showing Lead, execution, fix, and review counts by provider, with captured tokens and estimated costs](images/statistics.webp)
 
 The provider limits bar shows the tightest five-hour and weekly windows each installed CLI reports. **Details** lists the available windows, reset times when reported, and a refresh button. Dalang refreshes when a run finishes and every five minutes while the page is visible. Choose three, five, or ten minutes in **Config → General**. [Providers and accounts](PROVIDERS.md)

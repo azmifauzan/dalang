@@ -6,7 +6,7 @@ Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
 A project opens into a chat with three modes. **Ask** answers repository questions, **Quick** takes a one-task fix from plan to merge in the chat, and **Full** guides a larger change through discussion, brief, plan, work, and review. Every task still runs in a worktree with verification, automated review, and a human merge decision. [User guide](docs/USAGE.md)
 
-Linux verification covered typecheck, build, and 101 automated tests (87 core, 9 server, 5 CLI). The server tests run the built UI in headless Chromium with replayed agent output for all three modes, the v0.6 upgrade, and Indonesian UI strings. Live progress was checked against Antigravity logs. Real CLI runs for Quick and Full and a macOS run are still open.
+Linux verification covered typecheck, build, and 102 automated tests (88 core, 9 server, 5 CLI). The server tests run the built UI in headless Chromium with replayed agent output for all three modes, the v0.6 upgrade, and Indonesian UI strings. Live progress was checked against Antigravity logs. Real CLI runs for Quick and Full and a macOS run are still open.
 
 **Sessions and modes**
 - **Chat first.** Opening a project shows a heading with the composer in the middle and creates no session. The first message creates one. A chat with messages keeps the composer pinned to the bottom of the window.
@@ -25,6 +25,7 @@ Linux verification covered typecheck, build, and 101 automated tests (87 core, 9
 
 **Around the chat**
 - **Provider limits bar.** A slim bar shows the tightest 5 hour and weekly limit left per connected CLI, and `Details` lists every window with its reset time. It refreshes every 5 minutes while the page is visible (choose 3, 5, or 10 in Config, General, stored as `usageRefreshMinutes`), and when a run finishes.
+- **Lead usage in Statistics.** Ask, Quick planning, and Full discussion and planning contribute to run counts, token totals, and estimated API-equivalent costs. On upgrade Dalang can recover usage from readable Lead logs.
 - **Minimizable sidebar.** The sidebar shrinks to an icon rail on desktop and the choice is remembered. The project panel is full width.
 - **Fewer duplicate controls.** The Full flow no longer has the `Next step` card, and the plan step shows one `Generate plan now` button instead of three.
 - **Layout fix.** The top bar and sidebar now switch at the same `lg` breakpoint, so Config and Statistics no longer disappear between 768 and 1023 px.

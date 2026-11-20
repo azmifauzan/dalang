@@ -670,6 +670,7 @@ The v0.6 flow always runs `Discuss → Brief → Plan → Work → Review & merg
 - **Running turn**: `LeadService` keeps the Lead turns running now, by session, from the `lead.turn_started` and `lead.turn_finished` events, and reports one as `turn` on the session summary (in memory, with a one hour stale guard). Pages show the running panel from that, so it survives switching chats. Live log lines are kept per session in the page.
 - **One chat surface**: Ask, Quick, and the Full discuss step share `ChatTranscript`, `RunningTurn`, `ComposerDock`, `useChatScroll`, and `useComposerChoice` under `packages/web/src/components/chat/`. Replies render through `react-markdown` and `remark-gfm`. The model picker lists Claude models by their resolved version.
 - **Provider limits**: `ProviderUsageBar` reads the provider status and refreshes it on the `usageRefreshMinutes` setting (3, 5, or 10, default 5) while the page is visible, and when a run finishes.
+- **Lead usage statistics**. The `lead_turns` table records Lead calls and reported usage. Statistics combines those records with execution, fix, and review runs. Upgrades can recover historical usage from existing Lead logs on disk.
 - **Removed**: the "Next step" card, the Lead CLI and model fields of the Discuss step, and the duplicate plan buttons.
 - **Reopening and context**: a reopened session restores its conversation, brief, plan, and board. Follow-up turns resume the saved CLI session when it can, and otherwise hand the saved messages and a summary of completed work back as context.
 
