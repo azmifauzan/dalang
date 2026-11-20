@@ -8,6 +8,7 @@
 
 ## Find a topic
 
+- [Choose Ask, Quick, or Full](USAGE.md#choose-ask-quick-or-full)
 - [Choose models, add accounts, and route tasks](PROVIDERS.md)
 - [Monitor runs, recover a task, and roll back](USAGE.md#4-run-the-work)
 - [Review changes, merge, and open a pull request](USAGE.md#5-review-and-merge)

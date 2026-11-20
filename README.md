@@ -21,6 +21,8 @@ Start with one signed-in CLI or give planning, coding, and review to different p
 
 ## What you get
 
+- **Pick how much process you need.** Ask questions about your code with nothing written, fix something small with **Quick** in one screen, or run the full brief and plan flow with **Full**. Sessions are saved per project and can be reopened like any chat.
+- **See your limits at a glance.** A bar at the top shows how much of each connected CLI's 5 hour and weekly limit is left, and refreshes on its own.
 - **Agree on the scope before work starts.** Answer the Lead’s questions, edit the brief, and approve the task plan.
 - **Run independent tasks in parallel.** See dependencies, shared files, and which agent gets each task. Follow live logs and stop, retry, or resume runs from the Work view.
 - **Use the models and accounts you choose.** Configure agents by role and task complexity, with a fallback for limits, timeouts, or login failures.
@@ -51,9 +53,9 @@ dalang
 ## Your first project
 
 1. Follow the setup wizard to check your CLIs and choose your Lead, coders, and reviewer.
-2. Open an existing Git repository or create a new project. In **Discuss**, describe a goal with a clear result.
-3. Approve the **Brief**, then generate, edit, and approve the **Plan**.
-4. Start **Work** and follow agent activity. Open **Review & merge** to inspect the results and decide what to merge.
+2. Open an existing Git repository or create a new project. It opens into a chat. Use **Ask** to question the Lead about your code. Nothing is written.
+3. For a small fix or feature, choose **Quick** beside the send button. The Lead returns a one-task plan. Click **Run**, then review and merge.
+4. For larger work, choose **Full**. Describe a goal in **Discuss**, approve the **Brief** and **Plan**, start **Work**, and decide what to merge in **Review & merge**.
 
 [Walk through a project with screenshots](docs/USAGE.md)
 
@@ -71,4 +73,4 @@ dalang
 
 ## License
 
-[MIT](LICENSE) · [Wayang artwork credits](packages/web/src/assets/wayang/CREDITS.md)
+[MIT](LICENSE) · [Wayang artwork credits](packages/web/src/assets/wayang/CREDITS.md) · [Provider mark credits](packages/web/src/assets/providers/CREDITS.md)

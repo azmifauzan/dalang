@@ -296,7 +296,7 @@ Each phase must be useful on its own before the next one starts.
 | v0.4 Paralel | Worktree per task, dependency graph, per-provider parallel limits, quota fallback, usage statistics | Two independent tasks run at the same time without conflict; a quota limit automatically reroutes to a backup profile | Parallel half met on 19 Nov 2026 (one real-model run, 2 independent tasks ran at the same time and merged cleanly); quota reroute verified with scripted tests only |
 | v0.5 | Polish and distribution: npm package with `npx dalang-cli` and `dalang doctor`, several accounts per provider, token and cost statistics, replay tests, macOS sandbox, push and pull request after merge, documentation | `npx dalang-cli` starts on a clean Linux and macOS machine, and replay scenarios cover quota reroute, review fix round, and parallel merge | Released on 19 Nov 2026 as `dalang-cli@0.5.0` on npm (Linux verified: replay scenarios, headless Chromium browser E2E, `dalang doctor`, `pnpm pack` bundle; macOS `sandbox-exec` unit-tested for parity, clean macOS host install not yet run) |
 | v0.6 | UI revamp: first-run wizard, five-step guided project flow, wayang stage with activity feed during work, Config page with sidebar tabs, theme toggle, Indonesian and English (UI and agent output), redrawn gunungan logo, new-version notice | A new user reaches the Discuss step of a first project through the wizard without reading docs, and no action of the v0.5 UI is lost | Released on 19 Nov 2026 as `dalang-cli@0.6.0` on npm. Verified on Linux with unit tests, server API tests, CLI doctor tests, and headless Chromium CDP E2E for fresh-install wizard, upgrade path, 6 Config tabs, Statistics, Work stage pause/visibility, ID/EN i18n with a no-English-leak scan of every step and Config tab, light/dark theme, update notice, and 390px mobile drawer) |
-| v0.7 | Session modes: a project opens into a chat; sessions are saved per project and reopenable, with one `working` session at a time, and each runs as Ask (questions only, the default), Quick (small fix or feature, no brief), or Full (the five-step flow), switched from the composer and only upward | A project opens into a chat, a small bug fix goes from request to merge in one screen without a brief, an Ask session never changes a file, and a Full session behaves as in v0.6 | Planned |
+| v0.7 | Session modes: a project opens into a chat; sessions are saved per project and reopenable, with one `working` session at a time, and each runs as Ask (questions only, the default), Quick (small fix or feature, no brief), or Full (the five-step flow), chosen in the composer and applied when a message is sent | A project opens into a chat, a small bug fix goes from request to merge in one screen without a brief, an Ask session never changes a file, and a Full session behaves as in v0.6 | Tagged v0.7.0 and released on GitHub on 20 Nov 2026. Verified on Linux with typecheck, build, and automated tests (core, server with headless Chromium E2E on replayed agent output, and CLI doctor), and with a packed install from an empty folder (`--version`, `doctor`, server health, UI). Open: Quick and Full turns against the real CLIs after the chat rework, macOS, and the npm publish of 0.7.0 |
 | v0.8 | Agent delegation: a running agent splits its own task into subtasks on other profiles through a DALANG MCP server | One task is split by its agent into at least two subtasks on two providers, and all of them pass review and merge | Planned |
 | v0.9 | Session protocols (Claude Agent SDK, `codex app-server`, ACP), steering a running task, context handoff on fallback, native Windows | A fallback mid-task continues from the handoff instead of starting over, on all three providers | Planned |
 | v0.10 | Scheduled and webhook-triggered runs, outside agents over MCP | A scheduled run and a run started from a terminal agent both finish without opening the UI | Planned |
@@ -413,6 +413,38 @@ Decisions made while building v0.5 (Polish and distribution):
 
 What DALANG has that T3 Code does not: a brief agreed before any code, a plan with milestones and dependencies, routing by role and complexity, a reviewer on a different provider with a fix loop, `files_allowed` enforced on the diff, and a merge gate. T3 Code is a control plane for chat threads; DALANG stays a pipeline from goal to merged code. The items below borrow T3 Code's mechanisms where they make that pipeline stronger.
 
+### Research: terminal clients and similar tools (20 Nov 2026)
+
+Question: should DALANG offer a terminal UI (TUI) next to the web UI? This is a research note and an open question, not a decision. No roadmap item depends on it. Figures come from web search results (blogs and vendor posts, not the primary reports) and were not cross-checked.
+
+**Similar tools**
+
+| Tool | Shape | Note |
+| --- | --- | --- |
+| T3 Code | Desktop, web server, and mobile GUI over Claude Code, Codex, and OpenCode | Alpha. Started with `npx` or a desktop app. No TUI |
+| Claude Squad | Go TUI, one tmux session and one git worktree per agent | Works over SSH. Runs agents in parallel but has no brief, plan, review, or merge gate |
+| Conductor | macOS app, parallel agents in worktrees | Closed source |
+| Crystal | Desktop app | Retired in Feb 2026 for a paid successor |
+| Vibe Kanban | Kanban board for agents | Company closed in Apr 2026, now community maintained |
+| OpenCode | One server with a TUI, a web UI, a desktop app, and an SDK attached to it | Per its docs the web UI lacks some TUI features (custom keybinds, custom themes). Docs suggest the TUI for keyboard work and the web UI for file trees and diff review |
+
+- **Orchestration in OpenCode** is one primary agent with subagents (each with its own model, permissions, and prompt), plus community plugins for background and parallel agents. It is not a pipeline with a brief, a reviewer on another provider, and a merge gate. DALANG orchestrates other CLIs, OpenCode orchestrates models inside its own harness.
+- **Subscriptions**: OpenCode can use a ChatGPT Plus or Pro login and GitHub Copilot without an API key. Using a Claude Pro or Max login there is not supported by Anthropic (the OpenCode docs say so, and one review reports a block on third-party OAuth since 9 Jan 2026), so Claude needs an API key. DALANG drives the official CLIs, which log in themselves, so a Claude subscription works through Claude Code. Worth stating in the README. The status of that policy was not checked against Anthropic directly.
+
+**Terminal or web?** No survey found splits developers by terminal, IDE, or web client. Surveys measure which tool is used, not through what surface. Signals:
+
+- Stack Overflow 2025: Claude Code about 10% of all respondents, Cursor 18%, agents used by 31%. Stack Overflow 2026: coding assistants 66%, agents 26%.
+- JetBrains 2026 (via a secondary summary): 90% of professional developers use AI agents weekly, Claude Code 39% at work, then Copilot 21%, Codex 16%, Cursor 12%.
+- Pragmatic Engineer 2026 (via a secondary summary): 70% of engineers use two to four AI tools at once.
+- Terminal-first tools now ship IDE, desktop, and web surfaces too (Claude Code, and the Codex desktop app in 2026). No source shows a TUI would add DALANG users.
+
+**What a TUI would involve** (if it is ever built)
+
+- Every PRD feature can run in a terminal. Easy: chat, the question cards, run logs and controls, settings, history, statistics, the Ask, Quick, and Full composer. Needs extra work: the editable brief (open `$EDITOR`), the task board (keyboard reordering instead of drag and drop), and the diff and merge gate (a scrollable diff, with the browser as fallback for large diffs). Changes: browser notifications become a terminal bell or an OS notification, and the wayang artwork is not carried over.
+- The workable shape is the OpenCode pattern: the server keeps all session, mode, and gate logic and the TUI is a thin client of the same API, so the two UIs cannot drift. Ink (React for the terminal) would reuse the TypeScript and React stack and the `shared` types.
+- Cost: a second frontend to maintain for a small project, and OpenCode itself shows the two UIs still diverge in features. It is best started after the v0.7 session API is stable.
+- Cheaper first step if wanted: non-interactive commands against the running server (`ask`, `quick`, `sessions`, `status`, `approve`), which can grow into a TUI.
+
 ### v0.5: polish and distribution
 
 - **npm package.** Publish `dalang-cli` (the name `dalang` is taken on npm by an unrelated package; the installed command stays `dalang`); `npx dalang-cli` starts the server and opens the browser. `dalang doctor` checks Node, git, `bwrap` (or `sandbox-exec`), each CLI's install and login, and the data directory, and prints a fix for each failure.
@@ -488,7 +520,7 @@ The current UI confuses people new to DALANG. It shows six tabs named after inte
   | 5 Review and merge | Guard |
 
   Done steps show a check, the current step is highlighted, later steps are visible but not active. The D-A-L-A-N-G letters may stay as a small label; they are not the navigation.
-- Under the stepper, a "Next step" card always says what to do now in one sentence, with one primary button.
+- Under the stepper, a "Next step" card said what to do now in one sentence with one primary button. v0.7 removed it, because its button repeated an action that already sits in the step.
 
 ##### First-run wizard
 
@@ -595,13 +627,13 @@ The v0.6 flow always runs `Discuss → Brief → Plan → Work → Review & merg
 - **Reopening and continuing.** The Lead's context is restored through the saved CLI session id when the CLI can resume it; otherwise the saved messages are handed back to it as context. A finished Quick or Full session reopens as a chat: new messages are Ask-style questions about what was done, and the composer can start a new Quick or Full cycle in the same session (when no other session is `working`).
 - **A project opens straight into a chat (Ask).** There is no start panel and no mode to pick first. The project page is a conversation with the Lead and one composer at the bottom. The session is created on the first message, in Ask mode, so opening a project and looking around creates nothing.
 - **The mode lives in the composer.** A small segmented control beside the send button reads `Ask | Quick | Full`, with Ask selected. Switching it changes what sending does: Ask sends a message, Quick asks the Lead for a mini plan, Full starts the Discuss step with the Brief gate. The sidebar lists projects, and a project expands to its sessions (newest first, each with a small mode mark and a dot when it is `working`); `New chat` sits at the top of that list. The mode is never picked in the sidebar.
-- **Switching up is promotion.** On an active Ask session the control moves it to Quick or Full and carries the conversation over (the Lead's earlier answers become context for the brief or the mini plan). Switching down is disabled while the session is `working`, with a short reason, because work that changed files cannot become read-only. The Lead may suggest a switch in the chat ("this looks like a small fix, switch to Quick?") with a one-click button; it never switches on its own.
+- **Switching up is promotion, and it happens on send.** Choosing a mode in the control only decides what the next message does, so looking at Quick or Full changes nothing. When a message is sent in a higher mode, the session moves up and carries the conversation over (the Lead's earlier answers become context for the brief or the mini plan). A question (Ask) can be sent in any session at any time and never changes its mode, so a Full session can still be asked something. Quick is not offered inside a Full session until its work is finished, because a Full session already holds a brief and a plan. Switching down is disabled while the session is `working`, with a short reason, because work that changed files cannot become read-only. The Lead may suggest a switch in the chat ("this looks like a small fix, switch to Quick?") with a one-click button; it never switches on its own.
 - **The stepper and timeline appear only after a switch.** Ask shows no steps. Quick shows a short timeline (Request → Work → Review → Merge). Full shows the five-step stepper. A strip above the chat shows the mode badge and the session title (click to rename).
 - **Ask** (the default): a chat with the Lead about the repository. Read-only: no tasks, no worktree, nothing written outside `.dalang/` chat logs. Switching to Full from here is the "turn this talk into a brief" path.
 - **Quick**: for a bug fix or small feature. The user writes the request; the Lead returns one mini plan card (a single task with `files_allowed`, no brief) in the chat; one click on `Run` starts it; the usual verify, review (with the fix loop), and merge gate follow. If the Lead judges the work to need more than one task or touches many areas, it says so and offers a switch to Full, which keeps the request and the Lead's findings as the start of the Discuss step.
 - **Full**: exactly the v0.6 flow, unchanged.
 - **The merge gate applies in every mode that changes files.** Lighter modes skip planning ceremony, not safety: sandbox, `files_allowed`, verify, review, and the approval to merge stay.
-- **Promotion is explicit and one-way** (Ask → Quick, Ask → Full, Quick → Full). Nothing is promoted or demoted by a guess; the Lead may suggest it.
+- **Promotion is explicit.** A session moves up (Ask → Quick, Ask → Full, Quick → Full) when a message is sent in the higher mode. Nothing is promoted by a guess; the Lead may suggest it with a button. A question (Ask) is allowed in any session and never changes its mode.
 
 #### Data model change (schema v9)
 
@@ -622,12 +654,24 @@ The v0.6 flow always runs `Discuss → Brief → Plan → Work → Review & merg
 - An Ask session on a real repository answers questions and leaves `git status` clean.
 - A Quick session fixes a seeded small bug, passes verify and review, and merges after one approval, with no brief written.
 - Opening a project shows the chat with the composer ready and creates no session until the first message.
-- Switching an Ask session to Quick or Full keeps the conversation; switching a `working` session back to Ask is refused with a reason.
+- Switching an Ask session to Quick or Full keeps the conversation; a question can still be asked in a Full session, and Quick is not offered inside a Full session until its work is finished.
 - A Quick request the Lead judges too big offers a switch to Full, and the Full session starts with that request already in Discuss.
 - Sessions of a project are listed in the sidebar and reopening one restores its conversation, brief, plan, and board; the Lead answers a follow-up in a reopened session with the earlier context.
 - Starting work in a second session while another is `working` is refused with a clear message naming the first; after it merges or is discarded, the second can start.
 - A v0.6 database upgrades to schema v9 with every project's stage, brief, plan, tasks, and messages intact in its session.
 - The i18n leak scan passes for the new screens in Indonesian, and the browser E2E covers all three modes.
+
+#### Implementation notes (shipped in v0.7.0)
+
+- **Schema v9 and artifact migration**: `sessions` gained `title`, `mode`, `work_state`, `archived_at`, and the partial unique index `idx_sessions_one_working_per_project ON sessions(project_id) WHERE work_state = 'working'`. `briefs` and `plans` gained `session_id`, and `plans.brief_id` became nullable. `migrateToV9` turns each active v0.6 project into one Full session (`working` when unfinished work exists, else `idle`), deletes empty orphan sessions, moves `.dalang/` artifacts into `.dalang/sessions/<sessionId>/`, rewrites the stored paths, and adds the session ignore lines to `.dalang/.gitignore`.
+- **Ask**: Ask turns run with `permissionMode: 'read-only'` and write raw CLI logs into `.dalang/tmp/`, so `git status` stays clean even on upgraded repos.
+- **Quick**: a Quick turn validates a single-task `QuickPlanContractSchema` (`verdict: 'ready' | 'too_large'`), stores `plans.brief_id = null`, and runs the same sandbox, `files_allowed`, verify, review loop, and merge approval inline.
+- **Mode choice**: the composer buttons are local state. The chat endpoint takes the requested `mode` and promotes the session when that mode is higher. `POST /api/projects/:id/chat` also accepts `provider`, `model`, and `effort` for the turn.
+- **Running turn**: `LeadService` keeps the Lead turns running now, by session, from the `lead.turn_started` and `lead.turn_finished` events, and reports one as `turn` on the session summary (in memory, with a one hour stale guard). Pages show the running panel from that, so it survives switching chats. Live log lines are kept per session in the page.
+- **One chat surface**: Ask, Quick, and the Full discuss step share `ChatTranscript`, `RunningTurn`, `ComposerDock`, `useChatScroll`, and `useComposerChoice` under `packages/web/src/components/chat/`. Replies render through `react-markdown` and `remark-gfm`. The model picker lists Claude models by their resolved version.
+- **Provider limits**: `ProviderUsageBar` reads the provider status and refreshes it on the `usageRefreshMinutes` setting (3, 5, or 10, default 5) while the page is visible, and when a run finishes.
+- **Removed**: the "Next step" card, the Lead CLI and model fields of the Discuss step, and the duplicate plan buttons.
+- **Reopening and context**: a reopened session restores its conversation, brief, plan, and board. Follow-up turns resume the saved CLI session when it can, and otherwise hand the saved messages and a summary of completed work back as context.
 
 ### v0.8: agent delegation
 

@@ -2,6 +2,36 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
+## 0.7.0 (Session modes and chat), 20 Nov
+
+A project now opens into a chat. Sessions are saved per project and can be reopened like any AI chat, and each message runs as `Ask` (questions, read-only), `Quick` (a small fix with no brief), or `Full` (the v0.6 five-step flow). The merge gate, sandbox, `files_allowed`, verify, and review apply to every mode that changes files.
+
+Verified on Linux: typecheck, build, and 101 automated tests pass (87 core, 9 server, 5 CLI). The server tests include headless Chromium runs on a real server with replayed agent output, covering Ask, Quick, Full, the v0.6 upgrade path, and an Indonesian leak scan. Not verified: Quick and Full turns against the real CLIs after the chat rework, macOS, and a clean install on another host. The live progress panel was checked against real Antigravity logs only; the Claude Code and Codex event shapes follow their documented formats.
+
+**Sessions and modes**
+- **Chat first.** Opening a project shows a heading with the composer in the middle and creates no session. The first message creates one. A chat with messages keeps the composer pinned to the bottom of the window.
+- **Choosing a mode changes nothing until you send.** The Ask, Quick, and Full buttons decide what the next message does. A session moves up when a message is sent in a higher mode, and the Lead may suggest a switch with a button but never switches on its own. A question can be asked in any session at any time without changing its mode. Quick is not offered inside a Full session until its work is finished.
+- **Quick.** The Lead returns one mini plan (a single task and its allowed files, no brief). One click on `Run`, then verify, review, and the merge approval on one screen. A request the Lead judges too large offers `Switch to Full (keeps findings)`.
+- **Saved sessions.** Each project lists its sessions in the sidebar (newest first, mode mark, a pulsing dot while the Lead answers). Reopening one restores its conversation, brief, plan, and board. Sessions can be renamed, archived, or deleted after a confirmation that never touches merged code.
+- **One working session per project.** While a session has running tasks, a task awaiting review, or an unmerged branch, no other session in the project can start work (HTTP 409 naming the first). Other sessions can still ask questions. `Discard work` returns a session to idle.
+- **Database schema v9.** `sessions` gains `title`, `mode`, `work_state`, and `archived_at`, with a partial unique index allowing one `working` session per project. `briefs` and `plans` move to a `session_id`, and `plans.brief_id` can be null for Quick. Upgrading a v0.6 database turns each project that has data into one Full session, removes empty legacy sessions, and moves `.dalang/` artifacts into `.dalang/sessions/<session id>/`. The upgrade also adds `sessions/*/tmp/` and `sessions/*/logs/` to `.dalang/.gitignore` and keeps lines you added.
+
+**One chat surface in all three modes**
+- **Transcript.** Your messages on the right, Lead replies on the left as formatted text (headings, lists, code, tables, links) through `react-markdown` and `remark-gfm`. Raw HTML is never rendered, only web and mail links are clickable, and `file://` links show as code. A new reply is scrolled to its first line.
+- **Running panel.** Your question appears at once, then the real CLI name, elapsed time, the current step (reading a file, searching, running a command), and the answer as it streams. The raw log is folded under `Show technical log`.
+- **Running state survives switching chats.** The server reports the Lead turn running in a session (`turn` on the session summary), so a chat you leave and reopen still shows the panel with the right clock, the composer stays busy, and live progress is kept per chat.
+- **Model picker.** One chip opens a picker modeled on T3 Code: a provider rail with the real Claude, OpenAI, and Antigravity marks, model search, Claude models named with their versions (for example `Claude Opus 5.5`), and a reasoning column. It starts from the project's Lead setting. The chosen model and effort reach the CLI for Ask, Quick, and Full (`effort` on `POST /api/projects/:id/chat`).
+- **Header.** The page header names the CLI chosen in the composer, not the project's default id. The Full discuss step no longer has its own Lead CLI and model fields.
+
+**Around the chat**
+- **Provider limits bar.** A slim bar shows the tightest 5 hour and weekly limit left per connected CLI, and `Details` lists every window with its reset time. It refreshes every 5 minutes while the page is visible (choose 3, 5, or 10 in Config, General, stored as `usageRefreshMinutes`), and when a run finishes.
+- **Minimizable sidebar.** The sidebar shrinks to an icon rail on desktop and the choice is remembered. The project panel is full width.
+- **Fewer duplicate controls.** The Full flow no longer has the `Next step` card, and the plan step shows one `Generate plan now` button instead of three.
+- **Layout fix.** The top bar and sidebar now switch at the same `lg` breakpoint, so Config and Statistics no longer disappear between 768 and 1023 px.
+- **Bilingual.** All new screens exist in Indonesian and English and pass the leak scan.
+
+**Dependencies and size.** Adds `react-markdown` and `remark-gfm` to the web package. The built web bundle grows from 210,253 to 278,465 bytes gzipped (measured on the previous commit and on this one), which covers all of the v0.7 screens.
+
 ## 0.6.0 (UI revamp), 19 Nov
 
 Guided UI revamp focused on first-run clarity, bilingual Indonesian/English support, archival-derived wayang kulit & gunungan artwork, and update visibility without losing a single v0.5 action.

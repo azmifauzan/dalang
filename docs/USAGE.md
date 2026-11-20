@@ -1,6 +1,6 @@
 # Use Dalang
 
-This walkthrough takes a small change through **Discuss**, **Brief**, **Plan**, **Work**, and **Review & merge**. The screenshots show Dalang running a demo project with replayed agent responses. [Install and start Dalang](INSTALL.md)
+This walkthrough covers the three ways to work (**Ask**, **Quick**, and **Full**), then takes a small change through the Full flow: **Discuss**, **Brief**, **Plan**, **Work**, and **Review & merge**. The screenshots show Dalang running a demo project with replayed agent responses. They were taken before v0.7, so the sidebar and page header look different today. [Install and start Dalang](INSTALL.md)
 
 ## Set up your team and project
 
@@ -17,15 +17,35 @@ Choose **New project** to initialize a folder with Git, or **Open existing repo*
 
 Dalang uses `PROJECT.md` for repository instructions and can link `CLAUDE.md` and `AGENTS.md` to it. Use the **PROJECT.md** button to review the file or check the links. Keep build commands, test commands, and project conventions here.
 
+## Choose Ask, Quick, or Full
+
+A project opens into a chat with the Lead. The mode selector beside the send button decides how much process a message starts. No session exists until you send the first message.
+
+| Mode | Use it for | What happens |
+| --- | --- | --- |
+| **Ask** (default) | Questions about the repository | The Lead answers read-only. Nothing in the repository changes. |
+| **Quick** | A small bug fix or feature | The Lead returns one mini plan with a single task and the files it may touch, with no brief. Click **Run**. Verify, review, and the merge approval still apply. |
+| **Full** | A larger feature | The five-step flow below, with the brief and plan approvals. |
+
+- A new chat opens with a heading and the composer in the middle. Once there are messages, the conversation scrolls and the composer stays at the bottom.
+- The model chip beside the send button opens a picker: choose a provider on the left, search and pick a model, and set the reasoning effort on the right. It starts from the project's Lead setting, and you can change it at any time. The choice applies to Ask, Quick, and the first Full message sent from this composer.
+- Your question appears at once. While the CLI works you see its real name (for example Antigravity CLI), how long it has run, what it is doing (reading a file, searching, running a command), and the answer as it is written. The technical log is folded away under **Show technical log**. Replies are formatted: headings, lists, code, tables, and web links.
+- The bar at the top of a project shows how much of each connected CLI's 5 hour and weekly limits is left. The numbers refresh every 5 minutes while the page is open (choose 3, 5, or 10 minutes in **Config**, **General**) and again when a run finishes. Click **Details** for every window, its reset time, and a refresh button. A value at 20% or below turns red.
+- The button at the top of the sidebar minimizes it to a column of icons (new project, Statistics, Config, theme). Click it again to expand. Dalang remembers the choice.
+- The mode buttons only choose what your next message does, so you can look at Quick or Full without changing anything. A session moves up (Ask to Quick or Full, Quick to Full) when you send a message in the higher mode, and the conversation carries over. Ask is always available, in any session, and never changes the session's mode. Quick is not offered inside a Full session until its work is finished. The Lead may suggest a switch with a button, and never switches on its own.
+- If the Lead judges a Quick request too large, it says why and offers **Switch to Full (keeps findings)**.
+- Each project lists its sessions in the sidebar, newest first, with **New chat** at the top. Open one to restore its conversation, brief, plan, and task board. Click the title to rename a session. You can archive or delete it. Deleting asks for confirmation and never touches merged code.
+- Only one session per project can have unfinished work at a time. A second session can still chat in Ask mode, and can start work after the first one is merged or discarded with **Discard work**.
+
 ## 1. Discuss the goal
 
-Open **Discuss** and describe what should change, what must stay in scope, and how you will know it works. You can choose a **Lead CLI** and model for the discussion.
+Choose **Full** beside the send button and describe what should change, what must stay in scope, and how you will know it works. The model chip in the composer chooses the CLI and model for each message.
 
 For example, send this goal in a small Node.js project.
 
 > Add a greeting helper that returns a formatted message from a name. Include tests for normal and empty input. Keep the module dependency-free.
 
-Click **Send to Lead**. Answer any question cards, add notes if needed, then click **Submit answers & continue**. When the goal is clear, click **Enough, write the brief**.
+Click **Send** (the button reads **Send to Lead** once the discussion has started). Answer any question cards, add notes if needed, then click **Submit answers & continue**. When the goal is clear, click **Enough, write the brief**.
 
 ## 2. Approve the brief
 

@@ -84,4 +84,4 @@ CLIs periodically retire or rename model ids. Click **Refresh CLI status** to re
 
 ### Database schema version error after downgrading
 
-If you see `Database schema v8 is newer than this DALANG build`, update DALANG to the latest version (`npx dalang-cli@latest`) or point `DALANG_HOME` to a fresh directory.
+If you see `Database schema v9 is newer than this DALANG build`, update DALANG to the latest version (`npx dalang-cli@latest`) or point `DALANG_HOME` to a fresh directory.
