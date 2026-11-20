@@ -1,6 +1,6 @@
 # Use Dalang
 
-Start in Ask to explore a repository, use Quick for a one-task fix, or follow the Full walkthrough for work that needs a brief and a plan. These screenshots show Dalang v0.7 running demo repositories with replayed agent responses. [Install and start Dalang](INSTALL.md)
+Start in Ask to explore a repository, use Quick for a one-task fix, or follow the Full walkthrough for work that needs a brief and a plan. Screenshots use demo repositories and replayed agent responses. [Install and start Dalang](INSTALL.md)
 
 ## Set up your team and project
 
@@ -31,7 +31,11 @@ A project opens into a chat with the Lead. Pick a mode beside the send button. D
 
 The model chip beside the send button opens a picker for the provider, model, and reasoning effort. It starts with the project's Lead settings. While the Lead works, the chat shows the CLI name, elapsed time, progress, and any streamed reply. Expand **Show technical log** to inspect raw output.
 
-![Ask chat showing the Lead explaining a bug with a code block and offering to switch to Quick](images/ask.webp)
+### Attach images
+
+Choose Claude Code or Codex, then click the paperclip at the lower left of the composer or paste an image. In Ask, Quick, and Full, send up to three PNG, JPEG, or WebP images per message, each up to 4 MiB. Write a prompt if you want to give the CLI extra context. Use the preview's **Remove** button to drop an image before sending. Dalang sends the images to the selected provider for that turn and keeps them in the chat transcript.
+
+![Ask chat showing a screenshot attached to a message and the paperclip in the composer footer](images/ask.webp)
 
 ### Run a Quick fix
 
@@ -104,13 +108,17 @@ In **Remote push and pull request**, select the Git remote (usually `origin`). A
 | Where | What you can do |
 | --- | --- |
 | **Config → General** | Choose English or Indonesian for the UI and Lead/Reviewer output, set the theme, reopen the wizard, and manage quota refresh and update notifications. |
-| **Config → Agents** | Check CLI versions, logins, model lists, and quotas. Refresh after installing a CLI or signing in again. |
+| **Config → Agents** | Check CLI versions, logins, model lists, and quotas. Use **Update CLI** to update an installed provider or **Refresh CLI status** after signing in. |
 | **Config → Team** | Edit profiles, models, reasoning effort, account directories, fallback targets, timeouts, and parallel slots. |
 | **Config → Task routing** | Order rules by role and task complexity. The first matching rule selects the primary and can set a fallback. |
-| **Config → Security** | Check sandbox status and manage the Linux Antigravity keyring opt-in. |
+| **Config → Security** | Enable or disable DALANG password login, check sandbox status, and manage the Linux Antigravity keyring opt-in. |
 | **Config → About** | Check your version, look for updates, and open support docs. |
 | **Statistics** | Filter Lead, execution, fix, and review runs by project and time window. See duration, failures, fallback events, reported tokens, and API-equivalent cost estimates. |
 
 ![Statistics showing Lead, execution, fix, and review counts by provider, with captured tokens and estimated costs](images/statistics.webp)
 
 The provider limits bar shows the tightest five-hour and weekly windows each installed CLI reports. **Details** lists the available windows, reset times when reported, and a refresh button. Dalang refreshes when a run finishes and every five minutes while the page is visible. Choose three, five, or ten minutes in **Config → General**. [Providers and accounts](PROVIDERS.md)
+
+When DALANG login is enabled, use the **Sign out** icon on the far right of the sidebar footer. [Set or disable the app password](INSTALL.md#require-a-dalang-password)
+
+![DALANG sign-in form with the gunungan mark above the title](images/login.webp)

@@ -17,6 +17,7 @@ const CHECK_UPDATES_KEY = 'check_for_updates';
 const USAGE_REFRESH_KEY = 'usage_refresh_minutes';
 const UPDATE_LATEST_KEY = 'update_check_latest';
 const UPDATE_CHECKED_AT_KEY = 'update_check_at';
+const LOGIN_PASSWORD_KEY = 'login_password_hash';
 
 /**
  * Global DALANG settings persisted in the SQLite `settings` table.
@@ -48,6 +49,14 @@ export class SettingsService {
 
   antigravityKeyringAccess(): boolean {
     return this.getBool(AGY_KEYRING_KEY, false);
+  }
+
+  loginPasswordHash(): string | null {
+    return this.getValue(LOGIN_PASSWORD_KEY) || null;
+  }
+
+  setLoginPasswordHash(hash: string | null): void {
+    this.setValue(LOGIN_PASSWORD_KEY, hash ?? '');
   }
 
   language(): UiLanguage | null {

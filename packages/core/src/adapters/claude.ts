@@ -401,9 +401,10 @@ export class ClaudeCodeAdapter implements CliAdapter {
             ? 'bypassPermissions'
             : 'auto'
           : 'acceptEdits';
+    const images = options.images ?? [];
     const args: string[] = [
       '-p',
-      options.prompt,
+      ...(images.length ? ['--input-format', 'stream-json'] : [options.prompt]),
       '--output-format',
       'stream-json',
       '--verbose',
@@ -414,6 +415,19 @@ export class ClaudeCodeAdapter implements CliAdapter {
       '--permission-mode',
       permissionFlag,
     ];
+    const stdinData = images.length ? JSON.stringify({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'text', text: options.prompt },
+          ...images.map((image) => ({
+            type: 'image',
+            source: { type: 'base64', media_type: image.mimeType, data: image.data.toString('base64') },
+          })),
+        ],
+      },
+    }) + '\n' : undefined;
 
     if (options.sessionId) {
       args.push('--resume', options.sessionId);
@@ -451,7 +465,9 @@ export class ClaudeCodeAdapter implements CliAdapter {
         idleTimeoutMs: options.idleTimeoutMs ?? 180_000,
         signal: options.signal,
         env,
+        stdinData,
         onStdoutLine: (line) => {
+          if (images.length && /"type"\s*:\s*"user"/.test(line.slice(0, 256))) return;
           logger.write(line);
           options.onLogLine?.(line);
           const trimmed = line.trim();

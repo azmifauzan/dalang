@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { ProjectSummary, ProviderId, SessionMode, SessionSummaryDTO } from '@dalang/shared';
+import type { ChatImage, ProjectSummary, ProviderId, SessionMode, SessionSummaryDTO } from '@dalang/shared';
 import { useI18n } from '../i18n/index.js';
 import { api } from '../lib/api.js';
 import { ChatTranscript } from './chat/ChatTranscript.js';
@@ -41,6 +41,7 @@ export function AskSessionView({
   const qc = useQueryClient();
   const { t } = useI18n();
   const [input, setInput] = useState(initialPrompt ?? '');
+  const [images, setImages] = useState<ChatImage[]>([]);
   const [requestStartedAt, setRequestStartedAt] = useState(() => Date.now());
   const choice = useComposerChoice(project, session, onProviderChange);
 
@@ -58,15 +59,17 @@ export function AskSessionView({
   });
 
   const sendMutation = useMutation({
-    mutationFn: (vars: { message: string; mode: SessionMode }) =>
+    mutationFn: (vars: { message: string; mode: SessionMode; images: ChatImage[] }) =>
       api.sendChatMessage(project.id, {
         sessionId: session?.id,
         mode: vars.mode,
         message: vars.message,
+        images: vars.images,
         ...choice.payload,
       }),
     onSuccess: (res) => {
       setInput('');
+      setImages([]);
       qc.invalidateQueries({ queryKey: ['sessions', project.id] });
       qc.invalidateQueries({ queryKey: ['discuss', project.id, res.session.id] });
       qc.invalidateQueries({ queryKey: ['plan', project.id, res.session.id] });
@@ -87,11 +90,12 @@ export function AskSessionView({
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
     const trimmed = input.trim();
-    if (!trimmed) return;
+    if (!trimmed && !images.length) return;
     setRequestStartedAt(Date.now());
     sendMutation.mutate({
       message: trimmed,
       mode: selectedMode,
+      images,
     });
   };
 
@@ -117,6 +121,8 @@ export function AskSessionView({
       value={input}
       onChange={setInput}
       onSubmit={handleSubmit}
+      images={images}
+      onImagesChange={setImages}
       busy={turnRunning}
       otherWorkingSessionTitle={otherWorkingTitle}
     />

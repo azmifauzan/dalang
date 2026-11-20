@@ -1,0 +1,15 @@
+.git
+.agents
+.codex
+.claude
+.dalang
+**/.claude
+**/.env*
+**/.npmrc
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+packages/cli/bundle
+packages/cli/web-dist
+packages/cli/README.md
+packages/cli/LICENSE

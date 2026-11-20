@@ -1,6 +1,7 @@
 import type { ReactNode, RefObject } from 'react';
 import type {
   AskMessageContent,
+  ChatImageMessage,
   DiscussMessageDTO,
   SessionMode,
   SessionSummaryDTO,
@@ -56,6 +57,8 @@ export function ChatTranscript({
             ? (msg.content as AskMessageContent)
             : null;
         const custom = renderBody?.(msg) ?? null;
+        const attached = msg.type === 'images' && msg.content && typeof msg.content === 'object'
+          ? msg.content as ChatImageMessage : null;
 
         return (
           <article
@@ -112,6 +115,17 @@ export function ChatTranscript({
                       </Button>
                     </div>
                   )}
+                </div>
+              ) : attached ? (
+                <div className="space-y-2">
+                  {attached.text && <p className="whitespace-pre-wrap text-sm">{attached.text}</p>}
+                  <div className="flex flex-wrap gap-2">
+                    {attached.images.map((image) => (
+                      <a key={image.id} href={`/api/chat-images/${encodeURIComponent(image.id)}`} target="_blank" rel="noreferrer" className="max-w-full rounded-md focus-visible:outline-2 focus-visible:outline-ring">
+                        <img src={`/api/chat-images/${encodeURIComponent(image.id)}`} alt={image.name} loading="lazy" width={144} height={108} className="aspect-[4/3] max-w-full rounded-md border border-input object-cover" />
+                      </a>
+                    ))}
+                  </div>
                 </div>
               ) : typeof msg.content === 'string' && msg.role === 'lead' ? (
                 <Markdown>{msg.content}</Markdown>

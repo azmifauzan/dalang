@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { ProviderId, SandboxEngine } from '@dalang/shared';
+import { getDbPath } from '../paths.js';
 import type { CliRunner, RunCommandOptions, RunCommandResult } from './types.js';
 
 export function buildPathEnv(extraEnv?: Record<string, string | undefined>): NodeJS.ProcessEnv {
@@ -182,8 +183,10 @@ export class NodeCliRunner implements CliRunner {
       }
 
       if (options.stdinData !== undefined && child.stdin) {
-        child.stdin.write(options.stdinData);
-        child.stdin.end();
+        child.stdin.on('error', (err: NodeJS.ErrnoException) => {
+          if (err.code !== 'EPIPE') child.kill('SIGTERM');
+        });
+        child.stdin.end(options.stdinData);
       }
     });
   }
@@ -198,6 +201,7 @@ export interface BwrapInvocation {
 
 export interface SandboxWrapOptions {
   dbusSocket?: string;
+  imageDir?: string;
   readOnly?: boolean;
   bindProviderDirs?: boolean;
   configDir?: string | null;
@@ -210,8 +214,13 @@ const PROVIDER_STATE_DIRS: Record<ProviderId, string[]> = {
   antigravity: ['.gemini'],
 };
 
-const MASKED_CREDENTIAL_DIRS = ['.ssh', '.gnupg', '.aws', '.docker', '.kube', '.config/gcloud'] as const;
-const MASKED_CREDENTIAL_FILES = ['.git-credentials', '.netrc'] as const;
+const MASKED_CREDENTIAL_DIRS = ['.ssh', '.gnupg', '.aws', '.docker', '.kube', '.config/gcloud', '.local/share/keyrings'] as const;
+const MASKED_CREDENTIAL_FILES = ['.git-credentials', '.netrc', '.config/dalang/keyring-password'] as const;
+
+function maskedFiles(home: string): string[] {
+  const db = path.resolve(getDbPath());
+  return [...MASKED_CREDENTIAL_FILES.map((rel) => path.join(home, rel)), db, `${db}-wal`, `${db}-shm`, `${db}-journal`];
+}
 
 export function normalizeConfigDir(configDir?: string | null): string | null {
   const trimmed = configDir?.trim();
@@ -236,10 +245,9 @@ export function configDirError(configDir?: string | null): string | null {
   if (resolved === path.parse(resolved).root || inside(resolved, home)) {
     return 'Account directory must not be the filesystem root, your home directory, or a parent of it.';
   }
-  for (const rel of [...MASKED_CREDENTIAL_DIRS, ...MASKED_CREDENTIAL_FILES]) {
-    const abs = path.join(home, rel);
+  for (const abs of [...MASKED_CREDENTIAL_DIRS.map((rel) => path.join(home, rel)), ...maskedFiles(home)]) {
     if (inside(resolved, abs) || inside(abs, resolved)) {
-      return `Account directory must not contain or sit inside ~/${rel}, which the sandbox hides.`;
+      return `Account directory must not overlap ${abs}, which the sandbox hides.`;
     }
   }
   if (fs.existsSync(path.join(resolved, '.git'))) {
@@ -396,8 +404,7 @@ export function buildMacOsSeatbeltProfile(
       rules.push(`(deny file-read* (subpath "${escapeSbpl(abs)}"))`);
     }
   }
-  for (const rel of MASKED_CREDENTIAL_FILES) {
-    const abs = path.join(home, rel);
+  for (const abs of maskedFiles(home)) {
     rules.push(`(deny file-read* (literal "${escapeSbpl(abs)}"))`);
   }
 
@@ -478,6 +485,7 @@ export async function wrapWithBwrap(
     projectPath,
     projectPath,
   ];
+  if (options.imageDir) bwrapArgs.push('--ro-bind', options.imageDir, options.imageDir);
 
   // Keep user-session and container sockets out of reach (a socket there lets a run act outside the sandbox).
   // The only bus a run may see is a filtered proxy socket, mounted where the CLI expects the session bus.
@@ -497,8 +505,7 @@ export async function wrapWithBwrap(
       bwrapArgs.push('--tmpfs', abs);
     }
   }
-  for (const rel of MASKED_CREDENTIAL_FILES) {
-    const abs = path.join(home, rel);
+  for (const abs of maskedFiles(home)) {
     if (fs.existsSync(abs)) bwrapArgs.push('--ro-bind', '/dev/null', abs);
   }
 

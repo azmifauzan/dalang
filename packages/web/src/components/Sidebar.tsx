@@ -36,6 +36,8 @@ export interface SidebarProps {
   onToggleShowArchived: () => void;
   onOpenStatistics: () => void;
   onOpenConfig: (tab?: ConfigTabId) => void;
+  onSignOut?: () => void;
+  signingOut: boolean;
   onBackFromConfig: () => void;
   onSelectConfigTab: (tab: ConfigTabId) => void;
 }
@@ -58,6 +60,12 @@ function SidebarToggleIcon() {
   );
 }
 
+function SignOutIcon() {
+  return (
+    <path d="M10 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h5m7-14 5 5-5 5m5-5H9" strokeLinecap="round" strokeLinejoin="round" />
+  );
+}
+
 /** The minimized sidebar: the toggle and the actions that need no project list. */
 function SidebarRail({
   activeSection,
@@ -65,9 +73,11 @@ function SidebarRail({
   onNewProject,
   onOpenStatistics,
   onOpenConfig,
+  onSignOut,
+  signingOut,
 }: Pick<
   SidebarProps,
-  'activeSection' | 'onToggleCollapsed' | 'onNewProject' | 'onOpenStatistics' | 'onOpenConfig'
+  'activeSection' | 'onToggleCollapsed' | 'onNewProject' | 'onOpenStatistics' | 'onOpenConfig' | 'onSignOut' | 'signingOut'
 >) {
   const { t } = useI18n();
   const { resolved, toggleLightDark } = useTheme();
@@ -172,6 +182,19 @@ function SidebarRail({
             )}
           </svg>
         </button>
+        {onSignOut && (
+          <button
+            type="button"
+            aria-label={t('auth.signOut')}
+            title={t('auth.signOut')}
+            disabled={signingOut}
+            onClick={onSignOut}
+            className={`${button} disabled:cursor-wait disabled:opacity-50`}
+            style={style(false)}
+          >
+            <svg {...svgProps}><SignOutIcon /></svg>
+          </button>
+        )}
       </div>
     </div>
   );
@@ -197,6 +220,8 @@ function SidebarContent({
   onToggleShowArchived,
   onOpenStatistics,
   onOpenConfig,
+  onSignOut,
+  signingOut,
   onBackFromConfig,
   onSelectConfigTab,
   isMobileDrawer,
@@ -206,6 +231,12 @@ function SidebarContent({
 
   const closeIfMobile = () => {
     if (isMobileDrawer) onCloseMobile();
+  };
+  const footerButtonClass = 'inline-flex min-h-[40px] min-w-[40px] cursor-pointer items-center justify-center rounded-[6px] border transition-colors duration-150';
+  const footerButtonStyle = {
+    borderColor: 'var(--border-control)',
+    backgroundColor: 'var(--bg-well)',
+    color: 'var(--text-primary)',
   };
 
   return (
@@ -531,7 +562,6 @@ function SidebarContent({
         )}
       </div>
 
-      {/* Footer: Update notice + Statistics + Config + ID|EN + Sun/Moon */}
       <div
         className="space-y-2.5 border-t p-3"
         style={{ borderColor: 'var(--border-subtle)' }}
@@ -555,7 +585,7 @@ function SidebarContent({
           </button>
         )}
 
-        <div className="flex items-center justify-between gap-1.5">
+        <div className={`flex flex-wrap items-center justify-between ${onSignOut ? 'gap-0.5' : 'gap-1.5'}`}>
           {([
             {
               key: 'statistics',
@@ -589,12 +619,12 @@ function SidebarContent({
                 item.onClick();
                 closeIfMobile();
               }}
-              className="inline-flex min-h-[40px] min-w-[40px] cursor-pointer items-center justify-center rounded-[6px] border transition-colors duration-150"
-              style={{
-                backgroundColor: item.active ? 'var(--accent-tint)' : 'var(--bg-well)',
-                borderColor: item.active ? 'var(--accent)' : 'var(--border-control)',
-                color: item.active ? 'var(--accent)' : 'var(--text-primary)',
-              }}
+              className={footerButtonClass}
+              style={item.active ? {
+                backgroundColor: 'var(--accent-tint)',
+                borderColor: 'var(--accent)',
+                color: 'var(--accent)',
+              } : footerButtonStyle}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
                 {item.icon}
@@ -637,12 +667,8 @@ function SidebarContent({
             aria-label={t('nav.themeSwitchLabel')}
             title={resolved === 'dark' ? t('nav.themeDark') : t('nav.themeLight')}
             onClick={toggleLightDark}
-            className="inline-flex min-h-[40px] min-w-[40px] cursor-pointer items-center justify-center rounded-[6px] border transition-colors duration-150"
-            style={{
-              borderColor: 'var(--border-control)',
-              backgroundColor: 'var(--bg-well)',
-              color: 'var(--text-primary)',
-            }}
+            className={footerButtonClass}
+            style={footerButtonStyle}
           >
             {resolved === 'dark' ? (
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
@@ -655,6 +681,24 @@ function SidebarContent({
               </svg>
             )}
           </button>
+          {onSignOut && (
+            <button
+              type="button"
+              aria-label={t('auth.signOut')}
+              title={t('auth.signOut')}
+              disabled={signingOut}
+              onClick={() => {
+                onSignOut();
+                closeIfMobile();
+              }}
+              className={`${footerButtonClass} ml-auto disabled:cursor-wait disabled:opacity-50`}
+              style={footerButtonStyle}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
+                <SignOutIcon />
+              </svg>
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -690,6 +734,8 @@ export function Sidebar(props: SidebarProps) {
             onNewProject={props.onNewProject}
             onOpenStatistics={props.onOpenStatistics}
             onOpenConfig={props.onOpenConfig}
+            onSignOut={props.onSignOut}
+            signingOut={props.signingOut}
           />
         ) : (
           <SidebarContent {...props} isMobileDrawer={false} />

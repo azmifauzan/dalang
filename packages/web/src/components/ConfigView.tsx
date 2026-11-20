@@ -18,6 +18,7 @@ import {
   type UpdateStatusDTO,
 } from '@dalang/shared';
 import { GununganDetailed } from '../assets/wayang/Gunungan.js';
+import { AppLoginSettings } from './AppLogin.js';
 import { FallbackFields, describeFallback, EMPTY_FALLBACK, fallbackFromForm, fallbackToForm, type FallbackForm } from './FallbackFields.js';
 import { WayangFigure, castDisplayName, characterForProfile } from '../assets/wayang/WayangFigure.js';
 import { useI18n } from '../i18n/index.js';
@@ -106,10 +107,14 @@ export function ConfigView({
   tab,
   updateStatus,
   onReopenWizard,
+  onSignOut,
+  signingOut,
 }: {
   tab: ConfigTabId;
   updateStatus: UpdateStatusDTO | null;
   onReopenWizard: () => void;
+  onSignOut: () => void;
+  signingOut: boolean;
 }) {
   const qc = useQueryClient();
   const { lang, setLang, t, te } = useI18n();
@@ -138,6 +143,11 @@ export function ConfigView({
     onSuccess: (data) => {
       qc.setQueryData(['providers-status'], data);
     },
+  });
+
+  const updateCliMutation = useMutation({
+    mutationFn: api.updateProviderCli,
+    onSuccess: (data) => qc.setQueryData(['providers-status'], data),
   });
 
   const clearCooldownMutation = useMutation({
@@ -690,6 +700,25 @@ export function ConfigView({
                         )}
                       </dl>
 
+                      {p.installed && (
+                        <div className="mt-3 space-y-2">
+                          <Button
+                            type="button" variant="outline"
+                            disabled={updateCliMutation.isPending || Boolean(runtime?.activeCount)}
+                            onClick={() => updateCliMutation.mutate(p.id)}
+                          >
+                            {t(updateCliMutation.isPending && updateCliMutation.variables === p.id
+                              ? 'config.agents.updatingCli' : 'config.agents.updateCli')}
+                          </Button>
+                          {updateCliMutation.variables === p.id && updateCliMutation.isSuccess && (
+                            <p role="status" className="text-sm text-muted-foreground">{t('config.agents.cliUpdated')}</p>
+                          )}
+                          {updateCliMutation.variables === p.id && updateCliMutation.isError && (
+                            <p role="alert" className="break-words text-sm text-destructive">{updateCliMutation.error.message}</p>
+                          )}
+                        </div>
+                      )}
+
                       {runtime && (runtime.inCooldown || runtime.quotaExhausted) && (
                         <div
                           className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-[4px] border px-2.5 py-2 text-xs"
@@ -1143,6 +1172,8 @@ export function ConfigView({
             className="space-y-6 rounded-[8px] border p-5"
             style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
           >
+            <AppLoginSettings onSignOut={onSignOut} signingOut={signingOut} />
+
             {/* Sandbox state */}
             <div className="space-y-2">
               <div className="flex flex-wrap items-center gap-2">

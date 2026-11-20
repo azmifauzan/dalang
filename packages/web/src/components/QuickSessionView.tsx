@@ -1,6 +1,7 @@
 import { useState, type FormEvent, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
+  ChatImage,
   DiscussMessageDTO,
   ProjectSummary,
   ProviderId,
@@ -129,17 +130,20 @@ export function QuickSessionView({
     qc.invalidateQueries({ queryKey: ['projects'] });
   };
 
+  const [images, setImages] = useState<ChatImage[]>([]);
   const sendMutation = useMutation({
-    mutationFn: (vars: { message: string; mode: SessionMode }) =>
+    mutationFn: (vars: { message: string; mode: SessionMode; images: ChatImage[] }) =>
       api.sendChatMessage(project.id, {
         sessionId: session.id,
         mode: vars.mode,
         message: vars.message,
+        images: vars.images,
         ...choice.payload,
       }),
     onMutate: () => setActionError(null),
     onSuccess: (res) => {
       setInput('');
+      setImages([]);
       invalidateAll();
       onSessionUpdated(res.session);
     },
@@ -378,9 +382,9 @@ export function QuickSessionView({
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
     const trimmed = input.trim();
-    if (!trimmed) return;
+    if (!trimmed && !images.length) return;
     setRequestStartedAt(Date.now());
-    sendMutation.mutate({ message: trimmed, mode: activeComposerMode });
+    sendMutation.mutate({ message: trimmed, mode: activeComposerMode, images });
   };
 
   return (
@@ -691,6 +695,8 @@ export function QuickSessionView({
               value={input}
               onChange={setInput}
               onSubmit={handleSubmit}
+              images={images}
+              onImagesChange={setImages}
               busy={turnRunning}
               isFinishedSession={isFinished}
               otherWorkingSessionTitle={otherWorkingTitle}

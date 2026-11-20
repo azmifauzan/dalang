@@ -4,9 +4,14 @@ Dalang uses OS-level confinement where available, Git configuration checks, and 
 
 ## Loopback-only server
 
-- The server binds exclusively to `127.0.0.1`.
+- Standard installs bind the server to `127.0.0.1`. Docker binds inside the container and publishes the port on host `127.0.0.1`.
 - Every HTTP request whose `Host` or `Origin` header is not a loopback address (`127.0.0.1`, `localhost`, `::1`) is refused with `403 Forbidden` to prevent DNS rebinding attacks.
-- DALANG is a local single-user workbench with no remote relay or multi-user authentication layer.
+
+## Optional app login
+
+DALANG is a local single-user workbench. App login is off by default. Enable it in **Config → Security** to require one password for the workspace APIs, stored images, and live WebSocket updates. DALANG stores a salted `scrypt` hash in SQLite. The browser receives an `HttpOnly`, `SameSite=Strict` session cookie. Logout revokes the session, and sessions expire after 24 hours or when the server restarts. Provider sign-ins continue to use their respective CLIs.
+
+When login is enabled, authenticated requests with an `Origin` header must match the DALANG page's origin. The app login and CLI update endpoints apply the same origin check even with login off. [Set or disable the app password](INSTALL.md#require-a-dalang-password)
 
 ## OS sandbox confinement
 
@@ -18,7 +23,7 @@ On Linux and WSL 2, Dalang wraps agent turns and verify and integration commands
 - The project folder or isolated task worktree is the workspace mount. Ask and automated review use a read-only workspace mount.
 - Fresh `/tmp`, `/dev`, `/proc`, `--unshare-pid`, `--unshare-ipc`, `--new-session`, and `--die-with-parent`.
 - `/run/user` and `/run/docker.sock` are hidden so sandboxed agents cannot reach user systemd units or container daemons.
-- Sensitive credential directories and files are masked: `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.docker`, `~/.kube`, `~/.config/gcloud`, `~/.git-credentials`, and `~/.netrc`. (`~/.npmrc` stays readable for private npm registries.)
+- The sandbox masks the DALANG database and its SQLite sidecar files, Linux keyring files, and credentials under `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.docker`, `~/.kube`, `~/.config/gcloud`, `~/.git-credentials`, and `~/.netrc`. `~/.npmrc` stays readable for private npm registries.
 - Only the active provider's state directory (or the profile's custom `configDir`) is mounted writable for token refresh and session state.
 - `.git/hooks` (main repo) and `.git` (worktree gitdir file) are mounted read-only inside the sandbox so an agent cannot plant executable git hooks or redirect worktree metadata.
 
@@ -29,7 +34,11 @@ On macOS (`darwin`), DALANG wraps runs in `/usr/bin/sandbox-exec` with a dynamic
 - Denies all file writes by default (`(deny file-write*)`).
 - Allows file writes only to the active project/worktree (omitted for read-only reviews), `/tmp`, `/private/tmp`, `$TMPDIR`, `/dev/null`, and the active provider state/config directory.
 - Explicitly denies file writes to `.git/hooks` and worktree `.git` link files.
-- Explicitly denies file reads on `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.docker`, `~/.kube`, `~/.config/gcloud`, `~/.git-credentials`, and `~/.netrc`.
+- Denies reads of the same credential paths and DALANG database files.
+
+### Docker
+
+Compose runs DALANG as an unprivileged user with all container capabilities dropped. Docker's seccomp, AppArmor, and system-path settings are relaxed for bubblewrap, which still creates per-project sandboxes. Compose publishes the port on localhost. The Antigravity Secret Service uses a keyring inside the container. [Docker setup](INSTALL.md#run-with-docker)
 
 ### Windows (WSL 2)
 
@@ -43,7 +52,7 @@ That service exposes the entire desktop keyring, so a sandboxed `agy` run can re
 
 - **Antigravity in the Linux sandbox is off by default.**
 - Tasks routed to `agy` can use their configured fallback until you enable **Allow Antigravity to read the desktop keyring** in **Config → Security**.
-- Without `xdg-dbus-proxy` or an active desktop session bus, sandboxed `agy` runs are refused.
+- Sandboxed `agy` needs `xdg-dbus-proxy` and a session bus. The Docker image supplies both with its own Secret Service.
 
 ## Git config guard and hidden checkpoints
 

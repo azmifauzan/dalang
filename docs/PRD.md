@@ -1,6 +1,6 @@
 # PRD: DALANG
 
-Nov 18, 2026 · @Fauzan · Updated for v0.7.0, Nov 20, 2026
+Nov 18, 2026 · @Fauzan · Updated through v0.7.2, Nov 20, 2026
 
 ## Summary
 
@@ -90,7 +90,7 @@ P0 = required in v1, P1 = should be in v1, P2 = after v1.
 | F-19 | Guard | Per-task diff view with a review summary, and approve-merge or reject buttons | P0 |
 | F-20 | Guard | Post-merge integration step: run the whole test suite on the main branch | P1 |
 | F-21 | Settings | CRUD for agent profiles: provider, model, effort, role prompt, permission mode, timeout | P0 |
-| F-22 | Settings | Provider status page: which CLIs are installed, their versions, and login status | P0 |
+| F-22 | Settings | Provider status page with CLI installation, version, and login status. From v0.7.2 it also runs the official CLI updaters. | P0 |
 | F-23 | History | Archive of all runs: prompt, output, duration, profile used, and result | P0 |
 | F-24 | History | Usage statistics per provider (number of runs, duration, limit events) | P1 |
 | F-25 | Notifications | Browser notification when a human gate is waiting for a decision or when the pipeline fails | P2 |
@@ -195,16 +195,16 @@ All orchestrator decisions come from JSON files the agent writes to `.dalang/`, 
 
 | Area | Requirement |
 | --- | --- |
-| Network access | The server binds only to `127.0.0.1`. Access from outside the machine is disabled by default. Requests whose `Host` or `Origin` is not a loopback name are refused (DNS rebinding guard). |
-| Credentials | DALANG stores no API keys or tokens. Authentication relies entirely on the user's official CLI logins. |
-| Isolation | Agents may only write inside the project folder. Every CLI runs through a `bwrap` sandbox wrapper (project folder read-write, rest of the filesystem read-only, separate `/tmp`). P0 on Linux; macOS via `sandbox-exec` (P1). Docker container mode remains an option (P2). A restrictive prompt is an additional layer, not the only barrier. |
+| Network access | Standard installs bind to `127.0.0.1`. Docker publishes on host loopback. The server checks `Host` and `Origin` for loopback names to prevent DNS rebinding. |
+| Credentials | Provider authentication stays with the official CLIs. Optional DALANG login stores a salted app-password hash and uses process-local browser sessions. |
+| Isolation | On Linux `bwrap` provides a project workspace, a read-only filesystem outside its writable mounts, and a separate `/tmp`. macOS uses `sandbox-exec`. The Docker setup preserves the per-project bubblewrap sandbox. |
 | Reliability | Pipeline state is saved to SQLite on every step transition. After a crash or restart, the pipeline resumes from the last completed step. |
 | Timeouts | Each run has a total timeout and an idle timeout. A stuck process is killed and the task is marked failed with the reason. |
 | Observability | The stdout/stderr of every run is saved to `.dalang/logs/` and can be replayed in the UI. |
 | Responsiveness | Logs appear in the UI less than 1 second after the CLI writes them. |
 | Platform | Linux and macOS (P0), Windows via ConPTY (P1). |
 | Compliance | Only runs official CLI binaries. Does not extract OAuth tokens and does not call provider backends directly. |
-| Installation | One command: `npx dalang-cli` starts the server and opens the browser. |
+| Installation | `npx dalang-cli` starts the server and opens the browser. `docker compose up --build -d` starts a local container from the source checkout. |
 
 ## Architecture and technology stack
 
@@ -262,7 +262,7 @@ Implementation notes:
 - The agy user settings (`~/.gemini/antigravity-cli/settings.json`) contain `allowNonWorkspaceAccess: true`; overriding it via `--settings` did not change the behavior.
 - The agy model list comes from `agy models`, and the Codex list from `codex debug models` (JSON, `visibility: list`). Claude's list comes from an `initialize` control request over `--input-format stream-json` (the same list as its `/model` picker, no API call; updated 19 Nov 2026, earlier versions used the aliases `sonnet`, `opus`, and `haiku`).
 - Codex's own sandbox cannot start inside `bwrap` ("No permissions to create a new namespace"), so a Codex run inside `bwrap` silently fails to write files. The adapter therefore sets `sandbox_mode="danger-full-access"` when `bwrap` is the boundary and `workspace-write` otherwise. `codex exec resume` has no `--sandbox` flag, so the mode is passed with `-c` on both paths.
-- The spawn environment keeps the user's `PATH` first, so CLI shebangs (`env node`) resolve to the Node the user installed. `bwrap` also runs with `--die-with-parent`, `--new-session`, `--unshare-pid`, and `--unshare-ipc`, hides `/run/user` and `/run/docker.sock`, and keeps the network open because the CLIs need it. agy is the exception for `/run/user`: it reads its login from the desktop keyring over the session bus, so hiding that folder breaks authentication, and a run can still reach the user session bus.
+- The spawn environment keeps the user's `PATH` first so CLI shebangs (`env node`) resolve to the installed Node. `bwrap` runs with `--die-with-parent`, `--new-session`, `--unshare-pid`, and `--unshare-ipc`, hides `/run/user` and `/run/docker.sock`, and keeps the network open for the CLIs. For opted-in Antigravity runs, DALANG mounts a proxy socket that exposes only the Secret Service. [Antigravity keyring](SANDBOX.md#antigravity-keyring-exposure-opt-in)
 - Not yet tested: behavior when a limit is actually hit (error message and exit code in all three CLIs), agy interactive questions (`ask_question`) in headless mode, prompt-injection attacks on the restrictive prompt, and macOS (no `bwrap`, so agent writes are not confined there).
 
 ## Data model
@@ -273,7 +273,8 @@ SQLite stores state and indexes, while the full content of artifacts (brief, pla
 | --- | --- | --- |
 | `project` | id, name, path, main branch, created | has many `session`, `task` |
 | `session` | id, project\_id, mode (ask/quick/full, v0.7), work\_state (idle/working, v0.7), title (v0.7), phase (discuss/agree/list/run), cli\_session\_id | has many `message`; one `working` per project (v0.7) |
-| `message` | id, session\_id, role (user/lead), type (text/questions/brief), content, time | none |
+| `message` | id, session\_id, role, type, content, time | has many `message_images` (v0.7.2) |
+| `message_images` | id, message\_id, MIME type, image bytes | Deletion cascades from its message |
 | `brief` | id, project\_id, session\_id (v0.7), version, status (draft/approved), file path | one approved `brief` → one `plan` |
 | `plan` | id, brief\_id, version, file path | has many `task` |
 | `task` | id, plan\_id, title, role, complexity, status, profile\_override, review\_rounds | `task_dependency`, many `run` |
@@ -297,6 +298,7 @@ Each phase must be useful on its own before the next one starts.
 | v0.5 | Polish and distribution: npm package with `npx dalang-cli` and `dalang doctor`, several accounts per provider, token and cost statistics, replay tests, macOS sandbox, push and pull request after merge, documentation | `npx dalang-cli` starts on a clean Linux and macOS machine, and replay scenarios cover quota reroute, review fix round, and parallel merge | Released on 19 Nov 2026 as `dalang-cli@0.5.0` on npm (Linux verified: replay scenarios, headless Chromium browser E2E, `dalang doctor`, `pnpm pack` bundle; macOS `sandbox-exec` unit-tested for parity, clean macOS host install not yet run) |
 | v0.6 | UI revamp: first-run wizard, five-step guided project flow, wayang stage with activity feed during work, Config page with sidebar tabs, theme toggle, Indonesian and English (UI and agent output), redrawn gunungan logo, new-version notice | A new user reaches the Discuss step of a first project through the wizard without reading docs, and no action of the v0.5 UI is lost | Released on 19 Nov 2026 as `dalang-cli@0.6.0` on npm. Verified on Linux with unit tests, server API tests, CLI doctor tests, and headless Chromium CDP E2E for fresh-install wizard, upgrade path, 6 Config tabs, Statistics, Work stage pause/visibility, ID/EN i18n with a no-English-leak scan of every step and Config tab, light/dark theme, update notice, and 390px mobile drawer) |
 | v0.7 | Ask, Quick, and Full in a shared chat, saved sessions, one working session per project, and a provider limits bar | Read-only Q&A, a one-task fix from request to merge in one chat, and a five-step Full flow | Linux verification covers typecheck, build, database upgrades, CLI diagnostics, and all three modes in Chromium with replayed agents. [GitHub release](https://github.com/azmifauzan/dalang/releases/tag/v0.7.0) · [npm package](https://www.npmjs.com/package/dalang-cli/v/0.7.0) |
+| v0.7.2 | Chat image attachments, optional local login, Docker Compose, and provider CLI updates | Upload and reopen a chat image, protect app APIs and live connections when login is enabled, and launch the Docker image with all three updaters available | Implemented and covered by API, Chromium replay, and Linux Docker checks |
 | v0.8 | Agent delegation: a running agent splits its own task into subtasks on other profiles through a DALANG MCP server | One task is split by its agent into at least two subtasks on two providers, and all of them pass review and merge | Planned |
 | v0.9 | Session protocols (Claude Agent SDK, `codex app-server`, ACP), steering a running task, context handoff on fallback, native Windows | A fallback mid-task continues from the handoff instead of starting over, on all three providers | Planned |
 | v0.10 | Scheduled and webhook-triggered runs, outside agents over MCP | A scheduled run and a run started from a terminal agent both finish without opening the UI | Planned |
@@ -553,10 +555,10 @@ Opening Config swaps the sidebar for Config tabs with "← Back".
 | Tab | Content |
 | --- | --- |
 | General | Language, theme (light, dark, follow system), reopen the wizard, check for new versions (on or off) |
-| Agents | CLI status, login, version, models, quota, cooldown, extra accounts (v0.5) |
+| Agents | CLI status, login, version, models, quota, cooldown, and CLI updates (v0.7.2) |
 | Team | Agent profiles as wayang cards: character by role, provider, model, effort, fallback |
 | Task routing | Routing rules shown as sentences ("Complex engineer tasks → Kresna (Codex), fallback Gatotkaca (Claude)") with the editor behind them |
-| Security | Sandbox state, agy keyring permission, running without a sandbox, with the risk of each |
+| Security | Optional DALANG login (v0.7.2), sandbox state, Antigravity keyring permission, and unconfined execution settings |
 | About | Version and update status, licence, wayang artwork credits, documentation links |
 
 Statistics move to their own sidebar entry.
@@ -674,6 +676,12 @@ The v0.6 flow always runs `Discuss → Brief → Plan → Work → Review & merg
 - **Removed**: the "Next step" card, the Lead CLI and model fields of the Discuss step, and the duplicate plan buttons.
 - **Reopening and context**: a reopened session restores its conversation, brief, plan, and board. Follow-up turns resume the saved CLI session when it can, and otherwise hand the saved messages and a summary of completed work back as context.
 
+#### Chat images, local sign-in, and Docker (v0.7.2)
+
+- The shared composer accepts up to three PNG, JPEG, or WebP images per turn, each up to 4 MiB. Claude Code receives image blocks on stream-JSON stdin. Codex reads temporary image files through `--image`, including on resumed turns. Schema v10 stores image bytes separately from the transcript and removes them with their messages. [Attachment guide](USAGE.md#attach-images)
+- Local sign-in is off by default. The Security tab can require one app password for the workspace APIs, image downloads, and live WebSocket connections. The password hash persists and browser sessions expire on restart. [Security model](SANDBOX.md#optional-app-login)
+- Docker Compose provisions the three CLIs, bubblewrap, and a container-local Secret Service. The app stores its database and the providers' sign-ins and updated binaries in a persistent home volume. Each provider's **Update CLI** action runs its native updater and refreshes the status in Config. [Docker setup](INSTALL.md#run-with-docker)
+
 ### v0.8: agent delegation
 
 - DALANG serves an MCP endpoint on loopback. Each run gets a bearer token scoped to that run, which expires when the run ends; the token never enters logs.
@@ -696,7 +704,7 @@ The v0.6 flow always runs `Discuss → Brief → Plan → Work → Review & merg
 
 ### Not planned
 
-Remote access, relays, and phone apps. They conflict with DALANG's loopback-only security model (Host and Origin checks, no auth layer). Revisit only with a real authentication design.
+Remote access, relays, and companion phone apps require a separate deployment and authentication design. The optional DALANG password covers the local instance.
 
 ## Risks, mitigations, and decisions
 

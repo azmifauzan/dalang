@@ -1,3 +1,4 @@
+import os from 'node:os';
 import {
   buildAccountKey,
   type ProviderId,
@@ -47,6 +48,8 @@ export class ProviderRegistry {
   private readonly policy: ProviderPolicy;
   private readonly usageCache = new Map<string, UsageSnapshot>();
   private readonly rateLimitClearedAt = new Map<string, number>();
+  private readonly cliUpdates = new Set<ProviderId>();
+  private readonly activeTurns = new Map<ProviderId, number>();
 
   constructor(
     runner: CliRunner = new NodeCliRunner(),
@@ -54,11 +57,26 @@ export class ProviderRegistry {
   ) {
     this.runner = runner;
     this.policy = policy;
-    this.adapters = new Map<ProviderId, CliAdapter>([
-      ['claude-code', new ClaudeCodeAdapter(runner)],
-      ['codex', new CodexAdapter(runner)],
-      ['antigravity', new AntigravityAdapter(runner, policy)],
-    ]);
+    const adapters = [new ClaudeCodeAdapter(runner), new CodexAdapter(runner), new AntigravityAdapter(runner, policy)];
+    this.adapters = new Map(adapters.map((adapter) => [adapter.id, {
+      id: adapter.id,
+      displayName: adapter.displayName,
+      binary: adapter.binary,
+      checkStatus: (configDir) => adapter.checkStatus(configDir),
+      getUsage: (configDir) => adapter.getUsage(configDir),
+      runTurn: async (options) => {
+        const { id } = adapter;
+        if (this.cliUpdates.has(id)) throw Object.assign(new Error('This CLI is updating. Try again when it finishes.'), { statusCode: 409 });
+        this.activeTurns.set(id, (this.activeTurns.get(id) ?? 0) + 1);
+        try {
+          return await adapter.runTurn(options);
+        } finally {
+          const remaining = this.activeTurns.get(id)! - 1;
+          if (remaining) this.activeTurns.set(id, remaining);
+          else this.activeTurns.delete(id);
+        }
+      },
+    }]));
   }
 
   getRunner(): CliRunner {
@@ -92,6 +110,28 @@ export class ProviderRegistry {
       throw new Error(`Unknown provider: ${id}`);
     }
     return adapter;
+  }
+
+  async updateCli(id: ProviderId): Promise<void> {
+    const adapter = this.getAdapter(id);
+    if (this.cliUpdates.has(id) || this.activeTurns.has(id)) {
+      throw Object.assign(new Error('Wait for active turns or updates to finish before updating this CLI.'), { statusCode: 409 });
+    }
+    this.cliUpdates.add(id);
+    try {
+      const binary = await this.runner.which(adapter.binary);
+      if (!binary) throw new Error(`${adapter.displayName} is not installed.`);
+      const result = await this.runner.run(binary, ['update'], {
+        cwd: os.homedir(), timeoutMs: 300_000, idleTimeoutMs: 0, env: { CI: '1', CODEX_NON_INTERACTIVE: '1' },
+      });
+      if (result.timedOut) throw new Error(`${adapter.displayName} update timed out.`);
+      if (result.exitCode !== 0) {
+        const detail = (result.stderr.trim() || result.stdout.trim()).slice(-800);
+        throw new Error(`${adapter.displayName} update failed.${detail ? ` ${detail}` : ''}`);
+      }
+    } finally {
+      this.cliUpdates.delete(id);
+    }
   }
 
   getCachedUsage(provider: ProviderId, configDir?: string | null): UsageSnapshot | null {

@@ -1,6 +1,6 @@
 # Install Dalang
 
-Dalang runs a local web app on your machine. Set up Node.js, Git, and one coding-agent CLI before starting it.
+Dalang runs a local web app on your machine. For npm or source installs, set up Node.js, Git, and one coding-agent CLI. The Docker image includes all three CLIs. [Docker setup](#run-with-docker)
 
 ## Requirements
 
@@ -66,16 +66,44 @@ Open the URL printed in the terminal, normally `http://127.0.0.1:4173`. Keep the
 
 Use `dalang` in place of `npx dalang-cli` after a global install. You can also set `DALANG_PORT` to choose a default port.
 
+## Run with Docker
+
+Install Docker with Compose v2. From the DALANG source checkout, build and start the service.
+
+```bash
+docker compose up --build -d
+```
+
+Open `http://127.0.0.1:4173`. The image includes Claude Code, Codex CLI, Antigravity CLI, Git, and bubblewrap. The port is published on localhost. The service runs as the unprivileged `node` user with all container capabilities dropped. Compose relaxes Docker's seccomp, AppArmor, and system-path masking so bubblewrap can create its per-project namespaces and mount a private `/proc`. The host must allow unprivileged user namespaces.
+
+Sign in to the agents you use inside the container. Follow the URL or code printed by each CLI from your browser.
+
+```bash
+docker compose exec dalang claude auth login
+docker compose exec dalang codex login --device-auth
+docker compose exec dalang agy acp --login
+```
+
+For Antigravity, also enable **Config → Security → Allow Antigravity to read the desktop keyring**. The container supplies its own Secret Service and persistent keyring. **Config → Agents → Update CLI** runs each provider's updater. The `dalang-home` volume keeps database state, provider sign-ins, and updated CLI binaries across container replacement.
+
+Add projects under `/workspace`. To mount existing checkouts, set `DALANG_PROJECTS` to their parent directory before running Compose and open them by their container paths, such as `/workspace/my-repo`. Mounted repositories need write access for UID 1000.
+
+## Require a DALANG password
+
+Login starts off. In **Config → Security → DALANG login**, set a password of at least 12 characters and select **Enable login**. With login enabled, the **Sign out** icon appears at the far right of the sidebar footer, after the theme switch. Sign in again after signing out, after the 24-hour session expires, or after restarting DALANG. **Disable login** in Config returns the app to password-free access. Provider accounts still use their own sign-in commands. [How the login protects local access](SANDBOX.md#optional-app-login)
+
 ## Update Dalang
 
-Let active tasks finish or stop them, then stop the server with Ctrl+C. Back up your Dalang data directory and project checkout before upgrading from v0.6 or earlier. Use the command that matches your installation.
+Let active tasks finish or stop them, then stop the server with Ctrl+C or `docker compose stop`. Back up the Dalang data directory and any project checkout you may need to restore. Use the command that matches your installation.
 
 ```bash
 npx dalang-cli@latest
 npm install -g dalang-cli@latest
 ```
 
-With a global installation, start the updated app with `dalang`. On first launch, v0.7 upgrades the database to schema v9. A project with existing history gets a **Full** session in the sidebar. Dalang moves its saved artifacts into `.dalang/sessions/<session-id>/` and adds ignore rules for session logs and temporary files. Older builds may refuse to open the upgraded database.
+With a global installation, start the updated app with `dalang`. For Docker, update the source checkout and rerun `docker compose up --build -d`. Keep the `dalang-home` volume to retain app data, provider sign-ins, and CLI updates.
+
+Dalang v0.7.2 upgrades the database to schema v10 for chat images. When upgrading from v0.6 or earlier, it also organizes existing project history into a **Full** session and moves saved artifacts into `.dalang/sessions/<session-id>/`. Use your pre-upgrade backup to return to a build that requires an older schema.
 
 Use **Config → About → Check now** to check for a release. Dalang can also notify you about updates when version checks are enabled in **Config → General**. [Release notes](https://github.com/azmifauzan/dalang/releases)
 
@@ -83,7 +111,7 @@ Use **Config → About → Check now** to check for a release. Dalang can also n
 
 | Location | Contents |
 | --- | --- |
-| `~/.dalang/dalang.db` | Projects, chat transcripts, settings, and run history. Set `DALANG_HOME` to relocate the data directory. |
+| `~/.dalang/dalang.db` | Projects, chat transcripts and images, settings, and run history. Set `DALANG_HOME` to relocate the data directory. |
 | `~/.dalang/worktrees/` | Isolated task checkouts managed by Dalang. |
 | `<repo>/.dalang/sessions/<session-id>/` | Session briefs, plans, task results, reviews, and logs. |
 | `<repo>/.dalang/tmp/` | Temporary files including Ask technical logs. |

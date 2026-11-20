@@ -2,6 +2,14 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
+## 0.7.2 (Chat images, local sign-in, and Docker), 20 Nov
+
+- **Images in Ask, Quick, and Full.** Pick files with the paperclip or paste screenshots into the composer when using Claude Code or Codex. Send up to three PNG, JPEG, or WebP images per message, each up to 4 MiB. Reopen the saved chat to see its images. [Attach images](docs/USAGE.md#attach-images)
+- **Optional local password.** Enable DALANG login in **Config → Security**. It starts off. When enabled, the gunungan marks the sign-in screen and the Sign out icon appears at the far right of the sidebar footer. [Set a password](docs/INSTALL.md#require-a-dalang-password)
+- **Docker Compose.** Build and run a localhost container with Claude Code, Codex, Antigravity CLI, Git, and bubblewrap installed. The data volume retains DALANG state, provider sign-ins, and updated binaries. [Docker setup](docs/INSTALL.md#run-with-docker)
+- **CLI updates.** In **Config → Agents**, run the installed provider's updater and see its refreshed version. This works for all three providers. [Provider updates](docs/PROVIDERS.md#update-provider-clis)
+- **Upgrade.** Schema v10 adds stored chat images. Back up your data before upgrading if you may need to return to an older build. The npm package also includes the clearer `doctor` command guidance from v0.7.1. [Update and back up](docs/INSTALL.md#update-dalang)
+
 ## 0.7.1, 20 Nov
 
 `doctor` now shows the `npx dalang-cli` commands for starting DALANG and rerunning checks. It explains that the standalone `dalang` command is available after `npm install -g dalang-cli`.

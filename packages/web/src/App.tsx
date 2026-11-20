@@ -10,6 +10,7 @@ import { GununganMark } from './assets/wayang/Gunungan.js';
 import { characterForProfile } from './assets/wayang/WayangFigure.js';
 import { AgreeView } from './components/AgreeView.js';
 import { AskSessionView } from './components/AskSessionView.js';
+import { AppLogin } from './components/AppLogin.js';
 import { ConfigView } from './components/ConfigView.js';
 import { DiscussView } from './components/DiscussView.js';
 import { GuardView } from './components/GuardView.js';
@@ -72,9 +73,17 @@ function defaultStepForSession(session: SessionSummaryDTO | null): ProjectStepId
   return 'discuss';
 }
 
-function AppShell() {
+function AppShell({ authEnabled }: { authEnabled: boolean }) {
   const qc = useQueryClient();
   const { t } = useI18n();
+  const signOutMutation = useMutation({
+    mutationFn: api.logout,
+    onSuccess: (status) => {
+      qc.setQueryData(['auth-status'], status);
+      return qc.invalidateQueries({ queryKey: ['auth-status'] });
+    },
+  });
+  const signOut = () => signOutMutation.mutate();
 
   const [section, setSection] = useState<WorkspaceSection>('project');
   const [configTab, setConfigTab] = useState<ConfigTabId>('general');
@@ -399,6 +408,9 @@ function AppShell() {
 
     try {
       ws = new WebSocket(wsUrl);
+      ws.onclose = () => {
+        if (!closedByEffect) qc.invalidateQueries({ queryKey: ['auth-status'] });
+      };
       ws.onmessage = (ev) => {
         try {
           const msg = JSON.parse(ev.data as string) as {
@@ -576,7 +588,7 @@ function AppShell() {
         ws.close();
       }
     };
-  }, [activeProjectId, qc]);
+  }, [activeProjectId, authEnabled, qc]);
 
   const handleSelectProject = (project: ProjectSummary) => {
     setActiveProjectId(project.id);
@@ -729,12 +741,17 @@ function AppShell() {
         onToggleShowArchived={() => setShowArchivedSessions((v) => !v)}
         onOpenStatistics={handleOpenStatistics}
         onOpenConfig={handleOpenConfig}
+        onSignOut={authEnabled ? signOut : undefined}
+        signingOut={signOutMutation.isPending}
         onBackFromConfig={handleBackFromConfig}
         onSelectConfigTab={(tab) => setConfigTab(tab)}
       />
 
       {/* Main workspace */}
       <main className="flex min-w-0 flex-1 flex-col overflow-x-clip px-4 py-5 sm:px-6 lg:px-8">
+        {authEnabled && signOutMutation.isError && (
+          <ErrorPanel title={t('auth.signOut')} detail={signOutMutation.error.message} onRetry={signOut} />
+        )}
         <div
           className={
             section === 'project'
@@ -760,6 +777,8 @@ function AppShell() {
               tab={configTab}
               updateStatus={updateStatusQuery.data?.update ?? null}
               onReopenWizard={handleReopenWizard}
+              onSignOut={signOut}
+              signingOut={signOutMutation.isPending}
             />
           )}
 
@@ -1039,21 +1058,40 @@ function AppShell() {
 
 export function App() {
   const qc = useQueryClient();
+  const authQuery = useQuery({ queryKey: ['auth-status'], queryFn: api.authStatus, retry: false });
+  const authenticated = authQuery.data?.authenticated;
   const settingsQuery = useQuery({
     queryKey: ['settings'],
     queryFn: () => api.getSettings(),
     staleTime: 30_000,
+    enabled: authenticated === true,
   });
+
+  useEffect(() => {
+    const refreshAuth = () => { void qc.invalidateQueries({ queryKey: ['auth-status'] }); };
+    window.addEventListener('dalang-auth-required', refreshAuth);
+    return () => window.removeEventListener('dalang-auth-required', refreshAuth);
+  }, [qc]);
+
+  useEffect(() => {
+    if (authenticated === false) {
+      qc.removeQueries({ predicate: (query) => query.queryKey[0] !== 'auth-status' });
+    }
+  }, [authenticated, qc]);
 
   return (
     <ThemeProvider>
       <I18nProvider
-        serverLanguage={settingsQuery.data?.settings.language}
+        serverLanguage={settingsQuery.data?.settings.language ?? authQuery.data?.language}
         onLanguageChanged={() => {
           qc.invalidateQueries({ queryKey: ['settings'] });
         }}
       >
-        <AppShell />
+        {authQuery.data ? (
+          authenticated ? <AppShell authEnabled={authQuery.data.enabled} /> : <AppLogin />
+        ) : authQuery.isError ? (
+          <ErrorPanel title="DALANG" detail={authQuery.error.message} onRetry={() => authQuery.refetch()} />
+        ) : <LoadingPanel label="DALANG" />}
       </I18nProvider>
     </ThemeProvider>
   );

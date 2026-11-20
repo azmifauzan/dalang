@@ -1,0 +1,20 @@
+services:
+  dalang:
+    build: .
+    init: true
+    ports:
+      - "127.0.0.1:4173:4173"
+    volumes:
+      - dalang-home:/home/node
+      - ${DALANG_PROJECTS:-workspace}:/workspace
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:unconfined
+      - apparmor:unconfined
+      - systempaths=unconfined
+
+volumes:
+  dalang-home:
+  workspace:

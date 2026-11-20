@@ -14,7 +14,7 @@
   <a href="https://www.npmjs.com/package/dalang-cli">npm</a>
 </p>
 
-![Dalang v0.7 in Quick mode, with the saved chats, mode and model controls, and a one-task plan ready to run](docs/images/quick.webp)
+![Dalang in Ask mode with an attached screenshot, saved chats, and a paperclip button in the composer](docs/images/ask.webp)
 
 Dalang runs **Claude Code, Codex CLI, and Antigravity CLI** from a browser workspace on your machine. Open a Git repository and start a chat with the Lead. Ask a question, plan a small fix, or work through a larger feature. When agents change code, Dalang runs each task in a separate Git worktree and brings the verification output, review, and diff back for your merge decision.
 
@@ -28,7 +28,7 @@ Start with one signed-in CLI or give planning, coding, and review to different p
 | **Quick** | Review a one-task plan, run it, and decide whether to merge in the same chat. |
 | **Full** | Discuss a larger change, approve a brief and plan, run independent tasks in parallel, and review each diff before merging. |
 
-The composer lets you choose a mode, CLI, model, and reasoning effort. Reopen saved chats from the project sidebar. Use **Config** to set team roles, account directories, and fallback targets. The project header shows quota windows when the CLIs report them, and **Statistics** summarizes runs, tokens, and API-equivalent cost estimates.
+The composer lets you choose a mode, CLI, model, and reasoning effort. Attach or paste screenshots when using Claude Code or Codex. Reopen saved chats and their images from the project sidebar. In **Config**, manage provider updates, team roles, account directories, and fallback targets. The project header shows reported quota windows, and **Statistics** summarizes runs, tokens, and API-equivalent cost estimates.
 
 ## Install
 
@@ -51,6 +51,12 @@ dalang doctor
 dalang
 ```
 
+### Docker
+
+From the source checkout, run `docker compose up --build -d` and open `http://127.0.0.1:4173`. The image includes all three CLIs. Sign in to the providers you use from inside the container. [Docker setup](docs/INSTALL.md#run-with-docker)
+
+Dalang opens without an app password by default. Enable one in **Config → Security → DALANG login**. [Set up a DALANG password](docs/INSTALL.md#require-a-dalang-password)
+
 ## Your first project
 
 1. Follow the setup wizard to check your CLIs and choose your Lead, coders, and reviewer.
@@ -63,10 +69,10 @@ dalang
 
 | Guide | What it covers |
 | --- | --- |
-| [Install and update](docs/INSTALL.md) | Linux, macOS, WSL 2, npm, source builds, and data locations |
-| [Use Dalang](docs/USAGE.md) | Setup, planning, runs, review, Git, and settings |
-| [Providers and accounts](docs/PROVIDERS.md) | CLI sign-in, models, separate accounts, routing, and fallback |
-| [Sandbox and permissions](docs/SANDBOX.md) | Local access, filesystem confinement, Antigravity keyring access, and Git safety |
+| [Install and update](docs/INSTALL.md) | npm, Docker, platform requirements, upgrades, and backups |
+| [Use Dalang](docs/USAGE.md) | Chat, image attachments, planning, runs, review, Git, and settings |
+| [Providers and accounts](docs/PROVIDERS.md) | CLI sign-in and updates, models, separate accounts, routing, and fallback |
+| [Sandbox and permissions](docs/SANDBOX.md) | Local access, optional password, filesystem confinement, Antigravity keyring access, and Git safety |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | Startup, login, quota, sandbox, and Git problems |
 
 [All documentation](docs/README.md) · [Changelog](CHANGELOG.md) · [Report an issue](https://github.com/azmifauzan/dalang/issues)

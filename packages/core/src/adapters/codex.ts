@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
 import {
   DALANG_VERSION,
   EFFORT_LEVEL_ORDER,
@@ -335,16 +336,6 @@ export class CodexAdapter implements CliAdapter {
     if (options.outputFilePath && !isReadOnly) {
       args.push('-o', options.outputFilePath);
     }
-    args.push(options.prompt);
-
-    const invocation = await wrapWithSandbox(
-      this.runner,
-      this.id,
-      options.projectPath,
-      binaryPath,
-      args,
-      { readOnly: isReadOnly, configDir: options.configDir },
-    );
     const env = buildProviderAccountEnv(this.id, options.configDir);
 
     const logger = createTurnLogger(options.logFilePath);
@@ -359,8 +350,23 @@ export class CodexAdapter implements CliAdapter {
       model: options.model ?? null,
     };
     let sawUsage = false;
+    let imageDir: string | undefined;
 
     try {
+      if (options.images?.length) {
+        imageDir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'dalang-images-'));
+        for (const [index, image] of options.images.entries()) {
+          const imagePath = path.join(imageDir, `${index}.${image.mimeType.split('/')[1]}`);
+          fs.writeFileSync(imagePath, image.data, { mode: 0o600 });
+          args.push('--image', imagePath);
+        }
+        args.push('--');
+      }
+      args.push(options.prompt);
+      const invocation = await wrapWithSandbox(
+        this.runner, this.id, options.projectPath, binaryPath, args,
+        { readOnly: isReadOnly, configDir: options.configDir, imageDir },
+      );
       const res = await this.runner.run(invocation.command, invocation.args, {
         cwd: options.projectPath,
         timeoutMs: options.timeoutMs ?? 600_000,
@@ -434,6 +440,7 @@ export class CodexAdapter implements CliAdapter {
         ...(sawUsage ? { usage: usageAcc } : {}),
       };
     } finally {
+      if (imageDir) fs.rmSync(imageDir, { recursive: true, force: true });
       logger.close();
     }
   }

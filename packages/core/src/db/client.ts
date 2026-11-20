@@ -29,7 +29,7 @@ export function getDbDataDir(db: DalangDb): string | null {
   return dbDataDirs.get(db) ?? null;
 }
 
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 
 const BOOTSTRAP_SQL = `
 PRAGMA journal_mode = WAL;
@@ -1213,6 +1213,15 @@ export function openDatabase(dbFilePath: string = getDbPath()): DbConnection {
   if (upgrading && storedVersion < 7) migrateToV7(sqlite);
   if (upgrading && storedVersion < 8) migrateToV8(sqlite);
   if (upgrading && storedVersion < 9) migrateToV9(sqlite);
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS message_images (
+      id TEXT PRIMARY KEY,
+      message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+      mime_type TEXT NOT NULL,
+      data BLOB NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_message_images_message_id ON message_images(message_id);
+  `);
   backfillLeadTurnsFromDisk(sqlite);
   sqlite.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_one_working_per_project

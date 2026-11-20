@@ -20,6 +20,18 @@ npx dalang-cli --port 4180 --no-open
 
 Then open `http://127.0.0.1:4180`.
 
+### Docker fails to start
+
+Check `docker compose logs dalang`. If bubblewrap cannot create a namespace or mount `/proc`, confirm that the host allows unprivileged user namespaces and that the service uses the security settings in `compose.yaml`. To run the diagnostics inside the running container, use `docker compose exec dalang node /app/bin/dalang.js doctor`. [Docker setup](INSTALL.md#run-with-docker)
+
+### The DALANG login page asks for a password
+
+Use the password you set in **Config → Security → DALANG login**. Restarting DALANG ends existing browser sessions. A signed-in browser can disable the password from the same menu. The DALANG password and provider account credentials are separate. [App login](INSTALL.md#require-a-dalang-password)
+
+### The image attachment icon is disabled
+
+Choose Claude Code or Codex in the composer. Wait for the current turn to finish, or remove a preview if you already have three files attached. Each file must be PNG, JPEG, or WebP and at most 4 MiB. [Attach images](USAGE.md#attach-images)
+
 ### "Bubblewrap sandbox is unavailable" or "Sandbox confinement is unavailable"
 
 - **Linux**: install `bubblewrap` (`sudo apt install bubblewrap` or `sudo dnf install bubblewrap`), then verify with `which bwrap` and `npx dalang-cli doctor`.
@@ -53,6 +65,12 @@ CODEX_HOME=/path/to/dir codex login
 AGY_CONFIG_DIR=/path/to/dir XDG_CONFIG_HOME=/path/to/dir agy
 ```
 
+For Docker, sign in inside the container using the [Docker sign-in commands](INSTALL.md#run-with-docker).
+
+### Update CLI fails
+
+Wait for that provider's active turns to finish, then retry **Update CLI**. If the message points to an installation managed by a package manager or a permissions error, use that installation's update command and refresh CLI status. [Provider updates](PROVIDERS.md#update-provider-clis)
+
 ### Provider stays in cooldown after quota resets
 
 DALANG automatically expires a cached "0% remaining" reading at its reset time (or after 15 minutes if no reset time is reported), and reactive rate-limit cooldowns last 5 minutes. You can clear a cooldown immediately from **Config → Agents** using **Clear cooldown** (or **Refresh CLI status**).
@@ -85,7 +103,7 @@ CLIs periodically retire or rename model ids. Click **Refresh CLI status** to re
 
 ### Database schema version error after downgrading
 
-If you see `Database schema v9 is newer than this DALANG build`, start v0.7.0 or later with `npx dalang-cli@latest`. To run an older build with your previous state, restore the backup of both the data directory and project checkout made before migration. [Update and backup](INSTALL.md#update-dalang)
+If DALANG reports that the database schema is newer than the build, run `npx dalang-cli@latest` or update your Docker checkout. Schema v10 requires v0.7.2 or later. To resume using an older build, restore the pre-migration backup of the data directory and project checkout. [Update and backup](INSTALL.md#update-dalang)
 
 ### A project opens into an empty chat after upgrading
 

@@ -9,6 +9,7 @@ import {
   AssignTaskProfileInputSchema,
   BriefContentSchema,
   BriefReviseInputSchema,
+  CHAT_BODY_LIMIT,
   ChatMessageInputSchema,
   CreateOrOpenProjectInputSchema,
   CreateProfileInputSchema,
@@ -49,6 +50,7 @@ import {
   type CliRunner,
   type UpdateRegistryFetcher,
 } from '@dalang/core';
+import { registerAuth } from './auth.js';
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
 
@@ -127,6 +129,7 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     }
   });
 
+  const auth = registerAuth(app, settingsService);
   await app.register(fastifyWebsocket);
 
   app.setErrorHandler((err, _req, reply) => {
@@ -157,13 +160,21 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
   });
 
   // WebSocket live event stream
-  app.get('/ws', { websocket: true }, (socket) => {
+  app.get('/ws', { websocket: true }, (socket, req) => {
+    const untrack = auth.trackSocket(req, () => socket.close(4401));
     const unsubscribe = events.onEvent((event) => {
+      if (!auth.canAccess(req)) {
+        socket.close(4401);
+        return;
+      }
       if (socket.readyState === socket.OPEN) {
         socket.send(JSON.stringify(event));
       }
     });
-    socket.on('close', unsubscribe);
+    socket.on('close', () => {
+      unsubscribe();
+      untrack();
+    });
   });
 
   // Projects (F-01, F-02)
@@ -304,19 +315,29 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     },
   );
 
-  app.post<{ Params: { id: string } }>('/api/projects/:id/chat', async (req) => {
+  app.post<{ Params: { id: string } }>('/api/projects/:id/chat', { bodyLimit: CHAT_BODY_LIMIT }, async (req) => {
     const body = ChatMessageInputSchema.parse(req.body ?? {});
     return leadService.sendChatMessage(req.params.id, body);
   });
 
   app.post<{ Params: { id: string; sessionId: string } }>(
     '/api/projects/:id/sessions/:sessionId/messages',
+    { bodyLimit: CHAT_BODY_LIMIT },
     async (req) => {
       const raw = (req.body ?? {}) as Record<string, unknown>;
       const body = ChatMessageInputSchema.parse({ ...raw, sessionId: req.params.sessionId });
       return leadService.sendChatMessage(req.params.id, body);
     },
   );
+
+  app.get<{ Params: { id: string } }>('/api/chat-images/:id', async (req, reply) => {
+    const image = leadService.getChatImage(req.params.id);
+    if (!image) return reply.code(404).send({ error: 'Image not found.' });
+    return reply.type(image.mimeType)
+      .header('Cache-Control', 'private, no-store')
+      .header('X-Content-Type-Options', 'nosniff')
+      .send(image.data);
+  });
 
   // Discuss (F-03, F-04, F-05)
   app.get<{ Params: { id: string } }>('/api/projects/:id/discuss', async (req) => {
@@ -555,6 +576,16 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     };
   });
 
+  app.post<{ Params: { provider: string } }>('/api/providers/:provider/update', async (req) => {
+    const provider = ProviderIdSchema.parse(req.params.provider);
+    await registry.updateCli(provider);
+    cachedProviderStatuses = null;
+    await statusRefreshInFlight?.catch(() => undefined);
+    const providers = await getProviderStatuses(true);
+    events.emitEvent({ type: 'provider.updated', provider });
+    return { providers, providerStates: executionService.getProviderRuntimeStates() };
+  });
+
   app.post<{ Params: { provider: string } }>(
     '/api/providers/:provider/clear-cooldown',
     async (req) => {
@@ -673,8 +704,8 @@ export async function startDalangServer(opts: {
     currentVersion: opts.currentVersion,
   });
 
-  // Local-only invariant: always bind to 127.0.0.1
-  await app.listen({ host: '127.0.0.1', port });
+  // Docker forwards a host loopback port to the container interface. The Host/Origin guard still applies.
+  await app.listen({ host: process.env.DALANG_CONTAINER === '1' ? '0.0.0.0' : '127.0.0.1', port });
   const addr = app.server.address();
   const actualPort = typeof addr === 'object' && addr ? addr.port : port;
   // Warm the provider status (installed CLIs, logins, model lists) so the first page load does not wait for it.

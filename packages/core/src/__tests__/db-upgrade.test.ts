@@ -42,7 +42,7 @@ describe('database upgrade', () => {
     fresh.close();
 
     const upgraded = openDatabase(file);
-    expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(9);
+    expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(10);
     const runCols = (upgraded.sqlite.pragma('table_info(runs)') as Array<{ name: string }>).map((c) => c.name);
     expect(runCols).toContain('worktree_path');
     expect(runCols).toContain('input_tokens');
@@ -247,7 +247,7 @@ describe('database upgrade', () => {
     // Open and trigger v8 -> v9 upgrade
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(9);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(10);
 
       // Project A: 1 Full working session preserving brief, plan, tasks, messages, and moved artifacts
       const sessionsA = upgraded.sqlite

@@ -5,6 +5,7 @@ import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import {
   AskReplyContractSchema,
+  MAX_CHAT_IMAGE_BYTES,
   BriefContentSchema,
   DiscussRoundSchema,
   PlanContractSchema,
@@ -14,6 +15,8 @@ import {
   type BriefContent,
   type BriefDTO,
   type ChatMessageInput,
+  type ChatImage,
+  type ChatImageMessage,
   type EffortLevel,
   type SessionTurnDTO,
   type CreateSessionInput,
@@ -46,11 +49,12 @@ import {
   type UpdateTaskInput,
 } from '@dalang/shared';
 import type { ProviderRegistry } from '../adapters/registry.js';
-import type { TurnTokenUsage } from '../adapters/types.js';
+import type { TurnImage, TurnTokenUsage } from '../adapters/types.js';
 import type { DalangDb } from '../db/client.js';
 import {
   briefs,
   leadTurns,
+  messageImages,
   messages,
   plans,
   projects,
@@ -86,6 +90,23 @@ const UNFINISHED_TASK_STATUSES = new Set<string>([
   'awaiting_merge',
   'review_failed',
 ]);
+
+type ChatTurnImage = TurnImage & { name: string };
+
+function decodeChatImages(images: ChatImage[]): ChatTurnImage[] {
+  return images.map(({ name, mimeType, data }) => {
+    const bytes = Buffer.from(data, 'base64');
+    const mimeMatches = mimeType === 'image/png'
+      ? bytes.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))
+      : mimeType === 'image/jpeg'
+        ? bytes.subarray(0, 3).equals(Buffer.from('ffd8ff', 'hex'))
+        : bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP';
+    if (!mimeMatches || bytes.length > MAX_CHAT_IMAGE_BYTES || bytes.toString('base64') !== data) {
+      throw new Error('Invalid image. Use a PNG, JPEG, or WebP file up to 4 MiB.');
+    }
+    return { name, mimeType, data: bytes };
+  });
+}
 
 export function conflictError(message: string): Error & { statusCode: number } {
   const err = new Error(message) as Error & { statusCode: number };
@@ -592,6 +613,12 @@ export class LeadService {
   ): Promise<ChatTurnResult> {
     const project = this.getProjectRow(projectId);
     const requestedMode: SessionMode = input.mode ?? 'ask';
+    const images = decodeChatImages(input.images ?? []);
+    const existingSession = input.sessionId ? this.getSessionRow(projectId, input.sessionId) : null;
+    if (images.length && (input.provider ?? existingSession?.provider ?? project.leadProvider) === 'antigravity') {
+      throw new Error('Choose Claude Code or Codex to send images.');
+    }
+    const title = deriveSessionTitle(input.message, images[0]?.name);
 
     let sessionRow: typeof sessions.$inferSelect;
     if (!input.sessionId) {
@@ -600,13 +627,13 @@ export class LeadService {
       }
       const created = this.createSession(projectId, {
         mode: requestedMode,
-        title: deriveSessionTitle(input.message),
+        title,
         provider: input.provider,
         model: input.model,
       });
       sessionRow = this.getSessionRow(projectId, created.id);
     } else {
-      sessionRow = this.getSessionRow(projectId, input.sessionId);
+      sessionRow = existingSession!;
       const currentMode = (sessionRow.mode as SessionMode) || 'ask';
 
       // Sync optional provider/model override on the session.
@@ -661,7 +688,7 @@ export class LeadService {
         this.db
           .update(sessions)
           .set({
-            title: deriveSessionTitle(input.message),
+            title,
             updatedAt: new Date().toISOString(),
           })
           .where(eq(sessions.id, sessionRow.id))
@@ -671,7 +698,7 @@ export class LeadService {
     }
 
     if (requestedMode === 'ask') {
-      const askReply = await this.runAskTurnInner(project, sessionRow, input.message, input.effort);
+      const askReply = await this.runAskTurnInner(project, sessionRow, input.message, input.effort, images);
       return {
         session: this.getSession(projectId, sessionRow.id),
         mode: 'ask',
@@ -686,6 +713,7 @@ export class LeadService {
         sessionRow,
         input.message,
         input.effort,
+        images,
       );
       return {
         session: this.getSession(projectId, sessionRow.id),
@@ -704,7 +732,7 @@ export class LeadService {
       provider: input.provider,
       model: input.model ?? undefined,
       effort: input.effort,
-    });
+    }, images);
     return {
       session: this.getSession(projectId, sessionRow.id),
       mode: 'full',
@@ -718,10 +746,11 @@ export class LeadService {
     sessionRow: typeof sessions.$inferSelect,
     rawMessage: string,
     effort: EffortLevel = 'medium',
+    images: ChatTurnImage[] = [],
   ): Promise<AskMessageContent> {
     const userText = rawMessage.trim();
     const priorMessages = this.getDiscussState(project.id, sessionRow.id).messages;
-    this.appendMessage(sessionRow.id, 'user', 'text', userText);
+    this.appendUserMessage(sessionRow.id, userText, images);
     this.touchSession(sessionRow.id);
     this.events?.emitEvent({ type: 'discuss.updated', projectId: project.id, sessionId: sessionRow.id });
     this.events?.emitEvent({ type: 'sessions.updated', projectId: project.id, sessionId: sessionRow.id });
@@ -750,7 +779,7 @@ export class LeadService {
         projectContext ? `\nCurrent PROJECT.md:\n${projectContext}\n` : '',
         completedWorkSummary ? `\n${completedWorkSummary}\n` : '',
         historyBlock,
-        `User question:\n${userText}`,
+        `User question:\n${userText || 'See the attached images.'}`,
         ``,
         `Response instructions:`,
         `- Answer clearly and directly based on the repository and conversation context.`,
@@ -778,6 +807,7 @@ export class LeadService {
       let turn = await adapter.runTurn({
         projectPath: project.path,
         prompt: buildPrompt(shouldInlineHistory),
+        images,
         sessionId: sessionRow.cliSessionId,
         model: sessionRow.model,
         effort,
@@ -799,6 +829,7 @@ export class LeadService {
         turn = await adapter.runTurn({
           projectPath: project.path,
           prompt: buildPrompt(true),
+          images,
           sessionId: null,
           model: sessionRow.model,
           effort,
@@ -925,10 +956,11 @@ export class LeadService {
     sessionRow: typeof sessions.$inferSelect,
     rawMessage: string,
     effort: EffortLevel = 'high',
+    images: ChatTurnImage[] = [],
   ): Promise<{ quickPlan: QuickPlanContract; plan: PlanDTO | null }> {
     const userText = rawMessage.trim();
     const priorMessages = this.getDiscussState(project.id, sessionRow.id).messages;
-    this.appendMessage(sessionRow.id, 'user', 'text', userText);
+    this.appendUserMessage(sessionRow.id, userText, images);
     this.touchSession(sessionRow.id);
     this.events?.emitEvent({ type: 'discuss.updated', projectId: project.id, sessionId: sessionRow.id });
     this.events?.emitEvent({ type: 'sessions.updated', projectId: project.id, sessionId: sessionRow.id });
@@ -968,7 +1000,7 @@ export class LeadService {
       projectContext ? `\nCurrent PROJECT.md:\n${projectContext}\n` : '',
       completedWorkSummary ? `\n${completedWorkSummary}\n` : '',
       transcriptBlock,
-      `User request:\n${userText}`,
+      `User request:\n${userText || 'See the attached images.'}`,
       ``,
       `Instructions:`,
       `- Inspect the codebase to understand the exact files involved.`,
@@ -998,6 +1030,7 @@ export class LeadService {
         model: sessionRow.model,
         effort,
         prompt,
+        images,
         targetFilePath: draftFilePath,
         schema: QuickPlanContractSchema,
         schemaName: `quick-plan-v${nextPlanVersion}`,
@@ -1315,6 +1348,28 @@ export class LeadService {
     };
   }
 
+  private appendUserMessage(sessionId: string, text: string, images: ChatTurnImage[]): void {
+    if (!images.length) {
+      this.appendMessage(sessionId, 'user', 'text', text);
+      return;
+    }
+    const attachments = images.map((image) => ({ ...image, id: crypto.randomUUID() }));
+    const content: ChatImageMessage = {
+      text,
+      images: attachments.map(({ id, name }) => ({ id, name })),
+    };
+    this.db.transaction(() => {
+      const message = this.appendMessage(sessionId, 'user', 'images', content);
+      this.db.insert(messageImages).values(attachments.map(({ id, mimeType, data }) => ({
+        id, messageId: message.id, mimeType, data,
+      }))).run();
+    });
+  }
+
+  getChatImage(id: string): typeof messageImages.$inferSelect | undefined {
+    return this.db.select().from(messageImages).where(eq(messageImages.id, id)).get();
+  }
+
   getDiscussState(
     projectId: string,
     explicitSessionId?: string,
@@ -1392,6 +1447,7 @@ export class LeadService {
   private async sendDiscussMessageInner(
     projectId: string,
     input: DiscussMessageInput,
+    images: ChatTurnImage[] = [],
   ): Promise<{ round: DiscussRound; messages: DiscussMessageDTO[]; sessionId: string }> {
     const project = this.getProjectRow(projectId);
     const session = this.getOrCreateLeadSession(
@@ -1410,7 +1466,7 @@ export class LeadService {
     const priorMessages = state.messages;
 
     const userText = this.formatUserDiscussMessage(input);
-    this.appendMessage(session.id, 'user', 'text', userText);
+    this.appendUserMessage(session.id, userText, images);
     if (!session.title?.trim()) {
       this.db
         .update(sessions)
@@ -1446,7 +1502,7 @@ export class LeadService {
       `Project: ${project.name} (${project.path})`,
       projectContext ? `\nCurrent PROJECT.md:\n${projectContext}\n` : '',
       priorContext,
-      `User input:\n${userText}`,
+      `User input:\n${userText || 'See the attached images.'}`,
       ``,
       `Instructions:`,
       `- Ask focused, high-leverage clarification questions (2 to 5 questions) to pin down scope, stack, constraints, and edge cases.`,
@@ -1475,6 +1531,7 @@ export class LeadService {
         model: session.model,
         effort: input.effort ?? 'high',
         prompt,
+        images,
         targetFilePath: roundFilePath,
         schema: DiscussRoundSchema,
         schemaName: `discuss-round-${nextRound}`,
@@ -2817,6 +2874,10 @@ export class LeadService {
         if (m.type === 'ask' && m.content && typeof m.content === 'object') {
           const ask = m.content as AskMessageContent;
           return `[${m.role}/ask] ${ask.text}`;
+        }
+        if (m.type === 'images' && m.content && typeof m.content === 'object') {
+          const entry = m.content as ChatImageMessage;
+          return `[user/images] ${entry.text}\nAttached images: ${entry.images.map((image) => image.name).join(', ')}`;
         }
         return `[${m.role}/${m.type}] ${typeof m.content === 'string' ? m.content : JSON.stringify(m.content)}`;
       })

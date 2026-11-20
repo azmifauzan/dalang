@@ -1,4 +1,4 @@
-import type { EffortLevel, ProviderId, ProviderStatus, ProviderUsage } from '@dalang/shared';
+import type { ChatImage, EffortLevel, ProviderId, ProviderStatus, ProviderUsage } from '@dalang/shared';
 
 export interface RunCommandOptions {
   cwd: string;
@@ -30,6 +30,7 @@ export interface CliRunner {
 export interface AdapterTurnOptions {
   projectPath: string;
   prompt: string;
+  images?: TurnImage[];
   sessionId?: string | null;
   model?: string | null;
   effort?: EffortLevel;
@@ -41,6 +42,11 @@ export interface AdapterTurnOptions {
   signal?: AbortSignal;
   logFilePath?: string;
   onLogLine?: (line: string) => void;
+}
+
+export interface TurnImage {
+  mimeType: ChatImage['mimeType'];
+  data: Buffer;
 }
 
 export interface TurnTokenUsage {

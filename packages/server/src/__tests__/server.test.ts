@@ -86,7 +86,7 @@ function createMultiProjectFakeRunner(projectSpecs: Record<string, { title: stri
         stack: ['TypeScript'],
         taskTitle: 'Build core feature',
       };
-      const promptArg = args.find((a) => a.includes('.dalang/')) ?? args.join(' ');
+      const promptArg = args.find((a) => a.includes('.dalang/') && a.includes('\n')) ?? args.join(' ');
       const joined = `${cmd} ${args.join(' ')}`;
 
       const emit = (sid: string, text: string) => {

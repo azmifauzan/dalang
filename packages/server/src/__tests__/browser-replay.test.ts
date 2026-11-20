@@ -473,6 +473,7 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
           const agentsText = await waitForText('Refresh CLI status');
           expect(agentsText).toContain('Opus');
           expect(agentsText).toContain('Fable');
+          expect(agentsText).toContain('Update CLI');
 
           // Config -> Team: sungging wayang cards + New profile modal (Fable 1M, max effort, configDir).
           await clickButton('Team', true);
@@ -506,6 +507,38 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
           // Config -> Security: sandbox + keyring toggle.
           await clickButton('Security', true);
           await waitForText('Allow Antigravity to read the desktop keyring');
+          const signOutSelector = 'aside button[aria-label="Sign out"]';
+          expect(await browser.cdp.evalJs<boolean>(`Boolean(document.querySelector(${JSON.stringify(signOutSelector)}))`)).toBe(false);
+          const password = 'a browser test password';
+          const fillPassword = (selector: string) => browser.cdp.evalJs(`(() => {
+            const input = document.querySelector(${JSON.stringify(selector)});
+            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(password)});
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+          })()`);
+          await fillPassword('#new-login-password');
+          await clickButton('Enable login', true);
+          await waitForText('Disable login');
+          const usedSidebarSignOut = await browser.cdp.evalJs<boolean>(`(() => {
+            const signOut = document.querySelector(${JSON.stringify(signOutSelector)});
+            const config = document.querySelector('aside button[aria-label="Config"]');
+            if (!signOut || !config || signOut.textContent.trim() || !signOut.querySelector('svg')) return false;
+            const theme = signOut.previousElementSibling;
+            if (!theme?.matches('button[role="switch"]') || signOut.nextElementSibling) return false;
+            if (signOut.getBoundingClientRect().left < theme.getBoundingClientRect().right) return false;
+            if (signOut.getBoundingClientRect().top !== config.getBoundingClientRect().top) return false;
+            signOut.click();
+            return true;
+          })()`);
+          expect(usedSidebarSignOut).toBe(true);
+          await waitForText('Sign in to DALANG');
+          await fillPassword('#login-password');
+          await clickButton('Sign in', true);
+          await waitForText('Browser Replay App');
+          await clickButton('Statistics');
+          await clickButton('Config');
+          await clickButton('Security', true);
+          await clickButton('Disable login', true);
+          await waitForText('Enable login');
 
           // Config -> About: Gunungan + update commands + Tropenmuseum CC BY-SA 3.0 credits.
           await clickButton('About', true);
@@ -1084,11 +1117,29 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
           expect(stillZero.sessions).toHaveLength(0);
 
           // 2. Ask mode: send question -> creates Ask session in sidebar, shows answer + Lead suggestion, leaves git status clean!
+          const openedFilePicker = await browser.cdp.evalJs<boolean>(`(() => {
+            const attach = document.querySelector('main button[aria-label="Attach images"]');
+            const fileInput = document.querySelector('main input[type=file]');
+            if (!attach || attach.disabled || attach.textContent.trim() || !attach.querySelector('svg') || !fileInput) return false;
+            let opened = false;
+            fileInput.addEventListener('click', (event) => { event.preventDefault(); opened = true; }, { once: true });
+            attach.click();
+            const encoded = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/ZqMAAAAASUVORK5CYII=';
+            const bytes = Uint8Array.from(atob(encoded), (part) => part.charCodeAt(0));
+            const transfer = new DataTransfer();
+            transfer.items.add(new File([bytes], 'screenshot.png', { type: 'image/png' }));
+            fileInput.files = transfer.files;
+            fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+            return opened;
+          })()`);
+          expect(openedFilePicker).toBe(true);
+          await waitForText('screenshot.png');
           await setComposer('Why does add(2, 3) fail in src/math.mjs?');
           await browser.cdp.evalJs(`document.querySelector('main form button[type="submit"]')?.click()`);
           // Wait for the suggestion button: the answer text also shows briefly in the live log panel.
           const askDone = await waitForText('Switch to Quick');
           expect(askDone).toContain('add(a, b) currently returns a - b');
+          expect(await browser.cdp.evalJs<boolean>(`Boolean(document.querySelector('img[alt="screenshot.png"][src^="/api/chat-images/"]'))`)).toBe(true);
           expect(askDone).not.toContain('Review & merge');
           expect(execFileSync('git', ['status', '--porcelain'], { cwd: projDir, encoding: 'utf8' }).trim()).toBe('');
 

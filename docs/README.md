@@ -2,15 +2,18 @@
 
 ## Start here
 
-1. [Install Dalang](INSTALL.md) on Linux, macOS, or WSL 2.
+1. [Install Dalang](INSTALL.md) on Linux, macOS, or WSL 2, or [run it with Docker](INSTALL.md#run-with-docker).
 2. [Set up a provider](PROVIDERS.md) and sign in to at least one coding-agent CLI.
 3. [Open a project and start a chat](USAGE.md). Use Ask to explore, Quick for a one-task fix, or Full for work that needs a brief and plan.
 
 ## Find a topic
 
 - [Choose Ask, Quick, or Full](USAGE.md#choose-ask-quick-or-full)
+- [Attach images to a chat](USAGE.md#attach-images)
+- [Set a DALANG password](INSTALL.md#require-a-dalang-password)
 - [Reopen, archive, or discard work in a chat](USAGE.md#continue-or-manage-a-chat)
 - [Choose models, add accounts, and route tasks](PROVIDERS.md)
+- [Update the provider CLIs](PROVIDERS.md#update-provider-clis)
 - [Monitor runs, recover a task, and roll back](USAGE.md#4-run-the-work)
 - [Review changes, merge, and open a pull request](USAGE.md#5-review-and-merge)
 - [Read usage statistics and change settings](USAGE.md#settings-and-statistics)

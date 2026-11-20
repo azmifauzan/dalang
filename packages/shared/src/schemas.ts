@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const DALANG_VERSION = '0.7.1';
+export const DALANG_VERSION = '0.7.2';
 
 export const UiLanguageSchema = z.enum(['en', 'id']);
 export type UiLanguage = z.infer<typeof UiLanguageSchema>;
@@ -346,6 +346,23 @@ export const CreateOrOpenProjectInputSchema = z.object({
 });
 export type CreateOrOpenProjectInput = z.infer<typeof CreateOrOpenProjectInputSchema>;
 
+export const CHAT_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp'] as const;
+export const MAX_CHAT_IMAGES = 3;
+export const MAX_CHAT_IMAGE_BYTES = 4 * 1024 * 1024;
+export const CHAT_BODY_LIMIT = MAX_CHAT_IMAGES * 4 * Math.ceil(MAX_CHAT_IMAGE_BYTES / 3) + 1024 * 1024;
+
+const ChatImageSchema = z.object({
+  name: z.string().trim().min(1).max(255),
+  mimeType: z.enum(CHAT_IMAGE_TYPES),
+  data: z.string().min(1).max(4 * Math.ceil(MAX_CHAT_IMAGE_BYTES / 3)),
+});
+export type ChatImage = z.infer<typeof ChatImageSchema>;
+
+export interface ChatImageMessage {
+  text: string;
+  images: Array<{ id: string; name: string }>;
+}
+
 export const DiscussMessageInputSchema = z.object({
   sessionId: z.string().min(1).optional(),
   message: z.string().min(1),
@@ -390,7 +407,8 @@ export type SwitchSessionModeInput = z.infer<typeof SwitchSessionModeInputSchema
 export const ChatMessageInputSchema = z.object({
   sessionId: z.string().min(1).optional(),
   mode: SessionModeSchema.default('ask'),
-  message: z.string().min(1),
+  message: z.string(),
+  images: z.array(ChatImageSchema).max(MAX_CHAT_IMAGES).optional(),
   answers: z
     .array(
       z.object({
@@ -405,6 +423,9 @@ export const ChatMessageInputSchema = z.object({
   model: z.string().nullable().optional(),
   /** Reasoning effort for this turn; the Lead's usual effort applies when omitted. */
   effort: EffortLevelSchema.optional(),
+}).refine((input) => input.message.trim() || input.images?.length, {
+  message: 'Enter a message or attach an image.',
+  path: ['message'],
 });
 export type ChatMessageInput = z.infer<typeof ChatMessageInputSchema>;
 
@@ -525,6 +546,7 @@ export interface ProjectSummary {
 
 export type SessionMessageType =
   | 'text'
+  | 'images'
   | 'ask'
   | 'questions'
   | 'quick_plan'
@@ -808,6 +830,12 @@ export interface SettingsDTO {
   checkForUpdates: boolean;
   /** Minutes between automatic refreshes of the provider limits while the page is open. Default 5. */
   usageRefreshMinutes: UsageRefreshMinutes;
+}
+
+export interface AuthStatusDTO {
+  enabled: boolean;
+  authenticated: boolean;
+  language: UiLanguage | null;
 }
 
 export interface UpdateStatusDTO {

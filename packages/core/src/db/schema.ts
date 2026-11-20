@@ -1,4 +1,4 @@
-import { integer, primaryKey, real, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { blob, integer, primaryKey, real, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 export const projects = sqliteTable('projects', {
   id: text('id').primaryKey(),
@@ -41,6 +41,13 @@ export const messages = sqliteTable('messages', {
   type: text('type').notNull(),
   content: text('content').notNull(),
   createdAt: text('created_at').notNull(),
+});
+
+export const messageImages = sqliteTable('message_images', {
+  id: text('id').primaryKey(),
+  messageId: text('message_id').notNull().references(() => messages.id, { onDelete: 'cascade' }),
+  mimeType: text('mime_type').notNull(),
+  data: blob('data', { mode: 'buffer' }).notNull(),
 });
 
 export const briefs = sqliteTable('briefs', {

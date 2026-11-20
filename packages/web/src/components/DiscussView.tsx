@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import type {
+  ChatImage,
   DiscussMessageDTO,
   DiscussRound,
   ProjectSummary,
@@ -79,8 +80,9 @@ export function DiscussView({
     queryFn: () => api.getDiscussState(project.id, sessionId),
   });
 
+  const [images, setImages] = useState<ChatImage[]>([]);
   const sendMutation = useMutation({
-    mutationFn: (vars: { text: string; questions?: QuestionItem[]; mode: SessionMode }) => {
+    mutationFn: (vars: { text: string; questions?: QuestionItem[]; mode: SessionMode; images: ChatImage[] }) => {
       const structuredAnswers = (vars.questions ?? []).map((q) => {
         const draft = answersByQid[q.id] ?? { selectedOptions: [], customText: '' };
         return {
@@ -94,6 +96,7 @@ export function DiscussView({
         sessionId,
         mode: vars.mode,
         message: vars.text,
+        images: vars.images,
         answers:
           vars.mode === 'full' && structuredAnswers.length > 0 ? structuredAnswers : undefined,
         ...choice.payload,
@@ -101,6 +104,7 @@ export function DiscussView({
     },
     onSuccess: () => {
       setMessage('');
+      setImages([]);
       setAnswersByQid({});
       qc.invalidateQueries({ queryKey: ['discuss', project.id, sessionId] });
       qc.invalidateQueries({ queryKey: ['sessions', project.id] });
@@ -221,12 +225,13 @@ export function DiscussView({
   const handleComposerSubmit = (e: FormEvent) => {
     e.preventDefault();
     const trimmed = message.trim();
-    if (!trimmed && !hasAnswers) return;
+    if (!trimmed && !hasAnswers && !images.length) return;
     setRequestStartedAt(Date.now());
     sendMutation.mutate({
-      text: trimmed || t('discuss.defaultAnswersText'),
+      text: trimmed || (hasAnswers ? t('discuss.defaultAnswersText') : ''),
       questions: activeQuestions.length > 0 ? activeQuestions : undefined,
       mode: activeComposerMode,
+      images,
     });
   };
 
@@ -323,6 +328,8 @@ export function DiscussView({
                 value={message}
                 onChange={setMessage}
                 onSubmit={handleComposerSubmit}
+                images={images}
+                onImagesChange={setImages}
                 busy={turnRunning}
                 canSubmitEmpty={hasAnswers}
                 isFinishedSession={isFinished}

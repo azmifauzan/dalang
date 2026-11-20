@@ -87,7 +87,7 @@ export async function setupApprovedProject(
 }
 
 export function handleLeadCalls(cwd: string, args: string[], opts: RunCommandOptions): RunCommandResult | null {
-  const promptArg = args.find((a) => a.includes('.dalang/')) ?? args.join(' ');
+  const promptArg = args.find((a) => a.includes('.dalang/') && a.includes('\n')) ?? args.join(' ');
   const emitClaude = (sid: string, text: string) => {
     const line = JSON.stringify({ type: 'result', session_id: sid, result: text });
     opts.onStdoutLine?.(line);

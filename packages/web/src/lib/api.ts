@@ -2,6 +2,7 @@ import type {
   AgentProfileDTO,
   ApproveMergeInput,
   AskMessageContent,
+  AuthStatusDTO,
   BriefContent,
   BriefDTO,
   ChatMessageInput,
@@ -66,12 +67,22 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
   const data = (await res.json().catch(() => ({}))) as { error?: string };
   if (!res.ok) {
+    if (res.status === 401 && url !== '/api/auth/login') {
+      window.dispatchEvent(new Event('dalang-auth-required'));
+    }
     throw new Error(data.error || `Request failed (${res.status})`);
   }
   return data as T;
 }
 
 export const api = {
+  authStatus: () => request<AuthStatusDTO>('/api/auth/status'),
+  login: (password: string) => request<AuthStatusDTO>('/api/auth/login', {
+    method: 'POST', body: JSON.stringify({ password }),
+  }),
+  setLogin: (body: { enabled: true; password: string } | { enabled: false }) =>
+    request<AuthStatusDTO>('/api/auth/settings', { method: 'PUT', body: JSON.stringify(body) }),
+  logout: () => request<AuthStatusDTO>('/api/auth/logout', { method: 'POST' }),
   // Projects
   listProjects: () => request<{ projects: ProjectSummary[] }>('/api/projects'),
   createOrOpenProject: (body: CreateOrOpenProjectInput) =>
@@ -367,6 +378,10 @@ export const api = {
     );
   },
   getSettings: () => request<{ settings: SettingsDTO }>('/api/settings'),
+  updateProviderCli: (provider: ProviderId) =>
+    request<{ providers: ProviderStatus[]; providerStates: ProviderRuntimeStateDTO[] }>(
+      `/api/providers/${provider}/update`, { method: 'POST' },
+    ),
   updateSettings: (body: UpdateSettingsInput) =>
     request<{ settings: SettingsDTO }>('/api/settings', {
       method: 'PATCH',

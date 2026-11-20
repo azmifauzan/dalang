@@ -12,6 +12,14 @@ Dalang runs the official coding-agent CLIs with the accounts you sign into on yo
 
 Use the same terminal environment where you will start Dalang. Run `npx dalang-cli doctor` after signing in, or open **Config → Agents → Refresh CLI status** if Dalang is already running. If using WSL 2, install and sign in inside WSL.
 
+Docker ships the three CLIs and keeps their sign-ins inside the container. [Docker sign-in commands](INSTALL.md#run-with-docker)
+
+## Update provider CLIs
+
+Use **Config → Agents → Update CLI** on an installed provider. Dalang runs `claude update`, `codex update`, or `agy update` and refreshes the displayed version. Let that provider's active turns finish before updating. If your CLI installation is managed by a package manager that requires separate updates or elevated permissions, update it through that package manager and refresh its status in Dalang.
+
+For chat images, select Claude Code or Codex in the composer. [Attach images](USAGE.md#attach-images)
+
 ### Antigravity CLI on Linux
 
 The Linux sandbox needs `xdg-dbus-proxy` and an active desktop session to connect Antigravity to the Secret Service. Install the package with `sudo apt install xdg-dbus-proxy` or `sudo dnf install xdg-dbus-proxy`. In **Config → Security**, enable **Allow Antigravity to read the desktop keyring** only if you want to grant this access. The service exposes the full desktop keyring. With access disabled, tasks can route to their configured fallback. [Antigravity keyring details](SANDBOX.md#antigravity-keyring-exposure-opt-in)

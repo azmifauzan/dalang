@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z, type ZodType } from 'zod';
 import type { EffortLevel } from '@dalang/shared';
-import type { AdapterTurnResult, CliAdapter, TurnTokenUsage } from '../adapters/types.js';
+import type { AdapterTurnResult, CliAdapter, TurnImage, TurnTokenUsage } from '../adapters/types.js';
 import { getProjectLogsDir, getProjectTmpDir } from '../paths.js';
 import { ensureProjectDir, readArtifactFile, removeArtifactFile } from '../safe-fs.js';
 import { mergeTokenUsage } from './pricing.js';
@@ -14,6 +14,7 @@ export interface RunContractOptions<T> {
   model?: string | null;
   effort?: EffortLevel;
   prompt: string;
+  images?: TurnImage[];
   targetFilePath: string;
   schema: ZodType<T>;
   schemaName: string;
@@ -114,6 +115,7 @@ export async function runContractTurn<T>(
       turn = await options.adapter.runTurn({
         projectPath: options.projectPath,
         prompt: currentPrompt,
+        images: attempt === 1 || !currentSessionId ? options.images : undefined,
         sessionId: currentSessionId,
         model: options.model,
         effort: options.effort ?? 'high',
