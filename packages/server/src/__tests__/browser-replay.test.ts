@@ -378,11 +378,11 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
         try {
           const waitForText = async (needle: string) => {
             for (let i = 0; i < 60; i++) {
-              const text = await browser.cdp.evalJs<string>('document.body.innerText');
+              const text = await browser.cdp.evalJs<string>("document.body?.innerText ?? ''");
               if (text.includes(needle)) return text;
               await new Promise((r) => setTimeout(r, 100));
             }
-            const last = await browser.cdp.evalJs<string>('document.body.innerText');
+            const last = await browser.cdp.evalJs<string>("document.body?.innerText ?? ''");
             throw new Error(`Timed out waiting for text "${needle}". Body: ${last.slice(0, 500)}`);
           };
 
@@ -460,8 +460,9 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
           await clickButton('Statistics');
           const statsText = await waitForText('Tokens & Estimated Cost by Model');
           expect(statsText).toContain('Not your subscription bill');
-          expect(statsText).toContain('4.2k');
-          expect(statsText).toContain('$0.0092');
+          expect(statsText).toContain('Runs (L / E / F / R)');
+          expect(statsText).toContain('5.4k');
+          expect(statsText).toContain('2 / 0 / 0 / 1');
 
           // Sidebar -> Config swaps sidebar to Back + 6 tabs.
           await clickButton('Config');

@@ -483,7 +483,7 @@ export const en = {
   'stats.estCost': 'Est. cost (API-equiv)',
   'stats.notSubscriptionBill': 'Not your subscription bill',
   'stats.colProvider': 'Provider',
-  'stats.colRunsKinds': 'Runs (E / F / R)',
+  'stats.colRunsKinds': 'Runs (L / E / F / R)',
   'stats.colOutcomes': 'Outcomes',
   'stats.colDuration': 'Avg / Total Duration',
   'stats.colLimitsErrors': 'Limits & Errors',

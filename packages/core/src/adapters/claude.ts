@@ -182,7 +182,7 @@ export function parseClaudeInitializeModels(stdout: string): ProviderModelInfo[]
   return [];
 }
 
-function extractClaudeUsage(ev: Record<string, unknown>, fallbackModel?: string | null): TurnTokenUsage | undefined {
+export function extractClaudeUsage(ev: Record<string, unknown>, fallbackModel?: string | null): TurnTokenUsage | undefined {
   let inputTokens = 0;
   let outputTokens = 0;
   let cacheReadTokens = 0;

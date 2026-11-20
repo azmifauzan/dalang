@@ -423,6 +423,10 @@ function AppShell() {
                 [msg.sessionId!]: { logs: [], turn: EMPTY_LIVE_TURN },
               }));
             }
+            qc.invalidateQueries({ queryKey: ['statistics'] });
+          } else if (msg.type === 'lead.turn_finished' && msg.projectId) {
+            refreshUsageAfterRun();
+            qc.invalidateQueries({ queryKey: ['statistics'] });
           } else if (msg.type === 'lead.log' && msg.projectId === activeProjectId && msg.line) {
             if (msg.sessionId) {
               setLiveBySession((prev) => {

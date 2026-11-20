@@ -10,6 +10,7 @@ import { ExecutionService } from '../services/executor.js';
 import { LeadService } from '../services/lead.js';
 import { ProjectService } from '../services/project.js';
 import { SettingsService } from '../services/settings.js';
+import { StatisticsService } from '../services/stats.js';
 import { cleanupTempDirs, makeTempDir } from './exec-helpers.js';
 
 function initSeededBugRepo(dir: string): void {
@@ -628,8 +629,116 @@ describe('v0.7 Session Modes (Ask, Quick, Full)', () => {
       });
       expect(nextDiscuss.session.mode).toBe('full');
       expect(nextDiscuss.messages.some((m) => m.type === 'questions')).toBe(true);
+
+      // Verify both Lead turns (Quick + Discuss) are recorded in usage statistics
+      const statsSvc = new StatisticsService(conn.db);
+      const stats = statsSvc.getUsageStatistics({ projectId: project.id });
+      expect(stats.totals.totalRuns).toBe(2);
+      expect(stats.totals.completedRuns).toBe(2);
+      const claudeStats = stats.providers.find((p) => p.provider === 'claude-code')!;
+      expect(claudeStats.totalRuns).toBe(2);
+      expect(claudeStats.byKind.lead).toBe(2);
     } finally {
       conn.close();
+    }
+  });
+
+  it('backfills historical Lead turns from existing .dalang log files (Claude and Antigravity) on database open', async () => {
+    const dbDir = makeTempDir('dalang-v07-backfill-db-');
+    const projDir = path.join(makeTempDir('dalang-v07-backfill-proj-'), 'app');
+    initSeededBugRepo(projDir);
+    const dbPath = path.join(dbDir, 'dalang.db');
+
+    const conn1 = openDatabase(dbPath);
+    const projectSvc = new ProjectService(conn1.db);
+    const project = await projectSvc.createOrOpen({
+      mode: 'open',
+      path: projDir,
+      name: 'Backfill App',
+      initGitIfMissing: false,
+      leadProvider: 'claude-code',
+    });
+
+    const sessId = '2d47369c-d1f2-4614-9847-02480ce03cbb';
+    const now = new Date().toISOString();
+    conn1.sqlite
+      .prepare(
+        `INSERT INTO sessions (id, project_id, title, mode, work_state, phase, provider, model, created_at, updated_at)
+         VALUES (?, ?, 'halo', 'full', 'idle', 'discuss', 'antigravity', 'gemini-4-hydrogen', ?, ?)`,
+      )
+      .run(sessId, project.id, now, now);
+
+    // Write a Claude Ask log and an Antigravity Discuss log on disk
+    const tmpDir = path.join(projDir, '.dalang', 'tmp');
+    const sessLogsDir = path.join(projDir, '.dalang', 'sessions', sessId, 'logs');
+    fs.mkdirSync(tmpDir, { recursive: true });
+    fs.mkdirSync(sessLogsDir, { recursive: true });
+
+    const tsNow = Date.now();
+    fs.writeFileSync(
+      path.join(tmpDir, `ask-${sessId}-${tsNow - 60_000}.log`),
+      [
+        JSON.stringify({ type: 'system', subtype: 'init', model: 'claude-sonnet-5-5', session_id: 'c-1', claude_code_version: '2.1.0' }),
+        JSON.stringify({
+          type: 'result',
+          session_id: 'c-1',
+          duration_ms: 3200,
+          total_cost_usd: 0.052,
+          is_error: false,
+          usage: {
+            input_tokens: 100,
+            output_tokens: 350,
+            cache_read_input_tokens: 10000,
+            cache_creation_input_tokens: 5000,
+          },
+        }),
+      ].join('\n') + '\n',
+    );
+
+    fs.writeFileSync(
+      path.join(sessLogsDir, `discuss-round-1-${tsNow - 30_000}.log`),
+      [
+        JSON.stringify({ event: 'init', conversation_id: 'agy-1', init: { model: 'gemini-4-hydrogen' } }),
+        JSON.stringify({
+          event: 'result',
+          result: {
+            conversation_id: 'agy-1',
+            status: 'SUCCESS',
+            duration_seconds: 12.4,
+            usage: {
+              input_tokens: 20000,
+              output_tokens: 2500,
+              cache_read_tokens: 35000,
+            },
+          },
+        }),
+      ].join('\n') + '\n',
+    );
+    conn1.close();
+
+    // Reopen database -> backfillLeadTurnsFromDisk populates lead_turns from those 2 logs
+    const conn2 = openDatabase(dbPath);
+    try {
+      const stats = new StatisticsService(conn2.db).getUsageStatistics({ projectId: project.id });
+      expect(stats.totals.totalRuns).toBe(2);
+      expect(stats.totals.completedRuns).toBe(2);
+      expect(stats.totals.inputTokens).toBe(20100);
+      expect(stats.totals.outputTokens).toBe(2850);
+      expect(stats.totals.cacheReadTokens).toBe(45000);
+      expect(stats.totals.cacheWriteTokens).toBe(5000);
+      expect(stats.totals.totalDurationMs).toBe(15600);
+      expect(stats.totals.estimatedCostUsd).toBeGreaterThan(0.052);
+
+      const agyStats = stats.providers.find((p) => p.provider === 'antigravity')!;
+      expect(agyStats.totalRuns).toBe(1);
+      expect(agyStats.byKind.lead).toBe(1);
+      expect(agyStats.cacheReadTokens).toBe(35000);
+
+      const claudeStats = stats.providers.find((p) => p.provider === 'claude-code')!;
+      expect(claudeStats.totalRuns).toBe(1);
+      expect(claudeStats.byKind.lead).toBe(1);
+    } finally {
+      conn2.close();
     }
   });
 });

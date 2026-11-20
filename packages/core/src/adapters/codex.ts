@@ -117,7 +117,7 @@ export function parseCodexModelsJson(stdout: string): ProviderModelInfo[] {
   }
 }
 
-function accumulateCodexUsage(
+export function accumulateCodexUsage(
   acc: TurnTokenUsage,
   usageObj: Record<string, unknown>,
   model?: string | null,

@@ -1,4 +1,5 @@
 import type { ProviderId } from '@dalang/shared';
+import type { TurnTokenUsage } from '../adapters/types.js';
 
 export interface ModelPricingRates {
   inputPerMillion: number;
@@ -99,4 +100,55 @@ export function estimateApiEquivalentCostUsd(opts: {
       Math.max(0, opts.cacheWriteTokens) * rates.cacheWritePerMillion) /
     1_000_000;
   return { costUsd: Number(cost.toFixed(6)), source: 'estimated' };
+}
+
+export function mergeTokenUsage(
+  base: TurnTokenUsage | undefined,
+  next: TurnTokenUsage | undefined,
+): TurnTokenUsage | undefined {
+  if (!base) return next;
+  if (!next) return base;
+  return {
+    inputTokens: base.inputTokens + next.inputTokens,
+    outputTokens: base.outputTokens + next.outputTokens,
+    cacheReadTokens: base.cacheReadTokens + next.cacheReadTokens,
+    cacheWriteTokens: base.cacheWriteTokens + next.cacheWriteTokens,
+    costUsd:
+      base.costUsd !== null || next.costUsd !== null
+        ? (base.costUsd ?? 0) + (next.costUsd ?? 0)
+        : null,
+    model: next.model ?? base.model,
+  };
+}
+
+export function usageDbFields(
+  provider: ProviderId,
+  fallbackModel: string | null,
+  usage: TurnTokenUsage | undefined,
+): {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  estimatedCostUsd?: number;
+  costSource?: 'cli' | 'estimated';
+} {
+  if (!usage) return {};
+  const est = estimateApiEquivalentCostUsd({
+    provider,
+    model: usage.model ?? fallbackModel,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    cacheReadTokens: usage.cacheReadTokens,
+    cacheWriteTokens: usage.cacheWriteTokens,
+    reportedCostUsd: usage.costUsd,
+  });
+  return {
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    cacheReadTokens: usage.cacheReadTokens,
+    cacheWriteTokens: usage.cacheWriteTokens,
+    estimatedCostUsd: est.costUsd,
+    costSource: est.source,
+  };
 }

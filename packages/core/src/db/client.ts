@@ -6,6 +6,12 @@ import { and, eq } from 'drizzle-orm';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { ensureDir, getDbPath } from '../paths.js';
 import { ensureDalangIgnore } from '../safe-fs.js';
+import type { ProviderId } from '@dalang/shared';
+import { extractAgyUsage } from '../adapters/antigravity.js';
+import { extractClaudeUsage } from '../adapters/claude.js';
+import { accumulateCodexUsage } from '../adapters/codex.js';
+import type { TurnTokenUsage } from '../adapters/types.js';
+import { usageDbFields } from '../services/pricing.js';
 import * as schema from './schema.js';
 
 export type DalangDb = BetterSQLite3Database<typeof schema>;
@@ -168,6 +174,27 @@ CREATE TABLE IF NOT EXISTS provider_events (
   type TEXT NOT NULL,
   detail TEXT,
   created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS lead_turns (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+  phase TEXT NOT NULL DEFAULT 'ask',
+  provider TEXT NOT NULL,
+  model TEXT,
+  status TEXT NOT NULL DEFAULT 'completed',
+  cli_session_id TEXT,
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  failure_reason TEXT,
+  log_path TEXT,
+  input_tokens INTEGER,
+  output_tokens INTEGER,
+  cache_read_tokens INTEGER,
+  cache_write_tokens INTEGER,
+  estimated_cost_usd REAL,
+  cost_source TEXT
 );
 
 CREATE TABLE IF NOT EXISTS settings (
@@ -877,6 +904,293 @@ function migrateToV9(sqlite: Database.Database): void {
   }
 }
 
+const LEAD_LOG_FILE_RE = /^(ask-|quick-plan-|discuss-round-|brief-|plan-|split-).*\.log$/;
+
+function inferLeadPhaseFromLogName(fileName: string): string {
+  if (fileName.startsWith('ask-')) return 'ask';
+  if (fileName.startsWith('quick-plan-')) return 'quick';
+  if (fileName.startsWith('discuss-round-')) return 'discuss';
+  if (fileName.startsWith('brief-')) return 'agree';
+  return 'list';
+}
+
+function parseLeadLogFile(
+  absPath: string,
+  fallbackProvider: ProviderId,
+  fallbackModel: string | null,
+): {
+  provider: ProviderId;
+  model: string | null;
+  cliSessionId: string | null;
+  status: 'completed' | 'failed';
+  durationMs: number | null;
+  usage?: TurnTokenUsage;
+} | null {
+  let content: string;
+  try {
+    content = fs.readFileSync(absPath, 'utf8');
+  } catch {
+    return null;
+  }
+
+  let provider: ProviderId | null = null;
+  let model: string | null = fallbackModel;
+  let cliSessionId: string | null = null;
+  let status: 'completed' | 'failed' = 'completed';
+  let durationMs: number | null = null;
+  let usage: TurnTokenUsage | undefined;
+  let codexAcc: TurnTokenUsage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    costUsd: null,
+    model: fallbackModel,
+  };
+  let sawCodexUsage = false;
+  let sawJsonEvent = false;
+
+  for (const rawLine of content.split(/\r?\n/)) {
+    const trimmed = rawLine.trim();
+    if (!trimmed.startsWith('{')) continue;
+    try {
+      const ev = JSON.parse(trimmed) as Record<string, unknown>;
+      sawJsonEvent = true;
+
+      if (ev.event === 'init' || ev.event === 'step_update' || ev.event === 'result') {
+        provider = 'antigravity';
+        if (typeof ev.conversation_id === 'string' && ev.conversation_id) {
+          cliSessionId = ev.conversation_id;
+        }
+        if (ev.init && typeof ev.init === 'object') {
+          const initObj = ev.init as Record<string, unknown>;
+          if (typeof initObj.model === 'string' && initObj.model.trim()) {
+            model = initObj.model.trim();
+          }
+        }
+        if (ev.result && typeof ev.result === 'object') {
+          const inner = ev.result as Record<string, unknown>;
+          if (typeof inner.conversation_id === 'string' && inner.conversation_id) {
+            cliSessionId = inner.conversation_id;
+          }
+          if (typeof inner.duration_seconds === 'number' && Number.isFinite(inner.duration_seconds)) {
+            durationMs = Math.max(0, Math.round(inner.duration_seconds * 1000));
+          }
+          if (typeof inner.status === 'string' && inner.status !== 'SUCCESS') {
+            status = 'failed';
+          }
+        }
+        const parsedAgy = extractAgyUsage(ev, model);
+        if (parsedAgy) usage = parsedAgy;
+        continue;
+      }
+
+      if (
+        typeof ev.claude_code_version === 'string' ||
+        ev.modelUsage !== undefined ||
+        (ev.type === 'system' && ev.subtype === 'init')
+      ) {
+        provider = 'claude-code';
+      }
+      if (typeof ev.session_id === 'string' && ev.session_id) {
+        cliSessionId = ev.session_id;
+      }
+      if (ev.type === 'system' && typeof ev.model === 'string' && ev.model.trim()) {
+        model = ev.model.trim();
+      }
+      if (ev.type === 'assistant' && ev.message && typeof ev.message === 'object') {
+        const msg = ev.message as { model?: string };
+        if (typeof msg.model === 'string' && msg.model.trim()) {
+          model = msg.model.trim();
+        }
+      }
+      if (ev.type === 'result') {
+        provider = provider ?? 'claude-code';
+        if (typeof ev.duration_ms === 'number' && Number.isFinite(ev.duration_ms)) {
+          durationMs = Math.max(0, Math.round(ev.duration_ms));
+        }
+        if (ev.is_error === true) {
+          status = 'failed';
+        }
+        const parsedClaude = extractClaudeUsage(ev, model);
+        if (parsedClaude) {
+          usage = parsedClaude;
+          if (parsedClaude.model) model = parsedClaude.model;
+        }
+        continue;
+      }
+
+      if (ev.type === 'thread.started' && typeof ev.thread_id === 'string') {
+        provider = 'codex';
+        cliSessionId = ev.thread_id;
+      }
+      if (ev.type === 'turn.completed' && ev.usage && typeof ev.usage === 'object') {
+        provider = 'codex';
+        codexAcc = accumulateCodexUsage(codexAcc, ev.usage as Record<string, unknown>, model);
+        sawCodexUsage = true;
+      }
+      if (ev.type === 'token_usage_record' && ev.payload && typeof ev.payload === 'object') {
+        const payload = ev.payload as { usage?: Record<string, unknown> };
+        if (payload.usage && typeof payload.usage === 'object') {
+          provider = 'codex';
+          codexAcc = accumulateCodexUsage(codexAcc, payload.usage, model);
+          sawCodexUsage = true;
+        }
+      }
+    } catch {
+      // ignore non-JSON line
+    }
+  }
+
+  if (!sawJsonEvent) return null;
+  if (sawCodexUsage && !usage) {
+    usage = codexAcc;
+  }
+  const resolvedProvider = provider ?? fallbackProvider;
+  const resolvedModel = usage?.model?.trim() || model?.trim() || null;
+  return {
+    provider: resolvedProvider,
+    model: resolvedModel,
+    cliSessionId,
+    status,
+    durationMs,
+    ...(usage ? { usage: { ...usage, model: resolvedModel } } : {}),
+  };
+}
+
+/**
+ * Backfills `lead_turns` from existing `.dalang/` Lead log files on disk when upgrading a project
+ * that already ran Lead sessions before Lead-turn telemetry was stored in SQLite.
+ */
+function backfillLeadTurnsFromDisk(sqlite: Database.Database): void {
+  const countRow = sqlite.prepare('SELECT COUNT(*) AS n FROM lead_turns').get() as { n: number };
+  if (countRow.n > 0) return;
+
+  const projectRows = sqlite
+    .prepare('SELECT id, path, lead_provider, lead_model FROM projects')
+    .all() as Array<{
+    id: string;
+    path: string;
+    lead_provider: string;
+    lead_model: string | null;
+  }>;
+  if (projectRows.length === 0) return;
+
+  const insertTurn = sqlite.prepare(`
+    INSERT INTO lead_turns (
+      id, project_id, session_id, phase, provider, model, status, cli_session_id,
+      started_at, finished_at, failure_reason, log_path,
+      input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+      estimated_cost_usd, cost_source
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  for (const proj of projectRows) {
+    const dalangDir = path.join(proj.path, '.dalang');
+    if (!fs.existsSync(dalangDir)) continue;
+    try {
+      if (fs.lstatSync(dalangDir).isSymbolicLink()) continue;
+    } catch {
+      continue;
+    }
+
+    const sessionRows = sqlite
+      .prepare('SELECT id, provider, model FROM sessions WHERE project_id = ?')
+      .all(proj.id) as Array<{ id: string; provider: string; model: string | null }>;
+    const sessionById = new Map(sessionRows.map((s) => [s.id, s]));
+
+    const candidateFiles: Array<{ absPath: string; relPath: string; hintSessionId: string | null }> = [];
+    const collectDir = (dirAbs: string, hintSessionId: string | null) => {
+      if (!fs.existsSync(dirAbs)) return;
+      try {
+        if (fs.lstatSync(dirAbs).isSymbolicLink()) return;
+        for (const entry of fs.readdirSync(dirAbs, { withFileTypes: true })) {
+          if (!entry.isFile() || entry.isSymbolicLink()) continue;
+          if (!LEAD_LOG_FILE_RE.test(entry.name)) continue;
+          const absPath = path.join(dirAbs, entry.name);
+          const relPath = path.relative(proj.path, absPath).replace(/\\/g, '/');
+          const askMatch = entry.name.match(/^ask-([0-9a-fA-F-]{36})-\d+\.log$/);
+          candidateFiles.push({
+            absPath,
+            relPath,
+            hintSessionId: hintSessionId ?? (askMatch ? askMatch[1] : null),
+          });
+        }
+      } catch {
+        // ignore unreadable directories
+      }
+    };
+
+    collectDir(path.join(dalangDir, 'tmp'), null);
+    collectDir(path.join(dalangDir, 'logs'), null);
+    const sessionsRoot = path.join(dalangDir, 'sessions');
+    if (fs.existsSync(sessionsRoot)) {
+      try {
+        if (!fs.lstatSync(sessionsRoot).isSymbolicLink()) {
+          for (const entry of fs.readdirSync(sessionsRoot, { withFileTypes: true })) {
+            if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+            collectDir(path.join(sessionsRoot, entry.name, 'logs'), entry.name);
+            collectDir(path.join(sessionsRoot, entry.name, 'tmp'), entry.name);
+          }
+        }
+      } catch {
+        // ignore unreadable sessions dir
+      }
+    }
+
+    for (const item of candidateFiles) {
+      const matchedSession = item.hintSessionId ? sessionById.get(item.hintSessionId) : undefined;
+      const fallbackProvider = (matchedSession?.provider ?? proj.lead_provider ?? 'claude-code') as ProviderId;
+      const fallbackModel = matchedSession?.model ?? proj.lead_model ?? null;
+      const parsed = parseLeadLogFile(item.absPath, fallbackProvider, fallbackModel);
+      if (!parsed) continue;
+
+      let stat: fs.Stats;
+      try {
+        stat = fs.statSync(item.absPath);
+      } catch {
+        continue;
+      }
+
+      const fileName = path.basename(item.absPath);
+      const tsMatch = fileName.match(/-(\d{12,14})\.log$/);
+      const fileStartMs = tsMatch ? Number(tsMatch[1]) : null;
+      const mtimeMs = Math.round(stat.mtimeMs);
+      const startMs =
+        fileStartMs !== null && Number.isFinite(fileStartMs)
+          ? fileStartMs
+          : parsed.durationMs !== null
+            ? Math.max(0, mtimeMs - parsed.durationMs)
+            : mtimeMs;
+      const endMs =
+        parsed.durationMs !== null
+          ? startMs + parsed.durationMs
+          : Math.max(startMs, mtimeMs);
+
+      const usageFields = usageDbFields(parsed.provider, parsed.model, parsed.usage);
+      insertTurn.run(
+        crypto.randomUUID(),
+        proj.id,
+        matchedSession ? matchedSession.id : null,
+        inferLeadPhaseFromLogName(fileName),
+        parsed.provider,
+        parsed.model,
+        parsed.status,
+        parsed.cliSessionId,
+        new Date(startMs).toISOString(),
+        new Date(endMs).toISOString(),
+        item.relPath,
+        usageFields.inputTokens ?? null,
+        usageFields.outputTokens ?? null,
+        usageFields.cacheReadTokens ?? null,
+        usageFields.cacheWriteTokens ?? null,
+        usageFields.estimatedCostUsd ?? null,
+        usageFields.costSource ?? null,
+      );
+    }
+  }
+}
+
 export function openDatabase(dbFilePath: string = getDbPath()): DbConnection {
   const dataDir = dbFilePath !== ':memory:' ? path.dirname(dbFilePath) : null;
   if (dataDir) {
@@ -899,6 +1213,7 @@ export function openDatabase(dbFilePath: string = getDbPath()): DbConnection {
   if (upgrading && storedVersion < 7) migrateToV7(sqlite);
   if (upgrading && storedVersion < 8) migrateToV8(sqlite);
   if (upgrading && storedVersion < 9) migrateToV9(sqlite);
+  backfillLeadTurnsFromDisk(sqlite);
   sqlite.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_one_working_per_project
       ON sessions(project_id)

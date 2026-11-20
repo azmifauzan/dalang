@@ -83,7 +83,7 @@ import {
   rollbackGitToCheckpoint,
 } from './git.js';
 import type { LeadService } from './lead.js';
-import { estimateApiEquivalentCostUsd } from './pricing.js';
+import { estimateApiEquivalentCostUsd, mergeTokenUsage, usageDbFields } from './pricing.js';
 import { ProfileService } from './profiles.js';
 import { detectIntegrationCommand } from './project.js';
 import {
@@ -215,57 +215,6 @@ export function classifyProviderFailure(
  */
 function writePermission(profile: AgentProfileDTO): 'workspace-write' | 'accept-edits' {
   return profile.permissionMode === 'read-only' ? 'workspace-write' : profile.permissionMode;
-}
-
-function mergeTokenUsage(
-  base: TurnTokenUsage | undefined,
-  next: TurnTokenUsage | undefined,
-): TurnTokenUsage | undefined {
-  if (!base) return next;
-  if (!next) return base;
-  return {
-    inputTokens: base.inputTokens + next.inputTokens,
-    outputTokens: base.outputTokens + next.outputTokens,
-    cacheReadTokens: base.cacheReadTokens + next.cacheReadTokens,
-    cacheWriteTokens: base.cacheWriteTokens + next.cacheWriteTokens,
-    costUsd:
-      base.costUsd !== null || next.costUsd !== null
-        ? (base.costUsd ?? 0) + (next.costUsd ?? 0)
-        : null,
-    model: next.model ?? base.model,
-  };
-}
-
-function usageDbFields(
-  provider: ProviderId,
-  fallbackModel: string | null,
-  usage: TurnTokenUsage | undefined,
-): {
-  inputTokens?: number;
-  outputTokens?: number;
-  cacheReadTokens?: number;
-  cacheWriteTokens?: number;
-  estimatedCostUsd?: number;
-  costSource?: 'cli' | 'estimated';
-} {
-  if (!usage) return {};
-  const est = estimateApiEquivalentCostUsd({
-    provider,
-    model: usage.model ?? fallbackModel,
-    inputTokens: usage.inputTokens,
-    outputTokens: usage.outputTokens,
-    cacheReadTokens: usage.cacheReadTokens,
-    cacheWriteTokens: usage.cacheWriteTokens,
-    reportedCostUsd: usage.costUsd,
-  });
-  return {
-    inputTokens: usage.inputTokens,
-    outputTokens: usage.outputTokens,
-    cacheReadTokens: usage.cacheReadTokens,
-    cacheWriteTokens: usage.cacheWriteTokens,
-    estimatedCostUsd: est.costUsd,
-    costSource: est.source,
-  };
 }
 
 /** "codex · gpt-5" for a fallback run: the role stays the same, so the CLI and model are what differ. */

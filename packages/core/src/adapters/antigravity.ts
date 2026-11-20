@@ -144,7 +144,7 @@ export function parseAgyUsageJson(raw: string): { ok: boolean; windows: UsageWin
   }
 }
 
-function extractAgyUsage(ev: Record<string, unknown>, fallbackModel?: string | null): TurnTokenUsage | undefined {
+export function extractAgyUsage(ev: Record<string, unknown>, fallbackModel?: string | null): TurnTokenUsage | undefined {
   const containers: Array<Record<string, unknown>> = [];
   if (ev.usage && typeof ev.usage === 'object') containers.push(ev.usage as Record<string, unknown>);
   if (ev.stats && typeof ev.stats === 'object') containers.push(ev.stats as Record<string, unknown>);
@@ -164,11 +164,13 @@ function extractAgyUsage(ev: Record<string, unknown>, fallbackModel?: string | n
       (typeof u.completion_tokens === 'number' ? u.completion_tokens : undefined) ??
       (typeof u.outputTokens === 'number' ? u.outputTokens : 0);
     const cacheRead =
+      (typeof u.cache_read_tokens === 'number' ? u.cache_read_tokens : undefined) ??
       (typeof u.cache_read_input_tokens === 'number' ? u.cache_read_input_tokens : undefined) ??
       (typeof u.cached_input_tokens === 'number' ? u.cached_input_tokens : undefined) ??
       (typeof u.cached_tokens === 'number' ? u.cached_tokens : undefined) ??
       (typeof u.cacheReadInputTokens === 'number' ? u.cacheReadInputTokens : 0);
     const cacheWrite =
+      (typeof u.cache_write_tokens === 'number' ? u.cache_write_tokens : undefined) ??
       (typeof u.cache_creation_input_tokens === 'number' ? u.cache_creation_input_tokens : undefined) ??
       (typeof u.cacheWriteInputTokens === 'number' ? u.cacheWriteInputTokens : 0);
     const costUsd =
@@ -357,6 +359,7 @@ export class AntigravityAdapter implements CliAdapter {
 
     const logger = createTurnLogger(options.logFilePath);
     let sessionId: string | null = options.sessionId ?? null;
+    let resolvedModel: string | null = options.model ?? null;
     let responseText = '';
     let structuredOutput: unknown = undefined;
     let usage: TurnTokenUsage | undefined;
@@ -379,6 +382,12 @@ export class AntigravityAdapter implements CliAdapter {
             if (typeof ev.conversation_id === 'string' && ev.conversation_id) {
               sessionId = ev.conversation_id;
             }
+            if (ev.init && typeof ev.init === 'object') {
+              const initObj = ev.init as Record<string, unknown>;
+              if (typeof initObj.model === 'string' && initObj.model.trim()) {
+                resolvedModel = initObj.model.trim();
+              }
+            }
             if (typeof ev.response === 'string') {
               responseText = ev.response;
             }
@@ -393,7 +402,7 @@ export class AntigravityAdapter implements CliAdapter {
               if (typeof inner.response === 'string') responseText = inner.response;
               if (inner.structured_output !== undefined) structuredOutput = inner.structured_output;
             }
-            const parsedUsage = extractAgyUsage(ev, options.model);
+            const parsedUsage = extractAgyUsage(ev, resolvedModel);
             if (parsedUsage) usage = parsedUsage;
             if (typeof ev.text === 'string' && ev.type !== 'thinking') {
               textChunks.push(ev.text);

@@ -316,9 +316,9 @@ describe('v0.5 Replay runner scenarios (process-only replacement)', () => {
       expect(fs.existsSync(path.join(ctx.projDir, 'src/alpha.mjs'))).toBe(true);
       expect(fs.existsSync(path.join(ctx.projDir, 'src/beta.mjs'))).toBe(true);
 
-      // Token stats should cover both Codex coder turns and Claude reviewer turns.
+      // Token stats should cover Lead brief/plan turns, Codex coder turns, and Claude reviewer turns.
       const stats = ctx.statsSvc.getUsageStatistics({ projectId: ctx.project.id });
-      expect(stats.totals.totalRuns).toBe(4);
+      expect(stats.totals.totalRuns).toBe(6);
       expect(stats.totals.inputTokens).toBeGreaterThan(0);
       expect(stats.totals.cacheReadTokens).toBeGreaterThan(0);
       expect(stats.totals.estimatedCostUsd).toBeGreaterThan(0);

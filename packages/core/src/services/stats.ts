@@ -10,7 +10,7 @@ import type {
   UsageStatisticsResponseDTO,
 } from '@dalang/shared';
 import type { DalangDb } from '../db/client.js';
-import { projects, providerEvents, runs } from '../db/schema.js';
+import { leadTurns, projects, providerEvents, runs } from '../db/schema.js';
 
 const PROVIDERS: Array<{ id: ProviderId; displayName: string }> = [
   { id: 'claude-code', displayName: 'Claude Code' },
@@ -50,6 +50,15 @@ export class StatisticsService {
       runConditions.length > 0
         ? this.db.select().from(runs).where(and(...runConditions)).all()
         : this.db.select().from(runs).all();
+
+    const leadConditions = [];
+    if (projectId) leadConditions.push(eq(leadTurns.projectId, projectId));
+    if (cutoffIso) leadConditions.push(gte(leadTurns.startedAt, cutoffIso));
+
+    const leadTurnRows =
+      leadConditions.length > 0
+        ? this.db.select().from(leadTurns).where(and(...leadConditions)).all()
+        : this.db.select().from(leadTurns).all();
 
     const eventRows = cutoffIso
       ? this.db
@@ -91,7 +100,7 @@ export class StatisticsService {
         runningRuns: 0,
         rolledBackRuns: 0,
         fallbackRuns: 0,
-        byKind: { execute: 0, fix: 0, review: 0 },
+        byKind: { lead: 0, execute: 0, fix: 0, review: 0 },
         totalDurationMs: 0,
         avgDurationMs: null,
         inputTokens: 0,
@@ -146,7 +155,42 @@ export class StatisticsService {
     let grandCacheWriteTokens = 0;
     let grandEstimatedCostUsd = 0;
 
-    for (const r of runRows) {
+    const combinedRecords: Array<{
+      projectId: string;
+      provider: string;
+      model: string | null;
+      kind: string;
+      status: string;
+      usedFallback: boolean;
+      startedAt: string;
+      finishedAt: string | null;
+      inputTokens: number | null;
+      outputTokens: number | null;
+      cacheReadTokens: number | null;
+      cacheWriteTokens: number | null;
+      estimatedCostUsd: number | null;
+      costSource: string | null;
+    }> = [
+      ...runRows,
+      ...leadTurnRows.map((lt) => ({
+        projectId: lt.projectId,
+        provider: lt.provider,
+        model: lt.model,
+        kind: 'lead',
+        status: lt.status,
+        usedFallback: false,
+        startedAt: lt.startedAt,
+        finishedAt: lt.finishedAt,
+        inputTokens: lt.inputTokens,
+        outputTokens: lt.outputTokens,
+        cacheReadTokens: lt.cacheReadTokens,
+        cacheWriteTokens: lt.cacheWriteTokens,
+        estimatedCostUsd: lt.estimatedCostUsd,
+        costSource: lt.costSource,
+      })),
+    ];
+
+    for (const r of combinedRecords) {
       const inTok = r.inputTokens ?? 0;
       const outTok = r.outputTokens ?? 0;
       const cacheRead = r.cacheReadTokens ?? 0;
@@ -170,7 +214,8 @@ export class StatisticsService {
         else if (r.status === 'rolled_back') pStats.rolledBackRuns += 1;
 
         if (r.usedFallback) pStats.fallbackRuns += 1;
-        if (r.kind === 'fix') pStats.byKind.fix += 1;
+        if (r.kind === 'lead') pStats.byKind.lead += 1;
+        else if (r.kind === 'fix') pStats.byKind.fix += 1;
         else if (r.kind === 'review') pStats.byKind.review += 1;
         else pStats.byKind.execute += 1;
 
@@ -313,7 +358,7 @@ export class StatisticsService {
       projectId,
       windowDays,
       totals: {
-        totalRuns: runRows.length,
+        totalRuns: combinedRecords.length,
         completedRuns: grandCompleted,
         failedRuns: grandFailed,
         fallbackRuns: grandFallback,

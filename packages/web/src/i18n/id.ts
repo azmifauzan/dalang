@@ -485,7 +485,7 @@ export const id: Record<TranslationKey, string> = {
   'stats.estCost': 'Est. biaya (setara API)',
   'stats.notSubscriptionBill': 'Bukan tagihan langganan Anda',
   'stats.colProvider': 'Provider',
-  'stats.colRunsKinds': 'Eksekusi (E / F / R)',
+  'stats.colRunsKinds': 'Eksekusi (L / E / F / R)',
   'stats.colOutcomes': 'Hasil',
   'stats.colDuration': 'Rata-rata / Total Durasi',
   'stats.colLimitsErrors': 'Batas & Galat',

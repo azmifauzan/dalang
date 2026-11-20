@@ -2,9 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z, type ZodType } from 'zod';
 import type { EffortLevel } from '@dalang/shared';
-import type { AdapterTurnResult, CliAdapter } from '../adapters/types.js';
+import type { AdapterTurnResult, CliAdapter, TurnTokenUsage } from '../adapters/types.js';
 import { getProjectLogsDir, getProjectTmpDir } from '../paths.js';
 import { ensureProjectDir, readArtifactFile, removeArtifactFile } from '../safe-fs.js';
+import { mergeTokenUsage } from './pricing.js';
 
 export interface RunContractOptions<T> {
   adapter: CliAdapter;
@@ -27,6 +28,8 @@ export interface RunContractResult<T> {
   sessionId: string | null;
   attempts: number;
   lastTurn: AdapterTurnResult;
+  usage?: TurnTokenUsage;
+  logFilePath: string;
 }
 
 function isLink(target: string): boolean {
@@ -101,22 +104,32 @@ export async function runContractTurn<T>(
   let currentPrompt = options.prompt;
   let lastError = 'Output file was not created';
   let lastTurn: AdapterTurnResult | null = null;
+  let totalUsage: TurnTokenUsage | undefined;
 
   for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
     const outFilePath = path.join(tmpDir, `${options.schemaName}-attempt-${attempt}.txt`);
 
-    const turn = await options.adapter.runTurn({
-      projectPath: options.projectPath,
-      prompt: currentPrompt,
-      sessionId: currentSessionId,
-      model: options.model,
-      effort: options.effort ?? 'high',
-      outputFilePath: outFilePath,
-      logFilePath,
-      onLogLine: options.onLogLine,
-    });
+    let turn: AdapterTurnResult;
+    try {
+      turn = await options.adapter.runTurn({
+        projectPath: options.projectPath,
+        prompt: currentPrompt,
+        sessionId: currentSessionId,
+        model: options.model,
+        effort: options.effort ?? 'high',
+        outputFilePath: outFilePath,
+        logFilePath,
+        onLogLine: options.onLogLine,
+      });
+    } catch (err) {
+      if (err && typeof err === 'object') {
+        Object.assign(err, { usage: totalUsage, logFilePath });
+      }
+      throw err;
+    }
 
     lastTurn = turn;
+    totalUsage = mergeTokenUsage(totalUsage, turn.usage);
     if (turn.sessionId) {
       currentSessionId = turn.sessionId;
     }
@@ -128,6 +141,8 @@ export async function runContractTurn<T>(
         sessionId: currentSessionId,
         attempts: attempt,
         lastTurn: turn,
+        ...(totalUsage ? { usage: totalUsage } : {}),
+        logFilePath,
       };
     }
     lastError = outcome.error;
@@ -144,8 +159,10 @@ export async function runContractTurn<T>(
     }
   }
 
-  throw new Error(
+  const finalErr = new Error(
     `Agent output failed validation after ${maxRetries + 1} attempts: ${lastError}` +
       (lastTurn?.stderr ? ` (${lastTurn.stderr.slice(0, 200)})` : ''),
   );
+  Object.assign(finalErr, { usage: totalUsage, logFilePath });
+  throw finalErr;
 }

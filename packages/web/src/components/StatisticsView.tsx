@@ -231,7 +231,7 @@ export function StatisticsView() {
                     <td className="px-4 py-3 font-mono-token text-xs">
                       <div className="text-sm font-semibold">{ps.totalRuns}</div>
                       <div style={{ color: 'var(--text-secondary)' }}>
-                        {ps.byKind.execute} / {ps.byKind.fix} / {ps.byKind.review}
+                        {ps.byKind.lead ?? 0} / {ps.byKind.execute} / {ps.byKind.fix} / {ps.byKind.review}
                       </div>
                     </td>
                     <td className="px-4 py-3 font-mono-token text-xs">

@@ -158,6 +158,29 @@ export const providerEvents = sqliteTable('provider_events', {
   createdAt: text('created_at').notNull(),
 });
 
+export const leadTurns = sqliteTable('lead_turns', {
+  id: text('id').primaryKey(),
+  projectId: text('project_id')
+    .notNull()
+    .references(() => projects.id, { onDelete: 'cascade' }),
+  sessionId: text('session_id').references(() => sessions.id, { onDelete: 'set null' }),
+  phase: text('phase').notNull().default('ask'),
+  provider: text('provider').notNull(),
+  model: text('model'),
+  status: text('status').notNull().default('completed'),
+  cliSessionId: text('cli_session_id'),
+  startedAt: text('started_at').notNull(),
+  finishedAt: text('finished_at'),
+  failureReason: text('failure_reason'),
+  logPath: text('log_path'),
+  inputTokens: integer('input_tokens'),
+  outputTokens: integer('output_tokens'),
+  cacheReadTokens: integer('cache_read_tokens'),
+  cacheWriteTokens: integer('cache_write_tokens'),
+  estimatedCostUsd: real('estimated_cost_usd'),
+  costSource: text('cost_source'),
+});
+
 export const runs = sqliteTable('runs', {
   id: text('id').primaryKey(),
   projectId: text('project_id')

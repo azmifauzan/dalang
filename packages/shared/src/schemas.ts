@@ -1030,6 +1030,7 @@ export interface ProviderStatisticsDTO {
   rolledBackRuns: number;
   fallbackRuns: number;
   byKind: {
+    lead: number;
     execute: number;
     fix: number;
     review: number;

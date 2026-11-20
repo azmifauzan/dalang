@@ -46,9 +46,11 @@ import {
   type UpdateTaskInput,
 } from '@dalang/shared';
 import type { ProviderRegistry } from '../adapters/registry.js';
+import type { TurnTokenUsage } from '../adapters/types.js';
 import type { DalangDb } from '../db/client.js';
 import {
   briefs,
+  leadTurns,
   messages,
   plans,
   projects,
@@ -67,6 +69,7 @@ import {
 import { ensureProjectDir, readArtifactFile, writeArtifactFile } from '../safe-fs.js';
 import { runContractTurn } from './contract.js';
 import type { DalangEvent, DalangEventBus } from './events.js';
+import { mergeTokenUsage, usageDbFields } from './pricing.js';
 import { extractJsonCandidate } from './review.js';
 
 export const MAX_SPLIT_DEPTH = 2;
@@ -759,6 +762,9 @@ export class LeadService {
     };
 
     const adapter = this.registry.getAdapter(sessionRow.provider as ProviderId);
+    const startedAt = new Date().toISOString();
+    const relLogPath = path.relative(project.path, logFilePath);
+    let totalUsage: TurnTokenUsage | undefined;
     this.events?.emitEvent({
       type: 'lead.turn_started',
       projectId: project.id,
@@ -786,6 +792,7 @@ export class LeadService {
             line,
           }),
       });
+      totalUsage = mergeTokenUsage(totalUsage, turn.usage);
 
       // If resuming a saved CLI session failed, transparently retry once with saved message context.
       if (sessionRow.cliSessionId && (turn.exitCode !== 0 || !turn.text.trim())) {
@@ -806,6 +813,7 @@ export class LeadService {
               line,
             }),
         });
+        totalUsage = mergeTokenUsage(totalUsage, turn.usage);
       }
 
       if (turn.exitCode !== 0 && !turn.text.trim()) {
@@ -815,15 +823,29 @@ export class LeadService {
       }
 
       const parsedReply = this.parseAskReply(turn);
+      const nextCliSessionId = turn.sessionId ?? sessionRow.cliSessionId;
 
       this.db
         .update(sessions)
         .set({
-          cliSessionId: turn.sessionId ?? sessionRow.cliSessionId,
+          cliSessionId: nextCliSessionId,
           updatedAt: new Date().toISOString(),
         })
         .where(eq(sessions.id, sessionRow.id))
         .run();
+
+      this.recordLeadTurn({
+        projectId: project.id,
+        sessionId: sessionRow.id,
+        phase: 'ask',
+        provider: sessionRow.provider as ProviderId,
+        model: sessionRow.model,
+        status: 'completed',
+        cliSessionId: nextCliSessionId,
+        startedAt,
+        logPath: relLogPath,
+        usage: totalUsage,
+      });
 
       this.appendMessage(sessionRow.id, 'lead', 'ask', parsedReply);
       this.events?.emitEvent({
@@ -839,6 +861,19 @@ export class LeadService {
       return parsedReply;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      this.recordLeadTurn({
+        projectId: project.id,
+        sessionId: sessionRow.id,
+        phase: 'ask',
+        provider: sessionRow.provider as ProviderId,
+        model: sessionRow.model,
+        status: 'failed',
+        cliSessionId: sessionRow.cliSessionId,
+        startedAt,
+        failureReason: msg,
+        logPath: relLogPath,
+        usage: totalUsage,
+      });
       this.appendMessage(sessionRow.id, 'system', 'error', msg);
       this.events?.emitEvent({
         type: 'lead.turn_finished',
@@ -946,6 +981,7 @@ export class LeadService {
       .join('\n');
 
     const adapter = this.registry.getAdapter(sessionRow.provider as ProviderId);
+    const startedAt = new Date().toISOString();
     this.events?.emitEvent({
       type: 'lead.turn_started',
       projectId: project.id,
@@ -975,6 +1011,19 @@ export class LeadService {
             phase: 'quick',
             line,
           }),
+      });
+
+      this.recordLeadTurn({
+        projectId: project.id,
+        sessionId: sessionRow.id,
+        phase: 'quick',
+        provider: sessionRow.provider as ProviderId,
+        model: sessionRow.model,
+        status: 'completed',
+        cliSessionId: result.sessionId,
+        startedAt,
+        logPath: path.relative(project.path, result.logFilePath),
+        usage: result.usage,
       });
 
       const quickData = result.data;
@@ -1076,6 +1125,20 @@ export class LeadService {
       return { quickPlan: quickData, plan: createdPlan };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      const errMeta = err as { usage?: TurnTokenUsage; logFilePath?: string };
+      this.recordLeadTurn({
+        projectId: project.id,
+        sessionId: sessionRow.id,
+        phase: 'quick',
+        provider: sessionRow.provider as ProviderId,
+        model: sessionRow.model,
+        status: 'failed',
+        cliSessionId: sessionRow.cliSessionId,
+        startedAt,
+        failureReason: msg,
+        logPath: errMeta?.logFilePath ? path.relative(project.path, errMeta.logFilePath) : null,
+        usage: errMeta?.usage,
+      });
       this.appendMessage(sessionRow.id, 'system', 'error', msg);
       this.events?.emitEvent({
         type: 'lead.turn_finished',
@@ -1395,6 +1458,7 @@ export class LeadService {
       .join('\n');
 
     const adapter = this.registry.getAdapter(session.provider as ProviderId);
+    const startedAt = new Date().toISOString();
     this.events?.emitEvent({
       type: 'lead.turn_started',
       projectId,
@@ -1436,6 +1500,19 @@ export class LeadService {
         .where(eq(sessions.id, session.id))
         .run();
 
+      this.recordLeadTurn({
+        projectId,
+        sessionId: session.id,
+        phase: 'discuss',
+        provider: session.provider as ProviderId,
+        model: session.model,
+        status: 'completed',
+        cliSessionId: result.sessionId,
+        startedAt,
+        logPath: path.relative(project.path, result.logFilePath),
+        usage: result.usage,
+      });
+
       this.appendMessage(session.id, 'lead', 'questions', result.data);
       this.events?.emitEvent({
         type: 'lead.turn_finished',
@@ -1454,6 +1531,20 @@ export class LeadService {
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      const errMeta = err as { usage?: TurnTokenUsage; logFilePath?: string };
+      this.recordLeadTurn({
+        projectId,
+        sessionId: session.id,
+        phase: 'discuss',
+        provider: session.provider as ProviderId,
+        model: session.model,
+        status: 'failed',
+        cliSessionId: session.cliSessionId,
+        startedAt,
+        failureReason: msg,
+        logPath: errMeta?.logFilePath ? path.relative(project.path, errMeta.logFilePath) : null,
+        usage: errMeta?.usage,
+      });
       this.appendMessage(session.id, 'system', 'error', msg);
       this.events?.emitEvent({
         type: 'lead.turn_finished',
@@ -1501,6 +1592,7 @@ export class LeadService {
     ].join('\n');
 
     const adapter = this.registry.getAdapter(session.provider as ProviderId);
+    const startedAt = new Date().toISOString();
     this.events?.emitEvent({
       type: 'lead.turn_started',
       projectId,
@@ -1530,6 +1622,19 @@ export class LeadService {
             phase: 'agree',
             line,
           }),
+      });
+
+      this.recordLeadTurn({
+        projectId,
+        sessionId: session.id,
+        phase: 'agree',
+        provider: session.provider as ProviderId,
+        model: session.model,
+        status: 'completed',
+        cliSessionId: result.sessionId,
+        startedAt,
+        logPath: path.relative(project.path, result.logFilePath),
+        usage: result.usage,
       });
 
       const normalized: BriefContent = { ...result.data, version: nextVersion };
@@ -1587,6 +1692,20 @@ export class LeadService {
       return this.getBriefByVersion(projectId, nextVersion, session.id);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      const errMeta = err as { usage?: TurnTokenUsage; logFilePath?: string };
+      this.recordLeadTurn({
+        projectId,
+        sessionId: session.id,
+        phase: 'agree',
+        provider: session.provider as ProviderId,
+        model: session.model,
+        status: 'failed',
+        cliSessionId: session.cliSessionId,
+        startedAt,
+        failureReason: msg,
+        logPath: errMeta?.logFilePath ? path.relative(project.path, errMeta.logFilePath) : null,
+        usage: errMeta?.usage,
+      });
       this.events?.emitEvent({
         type: 'lead.turn_finished',
         projectId,
@@ -1699,6 +1818,7 @@ export class LeadService {
     ].join('\n');
 
     const adapter = this.registry.getAdapter(session.provider as ProviderId);
+    const startedAt = new Date().toISOString();
     this.events?.emitEvent({
       type: 'lead.turn_started',
       projectId,
@@ -1728,6 +1848,19 @@ export class LeadService {
             phase: 'agree',
             line,
           }),
+      });
+
+      this.recordLeadTurn({
+        projectId,
+        sessionId: session.id,
+        phase: 'agree',
+        provider: session.provider as ProviderId,
+        model: session.model,
+        status: 'completed',
+        cliSessionId: result.sessionId,
+        startedAt,
+        logPath: path.relative(project.path, result.logFilePath),
+        usage: result.usage,
       });
 
       const normalized: BriefContent = { ...result.data, version: nextVersion };
@@ -1770,6 +1903,20 @@ export class LeadService {
       return this.getBriefByVersion(projectId, nextVersion, session.id);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      const errMeta = err as { usage?: TurnTokenUsage; logFilePath?: string };
+      this.recordLeadTurn({
+        projectId,
+        sessionId: session.id,
+        phase: 'agree',
+        provider: session.provider as ProviderId,
+        model: session.model,
+        status: 'failed',
+        cliSessionId: session.cliSessionId,
+        startedAt,
+        failureReason: msg,
+        logPath: errMeta?.logFilePath ? path.relative(project.path, errMeta.logFilePath) : null,
+        usage: errMeta?.usage,
+      });
       this.events?.emitEvent({
         type: 'lead.turn_finished',
         projectId,
@@ -1885,6 +2032,9 @@ export class LeadService {
     ].join('\n');
 
     const adapter = this.registry.getAdapter(session.provider as ProviderId);
+    const startedAt = new Date().toISOString();
+    let totalUsage: TurnTokenUsage | undefined;
+    let lastLogFilePath: string | null = null;
     this.events?.emitEvent({
       type: 'lead.turn_started',
       projectId,
@@ -1915,6 +2065,8 @@ export class LeadService {
             line,
           }),
       });
+      totalUsage = mergeTokenUsage(totalUsage, result.usage);
+      lastLogFilePath = result.logFilePath;
 
       let currentSessionId = result.sessionId;
       const expandedTasks = await this.expandNeedsSplitTasks({
@@ -1927,6 +2079,9 @@ export class LeadService {
         onSessionId: (sid) => {
           currentSessionId = sid;
         },
+        onUsage: (u) => {
+          totalUsage = mergeTokenUsage(totalUsage, u);
+        },
         onLogLine: (line) =>
           this.events?.emitEvent({
             type: 'lead.log',
@@ -1935,6 +2090,19 @@ export class LeadService {
             phase: 'list',
             line,
           }),
+      });
+
+      this.recordLeadTurn({
+        projectId,
+        sessionId: session.id,
+        phase: 'list',
+        provider: session.provider as ProviderId,
+        model: session.model,
+        status: 'completed',
+        cliSessionId: currentSessionId,
+        startedAt,
+        logPath: lastLogFilePath ? path.relative(project.path, lastLogFilePath) : null,
+        usage: totalUsage,
       });
 
       const expandedIds = new Set(expandedTasks.map((t) => t.task.id));
@@ -1996,6 +2164,22 @@ export class LeadService {
       return this.getPlan(projectId, session.id)!;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      const errMeta = err as { usage?: TurnTokenUsage; logFilePath?: string };
+      totalUsage = mergeTokenUsage(totalUsage, errMeta?.usage);
+      const errLogPath = errMeta?.logFilePath ?? lastLogFilePath;
+      this.recordLeadTurn({
+        projectId,
+        sessionId: session.id,
+        phase: 'list',
+        provider: session.provider as ProviderId,
+        model: session.model,
+        status: 'failed',
+        cliSessionId: session.cliSessionId,
+        startedAt,
+        failureReason: msg,
+        logPath: errLogPath ? path.relative(project.path, errLogPath) : null,
+        usage: totalUsage,
+      });
       this.events?.emitEvent({
         type: 'lead.turn_finished',
         projectId,
@@ -2020,7 +2204,21 @@ export class LeadService {
         /Agent output failed validation/i.test(msg) &&
         !/session|resume|conversation|thread/i.test(msg);
       if (opts.sessionId && !isValidationError) {
-        return runContractTurn({ ...opts, sessionId: null });
+        const firstUsage = (err as { usage?: TurnTokenUsage })?.usage;
+        try {
+          const fallbackRes = await runContractTurn({ ...opts, sessionId: null });
+          const combined = mergeTokenUsage(firstUsage, fallbackRes.usage);
+          return {
+            ...fallbackRes,
+            ...(combined ? { usage: combined } : {}),
+          };
+        } catch (fallbackErr) {
+          if (fallbackErr && typeof fallbackErr === 'object') {
+            const fbUsage = (fallbackErr as { usage?: TurnTokenUsage }).usage;
+            Object.assign(fallbackErr, { usage: mergeTokenUsage(firstUsage, fbUsage) });
+          }
+          throw fallbackErr;
+        }
       }
       throw err;
     }
@@ -2034,6 +2232,7 @@ export class LeadService {
     model: string | null;
     tasksList: PlanTaskContract[];
     onSessionId: (sid: string | null) => void;
+    onUsage?: (usage: TurnTokenUsage | undefined) => void;
     onLogLine?: (line: string) => void;
   }): Promise<Array<{ task: PlanTaskContract; splitDepth: number; parentExternalId: string | null }>> {
     let working: Array<{ task: PlanTaskContract; splitDepth: number; parentExternalId: string | null }> =
@@ -2082,6 +2281,7 @@ export class LeadService {
 
         sessionId = splitRes.sessionId;
         opts.onSessionId(sessionId);
+        opts.onUsage?.(splitRes.usage);
 
         const replacementIds: string[] = [];
         const newSubtasks = splitRes.data.subtasks.map((sub, idx) => {
@@ -2508,6 +2708,47 @@ export class LeadService {
   // ---------------------------------------------------------------------------
   // Internal helpers
   // ---------------------------------------------------------------------------
+
+  private recordLeadTurn(input: {
+    projectId: string;
+    sessionId: string | null;
+    phase: string;
+    provider: ProviderId;
+    model: string | null;
+    status: 'completed' | 'failed';
+    cliSessionId: string | null;
+    startedAt: string;
+    failureReason?: string | null;
+    logPath?: string | null;
+    usage?: TurnTokenUsage;
+  }): void {
+    const finishedAt = new Date().toISOString();
+    const effectiveModel = input.usage?.model?.trim() || input.model?.trim() || null;
+    const usageFields = usageDbFields(input.provider, effectiveModel, input.usage);
+    this.db
+      .insert(leadTurns)
+      .values({
+        id: crypto.randomUUID(),
+        projectId: input.projectId,
+        sessionId: input.sessionId,
+        phase: input.phase,
+        provider: input.provider,
+        model: effectiveModel,
+        status: input.status,
+        cliSessionId: input.cliSessionId,
+        startedAt: input.startedAt,
+        finishedAt,
+        failureReason: input.failureReason ?? null,
+        logPath: input.logPath ?? null,
+        inputTokens: usageFields.inputTokens ?? null,
+        outputTokens: usageFields.outputTokens ?? null,
+        cacheReadTokens: usageFields.cacheReadTokens ?? null,
+        cacheWriteTokens: usageFields.cacheWriteTokens ?? null,
+        estimatedCostUsd: usageFields.estimatedCostUsd ?? null,
+        costSource: usageFields.costSource ?? null,
+      })
+      .run();
+  }
 
   private toSessionSummary(row: typeof sessions.$inferSelect): SessionSummaryDTO {
     const sessionBriefs = this.db
