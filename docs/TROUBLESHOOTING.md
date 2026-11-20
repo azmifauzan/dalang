@@ -25,7 +25,7 @@ Then open `http://127.0.0.1:4180`.
 - **Linux**: install `bubblewrap` (`sudo apt install bubblewrap` or `sudo dnf install bubblewrap`), then verify with `which bwrap` and `npx dalang-cli doctor`.
 - **macOS**: `/usr/bin/sandbox-exec` should be present by default. Verify with `ls -l /usr/bin/sandbox-exec`.
 - **Windows**: run DALANG inside WSL 2 (Ubuntu) with `bubblewrap` installed.
-- If you explicitly want to test without confinement, tick the unconfined confirmation checkbox in the Work or Review and merge step.
+- The Quick run card, Full Work view, and integration controls prompt for confirmation when their actions would run without OS confinement. [Sandbox and permissions](SANDBOX.md)
 
 ### Antigravity tasks keep falling back to another provider
 
@@ -50,6 +50,7 @@ If you use a profile with a custom **Account config directory**, run the login c
 ```bash
 CLAUDE_CONFIG_DIR=/path/to/dir claude auth login
 CODEX_HOME=/path/to/dir codex login
+AGY_CONFIG_DIR=/path/to/dir XDG_CONFIG_HOME=/path/to/dir agy
 ```
 
 ### Provider stays in cooldown after quota resets
@@ -84,4 +85,12 @@ CLIs periodically retire or rename model ids. Click **Refresh CLI status** to re
 
 ### Database schema version error after downgrading
 
-If you see `Database schema v9 is newer than this DALANG build`, update DALANG to the latest version (`npx dalang-cli@latest`) or point `DALANG_HOME` to a fresh directory.
+If you see `Database schema v9 is newer than this DALANG build`, start v0.7.0 or later with `npx dalang-cli@latest`. To run an older build with your previous state, restore the backup of both the data directory and project checkout made before migration. [Update and backup](INSTALL.md#update-dalang)
+
+### A project opens into an empty chat after upgrading
+
+Open the project's saved **Full** session in the sidebar to find the conversation, brief, and tasks from v0.6. A project with no saved history opens with an empty composer. [Work with saved chats](USAGE.md#continue-or-manage-a-chat)
+
+### Another session has unfinished work
+
+Open the session named in the message and finish reviewing its remaining tasks, or use **Discard work** in that session's header. Archiving is available after you finish or discard the work. You can keep using Ask in other sessions while you decide. [Work with saved chats](USAGE.md#continue-or-manage-a-chat)

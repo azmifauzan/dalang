@@ -68,14 +68,14 @@ Use `dalang` in place of `npx dalang-cli` after a global install. You can also s
 
 ## Update Dalang
 
-Let active tasks finish or stop them from **Work**, then stop the server with Ctrl+C. Use the command that matches your installation.
+Let active tasks finish or stop them, then stop the server with Ctrl+C. Back up your Dalang data directory and project checkout before upgrading from v0.6 or earlier. Use the command that matches your installation.
 
 ```bash
 npx dalang-cli@latest
 npm install -g dalang-cli@latest
 ```
 
-With a global installation, start the updated app with `dalang`. Dalang keeps your projects and data and may upgrade its database on startup. Older versions can refuse to open an upgraded database.
+With a global installation, start the updated app with `dalang`. On first launch, v0.7 upgrades the database to schema v9. A project with existing history gets a **Full** session in the sidebar. Dalang moves its saved artifacts into `.dalang/sessions/<session-id>/` and adds ignore rules for session logs and temporary files. Older builds may refuse to open the upgraded database.
 
 Use **Config → About → Check now** to check for a release. Dalang can also notify you about updates when version checks are enabled in **Config → General**. [Release notes](https://github.com/azmifauzan/dalang/releases)
 
@@ -83,8 +83,10 @@ Use **Config → About → Check now** to check for a release. Dalang can also n
 
 | Location | Contents |
 | --- | --- |
-| `~/.dalang/` | Local database, app state, and isolated task worktrees. Set `DALANG_HOME` to use another directory. |
-| `<repo>/.dalang/` | Project briefs, plans, task results, reviews, and logs. |
+| `~/.dalang/dalang.db` | Projects, chat transcripts, settings, and run history. Set `DALANG_HOME` to relocate the data directory. |
+| `~/.dalang/worktrees/` | Isolated task checkouts managed by Dalang. |
+| `<repo>/.dalang/sessions/<session-id>/` | Session briefs, plans, task results, reviews, and logs. |
+| `<repo>/.dalang/tmp/` | Temporary files including Ask technical logs. |
 | Project Git repository | Dalang task branches, checkpoint refs, and approved merges. |
 
 Stop Dalang before copying its data directory for a backup. Keep the project repository, including its Git history, and any uncommitted work you need from task worktrees.
@@ -98,10 +100,10 @@ Install pnpm before cloning and building Dalang. [pnpm installation](https://pnp
 ```bash
 git clone https://github.com/azmifauzan/dalang.git
 cd dalang
-pnpm install
+pnpm install --frozen-lockfile
 pnpm build
 pnpm --filter dalang-cli doctor
 pnpm start
 ```
 
-To update a source checkout, run `git pull`, `pnpm install`, and `pnpm build`, then restart. `pnpm test` runs the project’s checks without using model quota.
+To update a source checkout, run `git pull`, `pnpm install --frozen-lockfile`, and `pnpm build`, then restart. Run `pnpm typecheck` and `pnpm test` to verify the build without using model quota. The browser scenarios use a built web app and an installed Chromium or Chrome.

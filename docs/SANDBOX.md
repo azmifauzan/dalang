@@ -1,6 +1,6 @@
 # Sandbox and Security Model
 
-DALANG runs coding agents automatically on your local repositories. Prompts alone are not a security boundary, so DALANG enforces OS-level confinement, git config validation, and loopback-only HTTP checks.
+Dalang uses OS-level confinement where available, Git configuration checks, and a loopback-only server. The Lead requests read-only access for Ask. Quick and Full execute approved tasks in separate Git worktrees and require a human decision before merging task changes.
 
 ## Loopback-only server
 
@@ -12,10 +12,10 @@ DALANG runs coding agents automatically on your local repositories. Prompts alon
 
 ### Linux (`bwrap` / bubblewrap)
 
-Every CLI turn and every verify/integration shell command runs inside `bwrap`:
+On Linux and WSL 2, Dalang wraps agent turns and verify and integration commands in `bwrap` when available.
 
 - Root filesystem is mounted read-only (`--ro-bind / /`).
-- Only the active project folder (or isolated task worktree) is mounted read-write (`--bind`), or read-only (`--ro-bind`) for review turns.
+- The project folder or isolated task worktree is the workspace mount. Ask and automated review use a read-only workspace mount.
 - Fresh `/tmp`, `/dev`, `/proc`, `--unshare-pid`, `--unshare-ipc`, `--new-session`, and `--die-with-parent`.
 - `/run/user` and `/run/docker.sock` are hidden so sandboxed agents cannot reach user systemd units or container daemons.
 - Sensitive credential directories and files are masked: `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.docker`, `~/.kube`, `~/.config/gcloud`, `~/.git-credentials`, and `~/.netrc`. (`~/.npmrc` stays readable for private npm registries.)
@@ -33,7 +33,7 @@ On macOS (`darwin`), DALANG wraps runs in `/usr/bin/sandbox-exec` with a dynamic
 
 ### Windows (WSL 2)
 
-Run DALANG inside WSL 2 with `bubblewrap` installed so Linux confinement applies. Starting runs on a host with no sandbox requires an explicit unconfined opt-in per request. [Windows setup](INSTALL.md#windows-with-wsl-2)
+Run Dalang inside WSL 2 with `bubblewrap` installed so Linux confinement applies. Starting Quick or Full task execution or running integration tests without the platform sandbox requires explicit confirmation. [Windows setup](INSTALL.md#windows-with-wsl-2)
 
 ## Antigravity keyring exposure (opt-in)
 
@@ -49,14 +49,14 @@ That service exposes the entire desktop keyring, so a sandboxed `agy` run can re
 
 Because DALANG runs `git` on the host (outside the sandbox) against repositories the agent can edit, a malicious `.git/config` entry could execute host commands during `git add`, `git diff`, or `git merge`.
 
-Before every git operation, DALANG runs `git config --list --show-scope -z` and refuses to proceed if local, worktree, or command scope defines:
+Dalang checks Git configuration with `git config --list --show-scope -z`. The guard refuses these settings in local, worktree, or command scope.
 
 - `filter.*`
 - `include.path` or `includeIf.*.path`
-- `core.worktree` or `extensions.worktreeConfig` (or if `.git/config.worktree` exists)
+- `core.worktree`
 - `hook.*`, `trace2.*`, `diff.external`, or external `diff.*.command` / `diff.*.textconv` / `merge.*.driver`
 
-All DALANG git commands run with `core.hooksPath=/dev/null`, `core.fsmonitor=false`, `commit.gpgsign=false`, and `--no-verify`.
+The guard also refuses `extensions.worktreeConfig` in any scope and repositories with `.git/config.worktree`. It checks that each managed worktree's Git metadata points inside the registered repository's worktree metadata directory. Dalang disables hooks, filesystem monitoring, and commit signing on its managed Git commands.
 
 ### Hybrid hidden checkpoint refs
 
@@ -68,4 +68,4 @@ To avoid polluting your main branch with noisy `dalang: checkpoint ...` commits:
 
 ## Symlink-hardened artifact I/O
 
-Every read, write, or delete DALANG performs on agent-reachable files (`.dalang/` artifacts, `PROJECT.md`, run logs) refuses symlinks and paths resolving outside the project root, opens files with `O_NOFOLLOW`, and writes atomically via temp file + rename.
+Dalang's artifact helpers validate paths against the project root, reject unsafe symlink targets, and open files with `O_NOFOLLOW`. Writes use a temporary file and atomic rename. Briefs, plans, and task results live under a session-specific directory. [Data locations](INSTALL.md#data-and-uninstall)

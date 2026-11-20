@@ -23,7 +23,7 @@ The Linux sandbox needs `xdg-dbus-proxy` and an active desktop session to connec
 3. In **Config → Task routing**, match a task role and complexity to a primary profile. Put specific rules above broader rules because Dalang uses the first match. A task can also name a profile override in **Plan**.
 4. Set a fallback provider, model, and effort on the profile or the routing rule. For example, match low-complexity engineering tasks to a Codex profile, high-complexity engineering tasks to a Claude Code profile, and set a backup for either rule if you have another signed-in account.
 
-Model and effort options come from the CLI. If a saved model is marked **(unavailable)**, refresh status and choose a model the CLI still reports. Some models offer a context variant, such as **Use 1M context**, on the same profile.
+Model and effort options come from the CLI. If a saved model is marked **(unavailable)**, refresh status and choose a model the CLI still reports. Some models offer a context variant, such as **Use 1M context**, on the same profile. Use the model chip in the chat composer to choose a CLI, model, and reasoning effort for a Lead turn. Task execution uses the configured routing and profile overrides.
 
 ## Use separate accounts
 
@@ -39,6 +39,8 @@ Run the line for your provider. Enter the corresponding directory in the profile
 
 Dalang keeps quota readings, cooldowns, and parallel slots separate for each provider and account directory. The sandbox lets the CLI write to its config directory to maintain login state. Use a dedicated folder because Dalang rejects broad or sensitive directories, including the home directory, credential folders, and Git checkouts. [Sandbox and permissions](SANDBOX.md)
 
-## Understand token and cost figures
+## Read quota and cost figures
+
+Open **Details** on the project limits bar to see quota windows and any reset times reported by the CLIs. Open **Config → Agents** to refresh a CLI's login and model status or clear a cooldown. [Settings and statistics](USAGE.md#settings-and-statistics)
 
 Open **Statistics** to compare providers and projects by run time, failures, fallbacks, and captured tokens. The CLI may omit some usage fields. Dalang shows costs on an API-equivalent basis using reported amounts or reference model rates. Check your provider account for actual subscription charges.

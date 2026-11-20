@@ -4,30 +4,31 @@
 
 <h1 align="center">Dalang</h1>
 
-<p align="center">Run your coding agents as a team, from one local workspace.</p>
+<p align="center">Ask about your code, plan changes, and review agent work in one local workspace.</p>
 
 <p align="center">
   <a href="#install"><strong>Install</strong></a> ·
   <a href="./docs/USAGE.md">User guide</a> ·
   <a href="./docs/README.md">All docs</a> ·
-  <a href="https://github.com/azmifauzan/dalang/releases">Releases</a>
+  <a href="https://github.com/azmifauzan/dalang/releases">Releases</a> ·
+  <a href="https://www.npmjs.com/package/dalang-cli">npm</a>
 </p>
 
-![Dalang Work view showing a Codex task running on the wayang stage, the activity feed, and the run inspector](docs/images/work.webp)
+![Dalang v0.7 in Quick mode, with the saved chats, mode and model controls, and a one-task plan ready to run](docs/images/quick.webp)
 
-Dalang brings **Claude Code, Codex CLI, and Antigravity CLI** into one browser workspace on your machine. Describe a change you want to make, then work with a Lead agent to turn it into a brief and a task plan. Dalang assigns tasks to your agents, runs them in separate Git worktrees, and brings the reviews and diffs back for you to decide what to merge.
+Dalang runs **Claude Code, Codex CLI, and Antigravity CLI** from a browser workspace on your machine. Open a Git repository and start a chat with the Lead. Ask a question, plan a small fix, or work through a larger feature. When agents change code, Dalang runs each task in a separate Git worktree and brings the verification output, review, and diff back for your merge decision.
 
 Start with one signed-in CLI or give planning, coding, and review to different providers. Dalang uses the logins you already have. You can work in English or Indonesian.
 
-## What you get
+## Choose a mode
 
-- **Pick how much process you need.** Ask questions about your code with nothing written, fix something small with **Quick** in one screen, or run the full brief and plan flow with **Full**. Sessions are saved per project and can be reopened like any chat.
-- **See your limits at a glance.** A bar at the top shows how much of each connected CLI's 5 hour and weekly limit is left, and refreshes on its own.
-- **Agree on the scope before work starts.** Answer the Lead’s questions, edit the brief, and approve the task plan.
-- **Run independent tasks in parallel.** See dependencies, shared files, and which agent gets each task. Follow live logs and stop, retry, or resume runs from the Work view.
-- **Use the models and accounts you choose.** Configure agents by role and task complexity, with a fallback for limits, timeouts, or login failures.
-- **Review before you merge.** Read automated findings, test output, and the Git diff. Approve the merge or send the task back with feedback. Run integration tests and optionally push or open a GitHub pull request.
-- **Track usage across projects.** See runtimes, captured tokens, quota events, and API-equivalent cost estimates.
+| Mode | What you can do |
+| --- | --- |
+| **Ask** | Get a read-only answer about the repository. |
+| **Quick** | Review a one-task plan, run it, and decide whether to merge in the same chat. |
+| **Full** | Discuss a larger change, approve a brief and plan, run independent tasks in parallel, and review each diff before merging. |
+
+The composer lets you choose a mode, CLI, model, and reasoning effort. Reopen saved chats from the project sidebar. Use **Config** to set team roles, account directories, and fallback targets. The project header shows quota windows when the CLIs report them, and **Statistics** summarizes runs, tokens, and API-equivalent cost estimates.
 
 ## Install
 
@@ -53,11 +54,10 @@ dalang
 ## Your first project
 
 1. Follow the setup wizard to check your CLIs and choose your Lead, coders, and reviewer.
-2. Open an existing Git repository or create a new project. It opens into a chat. Use **Ask** to question the Lead about your code. Nothing is written.
-3. For a small fix or feature, choose **Quick** beside the send button. The Lead returns a one-task plan. Click **Run**, then review and merge.
-4. For larger work, choose **Full**. Describe a goal in **Discuss**, approve the **Brief** and **Plan**, start **Work**, and decide what to merge in **Review & merge**.
+2. Open an existing Git repository or create a project. Ask the Lead about the code, or choose **Quick** or **Full** before sending a change request.
+3. For Quick and Full work, inspect the review and Git diff before merging. The Full flow also lets you run integration tests, push, or open a GitHub pull request from **Review & merge**.
 
-[Walk through a project with screenshots](docs/USAGE.md)
+[Walk through a project with screenshots](docs/USAGE.md) · [Upgrade from an earlier release](docs/INSTALL.md#update-dalang)
 
 ## Documentation
 

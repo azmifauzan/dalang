@@ -4,9 +4,9 @@ Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
 ## 0.7.0 (Session modes and chat), 20 Nov
 
-A project now opens into a chat. Sessions are saved per project and can be reopened like any AI chat, and each message runs as `Ask` (questions, read-only), `Quick` (a small fix with no brief), or `Full` (the v0.6 five-step flow). The merge gate, sandbox, `files_allowed`, verify, and review apply to every mode that changes files.
+A project opens into a chat with three modes. **Ask** answers repository questions, **Quick** takes a one-task fix from plan to merge in the chat, and **Full** guides a larger change through discussion, brief, plan, work, and review. Every task still runs in a worktree with verification, automated review, and a human merge decision. [User guide](docs/USAGE.md)
 
-Verified on Linux: typecheck, build, and 101 automated tests pass (87 core, 9 server, 5 CLI). The server tests include headless Chromium runs on a real server with replayed agent output, covering Ask, Quick, Full, the v0.6 upgrade path, and an Indonesian leak scan. Not verified: Quick and Full turns against the real CLIs after the chat rework, macOS, and a clean install on another host. The live progress panel was checked against real Antigravity logs only; the Claude Code and Codex event shapes follow their documented formats.
+Linux verification covered typecheck, build, and 101 automated tests (87 core, 9 server, 5 CLI). The server tests run the built UI in headless Chromium with replayed agent output for all three modes, the v0.6 upgrade, and Indonesian UI strings. Live progress was checked against Antigravity logs. Real CLI runs for Quick and Full and a macOS run are still open.
 
 **Sessions and modes**
 - **Chat first.** Opening a project shows a heading with the composer in the middle and creates no session. The first message creates one. A chat with messages keeps the composer pinned to the bottom of the window.
@@ -30,7 +30,9 @@ Verified on Linux: typecheck, build, and 101 automated tests pass (87 core, 9 se
 - **Layout fix.** The top bar and sidebar now switch at the same `lg` breakpoint, so Config and Statistics no longer disappear between 768 and 1023 px.
 - **Bilingual.** All new screens exist in Indonesian and English and pass the leak scan.
 
-**Dependencies and size.** Adds `react-markdown` and `remark-gfm` to the web package. The built web bundle grows from 210,253 to 278,465 bytes gzipped (measured on the previous commit and on this one), which covers all of the v0.7 screens.
+**Documentation.** The README and user guide have new screenshots from the built v0.7 app. The install guide explains the schema v9 upgrade and where sessions and logs live. [Install and update](docs/INSTALL.md)
+
+**Dependencies.** The web package adds `react-markdown` and `remark-gfm` for formatted chat replies.
 
 ## 0.6.0 (UI revamp), 19 Nov
 

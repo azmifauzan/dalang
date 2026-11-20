@@ -1,6 +1,6 @@
 # Use Dalang
 
-This walkthrough covers the three ways to work (**Ask**, **Quick**, and **Full**), then takes a small change through the Full flow: **Discuss**, **Brief**, **Plan**, **Work**, and **Review & merge**. The screenshots show Dalang running a demo project with replayed agent responses. They were taken before v0.7, so the sidebar and page header look different today. [Install and start Dalang](INSTALL.md)
+Start in Ask to explore a repository, use Quick for a one-task fix, or follow the Full walkthrough for work that needs a brief and a plan. These screenshots show Dalang v0.7 running demo repositories with replayed agent responses. [Install and start Dalang](INSTALL.md)
 
 ## Set up your team and project
 
@@ -19,23 +19,38 @@ Dalang uses `PROJECT.md` for repository instructions and can link `CLAUDE.md` an
 
 ## Choose Ask, Quick, or Full
 
-A project opens into a chat with the Lead. The mode selector beside the send button decides how much process a message starts. No session exists until you send the first message.
+A project opens into a chat with the Lead. Pick a mode beside the send button. Dalang saves the session when you send the first message.
 
 | Mode | Use it for | What happens |
 | --- | --- | --- |
-| **Ask** (default) | Questions about the repository | The Lead answers read-only. Nothing in the repository changes. |
-| **Quick** | A small bug fix or feature | The Lead returns one mini plan with a single task and the files it may touch, with no brief. Click **Run**. Verify, review, and the merge approval still apply. |
-| **Full** | A larger feature | The five-step flow below, with the brief and plan approvals. |
+| **Ask** (default) | Questions about the repository | The Lead reads the repository and answers in chat. Dalang saves the transcript and keeps technical logs in an ignored directory. |
+| **Quick** | A small bug fix or feature | The Lead drafts a single task with allowed files, acceptance criteria, and a verify command. You run, review, and merge it from the chat. |
+| **Full** | A larger change | You discuss scope, approve a brief and plan, then use the Work and Review views to run and merge tasks. |
 
-- A new chat opens with a heading and the composer in the middle. Once there are messages, the conversation scrolls and the composer stays at the bottom.
-- The model chip beside the send button opens a picker: choose a provider on the left, search and pick a model, and set the reasoning effort on the right. It starts from the project's Lead setting, and you can change it at any time. The choice applies to Ask, Quick, and the first Full message sent from this composer.
-- Your question appears at once. While the CLI works you see its real name (for example Antigravity CLI), how long it has run, what it is doing (reading a file, searching, running a command), and the answer as it is written. The technical log is folded away under **Show technical log**. Replies are formatted: headings, lists, code, tables, and web links.
-- The bar at the top of a project shows how much of each connected CLI's 5 hour and weekly limits is left. The numbers refresh every 5 minutes while the page is open (choose 3, 5, or 10 minutes in **Config**, **General**) and again when a run finishes. Click **Details** for every window, its reset time, and a refresh button. A value at 20% or below turns red.
-- The button at the top of the sidebar minimizes it to a column of icons (new project, Statistics, Config, theme). Click it again to expand. Dalang remembers the choice.
-- The mode buttons only choose what your next message does, so you can look at Quick or Full without changing anything. A session moves up (Ask to Quick or Full, Quick to Full) when you send a message in the higher mode, and the conversation carries over. Ask is always available, in any session, and never changes the session's mode. Quick is not offered inside a Full session until its work is finished. The Lead may suggest a switch with a button, and never switches on its own.
-- If the Lead judges a Quick request too large, it says why and offers **Switch to Full (keeps findings)**.
-- Each project lists its sessions in the sidebar, newest first, with **New chat** at the top. Open one to restore its conversation, brief, plan, and task board. Click the title to rename a session. You can archive or delete it. Deleting asks for confirmation and never touches merged code.
-- Only one session per project can have unfinished work at a time. A second session can still chat in Ask mode, and can start work after the first one is merged or discarded with **Discard work**.
+### Ask about the code
+
+The model chip beside the send button opens a picker for the provider, model, and reasoning effort. It starts with the project's Lead settings. While the Lead works, the chat shows the CLI name, elapsed time, progress, and any streamed reply. Expand **Show technical log** to inspect raw output.
+
+![Ask chat showing the Lead explaining a bug with a code block and offering to switch to Quick](images/ask.webp)
+
+### Run a Quick fix
+
+1. Select **Quick** and describe the change. Check the proposed task, allowed files, acceptance criteria, and verify command.
+2. Click **Run**. Dalang runs the task in a Git worktree, executes the verify command, and runs automated review.
+3. Open **Show diff** and inspect the review. Click **Approve & merge** when ready, or send the task back with feedback.
+
+![Quick chat with the Request, Work, Review, and Merge timeline and a one-task plan ready to run](images/quick.webp)
+
+If the Lead finds the request needs a broader plan, use **Switch to Full (keeps findings)** to take the request and findings into Discuss.
+
+### Continue or manage a chat
+
+- Use **New chat** in the project sidebar or reopen a saved session to restore its conversation and work. Click the session title to rename it. The header also offers archive and delete actions, with a confirmation before deletion.
+- Sending a higher-mode message can move a session from Ask to Quick or Full, or from Quick to Full. The conversation carries over. Ask stays available in both work modes and keeps the session's current mode. Quick becomes available again after Full work is complete.
+- Only one session per project can hold unfinished work. Other sessions can still Ask. Finish merging the first session's work or use **Discard work** to free the project. Discarding stops its runs and removes unmerged task branches and worktrees. Merged code stays on the target branch.
+- The desktop sidebar can collapse to an icon rail. Dalang remembers your choice. On small screens, use **Menu** to open the sidebar.
+
+## Full walkthrough
 
 ## 1. Discuss the goal
 
@@ -55,7 +70,7 @@ In **Brief**, check the proposed scope, features, constraints, and assumptions. 
 
 In **Plan**, inspect tasks on the **Kanban** board or switch to the **Dependency graph**. Open a task to edit its goal, allowed files, dependencies, profile override, acceptance criteria, and verify command. The verify command should be a command you would run locally, such as `node --test`.
 
-![Plan view showing the kanban board and a task with its assigned profile and verify command](images/plan.webp)
+![Full Plan view showing the five-step navigation and an approved task on the kanban board](images/plan.webp)
 
 Break broad tasks into smaller ones with clear file boundaries. Use dependencies for work that must happen in order. Dalang queues independent tasks in parallel when capacity permits and holds back tasks with overlapping allowed files. Check all tasks, then click **Approve plan** and open **Work**.
 
@@ -74,7 +89,7 @@ Click **Start work** to run the approved queue. Dalang uses a separate Git workt
 
 After a coder finishes, Dalang runs the task’s verification and an automated review. Open **Review & merge** and select a task. Read the review findings, open **Show verify output**, and inspect the **Branch diff** before deciding.
 
-![Review and merge view with an automated review, branch diff, and merge controls](images/review.webp)
+![Full Review and merge view showing a task awaiting approval, its automated review, and the merge controls](images/review.webp)
 
 - **Approve and merge** adds the task changes to the project’s target branch. Dalang asks for a separate override if automated review failed.
 - **Reject and send back** lets you leave feedback and optionally requeue the task for another attempt.
@@ -88,7 +103,7 @@ In **Remote push and pull request**, select the Git remote (usually `origin`). A
 
 | Where | What you can do |
 | --- | --- |
-| **Config → General** | Choose English or Indonesian for the UI and Lead/Reviewer output, set the theme, reopen the wizard, and manage update notifications. |
+| **Config → General** | Choose English or Indonesian for the UI and Lead/Reviewer output, set the theme, reopen the wizard, and manage quota refresh and update notifications. |
 | **Config → Agents** | Check CLI versions, logins, model lists, and quotas. Refresh after installing a CLI or signing in again. |
 | **Config → Team** | Edit profiles, models, reasoning effort, account directories, fallback targets, timeouts, and parallel slots. |
 | **Config → Task routing** | Order rules by role and task complexity. The first matching rule selects the primary and can set a fallback. |
@@ -96,4 +111,4 @@ In **Remote push and pull request**, select the Git remote (usually `origin`). A
 | **Config → About** | Check your version, look for updates, and open support docs. |
 | **Statistics** | Filter runs by project and time window. See duration, failures, fallback events, token counts when available, and API-equivalent cost estimates. |
 
-For account switching and routing examples, see [Providers and accounts](PROVIDERS.md). For where Dalang saves project data, see [Data and uninstall](INSTALL.md#data-and-uninstall).
+The provider limits bar shows the tightest five-hour and weekly windows each installed CLI reports. **Details** lists the available windows, reset times when reported, and a refresh button. Dalang refreshes when a run finishes and every five minutes while the page is visible. Choose three, five, or ten minutes in **Config → General**. [Providers and accounts](PROVIDERS.md)
