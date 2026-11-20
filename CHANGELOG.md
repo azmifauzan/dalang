@@ -2,6 +2,10 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
+## 0.7.1, 20 Nov
+
+`doctor` now shows the `npx dalang-cli` commands for starting DALANG and rerunning checks. It explains that the standalone `dalang` command is available after `npm install -g dalang-cli`.
+
 ## 0.7.0 (Session modes and chat), 20 Nov
 
 A project opens into a chat with three modes. **Ask** answers repository questions, **Quick** takes a one-task fix from plan to merge in the chat, and **Full** guides a larger change through discussion, brief, plan, work, and review. Every task still runs in a worktree with verification, automated review, and a human merge decision. [User guide](docs/USAGE.md)

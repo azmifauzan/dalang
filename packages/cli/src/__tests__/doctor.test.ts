@@ -41,7 +41,8 @@ describe('dalang doctor', () => {
 
     const formatted = formatDoctorReport(report);
     expect(formatted).toContain('[PASS] Node.js runtime');
-    expect(formatted).toContain('Ready to run DALANG');
+    expect(formatted).toContain('Start with `npx dalang-cli`.');
+    expect(formatted).toContain('To use `dalang` directly, install globally with `npm install -g dalang-cli`.');
   });
 
   it('reports actionable fixes when sandbox and CLIs are missing', async () => {
@@ -64,6 +65,7 @@ describe('dalang doctor', () => {
     const anyCli = report.checks.find((c) => c.id === 'cli-any');
     expect(anyCli?.status).toBe('fail');
     expect(anyCli?.fix).toContain('claude auth login');
+    expect(formatDoctorReport(report)).toContain('rerun `npx dalang-cli doctor` (or `dalang doctor` after a global install).');
   });
 
   it('recognizes macOS sandbox-exec and Windows WSL guidance', async () => {

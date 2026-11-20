@@ -293,8 +293,8 @@ export function formatDoctorReport(report: DoctorReport): string {
   lines.push('');
   lines.push(
     report.ok
-      ? 'Ready to run DALANG (`dalang` or `npx dalang-cli`).'
-      : 'One or more required checks failed. Apply the fixes above and run `dalang doctor` again.',
+      ? 'Ready to run DALANG. Start with `npx dalang-cli`.\nTo use `dalang` directly, install globally with `npm install -g dalang-cli`.'
+      : 'One or more required checks failed. Apply the fixes above and rerun `npx dalang-cli doctor` (or `dalang doctor` after a global install).',
   );
   return lines.join('\n');
 }

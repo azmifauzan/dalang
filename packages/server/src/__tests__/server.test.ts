@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { CliRunner, RunCommandOptions, RunCommandResult } from '@dalang/core';
-import { BriefContentSchema, PlanContractSchema } from '@dalang/shared';
+import { BriefContentSchema, DALANG_VERSION, PlanContractSchema } from '@dalang/shared';
 import { createDalangServer } from '../app.js';
 
 const tempDirs: string[] = [];
@@ -254,7 +254,7 @@ describe('@dalang/server API (v0.1 Rembuk)', () => {
     try {
       const health = await app.inject({ method: 'GET', url: '/api/health' });
       expect(health.statusCode).toBe(200);
-      expect(health.json()).toEqual({ ok: true, version: '0.7.0' });
+      expect(health.json()).toEqual({ ok: true, version: DALANG_VERSION });
 
       const providersRes = await app.inject({ method: 'GET', url: '/api/providers/status' });
       expect(providersRes.statusCode).toBe(200);
@@ -666,7 +666,7 @@ describe('@dalang/server API (v0.1 Rembuk)', () => {
       const updateRes = await app.inject({ method: 'GET', url: '/api/update-status' });
       expect(updateRes.statusCode).toBe(200);
       expect(updateRes.json().update).toMatchObject({
-        currentVersion: '0.7.0',
+        currentVersion: DALANG_VERSION,
         latestVersion: '0.8.0',
         updateAvailable: true,
         checkEnabled: true,

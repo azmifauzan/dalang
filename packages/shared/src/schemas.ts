@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const DALANG_VERSION = '0.7.0';
+export const DALANG_VERSION = '0.7.1';
 
 export const UiLanguageSchema = z.enum(['en', 'id']);
 export type UiLanguage = z.infer<typeof UiLanguageSchema>;
