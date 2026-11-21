@@ -1,6 +1,7 @@
 .claude/
 .remember/
 node_modules/
+.dalang-local/
 dist/
 *.tsbuildinfo
 .DS_Store

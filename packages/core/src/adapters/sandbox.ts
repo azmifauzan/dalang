@@ -12,12 +12,15 @@ export function buildPathEnv(extraEnv?: Record<string, string | undefined>): Nod
   const extraPaths = [
     path.join(home, '.local/bin'),
     path.join(home, '.npm-global/bin'),
+    ...(process.platform === 'win32' && process.env.APPDATA
+      ? [path.join(process.env.APPDATA, 'npm/node_modules/@anthropic-ai/claude-code/bin')]
+      : []),
     '/usr/local/bin',
     '/usr/bin',
     '/bin',
   ];
   // The user's PATH wins so CLI shebangs (`env node`) resolve to the Node they installed.
-  const mergedPath = [...new Set([...existingPath.split(':').filter(Boolean), ...extraPaths])].join(':');
+  const mergedPath = [...new Set([...existingPath.split(path.delimiter).filter(Boolean), ...extraPaths])].join(path.delimiter);
   return {
     ...process.env,
     ...extraEnv,
@@ -28,14 +31,20 @@ export function buildPathEnv(extraEnv?: Record<string, string | undefined>): Nod
 export class NodeCliRunner implements CliRunner {
   async which(binary: string): Promise<string | null> {
     const env = buildPathEnv();
-    const pathEntries = (env.PATH ?? '').split(':').filter(Boolean);
+    const pathEntries = (env.PATH ?? '').split(path.delimiter).filter(Boolean);
     for (const dir of pathEntries) {
-      const candidate = path.join(dir, binary);
-      try {
-        fs.accessSync(candidate, fs.constants.X_OK);
-        return candidate;
-      } catch {
-        // continue
+      const names = process.platform === 'win32' && !path.extname(binary)
+        ? [`${binary}.exe`, `${binary}.com`]
+        : [binary];
+      for (const name of names) {
+        const candidate = path.join(dir, name);
+        try {
+          fs.accessSync(candidate, fs.constants.X_OK);
+          if (!fs.statSync(candidate).isFile()) continue;
+          return candidate;
+        } catch {
+          // continue
+        }
       }
     }
     return null;
@@ -58,6 +67,7 @@ export class NodeCliRunner implements CliRunner {
       const child = spawn(command, args, {
         cwd: options.cwd,
         env: buildPathEnv(options.env),
+        windowsVerbatimArguments: process.platform === 'win32' && path.basename(command).toLowerCase() === 'cmd.exe',
         stdio: [useStdinPipe ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       });
 

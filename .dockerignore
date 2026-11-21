@@ -3,6 +3,7 @@
 .codex
 .claude
 .dalang
+.dalang-local
 **/.claude
 **/.env*
 **/.npmrc

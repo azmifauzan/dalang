@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const DALANG_VERSION = '0.7.2';
+export const DALANG_VERSION = '0.7.3';
 
 export const UiLanguageSchema = z.enum(['en', 'id']);
 export type UiLanguage = z.infer<typeof UiLanguageSchema>;
@@ -780,6 +780,7 @@ export const RejectTaskInputSchema = z.object({
 export type RejectTaskInput = z.infer<typeof RejectTaskInputSchema>;
 
 export const ApproveMergeInputSchema = z.object({
+  allowUnconfined: z.boolean().default(false),
   runIntegration: z.boolean().default(true),
   allowFailedReview: z.boolean().default(false),
   pushAfterMerge: z.boolean().optional(),

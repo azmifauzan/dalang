@@ -2,6 +2,16 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
+## 0.7.3 (Native Windows support), 21 Nov
+
+- Fix native Windows PATH lookup, executable discovery, and quoted verification commands through `cmd.exe`.
+- Use instruction pointers when Windows cannot create `CLAUDE.md` and `AGENTS.md` symlinks, preserving user-owned files.
+- Normalize task artifact paths in agent prompts and JSON repair requests. Clarify that required task result metadata is exempt from application file scope.
+- Forward explicit unconfined consent to post-merge integration runs. Linux and macOS retain their platform shells and sandbox behavior.
+- Pin the source package manager and use SQLite's packaged native binaries without an unnecessary C++ build.
+- Ship through GitHub Releases with an npm-installable tarball and `SHA256SUMS`. The npm registry remains on v0.7.2.
+- Verify 104 applicable Windows tests in staged runs, 107 Linux regression tests, and a live Codex Quick flow through review, merge, and post-merge integration. Five Windows file-symlink/FIFO tests and two Linux Windows-only tests are skipped according to available OS facilities. Native macOS execution remains unverified.
+
 ## 0.7.2 (Chat images, local sign-in, and Docker), 20 Nov
 
 - **Images in Ask, Quick, and Full.** Pick files with the paperclip or paste screenshots into the composer when using Claude Code or Codex. Send up to three PNG, JPEG, or WebP images per message, each up to 4 MiB. Reopen the saved chat to see its images. [Attach images](docs/USAGE.md#attach-images)

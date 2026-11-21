@@ -40,15 +40,21 @@ describe('ProjectService (F-01, F-02)', () => {
     expect(summary.symlinksValid).toEqual({ claudeMd: true, agentsMd: true });
     expect(fs.existsSync(path.join(repoDir, '.git'))).toBe(true);
     expect(fs.existsSync(path.join(repoDir, '.dalang', 'discuss'))).toBe(true);
-    expect(fs.readlinkSync(path.join(repoDir, 'CLAUDE.md'))).toBe('PROJECT.md');
-    expect(fs.readlinkSync(path.join(repoDir, 'AGENTS.md'))).toBe('PROJECT.md');
+    for (const name of ['CLAUDE.md', 'AGENTS.md']) {
+      const file = path.join(repoDir, name);
+      if (fs.lstatSync(file).isSymbolicLink()) expect(fs.readlinkSync(file)).toBe('PROJECT.md');
+      else expect(fs.readFileSync(file, 'utf8')).toContain('PROJECT.md');
+    }
 
     const md = svc.readProjectMd(summary.id);
     expect(md.content).toContain('Node 26 + Fastify + React');
 
     const updated = svc.writeProjectMd(summary.id, '# My App\n\nUpdated conventions.\n');
     expect(updated.content).toContain('Updated conventions.');
-    expect(fs.readFileSync(path.join(repoDir, 'CLAUDE.md'), 'utf8')).toContain('Updated conventions.');
+    const claudeFile = path.join(repoDir, 'CLAUDE.md');
+    expect(fs.readFileSync(claudeFile, 'utf8')).toContain(
+      fs.lstatSync(claudeFile).isSymbolicLink() ? 'Updated conventions.' : 'PROJECT.md',
+    );
 
     conn.close();
   });

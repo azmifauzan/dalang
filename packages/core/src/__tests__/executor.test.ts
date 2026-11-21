@@ -133,7 +133,7 @@ describe('ExecutionService (v0.2 Jalan + v0.3 Kawal)', () => {
     } finally {
       conn.close();
     }
-  }, 15_000);
+  }, process.platform === 'win32' ? 60_000 : 15_000);
 
   it('falls back to backup profile when primary hits rate limit (F-13)', async () => {
     const providersUsed: string[] = [];

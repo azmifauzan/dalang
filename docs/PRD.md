@@ -1,6 +1,6 @@
 # PRD: DALANG
 
-Nov 18, 2026 · @Fauzan · Updated through v0.7.2, Nov 20, 2026
+Nov 18, 2026 · @Fauzan · Updated through v0.7.3, Nov 21, 2026
 
 ## Summary
 
@@ -11,6 +11,8 @@ All three modes save their conversation per project. Quick and Full run tasks in
 Dalang runs on the user's machine and uses the official CLI logins. The name comes from the original workflow: **Discuss · Agree · List · Assign · Navigate · Guard**.
 
 ## Background and problem
+
+Current platform support (v0.7.3): Linux and WSL 2 use bubblewrap, macOS uses sandbox-exec, and native Windows supports unconfined execution with explicit consent. Windows verification and integration commands use `cmd.exe`; Linux and macOS retain `/bin/sh`. Instruction pointers replace symlinks only on Windows when symlink privilege is unavailable. [Platform setup](INSTALL.md)
 
 Developers who have several coding-agent subscriptions currently run them by hand, one after another. Planning happens in one tool, coding in another, then testing and review in a third, all in the same workspace.
 
@@ -299,8 +301,9 @@ Each phase must be useful on its own before the next one starts.
 | v0.6 | UI revamp: first-run wizard, five-step guided project flow, wayang stage with activity feed during work, Config page with sidebar tabs, theme toggle, Indonesian and English (UI and agent output), redrawn gunungan logo, new-version notice | A new user reaches the Discuss step of a first project through the wizard without reading docs, and no action of the v0.5 UI is lost | Released on 19 Nov 2026 as `dalang-cli@0.6.0` on npm. Verified on Linux with unit tests, server API tests, CLI doctor tests, and headless Chromium CDP E2E for fresh-install wizard, upgrade path, 6 Config tabs, Statistics, Work stage pause/visibility, ID/EN i18n with a no-English-leak scan of every step and Config tab, light/dark theme, update notice, and 390px mobile drawer) |
 | v0.7 | Ask, Quick, and Full in a shared chat, saved sessions, one working session per project, and a provider limits bar | Read-only Q&A, a one-task fix from request to merge in one chat, and a five-step Full flow | Linux verification covers typecheck, build, database upgrades, CLI diagnostics, and all three modes in Chromium with replayed agents. [GitHub release](https://github.com/azmifauzan/dalang/releases/tag/v0.7.0) · [npm package](https://www.npmjs.com/package/dalang-cli/v/0.7.0) |
 | v0.7.2 | Chat image attachments, optional local login, Docker Compose, and provider CLI updates | Upload and reopen a chat image, protect app APIs and live connections when login is enabled, and launch the Docker image with all three updaters available | Implemented and covered by API, Chromium replay, and Linux Docker checks |
+| v0.7.3 | Native Windows execution, instruction pointers, platform shell commands, and review artifact scope | Install the tarball and complete a live Quick plan, code, verify, read-only review, merge, and integration on Windows; retain Linux regression coverage | Verified on Windows with Codex and Edge; 104 applicable Windows tests and 107 Linux tests passed. GitHub release and tarball distribution; npm publication is separate. |
 | v0.8 | Agent delegation: a running agent splits its own task into subtasks on other profiles through a DALANG MCP server | One task is split by its agent into at least two subtasks on two providers, and all of them pass review and merge | Planned |
-| v0.9 | Session protocols (Claude Agent SDK, `codex app-server`, ACP), steering a running task, context handoff on fallback, native Windows | A fallback mid-task continues from the handoff instead of starting over, on all three providers | Planned |
+| v0.9 | Session protocols (Claude Agent SDK, `codex app-server`, ACP), steering a running task, context handoff on fallback, native Windows confinement | A fallback mid-task continues from the handoff instead of starting over, on all three providers | Planned |
 | v0.10 | Scheduled and webhook-triggered runs, outside agents over MCP | A scheduled run and a run started from a terminal agent both finish without opening the UI | Planned |
 
 See [Roadmap after v0.4](#roadmap-after-v04) for the detail and the research behind it.
@@ -682,6 +685,14 @@ The v0.6 flow always runs `Discuss → Brief → Plan → Work → Review & merg
 - Local sign-in is off by default. The Security tab can require one app password for the workspace APIs, image downloads, and live WebSocket connections. The password hash persists and browser sessions expire on restart. [Security model](SANDBOX.md#optional-app-login)
 - Docker Compose provisions the three CLIs, bubblewrap, and a container-local Secret Service. The app stores its database and the providers' sign-ins and updated binaries in a persistent home volume. Each provider's **Update CLI** action runs its native updater and refreshes the status in Config. [Docker setup](INSTALL.md#run-with-docker)
 
+#### Native Windows compatibility (v0.7.3)
+
+- The runner uses the platform PATH delimiter, discovers native Windows executables, and preserves quoting for verification commands and executable paths containing spaces. Relative artifact paths in planning, execution, review, and JSON repair prompts use forward slashes on every platform.
+- Windows instruction pointers are recognized as configured while user-owned instruction files are preserved. Required task result metadata is exempt from application scope in the reviewer prompt, matching the existing scope checker.
+- Merge integration accepts `allowUnconfined: false` by default; the Quick and Full views forward explicit consent. Linux and macOS keep their existing sandbox engines and shells.
+- A live Codex Quick task on Windows completed plan, code, verification, read-only review, merge, and integration. Staged Windows runs passed 104 applicable tests with 5 unavailable symlink/FIFO cases skipped; Linux passed 107 with 2 Windows-only cases skipped. Edge exercised the browser flows. macOS parity tests passed; native Apple hardware verification remains open.
+- v0.7.3 ships as a GitHub release tarball with checksums. npm publication is separate from the GitHub release. [Release procedure](RELEASING.md)
+
 ### v0.8: agent delegation
 
 - DALANG serves an MCP endpoint on loopback. Each run gets a bearer token scoped to that run, which expires when the run ends; the token never enters logs.
@@ -695,7 +706,7 @@ The v0.6 flow always runs `Discuss → Brief → Plan → Work → Review & merg
 - Adapters move to the session protocols (Claude Agent SDK, `codex app-server`, ACP where agy supports it) behind a capability shape, keeping the one-shot CLI path as a fallback for any capability a provider lacks.
 - Steer a running task with a message, and interrupt without losing the session.
 - Context handoff on fallback: the next provider gets the brief plus a budgeted selection of the previous run (its requests, command results, and partial diff) instead of starting over.
-- Native Windows execution, with a sandbox that meets the same tests.
+- Native Windows OS confinement with a sandbox that meets the same tests; unconfined native execution is available in v0.7.3.
 
 ### v0.10: automation
 

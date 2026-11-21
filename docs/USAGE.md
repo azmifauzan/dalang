@@ -17,6 +17,8 @@ Choose **New project** to initialize a folder with Git, or **Open existing repo*
 
 Dalang uses `PROJECT.md` for repository instructions and can link `CLAUDE.md` and `AGENTS.md` to it. Use the **PROJECT.md** button to review the file or check the links. Keep build commands, test commands, and project conventions here.
 
+On native Windows without symlink privileges, Dalang creates instruction files that refer agents to `PROJECT.md`. Existing user-owned instruction files remain in place. The native Windows runner uses `cmd.exe` for task verification and integration; use Windows-compatible commands, or open the project from WSL 2 for POSIX commands.
+
 ## Choose Ask, Quick, or Full
 
 A project opens into a chat with the Lead. Pick a mode beside the send button. Dalang saves the session when you send the first message.
@@ -40,7 +42,7 @@ Choose Claude Code or Codex, then click the paperclip at the lower left of the c
 ### Run a Quick fix
 
 1. Select **Quick** and describe the change. Check the proposed task, allowed files, acceptance criteria, and verify command.
-2. Click **Run**. Dalang runs the task in a Git worktree, executes the verify command, and runs automated review.
+2. On native Windows, select **Run without sandbox confinement on this host** before clicking **Run**. Dalang runs the task in a Git worktree, executes the verify command, and runs automated review. Linux and macOS use their configured platform sandbox when available.
 3. Open **Show diff** and inspect the review. Click **Approve & merge** when ready, or send the task back with feedback.
 
 ![Quick chat with the Request, Work, Review, and Merge timeline and a one-task plan ready to run](images/quick.webp)
@@ -98,6 +100,8 @@ After a coder finishes, Dalang runs the task’s verification and an automated r
 - **Approve and merge** adds the task changes to the project’s target branch. Dalang asks for a separate override if automated review failed.
 - **Reject and send back** lets you leave feedback and optionally requeue the task for another attempt.
 - Set the **Integration command** for project-wide checks, such as `npm test`. Run it after a merge using the checkbox, or manually with **Run integration suite**.
+
+On native Windows, post-merge integration needs explicit unconfined consent in the current view. Without confinement or consent, the check is marked **skipped**. You can grant consent and run it manually. Required task `result.json` files are orchestration metadata; their presence does not violate a task's application-file scope.
 
 ### Push or open a pull request
 

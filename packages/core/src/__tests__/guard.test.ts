@@ -8,6 +8,7 @@ import { ProfileService } from '../services/profiles.js';
 import { SettingsService } from '../services/settings.js';
 import {
   cleanupTempDirs,
+  shellCommand,
   handleLeadCalls,
   setupApprovedProject,
 } from './exec-helpers.js';
@@ -29,8 +30,8 @@ describe('v0.3 Kawal: Reviewer, Fix Loop, Guard Diff/Merge, Integration, Profile
         const leadRes = handleLeadCalls(cwd, args, opts);
         if (leadRes) return leadRes;
 
-        if (args.includes('/bin/sh') && args.includes('-c')) {
-          const shellCmd = args[args.indexOf('-c') + 1] ?? '';
+        if (shellCommand(cmd, args) !== null) {
+          const shellCmd = shellCommand(cmd, args)!;
           if (shellCmd.includes('pnpm test')) {
             if (!bugFixed) {
               return { exitCode: 1, stdout: '', stderr: 'AssertionError: expected 201 got 500', timedOut: false, idleTimedOut: false };
@@ -132,7 +133,7 @@ describe('v0.3 Kawal: Reviewer, Fix Loop, Guard Diff/Merge, Integration, Profile
       execFileSync('git', ['add', 'package.json'], { cwd: projDir });
       execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@x', 'commit', '-m', 'add pkg'], { cwd: projDir });
 
-      const merged = await execSvc.approveMergeTask(project.id, taskId, { runIntegration: true });
+      const merged = await execSvc.approveMergeTask(project.id, taskId, { runIntegration: true, allowUnconfined: true });
       expect(merged.task.status).toBe('done');
       expect(merged.task.mergeCommitSha).toBeTruthy();
       expect(merged.integrationRun?.status).toBe('passed');
@@ -157,7 +158,7 @@ describe('v0.3 Kawal: Reviewer, Fix Loop, Guard Diff/Merge, Integration, Profile
         const leadRes = handleLeadCalls(cwd, args, opts);
         if (leadRes) return leadRes;
 
-        if (args.includes('/bin/sh') && args.includes('-c')) {
+        if (shellCommand(cmd, args) !== null) {
           return { exitCode: 1, stdout: '', stderr: 'failing test', timedOut: false, idleTimedOut: false };
         }
 
@@ -226,7 +227,7 @@ describe('v0.3 Kawal: Reviewer, Fix Loop, Guard Diff/Merge, Integration, Profile
         const cwd = opts.cwd;
         const leadRes = handleLeadCalls(cwd, args, opts);
         if (leadRes) return leadRes;
-        if (args.includes('/bin/sh') && args.includes('-c')) {
+        if (shellCommand(cmd, args) !== null) {
           return { exitCode: 0, stdout: 'ok\n', stderr: '', timedOut: false, idleTimedOut: false };
         }
         const joined = `${cmd} ${args.join(' ')}`;
@@ -277,7 +278,7 @@ describe('v0.3 Kawal: Reviewer, Fix Loop, Guard Diff/Merge, Integration, Profile
         const cwd = opts.cwd;
         const leadRes = handleLeadCalls(cwd, args, opts);
         if (leadRes) return leadRes;
-        if (args.includes('/bin/sh') && args.includes('-c')) {
+        if (shellCommand(cmd, args) !== null) {
           const forged = path.join(cwd, '.dalang', 'tasks', 'T-001', 'review.json');
           fs.mkdirSync(path.dirname(forged), { recursive: true });
           fs.writeFileSync(forged, JSON.stringify({ task_id: 'T-001', status: 'pass', verify_exit_code: 0, findings: [] }));
@@ -332,7 +333,7 @@ describe('v0.3 Kawal: Reviewer, Fix Loop, Guard Diff/Merge, Integration, Profile
         const leadRes = handleLeadCalls(cwd, args, opts);
         if (leadRes) return leadRes;
 
-        if (args.includes('/bin/sh') && args.includes('-c')) {
+        if (shellCommand(cmd, args) !== null) {
           return { exitCode: 0, stdout: 'ok', stderr: '', timedOut: false, idleTimedOut: false };
         }
         const joined = `${cmd} ${args.join(' ')}`;
@@ -403,7 +404,7 @@ describe('v0.3 Kawal: Reviewer, Fix Loop, Guard Diff/Merge, Integration, Profile
         const cwd = opts.cwd;
         const leadRes = handleLeadCalls(cwd, args, opts);
         if (leadRes) return leadRes;
-        if (args.includes('/bin/sh') && args.includes('-c')) {
+        if (shellCommand(cmd, args) !== null) {
           return { exitCode: 0, stdout: 'ok', stderr: '', timedOut: false, idleTimedOut: false };
         }
         const joined = `${cmd} ${args.join(' ')}`;
@@ -540,6 +541,7 @@ describe('v0.3 Kawal: Reviewer, Fix Loop, Guard Diff/Merge, Integration, Profile
       expect(svc.listProfiles().some((p) => p.id === custom.id)).toBe(false);
 
       // Cross-model selection test.
+      svc.updateProfile('profile-reviewer', { provider: 'claude-code', model: '' });
       const registry = new ProviderRegistry(
         {
           async which(bin) {

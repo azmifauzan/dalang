@@ -150,7 +150,7 @@ export async function runContractTurn<T>(
     lastError = outcome.error;
 
     if (attempt <= maxRetries) {
-      const relTarget = path.relative(options.projectPath, options.targetFilePath);
+      const relTarget = path.relative(options.projectPath, options.targetFilePath).split(path.sep).join('/');
       currentPrompt = [
         `Your previous output failed contract validation:`,
         `${lastError}`,

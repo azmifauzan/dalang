@@ -95,7 +95,7 @@ describe('ExecutionService hardening', () => {
     runner.run = async (cmd, args, opts) => {
       const joined = `${cmd} ${args.join(' ')}`;
       if (joined.includes('code review round')) {
-        reviewerModes.push(args.includes('plan') || args.includes('--ro-bind') ? 'read-only' : 'workspace-write');
+        reviewerModes.push(args.includes('plan') || args.includes('sandbox_mode="read-only"') || args.includes('--ro-bind') ? 'read-only' : 'workspace-write');
       } else if (joined.includes('/result.json')) {
         // Claude's headless flag for read-only is `plan`; coder turns must never be downgraded to it.
         coderModes.push(args.includes('plan') ? 'read-only' : 'workspace-write');
@@ -120,7 +120,7 @@ describe('ExecutionService hardening', () => {
   });
 
   it('refuses to run git when the repo config defines a clean filter the agent could have planted', async () => {
-    const marker = path.join(makeTempDir('dalang-marker-'), 'pwned');
+    const marker = path.join(makeTempDir('dalang-marker-'), 'pwned').split(path.sep).join('/');
     const { conn, project, plan, execSvc, projDir } = await setupApprovedProject(agentRunner('completed'));
     try {
       fs.appendFileSync(path.join(projDir, '.git', 'config'), `\n[filter "pwn"]\n\tclean = touch ${marker}\n`);
@@ -149,7 +149,7 @@ describe('ExecutionService hardening', () => {
       'an included config file',
       (dir: string, marker: string) => {
         fs.writeFileSync(path.join(dir, '.git', 'extra.cfg'), `[filter "pwn"]\n\tclean = touch ${marker}\n`);
-        fs.appendFileSync(path.join(dir, '.git', 'config'), `\n[include]\n\tpath = ${path.join(dir, '.git', 'extra.cfg')}\n`);
+        fs.appendFileSync(path.join(dir, '.git', 'config'), `\n[include]\n\tpath = ${path.join(dir, '.git', 'extra.cfg').split(path.sep).join('/')}\n`);
       },
     ],
     [
@@ -165,7 +165,7 @@ describe('ExecutionService hardening', () => {
       },
     ],
   ])('also refuses a filter hidden in %s', async (_name, plant) => {
-    const marker = path.join(makeTempDir('dalang-marker-'), 'pwned');
+    const marker = path.join(makeTempDir('dalang-marker-'), 'pwned').split(path.sep).join('/');
     const { conn, project, plan, execSvc, projDir } = await setupApprovedProject(agentRunner('completed'));
     try {
       plant(projDir, marker);

@@ -90,13 +90,16 @@ function createMultiProjectFakeRunner(projectSpecs: Record<string, { title: stri
       const joined = `${cmd} ${args.join(' ')}`;
 
       const emit = (sid: string, text: string) => {
-        const line = JSON.stringify({ type: 'result', session_id: sid, result: text });
+        const line = JSON.stringify(cmd.includes('agy')
+          ? { type: 'result', conversation_id: sid, response: text }
+          : { type: 'result', session_id: sid, result: text });
         opts.onStdoutLine?.(line);
         return { exitCode: 0, stdout: `${line}\n`, stderr: '', timedOut: false, idleTimedOut: false };
       };
 
-      if ((cmd === '/bin/sh' || args.includes('/bin/sh')) && args.includes('-c')) {
-        const shellCmd = args[args.indexOf('-c') + 1] ?? '';
+      if (((cmd === '/bin/sh' || args.includes('/bin/sh')) && args.includes('-c')) ||
+          (path.basename(cmd).toLowerCase() === 'cmd.exe' && args.includes('/c'))) {
+        const shellCmd = args[args.indexOf(args.includes('/c') ? '/c' : '-c') + 1] ?? '';
         if (shellCmd.includes('fail-verify')) {
           return { exitCode: 1, stdout: '', stderr: 'verify failed', timedOut: false, idleTimedOut: false };
         }
@@ -119,6 +122,8 @@ function createMultiProjectFakeRunner(projectSpecs: Record<string, { title: stri
         const isCodex = joined.includes('codex');
         const line = isCodex
           ? JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: payload } })
+          : joined.includes('agy')
+            ? JSON.stringify({ type: 'result', conversation_id: `rev-${extId}`, response: payload })
           : JSON.stringify({ type: 'result', session_id: `rev-${extId}`, result: payload });
         opts.onStdoutLine?.(line);
         return { exitCode: 0, stdout: `${line}\n`, stderr: '', timedOut: false, idleTimedOut: false };
@@ -570,7 +575,7 @@ describe('@dalang/server API (v0.1 Rembuk)', () => {
           const merged = await app.inject({
             method: 'POST',
             url: `/api/projects/${pid}/tasks/${tid}/approve-merge`,
-            payload: { runIntegration: true },
+            payload: { runIntegration: true, allowUnconfined: true },
           });
           expect(merged.statusCode).toBe(200);
           expect(merged.json().task.status).toBe('done');
@@ -596,7 +601,7 @@ describe('@dalang/server API (v0.1 Rembuk)', () => {
     } finally {
       await close();
     }
-  }, 15_000);
+  }, process.platform === 'win32' ? 60_000 : 15_000);
 
   it('refuses requests whose Host or Origin is not loopback (DNS rebinding guard)', async () => {
     const dbDir = makeTempDir('dalang-db-');
@@ -896,6 +901,6 @@ describe('@dalang/server API (v0.1 Rembuk)', () => {
     } finally {
       await close();
     }
-  }, 15_000);
+  }, process.platform === 'win32' ? 60_000 : 15_000);
 });
 

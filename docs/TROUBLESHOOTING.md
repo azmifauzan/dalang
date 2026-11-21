@@ -3,7 +3,7 @@
 Start every diagnosis by running:
 
 ```bash
-npx dalang-cli doctor
+dalang doctor
 ```
 
 It verifies Node.js, git, sandbox confinement, the data directory, `gh`, and every agent CLI, and prints a direct fix command for each warning or failure.
@@ -15,10 +15,26 @@ It verifies Node.js, git, sandbox confinement, the data directory, `gh`, and eve
 Open the URL printed in the terminal, normally `http://127.0.0.1:4173`. If startup reports `EADDRINUSE`, use another loopback port:
 
 ```bash
-npx dalang-cli --port 4180 --no-open
+dalang --port 4180 --no-open
 ```
 
 Then open `http://127.0.0.1:4180`.
+
+### Windows source install asks for C++ Build Tools
+
+Use the pinned pnpm version (`npm install -g pnpm@10.34.9`) and rerun `pnpm install --frozen-lockfile`. The workspace skips an unnecessary SQLite build because better-sqlite3 ships native binaries for the supported platforms. Use the [v0.7.3 GitHub tarball](INSTALL.md#native-windows) for a standalone install; `npm install -g dalang-cli` and `npx dalang-cli` currently select the older npm registry release.
+
+### A Windows provider is installed but Dalang cannot find it
+
+Check `Get-Command claude,codex,agy -All`, restart the terminal after changing PATH, then run `dalang doctor`. Native executables are required; an npm `.cmd` or PowerShell `.ps1` launcher alone is insufficient. Claude Code's standard npm-native executable location is also searched. [Windows providers](PROVIDERS.md#native-windows-providers)
+
+### Verification commands fail on native Windows
+
+Commands run through `cmd.exe`, so POSIX syntax such as `VAR=value command` or `/bin/sh` is not a Windows verification command. Use a portable script command such as `node src/math.test.mjs` or `npm test`, and quote paths containing spaces. Store the same command in the task and project integration settings. For POSIX-only projects, use WSL 2.
+
+### Windows project instructions report a link problem
+
+v0.7.3 creates instruction pointers when file-symlink privilege is unavailable. Existing `CLAUDE.md` or `AGENTS.md` files remain user-owned and are not replaced. Review those files and `PROJECT.md` from the project header. Developer Mode or administrator access is not required to use the instruction-pointer fallback.
 
 ### Docker fails to start
 
@@ -34,9 +50,9 @@ Choose Claude Code or Codex in the composer. Wait for the current turn to finish
 
 ### "Bubblewrap sandbox is unavailable" or "Sandbox confinement is unavailable"
 
-- **Linux**: install `bubblewrap` (`sudo apt install bubblewrap` or `sudo dnf install bubblewrap`), then verify with `which bwrap` and `npx dalang-cli doctor`.
+- **Linux**: install `bubblewrap` (`sudo apt install bubblewrap` or `sudo dnf install bubblewrap`), then verify with `which bwrap` and `dalang doctor`.
 - **macOS**: `/usr/bin/sandbox-exec` should be present by default. Verify with `ls -l /usr/bin/sandbox-exec`.
-- **Windows**: run DALANG inside WSL 2 (Ubuntu) with `bubblewrap` installed.
+- **Windows**: native execution requires explicit unconfined consent. To use Dalang OS confinement, run inside WSL 2 (Ubuntu) with `bubblewrap` installed.
 - The Quick run card, Full Work view, and integration controls prompt for confirmation when their actions would run without OS confinement. [Sandbox and permissions](SANDBOX.md)
 
 ### Antigravity tasks keep falling back to another provider
@@ -103,7 +119,7 @@ CLIs periodically retire or rename model ids. Click **Refresh CLI status** to re
 
 ### Database schema version error after downgrading
 
-If DALANG reports that the database schema is newer than the build, run `npx dalang-cli@latest` or update your Docker checkout. Schema v10 requires v0.7.2 or later. To resume using an older build, restore the pre-migration backup of the data directory and project checkout. [Update and backup](INSTALL.md#update-dalang)
+If DALANG reports that the database schema is newer than the build, install the [current release tarball](INSTALL.md#update-dalang) or update your Docker checkout. Schema v10 requires v0.7.2 or later. To resume using an older build, restore the pre-migration backup of the data directory and project checkout. [Update and backup](INSTALL.md#update-dalang)
 
 ### A project opens into an empty chat after upgrading
 

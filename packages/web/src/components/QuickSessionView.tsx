@@ -178,6 +178,7 @@ export function QuickSessionView({
     mutationFn: (allowFailedReview: boolean) =>
       api.approveMergeTask(project.id, quickTask!.id, {
         runIntegration: true,
+        allowUnconfined,
         allowFailedReview,
       }),
     onMutate: () => setActionError(null),

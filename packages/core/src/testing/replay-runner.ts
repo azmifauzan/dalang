@@ -350,7 +350,7 @@ export class ReplayCliRunner implements CliRunner {
     const base = path.basename(innerCommand);
 
     // Run real shell verify / integration commands directly in cwd (without bwrap overhead in test harness).
-    if ((base === 'sh' || innerCommand === '/bin/sh') && this.options.runRealShellCommands !== false) {
+    if ((base === 'sh' || base.toLowerCase() === 'cmd.exe' || innerCommand === '/bin/sh') && this.options.runRealShellCommands !== false) {
       this.invocations.push({ command, args, innerCommand, innerArgs, cwd: options.cwd, env: options.env });
       return this.realRunner.run(innerCommand, innerArgs, options);
     }

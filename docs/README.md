@@ -2,7 +2,7 @@
 
 ## Start here
 
-1. [Install Dalang](INSTALL.md) on Linux, macOS, or WSL 2, or [run it with Docker](INSTALL.md#run-with-docker).
+1. [Install Dalang](INSTALL.md) on Linux, macOS, native Windows, or WSL 2, or [run it with Docker](INSTALL.md#run-with-docker). v0.7.3 is available as a [GitHub release tarball](INSTALL.md#start-dalang).
 2. [Set up a provider](PROVIDERS.md) and sign in to at least one coding-agent CLI.
 3. [Open a project and start a chat](USAGE.md). Use Ask to explore, Quick for a one-task fix, or Full for work that needs a brief and plan.
 
@@ -24,6 +24,7 @@
 ## Project and development
 
 - [Build from source](INSTALL.md#build-from-source)
+- [Prepare and publish a GitHub release](RELEASING.md)
 - [Product requirements and roadmap](PRD.md)
 - [UI design direction](DESIGN.md)
 - [Wayang artwork credits](../packages/web/src/assets/wayang/CREDITS.md)

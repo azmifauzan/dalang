@@ -363,7 +363,7 @@ describe('Phase 0.4 parallel execution, worktrees, provider pool, quota fallback
     } finally {
       conn.close();
     }
-  }, 15_000);
+  }, process.platform === 'win32' ? 60_000 : 15_000);
 
   it('reroutes proactively on exhausted quota and reactive rate limits, and waits cleanly for busy fallback slots', async () => {
     const providerLog: Array<{ extId: string; cmd: string }> = [];
@@ -491,7 +491,7 @@ describe('Phase 0.4 parallel execution, worktrees, provider pool, quota fallback
     } finally {
       conn.close();
     }
-  }, 15_000);
+  }, process.platform === 'win32' ? 60_000 : 15_000);
 });
 
 describe('Claude model discovery', () => {

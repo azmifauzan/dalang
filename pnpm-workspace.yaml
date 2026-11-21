@@ -1,8 +1,9 @@
 packages:
   - "packages/*"
 onlyBuiltDependencies:
-  - better-sqlite3
   - esbuild
+ignoredBuiltDependencies:
+  - better-sqlite3
 minimumReleaseAgeExclude:
   - "@tanstack/query-core@5.108.0"
   - "@tanstack/react-query@5.108.0"

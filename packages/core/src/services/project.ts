@@ -18,10 +18,24 @@ import {
 import { ensureDalangIgnore, readArtifactFile, writeArtifactFile } from '../safe-fs.js';
 import { removeTaskWorktree } from './git.js';
 
+const PROJECT_INSTRUCTION_POINTER = 'Read and follow the project instructions in PROJECT.md.\n';
+
+function createProjectInstructionLink(linkPath: string): void {
+  try {
+    fs.symlinkSync('PROJECT.md', linkPath);
+  } catch (error) {
+    if (process.platform !== 'win32' || (error as NodeJS.ErrnoException).code !== 'EPERM') throw error;
+    fs.writeFileSync(linkPath, PROJECT_INSTRUCTION_POINTER, { flag: 'wx' });
+  }
+}
+
 function checkSymlinkPointsTo(linkPath: string, targetName: string): boolean {
   try {
     const stat = fs.lstatSync(linkPath);
-    if (!stat.isSymbolicLink()) return false;
+    if (!stat.isSymbolicLink()) {
+      return process.platform === 'win32' && stat.isFile() &&
+        fs.readFileSync(linkPath, 'utf8') === PROJECT_INSTRUCTION_POINTER;
+    }
     const rawTarget = fs.readlinkSync(linkPath);
     return path.basename(rawTarget) === targetName || rawTarget === targetName;
   } catch {
@@ -45,10 +59,10 @@ export function ensureSymlinks(projectPath: string): { claudeMd: boolean; agents
     }
 
     if (!stat) {
-      fs.symlinkSync('PROJECT.md', linkPath);
+      createProjectInstructionLink(linkPath);
     } else if (stat.isSymbolicLink() && fs.readlinkSync(linkPath) !== 'PROJECT.md') {
       fs.unlinkSync(linkPath);
-      fs.symlinkSync('PROJECT.md', linkPath);
+      createProjectInstructionLink(linkPath);
     }
     // A regular file is the user's own instructions: report it as not linked, never replace it.
   }

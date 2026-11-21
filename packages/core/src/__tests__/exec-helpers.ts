@@ -8,9 +8,17 @@ import { DalangEventBus, type DalangEvent } from '../services/events.js';
 import { ExecutionService } from '../services/executor.js';
 import { LeadService } from '../services/lead.js';
 import { ProjectService } from '../services/project.js';
+import { ProfileService } from '../services/profiles.js';
 import { SettingsService } from '../services/settings.js';
 
 const tempDirs: string[] = [];
+
+export function shellCommand(command: string, args: string[]): string | null {
+  const base = path.basename(command).toLowerCase();
+  if (base === 'cmd.exe' && args.includes('/c')) return args[args.indexOf('/c') + 1] ?? '';
+  if ((base === 'sh' || args.includes('/bin/sh')) && args.includes('-c')) return args[args.indexOf('-c') + 1] ?? '';
+  return null;
+}
 export function makeTempDir(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   tempDirs.push(dir);
@@ -36,6 +44,9 @@ export async function setupApprovedProject(
   const dbDir = makeTempDir('dalang-exec-db-');
   const projDir = path.join(makeTempDir('dalang-exec-proj-'), 'crud-app');
   const conn = openDatabase(path.join(dbDir, 'dalang.db'));
+  if (process.platform === 'win32') {
+    new ProfileService(conn.db).updateProfile('profile-reviewer', { provider: 'codex', model: '' });
+  }
   const events = new DalangEventBus();
   const settingsSvc = new SettingsService(conn.db);
   const registry = new ProviderRegistry(runner, {
@@ -158,7 +169,7 @@ export function handleVerifyAndReviewCalls(
   reviewStatus: 'pass' | 'fail' = 'pass',
 ): RunCommandResult | null {
   const joined = `${cmd} ${args.join(' ')}`;
-  if (args.includes('/bin/sh') && args.includes('-c')) {
+  if (shellCommand(cmd, args) !== null) {
     opts.onStdoutLine?.('Tests passed');
     return { exitCode: 0, stdout: 'Tests passed\n', stderr: '', timedOut: false, idleTimedOut: false };
   }

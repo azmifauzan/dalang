@@ -981,7 +981,7 @@ export class LeadService {
     ensureProjectDir(project.path, logsDir);
 
     const draftFilePath = path.join(tmpDir, `quick-plan-v${nextPlanVersion}.json`);
-    const relDraftPath = path.relative(project.path, draftFilePath);
+    const relDraftPath = path.relative(project.path, draftFilePath).split(path.sep).join('/');
 
     const projectMdPath = path.join(project.path, 'PROJECT.md');
     const projectContext = fs.existsSync(projectMdPath)
@@ -1064,7 +1064,7 @@ export class LeadService {
 
       if (quickData.verdict === 'ready' && quickData.task) {
         const planFilePath = path.join(sessionDir, 'plan.json');
-        const relPlanPath = path.relative(project.path, planFilePath);
+        const relPlanPath = path.relative(project.path, planFilePath).split(path.sep).join('/');
 
         const normalizedTask: PlanTaskContract = {
           ...quickData.task,
@@ -1484,7 +1484,7 @@ export class LeadService {
     const logsDir = getSessionLogsDir(project.path, session.id);
     ensureProjectDir(project.path, discussDir);
     const roundFilePath = path.join(discussDir, `round-${nextRound}.json`);
-    const relRoundPath = path.relative(project.path, roundFilePath);
+    const relRoundPath = path.relative(project.path, roundFilePath).split(path.sep).join('/');
 
     const projectMdPath = path.join(project.path, 'PROJECT.md');
     const projectContext = fs.existsSync(projectMdPath)
@@ -1634,7 +1634,7 @@ export class LeadService {
     const logsDir = getSessionLogsDir(project.path, session.id);
     ensureProjectDir(project.path, sessionDir);
     const briefFilePath = path.join(sessionDir, `brief.v${nextVersion}.json`);
-    const relBriefPath = path.relative(project.path, briefFilePath);
+    const relBriefPath = path.relative(project.path, briefFilePath).split(path.sep).join('/');
 
     const discussHistory = this.getDiscussState(projectId, session.id).messages;
     const transcriptSummary = this.formatTranscript(discussHistory);
@@ -1862,7 +1862,7 @@ export class LeadService {
     const logsDir = getSessionLogsDir(project.path, session.id);
     ensureProjectDir(project.path, sessionDir);
     const briefFilePath = path.join(sessionDir, `brief.v${nextVersion}.json`);
-    const relBriefPath = path.relative(project.path, briefFilePath);
+    const relBriefPath = path.relative(project.path, briefFilePath).split(path.sep).join('/');
 
     const prompt = [
       `Revise the project brief based on the user's feedback note.`,
@@ -2051,7 +2051,7 @@ export class LeadService {
     ensureProjectDir(project.path, sessionDir);
     ensureProjectDir(project.path, tmpDir);
     const planFilePath = path.join(sessionDir, 'plan.json');
-    const relPlanPath = path.relative(project.path, planFilePath);
+    const relPlanPath = path.relative(project.path, planFilePath).split(path.sep).join('/');
 
     const existingPlans = this.db
       .select()
@@ -2073,7 +2073,7 @@ export class LeadService {
 
     // The agent drafts into tmp so a failed run never clobbers the current plan.json.
     const draftFilePath = path.join(tmpDir, `plan-v${nextPlanVersion}.json`);
-    const relDraftPath = path.relative(project.path, draftFilePath);
+    const relDraftPath = path.relative(project.path, draftFilePath).split(path.sep).join('/');
 
     const prompt = [
       `Break the approved project brief into concrete milestones and small, verifiable tasks.`,
@@ -2307,7 +2307,7 @@ export class LeadService {
 
       for (const item of toSplit) {
         const splitTargetFile = path.join(tmpDir, `split-${item.task.id}-d${depth + 1}.json`);
-        const relSplitFile = path.relative(opts.projectPath, splitTargetFile);
+        const relSplitFile = path.relative(opts.projectPath, splitTargetFile).split(path.sep).join('/');
 
         const prompt = [
           `Task "${item.task.id}" (${item.task.title}) has needs_split: true.`,

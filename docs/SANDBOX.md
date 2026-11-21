@@ -40,7 +40,15 @@ On macOS (`darwin`), DALANG wraps runs in `/usr/bin/sandbox-exec` with a dynamic
 
 Compose runs DALANG as an unprivileged user with all container capabilities dropped. Docker's seccomp, AppArmor, and system-path settings are relaxed for bubblewrap, which still creates per-project sandboxes. Compose publishes the port on localhost. The Antigravity Secret Service uses a keyring inside the container. [Docker setup](INSTALL.md#run-with-docker)
 
-### Windows (WSL 2)
+### Native Windows
+
+v0.7.3 runs directly on Windows without a Dalang OS sandbox. Quick and Full execution require explicit unconfined consent for each request. The Windows runner uses `cmd.exe /d /s /c` for verify and integration commands, preserving quoted executable paths. Provider read-only modes remain requested, and Git guards, isolated worktrees, scope checks, automated review, and the merge approval gate still apply. They do not provide filesystem confinement for unconfined processes.
+
+The Quick merge and Full integration controls forward their explicit consent to post-merge integration. If no sandbox or consent is available, the post-merge check is recorded as skipped; it does not count as a passing integration run. The API field is `allowUnconfined`, defaulting to `false`.
+
+Windows installations without file-symlink privilege receive `CLAUDE.md` and `AGENTS.md` instruction pointers to `PROJECT.md`. Existing regular instruction files are preserved. These pointers are recognized as configured; they do not grant additional filesystem permissions.
+
+### Windows with WSL 2
 
 Run Dalang inside WSL 2 with `bubblewrap` installed so Linux confinement applies. Starting Quick or Full task execution or running integration tests without the platform sandbox requires explicit confirmation. [Windows setup](INSTALL.md#windows-with-wsl-2)
 
@@ -77,4 +85,4 @@ To avoid polluting your main branch with noisy `dalang: checkpoint ...` commits:
 
 ## Symlink-hardened artifact I/O
 
-Dalang's artifact helpers validate paths against the project root, reject unsafe symlink targets, and open files with `O_NOFOLLOW`. Writes use a temporary file and atomic rename. Briefs, plans, and task results live under a session-specific directory. [Data locations](INSTALL.md#data-and-uninstall)
+Dalang's artifact helpers validate paths against the project root and reject unsafe symlink targets, including directory junctions that lead outside a Windows project. Reads use `O_NOFOLLOW` where available and validate the opened descriptor against the resolved file; platforms without `/proc` use device and inode checks. Writes use a temporary file and atomic rename. Briefs, plans, and task results live under a session-specific directory. [Data locations](INSTALL.md#data-and-uninstall)

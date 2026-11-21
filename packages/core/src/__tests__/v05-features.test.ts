@@ -87,9 +87,9 @@ describe('v0.5 macOS sandbox-exec parity with bwrap', () => {
     expect(rw.args[0]).toBe('-p');
     const sbpl = rw.args[1];
     expect(sbpl).toContain('(deny file-write*)');
-    expect(sbpl).toContain(`(allow file-write* (subpath "${proj}"))`);
-    expect(sbpl).toContain(`(allow file-write* (subpath "${customConfig}"))`);
-    expect(sbpl).toContain(`(deny file-write* (subpath "${path.join(proj, '.git', 'hooks')}"))`);
+    expect(sbpl).toContain(`(allow file-write* (subpath ${JSON.stringify(proj)}))`);
+    expect(sbpl).toContain(`(allow file-write* (subpath ${JSON.stringify(customConfig)}))`);
+    expect(sbpl).toContain(`(deny file-write* (subpath ${JSON.stringify(path.join(proj, '.git', 'hooks'))}))`);
     expect(sbpl).toContain('.ssh');
     expect(sbpl).toContain('.gnupg');
     expect(sbpl).toContain('.aws');
@@ -105,7 +105,7 @@ describe('v0.5 macOS sandbox-exec parity with bwrap', () => {
     const wtDir = makeTempDir('dalang-macos-wt-');
     fs.writeFileSync(path.join(wtDir, '.git'), 'gitdir: /tmp/main/.git/worktrees/t1\n');
     const wtProfile = buildMacOsSeatbeltProfile('claude-code', wtDir);
-    expect(wtProfile).toContain(`(deny file-write* (literal "${path.join(wtDir, '.git')}"))`);
+    expect(wtProfile).toContain(`(deny file-write* (literal ${JSON.stringify(path.join(wtDir, '.git'))}))`);
   });
 
   it('rejects account directories that would expose hidden credentials or the project', () => {

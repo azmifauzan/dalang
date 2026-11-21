@@ -210,6 +210,7 @@ export function GuardView({ project, sessionId, onGoToWork }: GuardViewProps) {
     mutationFn: (vars: { taskId: string; runIntegration: boolean; allowFailedReview: boolean }) =>
       api.approveMergeTask(project.id, vars.taskId, {
         runIntegration: vars.runIntegration,
+        allowUnconfined: allowUnconfinedIntegration,
         allowFailedReview: vars.allowFailedReview,
       }),
     onSuccess: (data) => {

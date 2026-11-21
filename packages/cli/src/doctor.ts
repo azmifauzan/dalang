@@ -145,7 +145,7 @@ export async function runDoctorChecks(
       status: 'warn',
       detail:
         platform === 'win32'
-          ? 'No native Windows sandbox in v0.5; runs require unconfined opt-in.'
+          ? 'No native Windows sandbox; runs require unconfined opt-in.'
           : `No sandbox binary found on ${platform}. Runs require unconfined opt-in.`,
       fix:
         platform === 'linux'

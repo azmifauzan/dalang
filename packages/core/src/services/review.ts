@@ -156,6 +156,7 @@ export function buildReviewPrompt(opts: {
     ``,
     `Allowed files (files_allowed):`,
     opts.task.filesAllowed.length > 0 ? opts.task.filesAllowed.map((f) => `- ${f}`).join('\n') : '- (project workspace)',
+    `DALANG requires the coder to write "${opts.relReviewPath.replace(/review\.json$/, 'result.json')}" as orchestration metadata, even when the task says only one source file may change. This required result file is not an application scope violation. Do not ask the coder to remove it. Other changes outside files_allowed still require justification.`,
     ``,
     `Acceptance criteria:`,
     opts.task.acceptanceCriteria.map((c) => `- ${c}`).join('\n'),

@@ -30,6 +30,15 @@ afterEach(() => {
 });
 
 function findChromeBinary(): string | null {
+  if (process.platform === 'win32') {
+    for (const root of [process.env['PROGRAMFILES(X86)'], process.env.PROGRAMFILES, process.env.LOCALAPPDATA]) {
+      if (!root) continue;
+      for (const relative of ['Microsoft/Edge/Application/msedge.exe', 'Google/Chrome/Application/chrome.exe']) {
+        const candidate = path.join(root, relative);
+        if (fs.existsSync(candidate)) return candidate;
+      }
+    }
+  }
   const cacheRoot = path.join(os.homedir(), '.cache', 'ms-playwright');
   if (fs.existsSync(cacheRoot)) {
     const entries = fs.readdirSync(cacheRoot).filter((e) => e.startsWith('chromium-')).sort().reverse();
@@ -1160,6 +1169,11 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
           expect(quickPlanText).toContain('src/math.mjs');
 
           // Click Run -> coder + verify + review run -> inline Approve & merge appears
+          await browser.cdp.evalJs(`(() => {
+            const label = [...document.querySelectorAll('main label')].find(el => el.textContent?.includes('Run without sandbox confinement'));
+            const checkbox = label?.querySelector('input[type="checkbox"]');
+            if (checkbox && !checkbox.checked) checkbox.click();
+          })()`);
           await clickButton('Run', true);
           await waitForText('Approve & merge', 120);
 

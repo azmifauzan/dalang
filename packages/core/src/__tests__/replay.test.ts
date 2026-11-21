@@ -53,6 +53,8 @@ async function seedProjectWithTasks(
   const registry = new ProviderRegistry(runner, { antigravityKeyringAccess: () => false });
   const projectSvc = new ProjectService(conn.db);
   const profileSvc = new ProfileService(conn.db);
+  const reviewer = transcript.turns.find((turn) => turn.id?.includes('review'))?.match?.provider;
+  if (reviewer) profileSvc.updateProfile('profile-reviewer', { provider: reviewer, model: '' });
   const leadSvc = new LeadService(conn.db, registry, events);
   const execSvc = new ExecutionService(conn.db, registry, leadSvc, events);
   const statsSvc = new StatisticsService(conn.db, () => execSvc.getProviderRuntimeStates());
@@ -200,7 +202,7 @@ describe('v0.5 Replay runner scenarios (process-only replacement)', () => {
     } finally {
       ctx.conn.close();
     }
-  }, 20_000);
+  }, process.platform === 'win32' ? 60_000 : 20_000);
 
   it('Scenario 2: failed review round 1 -> coder fix round 2 -> pass -> merge -> push & open PR via gh', async () => {
     const transcript = loadReplayTranscript(path.join(FIXTURES_DIR, 'review-fix-round.json'));
@@ -243,6 +245,7 @@ describe('v0.5 Replay runner scenarios (process-only replacement)', () => {
       // Approve merge -> runs integration tests + pushes branch + opens PR via gh!
       const merged = await ctx.execSvc.approveMergeTask(ctx.project.id, entry.task.id, {
         runIntegration: true,
+        allowUnconfined: true,
       });
       expect(merged.task.status).toBe('done');
       expect(merged.integrationRun?.status).toBe('passed');
@@ -271,7 +274,7 @@ describe('v0.5 Replay runner scenarios (process-only replacement)', () => {
     } finally {
       ctx.conn.close();
     }
-  }, 20_000);
+  }, process.platform === 'win32' ? 60_000 : 20_000);
 
   it('Scenario 3: two parallel tasks in isolated worktrees merge cleanly with hidden baseline checkpoints', async () => {
     const transcript = loadReplayTranscript(path.join(FIXTURES_DIR, 'parallel-merge.json'));
@@ -308,7 +311,7 @@ describe('v0.5 Replay runner scenarios (process-only replacement)', () => {
 
       // Merge both tasks cleanly onto main.
       for (const t of planAfterRun.tasks) {
-        const res = await ctx.execSvc.approveMergeTask(ctx.project.id, t.id, { runIntegration: true });
+        const res = await ctx.execSvc.approveMergeTask(ctx.project.id, t.id, { runIntegration: true, allowUnconfined: true });
         expect(res.task.status).toBe('done');
         expect(res.integrationRun?.status).toBe('passed');
       }
@@ -325,5 +328,5 @@ describe('v0.5 Replay runner scenarios (process-only replacement)', () => {
     } finally {
       ctx.conn.close();
     }
-  }, 20_000);
+  }, process.platform === 'win32' ? 60_000 : 20_000);
 });

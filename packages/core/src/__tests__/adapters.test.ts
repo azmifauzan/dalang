@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import * as sandbox from '../adapters/sandbox.js';
 import { AntigravityAdapter, parseAgyModelsOutput, parseAgyUsageJson } from '../adapters/antigravity.js';
 import { ClaudeCodeAdapter, parseClaudeUsageText } from '../adapters/claude.js';
 import { CodexAdapter, parseCodexRateLimits } from '../adapters/codex.js';
@@ -16,6 +17,7 @@ function makeTempDir(prefix: string): string {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const dir of tempDirs.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -95,7 +97,7 @@ describe('Provider adapters & bwrap wrapper', () => {
       },
       async run(command, args, opts): Promise<RunCommandResult> {
         calls.push({ command, args, opts });
-        const innerArgs = args.join(' ');
+        const innerArgs = `${command} ${args.join(' ')}`;
         if (innerArgs.includes('claude')) {
           const line1 = JSON.stringify({ type: 'system', session_id: 'claude-sess-1' });
           const line2 = JSON.stringify({ type: 'result', session_id: 'claude-sess-1', result: 'ok-claude' });
@@ -142,6 +144,7 @@ describe('Provider adapters & bwrap wrapper', () => {
     expect(r2.sessionId).toBe('codex-thread-9');
     expect(r2.text).toBe('ok-codex');
 
+    vi.spyOn(sandbox, 'startDbusProxy').mockResolvedValue({ socketPath: '/tmp/proxy/bus', stop: () => {} });
     const agy = new AntigravityAdapter(fakeRunner, { antigravityKeyringAccess: () => true });
     const r3 = await agy.runTurn({ projectPath: projectDir, prompt: 'hello', sessionId: 'prev-a' });
     expect(r3.sessionId).toBe('agy-conv-7');
@@ -196,6 +199,8 @@ describe('bwrap session bus', () => {
 
   it('hides /run/user for every provider and mounts only the filtered proxy socket as the bus', async () => {
     if (process.platform !== 'linux' || typeof process.getuid !== 'function') return;
+    const exists = fs.existsSync;
+    vi.spyOn(fs, 'existsSync').mockImplementation((file) => file === '/run/user' || exists(file));
     const proj = makeTempDir('dalang-bus-proj-');
     const withProxy = await wrapWithBwrap(runner, 'antigravity', proj, '/bin/true', [], { dbusSocket: '/tmp/proxy/bus' });
     const joined = withProxy.args.join(' ');

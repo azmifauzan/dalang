@@ -7,7 +7,7 @@ Dalang runs a local web app on your machine. For npm or source installs, set up 
 - [Node.js](https://nodejs.org/en/download) **24 or newer**, with npm. Check with `node --version` and `npm --version`.
 - **Git** in your terminal’s PATH. Check with `git --version`.
 - At least one installed and signed-in **Claude Code**, **Codex CLI**, or **Antigravity CLI**. [Provider setup](PROVIDERS.md)
-- The platform sandbox below. For GitHub pull requests, also install [GitHub CLI](https://cli.github.com/) and run `gh auth login`.
+- The platform sandbox below, or explicit unconfined consent on native Windows. For GitHub pull requests, also install [GitHub CLI](https://cli.github.com/) and run `gh auth login`.
 
 ### Linux
 
@@ -36,9 +36,39 @@ Run `xcode-select --install` if Git is missing, then install a supported Node.js
 2. In the Ubuntu shell, install Node.js 24+, Git, and `bubblewrap` as described above. Install and sign in to your agent CLI in that shell too.
 3. Run Dalang in Ubuntu. If a tab does not open, visit `http://127.0.0.1:4173` in your Windows browser.
 
+### Native Windows
+
+Install Node.js 24+, Git, and at least one signed-in provider CLI in Windows. Use PowerShell to install the v0.7.3 release directly:
+
+```powershell
+npm install -g https://github.com/azmifauzan/dalang/releases/download/v0.7.3/dalang-cli-0.7.3.tgz
+dalang doctor
+dalang --no-open
+```
+
+Open `http://127.0.0.1:4173`. SQLite uses the binary shipped in the package; C++ Build Tools are not needed for this configuration. For a source checkout, follow [Build from source](#build-from-source); the pinned pnpm version also works in PowerShell.
+
+Native Windows has no Dalang sandbox. Agent execution requires explicit unconfined opt-in. Verification commands use `cmd.exe`, so configure commands with Windows-compatible syntax. When symlink privileges are unavailable, new `CLAUDE.md` and `AGENTS.md` files refer agents to `PROJECT.md`; existing user instruction files are preserved. Dalang recognizes these instruction pointers as configured. Claude's npm installation is detected through its native executable; arbitrary `.cmd` launchers are not supported.
+
+Verification on Windows on 2026-11-21 covered installation from a standalone npm tarball, production build, type checking, SQLite, HTTP health, CLI detection, project creation, shell commands including executable paths with spaces, and the Edge browser scenarios for setup, navigation, Ask, Quick merge, and promotion to Full. All 104 applicable tests passed in staged runs (87 core, 12 server/browser, 5 CLI). Five file-symlink/FIFO tests were skipped because the OS facilities or privileges were unavailable; directory-link confinement was tested with Windows junctions.
+
+A live Codex Quick task also passed planning, coding, verification, read-only review, merge, and post-merge integration on an isolated repository with a seeded arithmetic bug. Required `result.json` orchestration metadata is explicitly distinguished from application scope in the review prompt.
+
+Linux regression in a container passed 107 tests, with the two Windows-only tests skipped. macOS sandbox profile and detection tests passed, but no native macOS machine was available for an end-to-end run. Platform-specific Windows behavior is gated on `win32`; Linux and macOS retain their existing shells and sandbox engines.
+
 ## Start Dalang
 
-Run directly with npm.
+v0.7.3 is a GitHub release with an npm-installable tarball. It has not been published to the npm registry. Use this command on any supported platform to install this release:
+
+```bash
+npm install -g https://github.com/azmifauzan/dalang/releases/download/v0.7.3/dalang-cli-0.7.3.tgz
+dalang doctor
+dalang
+```
+
+The release also includes `SHA256SUMS` for checking the downloaded tarball. To install a downloaded file, run `npm install -g ./dalang-cli-0.7.3.tgz`.
+
+The following npm registry commands currently install v0.7.2, which predates native Windows support. They remain available for Linux, macOS, and WSL 2:
 
 ```bash
 npx dalang-cli doctor
@@ -94,14 +124,15 @@ Login starts off. In **Config → Security → DALANG login**, set a password of
 
 ## Update Dalang
 
-Let active tasks finish or stop them, then stop the server with Ctrl+C or `docker compose stop`. Back up the Dalang data directory and any project checkout you may need to restore. Use the command that matches your installation.
+Let active tasks finish or stop them, then stop the server with Ctrl+C or `docker compose stop`. Back up the Dalang data directory and any project checkout you may need to restore. To update to v0.7.3, install its release tarball:
 
 ```bash
-npx dalang-cli@latest
-npm install -g dalang-cli@latest
+npm install -g https://github.com/azmifauzan/dalang/releases/download/v0.7.3/dalang-cli-0.7.3.tgz
 ```
 
 With a global installation, start the updated app with `dalang`. For Docker, update the source checkout and rerun `docker compose up --build -d`. Keep the `dalang-home` volume to retain app data, provider sign-ins, and CLI updates.
+
+v0.7.3 keeps database schema v10; it introduces no additional schema migration.
 
 Dalang v0.7.2 upgrades the database to schema v10 for chat images. When upgrading from v0.6 or earlier, it also organizes existing project history into a **Full** session and moves saved artifacts into `.dalang/sessions/<session-id>/`. Use your pre-upgrade backup to return to a build that requires an older schema.
 
@@ -119,13 +150,16 @@ Use **Config → About → Check now** to check for a release. Dalang can also n
 
 Stop Dalang before copying its data directory for a backup. Keep the project repository, including its Git history, and any uncommitted work you need from task worktrees.
 
+On native Windows, `~/.dalang` is `%USERPROFILE%\.dalang`. To choose another location for the current PowerShell session, set `$env:DALANG_HOME = 'D:\DalangData'` before starting `dalang`.
+
 To uninstall the global command, run `npm uninstall -g dalang-cli`. Your local data and project artifacts remain available after uninstalling.
 
 ## Build from source
 
-Install pnpm before cloning and building Dalang. [pnpm installation](https://pnpm.io/installation)
+Install the pinned pnpm version before cloning and building Dalang. The commands below work in PowerShell and POSIX shells.
 
 ```bash
+npm install -g pnpm@10.34.9
 git clone https://github.com/azmifauzan/dalang.git
 cd dalang
 pnpm install --frozen-lockfile
@@ -134,4 +168,4 @@ pnpm --filter dalang-cli doctor
 pnpm start
 ```
 
-To update a source checkout, run `git pull`, `pnpm install --frozen-lockfile`, and `pnpm build`, then restart. Run `pnpm typecheck` and `pnpm test` to verify the build without using model quota. The browser scenarios use a built web app and an installed Chromium or Chrome.
+To update a source checkout, run `git pull`, `pnpm install --frozen-lockfile`, and `pnpm build`, then restart. Run `pnpm typecheck` and `pnpm test` to verify the build without using model quota. The browser scenarios use a built web app and Chromium or Chrome on Linux, or Edge or Chrome on Windows. Windows tests run serially with longer Git/worktree timeouts. File-symlink tests probe the available privilege; FIFO tests apply only to POSIX platforms.

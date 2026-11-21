@@ -62,6 +62,12 @@ Core palette stays within 2 semantic cores + 1 accent + warm neutrals, plus mute
 - **Provider limits bar.** A slim sticky bar above the project shows the tightest 5 hour and weekly limit per CLI (one number on narrow screens). A value at 20% or below turns red and is also shown as a number, so color is never the only signal. `Details` opens a panel sized to the space below the bar.
 
 ## Components
+
+### Platform states (v0.7.3)
+
+Native Windows uses the existing unconfined-consent controls in Quick, Work, and integration views. A skipped post-merge check remains distinct from a passing check. Windows instruction pointers to `PROJECT.md` count as configured, while user-owned instruction files retain their ownership. Edge browser verification covers the setup wizard, workspace navigation, Ask, Quick merge, and promotion to Full. Screenshots in the user guide continue to illustrate those shared flows.
+
+### Shared components
 - **shadcn/ui, owned in the repo**: Button, Input, Textarea, NativeSelect, Label, Badge, and Dialog live in `packages/web/src/components/ui` (Base UI primitives) and are restyled to this document. Do not regenerate them from the CLI without redoing the restyle: the CLI default adds a web font, an icon library, pill badges, a blurred scrim, and entrance animations, all of which this direction rejects.
 - **Token mapping**: shadcn tokens (`--background`, `--primary`, `--border`, `--ring`, and the rest) resolve to the palette above in `packages/web/src/styles/app.css`, so the light and dark themes follow `data-theme`.
 - **Targets and fields**: every button and field is at least 44px tall. Selects stay native so mobile pickers and keyboard behavior are the platform's.

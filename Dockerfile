@@ -1,7 +1,7 @@
 FROM node:24-bookworm-slim AS build
 WORKDIR /src
 RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
-    && npm install -g pnpm@12.21.0 \
+    && npm install -g pnpm@10.34.9 \
     && rm -rf /var/lib/apt/lists/*
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json README.md LICENSE ./
 COPY packages/cli/package.json ./packages/cli/

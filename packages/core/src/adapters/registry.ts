@@ -239,8 +239,8 @@ export class ProviderRegistry {
       this.runner,
       null,
       projectPath,
-      '/bin/sh',
-      ['-c', command],
+      process.platform === 'win32' ? (process.env.ComSpec || 'cmd.exe') : '/bin/sh',
+      process.platform === 'win32' ? ['/d', '/s', '/c', `"${command}"`] : ['-c', command],
       { bindProviderDirs: false },
     );
     return this.runner.run(invocation.command, invocation.args, {

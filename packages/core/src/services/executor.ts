@@ -1377,15 +1377,15 @@ export class ExecutionService {
     ensureProjectDir(worktreePath, taskArtDir);
 
     const relTaskDir = sessionId
-      ? path.join('.dalang', 'sessions', sessionId, 'tasks', task.externalId)
-      : path.join('.dalang', 'tasks', task.externalId);
+      ? path.posix.join('.dalang', 'sessions', sessionId, 'tasks', task.externalId)
+      : path.posix.join('.dalang', 'tasks', task.externalId);
     const relLogsDir = sessionId
-      ? path.join('.dalang', 'sessions', sessionId, 'logs')
-      : path.join('.dalang', 'logs');
+      ? path.posix.join('.dalang', 'sessions', sessionId, 'logs')
+      : path.posix.join('.dalang', 'logs');
 
-    const relResultPath = path.join(relTaskDir, 'result.json');
+    const relResultPath = path.posix.join(relTaskDir, 'result.json');
     const absResultPath = path.join(worktreePath, relResultPath);
-    const relReviewPath = path.join(relTaskDir, 'review.json');
+    const relReviewPath = path.posix.join(relTaskDir, 'review.json');
     const absReviewPath = path.join(worktreePath, relReviewPath);
 
     // Clear stale outputs before running so only files written in this execution count.
@@ -3016,7 +3016,7 @@ export class ExecutionService {
     absResultPath: string,
     expectedTaskId: string,
   ): { ok: true; data: TaskResultContract } | { ok: false; error: string } {
-    const rel = path.relative(worktreePath, absResultPath);
+    const rel = path.relative(worktreePath, absResultPath).split(path.sep).join('/');
     if (!fs.existsSync(absResultPath)) {
       return { ok: false, error: `Expected result file was not written at ${rel}` };
     }
@@ -3383,6 +3383,7 @@ export class ExecutionService {
         taskId: task.id,
         mergeCommitSha,
         fromMerge: true,
+        allowUnconfined: input.allowUnconfined,
       });
     }
 
