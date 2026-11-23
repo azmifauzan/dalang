@@ -130,7 +130,7 @@ describe('v0.8 agent delegation', () => {
   });
 
   describe('Adapter MCP wiring & log secret redaction', () => {
-    it('wires MCP config and redacts bearer tokens from logs across Claude, Codex, and Antigravity', async () => {
+    it('wires MCP config and redacts bearer tokens from logs for Claude and Codex and withholds it from Antigravity', async () => {
       const secret = 'tok_super_secret_delegation_9876543210';
       const workDir = makeTempDir('dalang-mcp-adapt-');
       const captured: Array<{ cmd: string; args: string[]; env?: Record<string, string | undefined>; configContent?: string }> = [];
@@ -197,23 +197,15 @@ describe('v0.8 agent delegation', () => {
       expect(codexLines.join('\n')).not.toContain(secret);
       expect(codexRes.stdout).not.toContain(secret);
 
-      const agyLog = path.join(workDir, 'agy.log');
-      const agyLines: string[] = [];
-      const agyRes = await new AntigravityAdapter(runner).runTurn({
+      await new AntigravityAdapter(runner).runTurn({
         projectPath: workDir,
         prompt: 'hello',
-        logFilePath: agyLog,
-        onLogLine: (l) => agyLines.push(l),
+        logFilePath: path.join(workDir, 'agy.log'),
         mcp: { url: 'http://127.0.0.1:4173/mcp', bearerToken: secret },
       });
-      expect(captured[2].args).toContain('--settings');
+      // agy rejects per-run MCP servers (`--settings: unknown setting "mcpServers"`), so it gets no MCP config.
+      expect(captured[2].args).not.toContain('--settings');
       expect(captured[2].args.join(' ')).not.toContain(secret);
-      expect(captured[2].configContent).toContain('http://127.0.0.1:4173/mcp');
-      expect(fs.readFileSync(agyLog, 'utf8')).not.toContain(secret);
-      expect(agyLines.join('\n')).not.toContain(secret);
-      expect(agyRes.stdout).not.toContain(secret);
-      const agyCfgPath = captured[2].args[captured[2].args.indexOf('--settings') + 1];
-      expect(fs.existsSync(agyCfgPath)).toBe(false);
     });
   });
 

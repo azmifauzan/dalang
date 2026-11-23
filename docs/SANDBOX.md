@@ -6,7 +6,7 @@ Dalang uses OS-level confinement where available, Git configuration checks, and 
 
 - Standard installs bind the server to `127.0.0.1`. Docker binds inside the container and publishes the port on host `127.0.0.1`.
 - Every HTTP request whose `Host` or `Origin` header is not a loopback address (`127.0.0.1`, `localhost`, `::1`) is refused with `403 Forbidden` to prevent DNS rebinding attacks.
-- A run's MCP settings, which contain its delegation token, sit in a private temporary folder that is mounted read-only into the sandbox and deleted when the turn ends. Codex receives the token through an environment variable instead of a file.
+- A run's MCP settings, which contain its delegation token, sit in a private temporary folder that is mounted read-only into the sandbox and deleted when the turn ends. Codex receives the token through an environment variable instead of a file. Antigravity gets no delegation token or MCP settings.
 - The `/mcp` delegation endpoint enforces the same loopback `Host` and `Origin` guard and requires a run-scoped `Authorization: Bearer <token>` issued only for active depth-0 coder runs. Tokens are verified with constant-time comparison, expire immediately when the run ends, are never placed in CLI prompts or logs (adapter loggers scrub the token before writing), and cannot inspect or cancel subtasks belonging to other tasks.
 
 ## Optional app login

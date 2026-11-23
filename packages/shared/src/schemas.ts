@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const DALANG_VERSION = '0.9.0';
+export const DALANG_VERSION = '0.9.1';
 
 export const MAX_DELEGATION_DEPTH = 1;
 export const DEFAULT_MAX_SUBTASKS_PER_TASK = 6;

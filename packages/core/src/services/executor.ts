@@ -176,6 +176,11 @@ interface TaskRepoContext {
 
 const MAX_JOINED_DIFF_CHARS = 200_000;
 
+/** `agy` accepts MCP servers only from its saved config, not per run, so Antigravity cannot receive the delegation token. */
+function providerSupportsDelegation(provider: ProviderId): boolean {
+  return provider !== 'antigravity';
+}
+
 function formatRepoLabel(repoPath: string): string {
   return repoPath === '.' ? 'root (.)' : `${repoPath}/`;
 }
@@ -2459,7 +2464,9 @@ export class ExecutionService {
         }
 
         const mcpUrl =
-          opts.task.delegationDepth < MAX_DELEGATION_DEPTH ? this.mcpEndpointResolver() : null;
+          opts.task.delegationDepth < MAX_DELEGATION_DEPTH && providerSupportsDelegation(profile.provider)
+            ? this.mcpEndpointResolver()
+            : null;
         if (mcpUrl) {
           // The parent CLI idles while delegate_task waits: give its limiter slot back so a same-account
           // subtask or its reviewer cannot deadlock at maxParallel=1.
@@ -4083,8 +4090,9 @@ export class ExecutionService {
     profile: AgentProfileDTO,
     relResultPath: string,
     rejectionNote?: string | null,
-    delegationEnabled = false,
+    delegationRequested = false,
   ): string {
+    const delegationEnabled = delegationRequested && providerSupportsDelegation(profile.provider);
     const jsonSchema = z.toJSONSchema(TaskResultContractSchema);
     const availableProfiles = delegationEnabled
       ? this.profiles

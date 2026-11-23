@@ -2,6 +2,10 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
+## 0.9.1 (Antigravity coder fix), 23 Nov
+
+- **Antigravity coder runs start again.** Since 0.8.0 every Antigravity coder run failed at start with `--settings: unknown setting "mcpServers"` on `agy` 1.5.15, so the default coder profiles could not run and fell back to another provider. `agy` takes MCP servers only from its saved config, so DALANG no longer passes delegation settings to it. Agent delegation therefore works from Claude Code and Codex coders; an Antigravity coder works on its task without the delegation tools and without the delegation instructions in its prompt. Delegated subtasks can still run on Antigravity. Antigravity reviews were never affected.
+
 ## 0.9.0 (Workspace projects with nested repositories), 23 Nov
 
 Workspace folders whose top-level subdirectories are their own standalone Git repositories (such as a root repo ignoring `frontend/`, `backend/`, and `scheduling-service/`) can now be opened and worked on as a single DALANG project.
@@ -11,7 +15,7 @@ Workspace folders whose top-level subdirectories are their own standalone Git re
 - **Per-repo checkpoints, scope checks, and labeled diffs.** Runs checkpoint commits, hidden checkpoint refs, changed-file collection, and `files_allowed` scope validation across all repos with root-relative paths. Joins diffs with repository headers for the reviewer and shows repo badges in the **Review & merge** and **Quick** diff views.
 - **Per-repo Gate 2 merge, dirty-overlap check, and push/PR.** Refuses merges only when uncommitted edits in a target repo overlap files modified by the task (leaving unrelated uncommitted edits intact, including in the root repo), creates one `--no-ff` merge commit per changed repo, restores earlier merged repos with `git reset --keep` if a later repo fails, and pushes / opens pull requests against each changed repo's own Git remote.
 - **Live check.** On 23 Nov a Quick task on the `sei-office` workspace (against a copy of the app data) changed `frontend/` and `scheduling-service/` through a Claude coder with an Antigravity review. Gate 2 merged one commit into `dev` and one into `feat/employee-sync-tanpa-email`, left `backend/` untouched, and kept unrelated uncommitted files. Discarding a task removed every worktree and task branch.
-- **Known issue (since 0.8.0).** Antigravity coder runs fail at start with `--settings: unknown setting "mcpServers"` on `agy` 1.5.15, because the delegation MCP config is passed through `--settings`. Antigravity reviews are unaffected, and a Claude or Codex coder works. Until this is fixed, route coder profiles to Claude Code or Codex.
+- **Known issue, fixed in 0.9.1.** Antigravity coder runs failed at start with `--settings: unknown setting "mcpServers"` on `agy` 1.5.15.
 - **Per-repo rollback and delegation.** Rolls back merged or unmerged runs across every affected repo with dirty/external-commit safety checks, and gives delegated subtasks nested worktrees branched from the parent task's branches that merge back per repo.
 
 ## 0.8.0 (Agent delegation), 23 Nov
