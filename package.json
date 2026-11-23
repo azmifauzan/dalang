@@ -1,6 +1,6 @@
 {
   "name": "dalang-monorepo",
-  "version": "0.7.4",
+  "version": "0.8.0",
   "private": true,
   "packageManager": "pnpm@10.34.9",
   "type": "module",

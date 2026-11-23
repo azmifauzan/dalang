@@ -327,7 +327,7 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
       dbPath: dbFile,
       staticDir: WEB_DIST_DIR,
       runner,
-      updateFetcher: async () => '0.8.0',
+      updateFetcher: async () => '0.9.0',
     });
 
     try {
@@ -419,9 +419,10 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
           const homeText = await waitForText('Browser Replay App');
           expect(homeText).not.toContain('Welcome to DALANG');
           expect(homeText).toContain('Ask anything about this repository');
-          await waitForText('Version 0.8.0 is available');
+          await waitForText('Version 0.9.0 is available');
 
           // Open the existing Full session from the sidebar to enter the 5-step stepper.
+          await waitForText('FULL');
           await browser.cdp.evalJs(`(() => {
             const hit = [...document.querySelectorAll('aside button')].find(
               (b) => (b.textContent || '').includes('FULL'),
@@ -488,11 +489,12 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
           const modelOptions = await browser.cdp.evalJs<string[]>(
             `[...document.querySelectorAll('#prof-model option')].map(o => o.textContent?.trim() || '')`,
           );
-          expect(modelOptions).toContain('Opus');
-          expect(modelOptions).toContain('Fable');
+          // Claude models are listed with their versions.
+          expect(modelOptions).toContain('Claude Opus 5.5');
+          expect(modelOptions).toContain('Claude Fable 5.2');
           await browser.cdp.evalJs(`
             const sel = document.getElementById('prof-model');
-            const fableOpt = [...sel.options].find(o => o.textContent?.trim() === 'Fable');
+            const fableOpt = [...sel.options].find(o => o.textContent?.trim() === 'Claude Fable 5.2');
             const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
             setter.call(sel, fableOpt.value);
             sel.dispatchEvent(new Event('change', { bubbles: true }));
@@ -568,10 +570,10 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
           await browser.cdp.evalJs(`document.querySelector('main input[type="checkbox"]')?.click()`);
           await new Promise((r) => setTimeout(r, 300));
           expect(await browser.cdp.evalJs<string>('document.body.innerText')).not.toContain(
-            'Version 0.8.0 is available',
+            'Version 0.9.0 is available',
           );
           await browser.cdp.evalJs(`document.querySelector('main input[type="checkbox"]')?.click()`);
-          await waitForText('Version 0.8.0 is available');
+          await waitForText('Version 0.9.0 is available');
 
           // Back from Config returns to previous section (Statistics); click the Full session in sidebar to return to workspace.
           await clickButton('Back');
@@ -593,7 +595,7 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
             `[...document.querySelectorAll('aside button[aria-label]')].map(b => b.getAttribute('aria-label'))`,
           );
           expect(iconLabels).toEqual(expect.arrayContaining(['Statistik', 'Pengaturan']));
-          expect(idText).toContain('Versi 0.8.0 tersedia');
+          expect(idText).toContain('Versi 0.9.0 tersedia');
           const settingsAfterId = await apiJson<{ settings: { language: string | null } }>('/api/settings');
           expect(settingsAfterId.settings.language).toBe('id');
 

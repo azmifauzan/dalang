@@ -1,6 +1,9 @@
 import { z } from 'zod';
 
-export const DALANG_VERSION = '0.7.4';
+export const DALANG_VERSION = '0.8.0';
+
+export const MAX_DELEGATION_DEPTH = 1;
+export const DEFAULT_MAX_SUBTASKS_PER_TASK = 6;
 
 export const UiLanguageSchema = z.enum(['en', 'id']);
 export type UiLanguage = z.infer<typeof UiLanguageSchema>;
@@ -609,6 +612,9 @@ export interface TaskDTO {
   needsSplit: boolean;
   splitDepth: number;
   parentTaskId: string | null;
+  delegatedByRunId: string | null;
+  delegationDepth: number;
+  mergeTargetBranch: string | null;
   profileOverride: string | null;
   reviewRounds: number;
   branchName: string | null;
@@ -866,6 +872,9 @@ export interface TaskDispatchPreviewDTO {
   role: PlanTaskRole;
   complexity: TaskComplexity;
   status: TaskStatus;
+  parentTaskId: string | null;
+  delegatedByRunId: string | null;
+  delegationDepth: number;
   dependsOn: string[];
   wave: number;
   overlappingTasks: string[];
@@ -891,6 +900,8 @@ export interface TaskRunDTO {
   taskId: string;
   taskExternalId: string;
   taskTitle: string;
+  parentTaskId?: string | null;
+  delegationDepth?: number;
   profileId: string;
   profileName: string;
   provider: ProviderId;
@@ -1139,4 +1150,56 @@ export interface ExecutionStateDTO {
   providerStates: ProviderRuntimeStateDTO[];
   dispatchPreviews: TaskDispatchPreviewDTO[];
   runs: TaskRunDTO[];
+}
+
+/**
+ * v0.8 Agent Delegation MCP tool schemas & DTOs
+ */
+export const DelegateTaskInputSchema = z.object({
+  title: z.string().trim().min(1).max(160).optional(),
+  prompt: z.string().trim().min(1).max(20_000),
+  profile: z.string().trim().min(1).max(100).optional(),
+  provider: ProviderIdSchema.optional(),
+  model: z.string().trim().min(1).max(120).optional(),
+  effort: EffortLevelSchema.optional(),
+  files_allowed: z.array(z.string().trim().min(1)).optional(),
+  acceptance_criteria: z.array(z.string().trim().min(1)).min(1).max(20).optional(),
+  verify: z.string().trim().min(1).max(500).optional(),
+  mode: z.enum(['wait', 'async']).default('wait'),
+});
+export type DelegateTaskInput = z.infer<typeof DelegateTaskInputSchema>;
+
+export const TaskStatusInputSchema = z.object({
+  task_id: z.string().trim().min(1),
+});
+export type TaskStatusInput = z.infer<typeof TaskStatusInputSchema>;
+
+export const TaskCancelInputSchema = z.object({
+  task_id: z.string().trim().min(1),
+});
+export type TaskCancelInput = z.infer<typeof TaskCancelInputSchema>;
+
+export interface DelegatedSubtaskStatusDTO {
+  task_id: string;
+  external_id: string;
+  parent_task_id: string;
+  title: string;
+  status: TaskStatus;
+  provider: ProviderId;
+  model: string | null;
+  profile: string;
+  branch_name: string | null;
+  merge_target_branch: string | null;
+  merged_into_parent: boolean;
+  merge_commit_sha: string | null;
+  files_allowed: string[];
+  verify: string;
+  review_status: 'pass' | 'fail' | null;
+  review_rounds: number;
+  review_findings: ReviewFinding[];
+  summary: string | null;
+  changed_files: string[];
+  error: string | null;
+  created_at: string;
+  updated_at: string;
 }

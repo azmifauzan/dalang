@@ -176,6 +176,24 @@ export function WorkStage({
         });
       case 'integration':
         return t('work.feedIntegration', { status: te(item.status ?? 'done') });
+      case 'delegated':
+        return t('work.feedDelegated', {
+          parent: item.target ?? '',
+          subtask: item.taskExternalId ?? '',
+          provider: prov,
+          title: item.title ?? '',
+        });
+      case 'subtask_merged':
+        return t('work.feedSubtaskMerged', {
+          subtask: item.taskExternalId ?? '',
+          branch: item.target ?? '',
+        });
+      case 'subagent':
+        return t('work.feedNativeSubagent', {
+          cast,
+          provider: prov,
+          label: item.target ?? '',
+        });
     }
   };
 

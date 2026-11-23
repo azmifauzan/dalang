@@ -122,6 +122,9 @@ export class NodeCliRunner implements CliRunner {
       };
 
       resetIdle();
+      options.onKeepAlive?.(() => {
+        if (!settled) resetIdle();
+      });
 
       const flushLines = (chunk: string, isStderr: boolean) => {
         if (isStderr) {
@@ -212,6 +215,7 @@ export interface BwrapInvocation {
 export interface SandboxWrapOptions {
   dbusSocket?: string;
   imageDir?: string;
+  mcpDir?: string;
   readOnly?: boolean;
   bindProviderDirs?: boolean;
   configDir?: string | null;
@@ -496,6 +500,7 @@ export async function wrapWithBwrap(
     projectPath,
   ];
   if (options.imageDir) bwrapArgs.push('--ro-bind', options.imageDir, options.imageDir);
+  if (options.mcpDir) bwrapArgs.push('--ro-bind', options.mcpDir, options.mcpDir);
 
   // Keep user-session and container sockets out of reach (a socket there lets a run act outside the sandbox).
   // The only bus a run may see is a filtered proxy socket, mounted where the CLI expects the session bus.

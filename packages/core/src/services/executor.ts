@@ -5,10 +5,14 @@ import { and, desc, eq, gte, inArray, ne, or } from 'drizzle-orm';
 import { z } from 'zod';
 import {
   buildAccountKey,
+  DEFAULT_MAX_SUBTASKS_PER_TASK,
+  MAX_DELEGATION_DEPTH,
   ReviewContractSchema,
   TaskResultContractSchema,
   type AgentProfileDTO,
   type ApproveMergeInput,
+  type DelegateTaskInput,
+  type DelegatedSubtaskStatusDTO,
   type ExecutionStateDTO,
   type GuardStateDTO,
   type GuardTaskEntryDTO,
@@ -24,12 +28,14 @@ import {
   type RunStatus,
   type SessionSummaryDTO,
   type StartExecutionInput,
+  type TaskCancelInput,
   type TaskDiffDTO,
   type TaskDispatchPreviewDTO,
   type TaskDTO,
   type TaskResultContract,
   type TaskReviewDTO,
   type TaskRunDTO,
+  type TaskStatusInput,
   type UiLanguage,
 } from '@dalang/shared';
 import { createTurnLogger } from '../adapters/logger.js';
@@ -69,6 +75,7 @@ import {
   createGitHubPullRequest,
   createHiddenCheckpointRef,
   createTaskWorktree,
+  findNestedRepos,
   deleteTaskBranch,
   detectDefaultGitRemote,
   ensureMainBaseline,
@@ -77,12 +84,21 @@ import {
   getRepoState,
   getTaskDiff,
   isAncestorCommit,
+  mergeTaskBranchIntoWorktree,
   mergeTaskBranchToMain,
   pushRefToRemote,
   removeTaskWorktree,
   rollbackGitToCheckpoint,
 } from './git.js';
 import type { LeadService } from './lead.js';
+import {
+  DelegationSessionStore,
+  handleMcpHttpRequest,
+  type DelegationTokenScope,
+  type McpDelegationHandler,
+  type McpHttpRequest,
+  type McpHttpResponse,
+} from './mcp.js';
 import { estimateApiEquivalentCostUsd, mergeTokenUsage, usageDbFields } from './pricing.js';
 import { ProfileService } from './profiles.js';
 import { detectIntegrationCommand } from './project.js';
@@ -96,6 +112,7 @@ import {
 import {
   computeTaskWaves,
   globsOverlap,
+  isGlobSubset,
   ProviderLimiter,
   type SlotLease,
 } from './scheduler.js';
@@ -104,6 +121,8 @@ export interface ExecutionServiceOptions {
   worktreesRoot?: string;
   quotaCooldownMs?: number;
   getLanguage?: () => UiLanguage;
+  mcpEndpointUrl?: string | (() => string | null);
+  maxSubtasksPerTask?: number;
 }
 
 interface ActiveTaskExecution {
@@ -227,10 +246,16 @@ export class ExecutionService {
   private readonly worktreesRoot: string;
   private readonly quotaCooldownMs: number;
   private readonly getLanguage: () => UiLanguage;
+  private mcpEndpointResolver: () => string | null;
+  private readonly maxSubtasksPerTask: number;
+  private readonly delegationStore = new DelegationSessionStore();
   private readonly limiter = new ProviderLimiter();
   private readonly activeTasks = new Map<string, ActiveTaskExecution>();
+  private readonly activeSubtasksByParent = new Map<string, Set<string>>();
+  private readonly subtaskFilesByTaskId = new Map<string, string[]>();
   private readonly projectQueues = new Map<string, ProjectQueueExecution>();
   private readonly projectGitLocks = new Map<string, Promise<void>>();
+  private readonly mcpHandler: McpDelegationHandler;
 
   constructor(
     private readonly db: DalangDb,
@@ -243,7 +268,28 @@ export class ExecutionService {
     this.worktreesRoot = options.worktreesRoot ?? getWorktreesRoot(getDbDataDir(db));
     this.quotaCooldownMs = options.quotaCooldownMs ?? DEFAULT_QUOTA_COOLDOWN_MS;
     this.getLanguage = options.getLanguage ?? (() => 'en');
+    const urlOpt = options.mcpEndpointUrl;
+    this.mcpEndpointResolver =
+      typeof urlOpt === 'function' ? urlOpt : () => (typeof urlOpt === 'string' && urlOpt.trim() ? urlOpt.trim() : null);
+    this.maxSubtasksPerTask = Math.max(1, options.maxSubtasksPerTask ?? DEFAULT_MAX_SUBTASKS_PER_TASK);
+    this.mcpHandler = {
+      delegateTask: (scope, input) => this.delegateSubtask(scope, input),
+      getTaskStatus: (scope, input) => this.getDelegatedTaskStatus(scope, input),
+      cancelTask: (scope, input) => this.cancelDelegatedTask(scope, input),
+    };
     this.reconcileInterruptedRuns();
+  }
+
+  setMcpEndpointUrl(url: string | null): void {
+    this.mcpEndpointResolver = () => (url?.trim() ? url.trim() : null);
+  }
+
+  getDelegationStore(): DelegationSessionStore {
+    return this.delegationStore;
+  }
+
+  handleMcpHttpRequest(req: McpHttpRequest): Promise<McpHttpResponse> {
+    return handleMcpHttpRequest(this.delegationStore, this.mcpHandler, req);
   }
 
   /**
@@ -653,10 +699,12 @@ export class ExecutionService {
   }
 
   private findOverlappingActiveTask(plan: PlanDTO, target: TaskDTO): TaskDTO | null {
+    if (target.delegationDepth > 0) return null;
     return (
       plan.tasks.find(
         (other) =>
           other.id !== target.id &&
+          other.delegationDepth === 0 &&
           (this.activeTasks.has(other.id) ||
             other.status === 'running' ||
             other.status === 'reviewing' ||
@@ -672,26 +720,42 @@ export class ExecutionService {
     const waves = computeTaskWaves(plan.tasks);
 
     return plan.tasks.map((task) => {
+      const isSubtask = task.delegationDepth > 0;
       const pendingDeps = task.dependsOn.filter((dep) => statusByExternal.get(dep) !== 'done');
       const dependenciesSatisfied = pendingDeps.length === 0;
       const routing = this.routeTask(task, sandboxReady);
       const wave = waves.get(task.externalId) ?? 0;
 
-      const overlappingTasks = plan.tasks
-        .filter(
-          (other) =>
-            other.id !== task.id &&
-            other.status !== 'done' &&
-            globsOverlap(task.filesAllowed, other.filesAllowed),
-        )
-        .map((other) => other.externalId);
+      const overlappingTasks = isSubtask
+        ? []
+        : plan.tasks
+            .filter(
+              (other) =>
+                other.id !== task.id &&
+                other.delegationDepth === 0 &&
+                other.status !== 'done' &&
+                globsOverlap(task.filesAllowed, other.filesAllowed),
+            )
+            .map((other) => other.externalId);
 
-      const activeOverlap = this.findOverlappingActiveTask(plan, task);
+      const activeOverlap = isSubtask ? null : this.findOverlappingActiveTask(plan, task);
       const blockedByOverlapWith =
-        task.status === 'approved' && activeOverlap ? activeOverlap.externalId : null;
+        !isSubtask && task.status === 'approved' && activeOverlap ? activeOverlap.externalId : null;
 
       let blockedReason: string | null = null;
-      if (plan.status !== 'approved') {
+      if (isSubtask) {
+        if (task.status === 'done') {
+          blockedReason = null;
+        } else if (task.status === 'running') {
+          blockedReason = 'Currently running';
+        } else if (task.status === 'reviewing') {
+          blockedReason = 'Currently in review';
+        } else if (task.status === 'failed' || task.status === 'review_failed' || task.status === 'stopped') {
+          blockedReason = task.rejectionNote || `Subtask is ${task.status}`;
+        } else {
+          blockedReason = 'Managed by parent task delegation';
+        }
+      } else if (plan.status !== 'approved') {
         blockedReason = 'Plan is not approved yet';
       } else if (task.status === 'done') {
         blockedReason = null;
@@ -712,12 +776,13 @@ export class ExecutionService {
       }
 
       const eligible =
+        !isSubtask &&
         plan.status === 'approved' &&
         task.status === 'approved' &&
         dependenciesSatisfied &&
         !blockedByOverlapWith &&
         routing.blocked === null;
-      if (!eligible && blockedReason === null && routing.blocked && task.status !== 'done') {
+      if (!isSubtask && !eligible && blockedReason === null && routing.blocked && task.status !== 'done') {
         blockedReason = routing.blocked;
       }
 
@@ -729,6 +794,9 @@ export class ExecutionService {
         role: task.role,
         complexity: task.complexity,
         status: task.status,
+        parentTaskId: task.parentTaskId,
+        delegatedByRunId: task.delegatedByRunId,
+        delegationDepth: task.delegationDepth,
         dependsOn: task.dependsOn,
         wave,
         overlappingTasks,
@@ -869,6 +937,9 @@ export class ExecutionService {
 
     const target = plan.tasks.find((t) => t.id === input.taskId || t.externalId === input.taskId);
     if (!target) throw new Error(`Task not found: ${input.taskId}`);
+    if (target.delegationDepth > 0) {
+      throw new Error(`Task ${target.externalId} is a delegated subtask managed by its parent task.`);
+    }
     if (target.status === 'running' || target.status === 'reviewing') {
       throw new Error(`Task ${target.externalId} is currently ${target.status}.`);
     }
@@ -1155,6 +1226,34 @@ export class ExecutionService {
     }
   }
 
+  private abortSubtasksForParent(parentTaskId: string): ActiveTaskExecution[] {
+    const subIds = this.activeSubtasksByParent.get(parentTaskId);
+    if (!subIds || subIds.size === 0) return [];
+    const handles: ActiveTaskExecution[] = [];
+    for (const subId of [...subIds]) {
+      const handle = this.activeTasks.get(subId);
+      if (handle) {
+        handle.controller.abort();
+        handles.push(handle);
+      }
+    }
+    return handles;
+  }
+
+  private async waitForParentSubtasks(parentTaskId: string): Promise<void> {
+    while (true) {
+      const subIds = this.activeSubtasksByParent.get(parentTaskId);
+      if (!subIds || subIds.size === 0) break;
+      const promises: Array<Promise<unknown>> = [];
+      for (const subId of [...subIds]) {
+        const handle = this.activeTasks.get(subId);
+        if (handle) promises.push(handle.promise.catch(() => undefined));
+      }
+      if (promises.length === 0) break;
+      await Promise.all(promises);
+    }
+  }
+
   async stopExecution(
     projectId: string,
     taskId?: string,
@@ -1166,11 +1265,17 @@ export class ExecutionService {
       const matched = plan?.tasks.find((t) => t.id === taskId || t.externalId === taskId);
       const targetId = matched?.id ?? taskId;
       const active = this.activeTasks.get(targetId);
-      if (!active || active.projectId !== projectId) {
+      const activeSubs = this.abortSubtasksForParent(targetId);
+      if ((!active || active.projectId !== projectId) && activeSubs.length === 0) {
         return { stopped: false };
       }
-      active.controller.abort();
-      await active.promise.catch(() => undefined);
+      if (active && active.projectId === projectId) {
+        active.controller.abort();
+      }
+      await Promise.all([
+        active && active.projectId === projectId ? active.promise.catch(() => undefined) : Promise.resolve(),
+        ...activeSubs.map((s) => s.promise.catch(() => undefined)),
+      ]);
       return { stopped: true };
     }
 
@@ -1347,6 +1452,17 @@ export class ExecutionService {
     const routing = this.routeTask(task, sandboxReady);
     if (routing.blocked) throw new Error(routing.blocked);
 
+    // A nested repo is not part of the project's git tree, so it is missing from the task worktree.
+    const nested = findNestedRepos(project.path);
+    const inNested = nested.filter((dir) =>
+      task.filesAllowed.some((p) => p === dir || p.startsWith(`${dir}/`)),
+    );
+    if (inNested.length > 0) {
+      throw new Error(
+        `${task.externalId} edits ${inNested.map((d) => `${d}/`).join(', ')}, which is its own git repository and is not in the task worktree. Open ${inNested.map((d) => `${d}/`).join(', ')} as a separate DALANG project and run the task there.`,
+      );
+    }
+
     const branchName = `dalang/${task.externalId}`;
     const worktreePath = getTaskWorktreeDir(this.worktreesRoot, projectId, task.externalId);
     const resetToBase = !resumeSessionId || !(await branchExists(project.path, branchName));
@@ -1519,6 +1635,8 @@ export class ExecutionService {
     relReviewPath: string;
     resumeSessionId: string | null;
   }): Promise<RunStatus> {
+    const delegationEnabled =
+      ctx.task.delegationDepth < MAX_DELEGATION_DEPTH && Boolean(this.mcpEndpointResolver());
     const coderOutcome = await this.runCoderPhaseWithFallback({
       projectId: ctx.projectId,
       sessionId: ctx.sessionId,
@@ -1542,9 +1660,15 @@ export class ExecutionService {
       kind: 'execute',
       prompt: ctx.resumeSessionId
         ? this.buildResumePrompt(ctx.task, ctx.relResultPath, ctx.priorRejectionNote)
-        : this.buildTaskPrompt(ctx.task, ctx.initialProfile, ctx.relResultPath, ctx.priorRejectionNote),
+        : this.buildTaskPrompt(
+            ctx.task,
+            ctx.initialProfile,
+            ctx.relResultPath,
+            ctx.priorRejectionNote,
+            delegationEnabled,
+          ),
       buildPromptForProfile: (prof) =>
-        this.buildTaskPrompt(ctx.task, prof, ctx.relResultPath, ctx.priorRejectionNote),
+        this.buildTaskPrompt(ctx.task, prof, ctx.relResultPath, ctx.priorRejectionNote, delegationEnabled),
     });
 
     if (coderOutcome.status !== 'completed') {
@@ -1600,6 +1724,7 @@ export class ExecutionService {
     kind: 'execute' | 'fix';
     prompt: string;
     buildPromptForProfile: (profile: AgentProfileDTO) => string;
+    onParentKeepAlive?: () => void;
   }): Promise<{
     status: RunStatus;
     profile: AgentProfileDTO;
@@ -1637,6 +1762,7 @@ export class ExecutionService {
       let capturedUsage: TurnTokenUsage | undefined;
 
       const emitDalangLine = (line: string) => {
+        opts.onParentKeepAlive?.();
         this.appendDalangLog(logFileAbs, line);
         this.events?.emitEvent({
           type: 'run.log',
@@ -1647,6 +1773,7 @@ export class ExecutionService {
         });
       };
       const emitAdapterLine = (line: string) => {
+        opts.onParentKeepAlive?.();
         this.events?.emitEvent({
           type: 'run.log',
           projectId: opts.projectId,
@@ -1711,6 +1838,16 @@ export class ExecutionService {
 
       let lease: SlotLease | null = preLease;
       let resultAlreadyValidated = false;
+      let delegationScope: DelegationTokenScope | null = null;
+      const keepAliveRef = { resetIdle: () => {} };
+      let yieldWaitCount = 0;
+      let yieldChain: Promise<void> = Promise.resolve();
+
+      const onParentAbort = () => {
+        this.abortSubtasksForParent(opts.task.id);
+      };
+      opts.execHandle.controller.signal.addEventListener('abort', onParentAbort, { once: true });
+
       try {
         if (!lease) {
           emitDalangLine(
@@ -1721,6 +1858,60 @@ export class ExecutionService {
             profile.maxParallel,
             opts.execHandle.controller.signal,
           );
+        }
+
+        const mcpUrl =
+          opts.task.delegationDepth < MAX_DELEGATION_DEPTH ? this.mcpEndpointResolver() : null;
+        if (mcpUrl) {
+          // The parent CLI idles while delegate_task waits: give its limiter slot back so a same-account
+          // subtask or its reviewer cannot deadlock at maxParallel=1.
+          const yieldParentSlot = async (): Promise<() => Promise<void>> => {
+            const enter = yieldChain.then(() => {
+              yieldWaitCount += 1;
+              if (yieldWaitCount === 1 && lease) {
+                lease.release();
+                lease = null;
+              }
+            });
+            yieldChain = enter.catch(() => undefined);
+            await enter;
+
+            let restored = false;
+            return async () => {
+              if (restored) return;
+              restored = true;
+              const exit = yieldChain.then(async () => {
+                yieldWaitCount = Math.max(0, yieldWaitCount - 1);
+                if (yieldWaitCount === 0 && !lease && !opts.execHandle.controller.signal.aborted) {
+                  lease = await this.limiter.acquire(
+                    profileAccountKey,
+                    profile.maxParallel,
+                    opts.execHandle.controller.signal,
+                  );
+                }
+              });
+              yieldChain = exit.catch(() => undefined);
+              await exit;
+            };
+          };
+
+          delegationScope = this.delegationStore.issue({
+            runId,
+            projectId: opts.projectId,
+            sessionId: opts.sessionId,
+            taskId: opts.task.id,
+            externalId: opts.task.externalId,
+            branchName: opts.branchName,
+            worktreePath: opts.worktreePath,
+            baseMainSha: opts.baseMainSha,
+            delegationDepth: opts.task.delegationDepth,
+            filesAllowed: opts.task.filesAllowed,
+            verify: opts.task.verify,
+            parentAccountKey: profileAccountKey,
+            sandboxReady: opts.sandboxReady,
+            keepParentAlive: () => keepAliveRef.resetIdle(),
+            yieldParentSlot,
+          });
         }
 
         emitDalangLine(
@@ -1741,6 +1932,12 @@ export class ExecutionService {
           signal: opts.execHandle.controller.signal,
           logFilePath: logFileAbs,
           onLogLine: emitAdapterLine,
+          onKeepAlive: (fn) => {
+            keepAliveRef.resetIdle = fn;
+          },
+          ...(delegationScope && mcpUrl
+            ? { mcp: { url: mcpUrl, bearerToken: delegationScope.token } }
+            : {}),
         });
 
         capturedSessionId = turn.sessionId ?? capturedSessionId;
@@ -1751,12 +1948,39 @@ export class ExecutionService {
         rateLimitFromStream = turn.rateLimitReason;
         capturedUsage = mergeTokenUsage(capturedUsage, turn.usage);
 
+        // Revoke the delegation token immediately once the coder turn ends.
+        if (delegationScope) {
+          this.delegationStore.revoke(delegationScope.token);
+          delegationScope = null;
+        }
+
         if (capturedSessionId) {
           this.db
             .update(runs)
             .set({ cliSessionId: capturedSessionId })
             .where(eq(runs.id, runId))
             .run();
+        }
+
+        // Handle any async subtasks still in flight when the parent coder turn ends.
+        if (this.activeSubtasksByParent.get(opts.task.id)?.size) {
+          if (aborted || thrownError || rateLimitFromStream || (exitCode !== null && exitCode !== 0)) {
+            this.abortSubtasksForParent(opts.task.id);
+            await this.waitForParentSubtasks(opts.task.id);
+          } else {
+            emitDalangLine(
+              `[dalang] Waiting for in-flight delegated subtasks of ${opts.task.externalId} to finish and merge...`,
+            );
+            // Release parent slot while waiting for remaining async subtasks so same-account subtasks can finish.
+            if (lease) {
+              lease.release();
+              lease = null;
+            }
+            await this.waitForParentSubtasks(opts.task.id);
+            if (opts.execHandle.controller.signal.aborted) {
+              aborted = true;
+            }
+          }
         }
 
         if (!aborted && !thrownError && (exitCode === null || exitCode === 0) && !rateLimitFromStream) {
@@ -1766,6 +1990,13 @@ export class ExecutionService {
             opts.task.externalId,
           );
           if (!firstCheck.ok && !opts.execHandle.controller.signal.aborted) {
+            if (!lease) {
+              lease = await this.limiter.acquire(
+                profileAccountKey,
+                profile.maxParallel,
+                opts.execHandle.controller.signal,
+              );
+            }
             emitDalangLine(
               `[dalang] ${firstCheck.error}; requesting structured result.json repair...`,
             );
@@ -1822,7 +2053,17 @@ export class ExecutionService {
           thrownError = err instanceof Error ? err.message : String(err);
           emitDalangLine(`[dalang:error] ${thrownError}`);
         }
+        this.abortSubtasksForParent(opts.task.id);
       } finally {
+        opts.execHandle.controller.signal.removeEventListener('abort', onParentAbort);
+        if (delegationScope) {
+          this.delegationStore.revoke(delegationScope.token);
+          delegationScope = null;
+        }
+        if (this.activeSubtasksByParent.get(opts.task.id)?.size) {
+          this.abortSubtasksForParent(opts.task.id);
+          await this.waitForParentSubtasks(opts.task.id);
+        }
         lease?.release();
       }
 
@@ -2208,6 +2449,12 @@ export class ExecutionService {
     relResultPath: string;
     absReviewPath: string;
     relReviewPath: string;
+    subtaskMergeTarget?: {
+      parentTaskId: string;
+      parentWorktreePath: string;
+      parentBranch: string;
+    };
+    onParentKeepAlive?: () => void;
   }): Promise<RunStatus> {
     let activeCoderProfile = ctx.coderProfile;
     let activeCoderFallback = ctx.coderFallback;
@@ -2308,6 +2555,7 @@ export class ExecutionService {
         relTaskDir: ctx.relTaskDir,
         absReviewPath: ctx.absReviewPath,
         relReviewPath: ctx.relReviewPath,
+        onParentKeepAlive: ctx.onParentKeepAlive,
       });
 
       if (reviewOutcome.status === 'stopped') {
@@ -2329,6 +2577,74 @@ export class ExecutionService {
 
       const reviewData = reviewOutcome.contract;
       if (reviewData.status === 'pass') {
+        if (ctx.subtaskMergeTarget) {
+          // Delegated subtasks merge back into the parent task's branch (never into main).
+          try {
+            const merged = await this.withProjectGitLock(ctx.projectId, async () => {
+              const result = await mergeTaskBranchIntoWorktree(
+                ctx.projectPath,
+                ctx.subtaskMergeTarget!.parentWorktreePath,
+                ctx.subtaskMergeTarget!.parentBranch,
+                ctx.branchName,
+                `dalang: merge subtask ${ctx.task.externalId} (${ctx.task.title}) into ${ctx.subtaskMergeTarget!.parentBranch}`,
+              );
+              await removeTaskWorktree(ctx.projectPath, ctx.worktreePath).catch(() => undefined);
+              return result;
+            });
+            const mergedAt = new Date().toISOString();
+            this.db
+              .update(reviews)
+              .set({ humanDecision: 'approved', decidedAt: mergedAt })
+              .where(and(eq(reviews.taskId, ctx.task.id), eq(reviews.humanDecision, 'pending')))
+              .run();
+            this.db
+              .update(tasks)
+              .set({
+                status: 'done',
+                reviewRounds: round,
+                mergeCommitSha: merged.mergeCommitSha,
+                rejectionNote: null,
+                updatedAt: mergedAt,
+              })
+              .where(eq(tasks.id, ctx.task.id))
+              .run();
+            this.events?.emitEvent({
+              type: 'task.subtask_merged',
+              projectId: ctx.projectId,
+              sessionId: ctx.sessionId,
+              parentTaskId: ctx.subtaskMergeTarget.parentTaskId,
+              taskId: ctx.task.id,
+              externalId: ctx.task.externalId,
+              targetBranch: ctx.subtaskMergeTarget.parentBranch,
+              mergeCommitSha: merged.mergeCommitSha,
+            });
+            this.events?.emitEvent({
+              type: 'plan.updated',
+              projectId: ctx.projectId,
+              sessionId: ctx.sessionId,
+            });
+            return 'completed';
+          } catch (mergeErr) {
+            const msg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
+            this.db
+              .update(tasks)
+              .set({
+                status: 'failed',
+                reviewRounds: round,
+                rejectionNote: msg,
+                updatedAt: new Date().toISOString(),
+              })
+              .where(eq(tasks.id, ctx.task.id))
+              .run();
+            this.events?.emitEvent({
+              type: 'plan.updated',
+              projectId: ctx.projectId,
+              sessionId: ctx.sessionId,
+            });
+            return 'failed';
+          }
+        }
+
         this.db
           .update(tasks)
           .set({
@@ -2476,6 +2792,7 @@ export class ExecutionService {
             verifyOutput: reviewOutcome.verifyOutput,
             scopeWarnings: activeScopeWarnings,
           }),
+        onParentKeepAlive: ctx.onParentKeepAlive,
       });
 
       if (fixOutcome.status !== 'completed') {
@@ -2516,6 +2833,7 @@ export class ExecutionService {
     relTaskDir: string;
     absReviewPath: string;
     relReviewPath: string;
+    onParentKeepAlive?: () => void;
   }): Promise<{
     status: 'completed' | 'failed' | 'stopped';
     contract?: ReviewContract;
@@ -2572,6 +2890,7 @@ export class ExecutionService {
       });
 
       const emitDalangLine = (line: string) => {
+        opts.onParentKeepAlive?.();
         this.appendDalangLog(absLogPath, line);
         this.events?.emitEvent({
           type: 'run.log',
@@ -2582,6 +2901,7 @@ export class ExecutionService {
         });
       };
       const emitAdapterLine = (line: string) => {
+        opts.onParentKeepAlive?.();
         this.events?.emitEvent({
           type: 'run.log',
           projectId: opts.projectId,
@@ -3050,8 +3370,28 @@ export class ExecutionService {
     profile: AgentProfileDTO,
     relResultPath: string,
     rejectionNote?: string | null,
+    delegationEnabled = false,
   ): string {
     const jsonSchema = z.toJSONSchema(TaskResultContractSchema);
+    const availableProfiles = delegationEnabled
+      ? this.profiles
+          .listProfiles()
+          .filter((p) => p.permissionMode !== 'read-only')
+          .map((p) => `${p.name} (${p.provider}${p.model ? `/${p.model}` : ''})`)
+          .join(', ')
+      : '';
+    const delegationBlock = delegationEnabled
+      ? [
+          ``,
+          `Agent delegation (DALANG MCP server "dalang"):`,
+          `- You can delegate independent pieces of this task using MCP tools: delegate_task, task_status, task_cancel.`,
+          `- Available profiles: ${availableProfiles || 'default routing'}. You may pass profile, or provider + model.`,
+          `- Every subtask's files_allowed must be a subset of this task's files_allowed (keep parallel subtasks on non-overlapping files).`,
+          `- Each subtask runs in its own worktree branched from your task branch, runs verify and automated review, and merges back into your branch on pass (depth 1 max, up to ${this.maxSubtasksPerTask} subtasks).`,
+          `- Use mode="wait" to wait for the merged result, or mode="async" to run subtasks concurrently and poll with task_status.`,
+        ].join('\n')
+      : '';
+
     return [
       `You are executing task ${task.externalId}: "${task.title}" (milestone ${task.milestone}) for a project managed by DALANG.`,
       profile.rolePrompt ? `Role instructions: ${profile.rolePrompt}` : '',
@@ -3073,6 +3413,7 @@ export class ExecutionService {
       ``,
       `Verify command (must be run before finishing):`,
       task.verify,
+      delegationBlock,
       ``,
       `When done, write a JSON file directly to "${relResultPath}" matching this JSON Schema:`,
       JSON.stringify(jsonSchema, null, 2),
@@ -3096,6 +3437,729 @@ export class ExecutionService {
     ]
       .filter(Boolean)
       .join('\n');
+  }
+
+  // Agent delegation: the loopback MCP tools delegate_task, task_status, and task_cancel.
+
+  private resolveSubtaskRouting(
+    input: DelegateTaskInput,
+    sandboxReady: boolean,
+  ): {
+    primary: AgentProfileDTO;
+    fallback: AgentProfileDTO | null;
+    note: string | null;
+    proactiveFallback: boolean;
+    quotaReroutedReason: string | null;
+    skippedPrimaryProvider: ProviderId | null;
+    skippedPrimaryConfigDir: string | null;
+    blocked: string | null;
+  } {
+    const allProfiles = this.profiles.listProfiles();
+    if (allProfiles.length === 0) {
+      throw new Error('No agent profiles configured.');
+    }
+
+    let baseRouting: ReturnType<ExecutionService['routeTask']>;
+
+    if (input.profile) {
+      const matched = allProfiles.find(
+        (p) => p.id === input.profile || p.name === input.profile,
+      );
+      if (!matched) {
+        const names = allProfiles.map((p) => p.name).join(', ');
+        throw new Error(`Unknown agent profile "${input.profile}". Available profiles: ${names}`);
+      }
+      baseRouting = this.routeTask(
+        { role: 'engineer', complexity: 'low', profileOverride: matched.id },
+        sandboxReady,
+      );
+    } else if (input.provider) {
+      const matchingProvider =
+        allProfiles.find(
+          (p) => p.provider === input.provider && p.permissionMode !== 'read-only',
+        ) ??
+        allProfiles.find((p) => p.provider === input.provider) ??
+        allProfiles.find((p) => p.id === 'profile-coder-small') ??
+        allProfiles[0];
+
+      const customPrimary: AgentProfileDTO = {
+        ...matchingProvider,
+        provider: input.provider,
+        model: input.model ?? (matchingProvider.provider === input.provider ? matchingProvider.model : ''),
+        effort: input.effort ?? matchingProvider.effort,
+        configDir: matchingProvider.provider === input.provider ? matchingProvider.configDir : null,
+      };
+      const primaryStatus = this.evaluateProviderUsability(
+        customPrimary.provider,
+        customPrimary.model || null,
+        sandboxReady,
+        customPrimary.configDir,
+      );
+      if (primaryStatus.usable) {
+        return {
+          primary: customPrimary,
+          fallback: null,
+          note: null,
+          proactiveFallback: false,
+          quotaReroutedReason: null,
+          skippedPrimaryProvider: null,
+          skippedPrimaryConfigDir: null,
+          blocked: null,
+        };
+      }
+      const fallbackRouting = this.routeTask(
+        { role: 'engineer', complexity: 'low', profileOverride: matchingProvider.id },
+        sandboxReady,
+      );
+      if (fallbackRouting.fallback) {
+        const fbStatus = this.evaluateProviderUsability(
+          fallbackRouting.fallback.provider,
+          fallbackRouting.fallback.model || null,
+          sandboxReady,
+          fallbackRouting.fallback.configDir,
+        );
+        if (fbStatus.usable) {
+          const reason = `Requested provider ${customPrimary.provider} unavailable (${primaryStatus.reason}); using fallback ${routeLabel(fallbackRouting.fallback)}.`;
+          return {
+            primary: fallbackRouting.fallback,
+            fallback: null,
+            note: reason,
+            proactiveFallback: primaryStatus.kind !== 'blocked',
+            quotaReroutedReason: primaryStatus.kind !== 'blocked' ? reason : null,
+            skippedPrimaryProvider: primaryStatus.kind !== 'blocked' ? customPrimary.provider : null,
+            skippedPrimaryConfigDir: primaryStatus.kind !== 'blocked' ? customPrimary.configDir : null,
+            blocked: null,
+          };
+        }
+      }
+      return {
+        primary: customPrimary,
+        fallback: null,
+        note: null,
+        proactiveFallback: false,
+        quotaReroutedReason: null,
+        skippedPrimaryProvider: null,
+        skippedPrimaryConfigDir: null,
+        blocked: primaryStatus.reason,
+      };
+    } else {
+      baseRouting = this.routeTask(
+        { role: 'engineer', complexity: 'low', profileOverride: null },
+        sandboxReady,
+      );
+    }
+
+    if (baseRouting.blocked) return baseRouting;
+
+    let primary = baseRouting.primary;
+    if (input.provider && input.provider !== primary.provider) {
+      primary = {
+        ...primary,
+        provider: input.provider,
+        model: input.model ?? '',
+        configDir: null,
+      };
+    }
+    if (input.model !== undefined) {
+      primary = { ...primary, model: input.model };
+    }
+    if (input.effort !== undefined) {
+      primary = { ...primary, effort: input.effort };
+    }
+
+    const finalStatus = this.evaluateProviderUsability(
+      primary.provider,
+      primary.model || null,
+      sandboxReady,
+      primary.configDir,
+    );
+    if (!finalStatus.usable) {
+      return {
+        ...baseRouting,
+        primary,
+        blocked: finalStatus.reason,
+      };
+    }
+
+    return {
+      ...baseRouting,
+      primary,
+    };
+  }
+
+  private nextSubtaskExternalId(plan: PlanDTO, parentExternalId: string): string {
+    const existing = new Set(plan.tasks.map((t) => t.externalId));
+    const base = parentExternalId.slice(0, 26);
+    for (let seq = 1; seq <= 999; seq++) {
+      const candidate = `${base}-S${seq}`;
+      if (!existing.has(candidate)) return candidate;
+    }
+    return `${base.slice(0, 22)}-S${crypto.randomBytes(2).toString('hex')}`;
+  }
+
+  private async delegateSubtask(
+    scope: DelegationTokenScope,
+    input: DelegateTaskInput,
+  ): Promise<DelegatedSubtaskStatusDTO> {
+    if (scope.delegationDepth >= MAX_DELEGATION_DEPTH) {
+      throw new Error(
+        `Delegation depth limit (${MAX_DELEGATION_DEPTH}) reached: subtasks cannot delegate further.`,
+      );
+    }
+
+    const parentHandle = this.activeTasks.get(scope.taskId);
+    if (!parentHandle || parentHandle.controller.signal.aborted) {
+      throw new Error(`Parent task ${scope.externalId} is no longer running.`);
+    }
+
+    const project = this.getProjectRow(scope.projectId);
+    const plan = this.leadService.getPlan(scope.projectId, scope.sessionId);
+    if (!plan) {
+      throw new Error('Plan not found for active delegation session.');
+    }
+    const parentTask = plan.tasks.find((t) => t.id === scope.taskId);
+    if (!parentTask) {
+      throw new Error(`Parent task not found: ${scope.externalId}`);
+    }
+    if (parentTask.delegationDepth >= MAX_DELEGATION_DEPTH) {
+      throw new Error(
+        `Delegation depth limit (${MAX_DELEGATION_DEPTH}) reached: subtasks cannot delegate further.`,
+      );
+    }
+
+    const existingSubtasks = this.db
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(and(eq(tasks.planId, plan.id), eq(tasks.parentTaskId, parentTask.id)))
+      .all();
+    if (existingSubtasks.length >= this.maxSubtasksPerTask) {
+      throw new Error(
+        `Subtask cap (${this.maxSubtasksPerTask}) reached for task ${parentTask.externalId}.`,
+      );
+    }
+
+    let subtaskFilesAllowed: string[];
+    if (input.files_allowed === undefined) {
+      subtaskFilesAllowed = [...parentTask.filesAllowed];
+    } else {
+      const subsetCheck = isGlobSubset(input.files_allowed, parentTask.filesAllowed);
+      if (!subsetCheck.ok) {
+        throw new Error(
+          `files_allowed must be a subset of parent task ${parentTask.externalId} (${parentTask.filesAllowed.join(', ') || 'workspace'}): invalid ${subsetCheck.invalidPatterns.join(', ')}`,
+        );
+      }
+      subtaskFilesAllowed = input.files_allowed;
+    }
+
+    const sandboxReady = scope.sandboxReady;
+    const routing = this.resolveSubtaskRouting(input, sandboxReady);
+    if (routing.blocked) {
+      throw new Error(routing.blocked);
+    }
+
+    const subtaskId = crypto.randomUUID();
+    const externalId = this.nextSubtaskExternalId(plan, parentTask.externalId);
+    const firstLine = input.prompt.split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? 'Delegated subtask';
+    const title = (input.title?.trim() || firstLine).slice(0, 120);
+    const verifyCmd = input.verify?.trim() || parentTask.verify;
+    const acceptanceCriteria =
+      input.acceptance_criteria && input.acceptance_criteria.length > 0
+        ? input.acceptance_criteria
+        : [`Complete delegated goal: ${title}`];
+    const subtaskBranch = `dalang/${externalId}`;
+    const maxPos = plan.tasks.reduce((max, t) => Math.max(max, t.position), -1);
+    const now = new Date().toISOString();
+
+    this.db
+      .insert(tasks)
+      .values({
+        id: subtaskId,
+        planId: plan.id,
+        externalId,
+        title,
+        milestone: parentTask.milestone,
+        role: 'engineer',
+        complexity: 'low',
+        status: 'running',
+        position: maxPos + 1,
+        goal: input.prompt,
+        filesAllowedJson: JSON.stringify(subtaskFilesAllowed),
+        filesReferenceJson: JSON.stringify(parentTask.filesReference),
+        acceptanceCriteriaJson: JSON.stringify(acceptanceCriteria),
+        verify: verifyCmd,
+        needsSplit: false,
+        splitDepth: parentTask.splitDepth,
+        parentTaskId: parentTask.id,
+        delegatedByRunId: scope.runId,
+        delegationDepth: parentTask.delegationDepth + 1,
+        mergeTargetBranch: scope.branchName,
+        profileOverride: routing.primary.id,
+        reviewRounds: 0,
+        branchName: subtaskBranch,
+        mergeCommitSha: null,
+        rejectionNote: null,
+        prUrl: null,
+        pushedAt: null,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .run();
+
+    const subtaskDto = this.leadService
+      .getPlan(scope.projectId, scope.sessionId)!
+      .tasks.find((t) => t.id === subtaskId)!;
+
+    this.events?.emitEvent({
+      type: 'task.delegated',
+      projectId: scope.projectId,
+      sessionId: scope.sessionId,
+      parentTaskId: parentTask.id,
+      parentExternalId: parentTask.externalId,
+      taskId: subtaskDto.id,
+      externalId: subtaskDto.externalId,
+      title: subtaskDto.title,
+      provider: routing.primary.provider,
+      model: routing.primary.model || null,
+      profileName: routing.primary.name,
+    });
+    this.events?.emitEvent({
+      type: 'plan.updated',
+      projectId: scope.projectId,
+      sessionId: scope.sessionId,
+    });
+
+    const subHandle: ActiveTaskExecution = {
+      projectId: scope.projectId,
+      sessionId: scope.sessionId,
+      taskId: subtaskDto.id,
+      runId: '',
+      controller: new AbortController(),
+      promise: Promise.resolve('stopped'),
+    };
+    this.activeTasks.set(subtaskDto.id, subHandle);
+    this.subtaskFilesByTaskId.set(subtaskDto.id, subtaskFilesAllowed);
+    let siblingSet = this.activeSubtasksByParent.get(parentTask.id);
+    if (!siblingSet) {
+      siblingSet = new Set();
+      this.activeSubtasksByParent.set(parentTask.id, siblingSet);
+    }
+    siblingSet.add(subtaskDto.id);
+
+    const runPromise = this.executeDelegatedSubtask({
+      scope,
+      projectPath: project.path,
+      mainBranch: project.mainBranch,
+      subtask: subtaskDto,
+      subHandle,
+      routing,
+    });
+    subHandle.promise = runPromise;
+
+    if (input.mode === 'async') {
+      return this.buildSubtaskStatusDTO(scope.projectId, parentTask.id, subtaskDto.id);
+    }
+
+    // `wait` mode: yield parent's limiter slot while blocked waiting for the subtask (coder + review)
+    // so neither same-account subtasks nor cross-model reviewers can deadlock on maxParallel=1.
+    const restoreSlot = scope.yieldParentSlot
+      ? await scope.yieldParentSlot()
+      : async () => {};
+    try {
+      await runPromise;
+    } finally {
+      await restoreSlot().catch(() => undefined);
+    }
+
+    return this.buildSubtaskStatusDTO(scope.projectId, parentTask.id, subtaskDto.id);
+  }
+
+  private async waitForOverlappingSiblings(
+    parentTaskId: string,
+    subtaskId: string,
+    filesAllowed: string[],
+    signal: AbortSignal,
+  ): Promise<void> {
+    while (!signal.aborted) {
+      const siblingIds = this.activeSubtasksByParent.get(parentTaskId);
+      if (!siblingIds) return;
+      const blockers: Array<Promise<unknown>> = [];
+      for (const otherId of siblingIds) {
+        if (otherId === subtaskId) break; // only wait for earlier-registered siblings to avoid mutual deadlock
+        const otherFiles = this.subtaskFilesByTaskId.get(otherId) ?? [];
+        if (globsOverlap(filesAllowed, otherFiles)) {
+          const handle = this.activeTasks.get(otherId);
+          if (handle) blockers.push(handle.promise.catch(() => undefined));
+        }
+      }
+      if (blockers.length === 0) return;
+      await Promise.race([
+        Promise.all(blockers),
+        new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true })),
+      ]);
+    }
+  }
+
+  private async executeDelegatedSubtask(opts: {
+    scope: DelegationTokenScope;
+    projectPath: string;
+    mainBranch: string;
+    subtask: TaskDTO;
+    subHandle: ActiveTaskExecution;
+    routing: ReturnType<ExecutionService['resolveSubtaskRouting']>;
+  }): Promise<RunStatus> {
+    const { scope, projectPath, mainBranch, subtask, subHandle, routing } = opts;
+    const branchName = subtask.branchName ?? `dalang/${subtask.externalId}`;
+    const worktreePath = getTaskWorktreeDir(this.worktreesRoot, scope.projectId, subtask.externalId);
+
+    const cleanupUnmergedSubtask = async () => {
+      const taskRuns = this.db.select().from(runs).where(eq(runs.taskId, subtask.id)).all();
+      for (const r of taskRuns) {
+        const content = await readArtifactWithGitFallback(projectPath, r.logPath, r.commitAfter);
+        if (content !== null) {
+          const abs = path.join(projectPath, r.logPath);
+          if (!fs.existsSync(abs)) {
+            writeArtifactFile(projectPath, abs, content, 'refuse');
+          }
+        }
+      }
+      await this.withProjectGitLock(scope.projectId, async () => {
+        await removeTaskWorktree(projectPath, worktreePath).catch(() => undefined);
+        if (await branchExists(projectPath, branchName).catch(() => false)) {
+          await deleteTaskBranch(projectPath, mainBranch, branchName).catch(() => undefined);
+        }
+      });
+    };
+
+    try {
+      await this.waitForOverlappingSiblings(
+        scope.taskId,
+        subtask.id,
+        subtask.filesAllowed,
+        subHandle.controller.signal,
+      );
+      if (subHandle.controller.signal.aborted) {
+        const now = new Date().toISOString();
+        this.db
+          .update(tasks)
+          .set({ status: 'stopped', branchName: null, rejectionNote: 'Cancelled', updatedAt: now })
+          .where(eq(tasks.id, subtask.id))
+          .run();
+        this.events?.emitEvent({ type: 'plan.updated', projectId: scope.projectId, sessionId: scope.sessionId });
+        return 'stopped';
+      }
+
+      const { headSha: subBaseSha } = await this.withProjectGitLock(scope.projectId, async () => {
+        return createTaskWorktree(projectPath, worktreePath, branchName, scope.branchName, true);
+      });
+
+      const logsDir = scope.sessionId
+        ? getSessionLogsDir(projectPath, scope.sessionId)
+        : getProjectLogsDir(projectPath);
+      ensureProjectDir(projectPath, logsDir);
+
+      const taskArtDir = scope.sessionId
+        ? getSessionTaskArtifactDir(worktreePath, scope.sessionId, subtask.externalId)
+        : getTaskArtifactDir(worktreePath, subtask.externalId);
+      ensureProjectDir(worktreePath, taskArtDir);
+
+      const relTaskDir = scope.sessionId
+        ? path.posix.join('.dalang', 'sessions', scope.sessionId, 'tasks', subtask.externalId)
+        : path.posix.join('.dalang', 'tasks', subtask.externalId);
+      const relLogsDir = scope.sessionId
+        ? path.posix.join('.dalang', 'sessions', scope.sessionId, 'logs')
+        : path.posix.join('.dalang', 'logs');
+
+      const relResultPath = path.posix.join(relTaskDir, 'result.json');
+      const absResultPath = path.join(worktreePath, relResultPath);
+      const relReviewPath = path.posix.join(relTaskDir, 'review.json');
+      const absReviewPath = path.join(worktreePath, relReviewPath);
+
+      removeArtifactFile(worktreePath, absResultPath);
+      removeArtifactFile(worktreePath, absReviewPath);
+
+      if (routing.proactiveFallback && routing.quotaReroutedReason) {
+        this.recordProviderEvent(
+          routing.skippedPrimaryProvider ?? routing.primary.provider,
+          'quota_fallback',
+          routing.quotaReroutedReason,
+          routing.skippedPrimaryConfigDir,
+        );
+      }
+
+      const runId = crypto.randomUUID();
+      const attempt = this.nextAttemptForTask(subtask.id);
+      const relLogPath = path.join(relLogsDir, `run-${subtask.externalId}-${Date.now()}.log`);
+      const absLogPath = path.join(projectPath, relLogPath);
+
+      this.insertRunRecord({
+        id: runId,
+        projectId: scope.projectId,
+        taskId: subtask.id,
+        profileId: routing.primary.id,
+        provider: routing.primary.provider,
+        accountKey: buildAccountKey(routing.primary.provider, routing.primary.configDir),
+        model: routing.primary.model || null,
+        kind: 'execute',
+        branchName,
+        worktreePath,
+        cliSessionId: null,
+        attempt,
+        usedFallback: routing.proactiveFallback,
+        commitBefore: subBaseSha,
+        logPath: relLogPath,
+      });
+      subHandle.runId = runId;
+
+      this.events?.emitEvent({
+        type: 'run.started',
+        projectId: scope.projectId,
+        sessionId: scope.sessionId,
+        taskId: subtask.id,
+        runId,
+        profileName: routing.primary.name,
+        provider: routing.primary.provider,
+      });
+      this.events?.emitEvent({
+        type: 'plan.updated',
+        projectId: scope.projectId,
+        sessionId: scope.sessionId,
+      });
+
+      const coderOutcome = await this.runCoderPhaseWithFallback({
+        projectId: scope.projectId,
+        sessionId: scope.sessionId,
+        projectPath,
+        worktreePath,
+        branchName,
+        baseMainSha: subBaseSha,
+        task: subtask,
+        execHandle: subHandle,
+        initialRunId: runId,
+        initialProfile: routing.primary,
+        fallbackProfile: routing.fallback,
+        initialLease: null,
+        sandboxReady: scope.sandboxReady,
+        routeNote: routing.note,
+        absLogPath,
+        relLogsDir,
+        absResultPath,
+        relResultPath,
+        sessionToResume: null,
+        kind: 'execute',
+        prompt: this.buildTaskPrompt(subtask, routing.primary, relResultPath, null, false),
+        buildPromptForProfile: (prof) =>
+          this.buildTaskPrompt(subtask, prof, relResultPath, null, false),
+        onParentKeepAlive: scope.keepParentAlive,
+      });
+
+      if (coderOutcome.status !== 'completed') {
+        await cleanupUnmergedSubtask();
+        this.db
+          .update(tasks)
+          .set({ branchName: null, updatedAt: new Date().toISOString() })
+          .where(eq(tasks.id, subtask.id))
+          .run();
+        return coderOutcome.status;
+      }
+
+      const reviewStatus = await this.runReviewAndFixLoop({
+        projectId: scope.projectId,
+        sessionId: scope.sessionId,
+        projectPath,
+        worktreePath,
+        mainBranch: scope.branchName,
+        branchName,
+        baseMainSha: subBaseSha,
+        task: subtask,
+        execHandle: subHandle,
+        sandboxReady: scope.sandboxReady,
+        coderProfile: coderOutcome.profile,
+        coderFallback: coderOutcome.fallback,
+        coderSessionId: coderOutcome.sessionId,
+        coderResult: coderOutcome.result,
+        scopeWarnings: coderOutcome.scopeWarnings,
+        relLogsDir,
+        relTaskDir,
+        absResultPath,
+        relResultPath,
+        absReviewPath,
+        relReviewPath,
+        subtaskMergeTarget: {
+          parentTaskId: scope.taskId,
+          parentWorktreePath: scope.worktreePath,
+          parentBranch: scope.branchName,
+        },
+        onParentKeepAlive: scope.keepParentAlive,
+      });
+
+      if (reviewStatus !== 'completed') {
+        await cleanupUnmergedSubtask();
+        this.db
+          .update(tasks)
+          .set({ branchName: null, updatedAt: new Date().toISOString() })
+          .where(eq(tasks.id, subtask.id))
+          .run();
+      }
+      return reviewStatus;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await cleanupUnmergedSubtask().catch(() => undefined);
+      this.db
+        .update(tasks)
+        .set({
+          status: subHandle.controller.signal.aborted ? 'stopped' : 'failed',
+          branchName: null,
+          rejectionNote: msg,
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(tasks.id, subtask.id))
+        .run();
+      this.events?.emitEvent({
+        type: 'plan.updated',
+        projectId: scope.projectId,
+        sessionId: scope.sessionId,
+      });
+      return subHandle.controller.signal.aborted ? 'stopped' : 'failed';
+    } finally {
+      if (this.activeTasks.get(subtask.id) === subHandle) {
+        this.activeTasks.delete(subtask.id);
+      }
+      this.subtaskFilesByTaskId.delete(subtask.id);
+      const set = this.activeSubtasksByParent.get(scope.taskId);
+      if (set) {
+        set.delete(subtask.id);
+        if (set.size === 0) this.activeSubtasksByParent.delete(scope.taskId);
+      }
+    }
+  }
+
+  private findScopedSubtaskRow(scope: DelegationTokenScope, taskIdOrExt: string) {
+    const row = this.db
+      .select()
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.parentTaskId, scope.taskId),
+          or(eq(tasks.id, taskIdOrExt), eq(tasks.externalId, taskIdOrExt)),
+        ),
+      )
+      .get();
+    if (!row) {
+      throw new Error(`Delegated subtask not found for parent ${scope.externalId}: ${taskIdOrExt}`);
+    }
+    return row;
+  }
+
+  private async getDelegatedTaskStatus(
+    scope: DelegationTokenScope,
+    input: TaskStatusInput,
+  ): Promise<DelegatedSubtaskStatusDTO> {
+    const row = this.findScopedSubtaskRow(scope, input.task_id);
+    return this.buildSubtaskStatusDTO(scope.projectId, scope.taskId, row.id);
+  }
+
+  private async cancelDelegatedTask(
+    scope: DelegationTokenScope,
+    input: TaskCancelInput,
+  ): Promise<DelegatedSubtaskStatusDTO> {
+    const row = this.findScopedSubtaskRow(scope, input.task_id);
+    const active = this.activeTasks.get(row.id);
+    if (active) {
+      active.controller.abort();
+      await active.promise.catch(() => undefined);
+    } else if (row.status !== 'done' && row.status !== 'stopped') {
+      const now = new Date().toISOString();
+      this.db
+        .update(tasks)
+        .set({ status: 'stopped', branchName: null, rejectionNote: 'Cancelled by parent agent', updatedAt: now })
+        .where(eq(tasks.id, row.id))
+        .run();
+      this.events?.emitEvent({
+        type: 'plan.updated',
+        projectId: scope.projectId,
+        sessionId: scope.sessionId,
+      });
+    }
+    return this.buildSubtaskStatusDTO(scope.projectId, scope.taskId, row.id);
+  }
+
+  private async buildSubtaskStatusDTO(
+    projectId: string,
+    parentTaskId: string,
+    subtaskId: string,
+  ): Promise<DelegatedSubtaskStatusDTO> {
+    const project = this.getProjectRow(projectId);
+    const row = this.db.select().from(tasks).where(eq(tasks.id, subtaskId)).get();
+    if (!row) {
+      throw new Error(`Subtask not found: ${subtaskId}`);
+    }
+    const taskRuns = this.db
+      .select()
+      .from(runs)
+      .where(eq(runs.taskId, row.id))
+      .orderBy(desc(runs.startedAt), desc(runs.attempt))
+      .all();
+    const latestCoderRun = taskRuns.find((r) => r.kind !== 'review') ?? taskRuns[0] ?? null;
+    const profileById = new Map(this.profiles.listProfiles().map((p) => [p.id, p]));
+    const latestProfile = latestCoderRun
+      ? profileById.get(latestCoderRun.profileId)
+      : row.profileOverride
+        ? profileById.get(row.profileOverride)
+        : undefined;
+
+    let coderResult: TaskResultContract | null = null;
+    if (latestCoderRun) {
+      const runDto = await this.toRunDTO(project.path, latestCoderRun, undefined, latestProfile);
+      coderResult = runDto.result;
+    }
+
+    const latestReviewRow = this.db
+      .select()
+      .from(reviews)
+      .where(eq(reviews.taskId, row.id))
+      .orderBy(desc(reviews.round), desc(reviews.createdAt))
+      .get();
+    const latestReviewDto = latestReviewRow
+      ? await this.toReviewDTO(
+          project.path,
+          latestReviewRow,
+          undefined,
+          profileById.get(latestReviewRow.reviewerProfileId),
+        )
+      : null;
+
+    const filesAllowed: string[] = (() => {
+      try {
+        return JSON.parse(row.filesAllowedJson) as string[];
+      } catch {
+        return [];
+      }
+    })();
+
+    return {
+      task_id: row.id,
+      external_id: row.externalId,
+      parent_task_id: parentTaskId,
+      title: row.title,
+      status: row.status as TaskDTO['status'],
+      provider: (latestCoderRun?.provider ?? latestProfile?.provider ?? 'codex') as ProviderId,
+      model: latestCoderRun?.model ?? (latestProfile?.model || null),
+      profile: latestProfile?.name ?? latestCoderRun?.profileId ?? row.profileOverride ?? 'default',
+      branch_name: row.branchName ?? null,
+      merge_target_branch: row.mergeTargetBranch ?? null,
+      merged_into_parent: row.status === 'done' && Boolean(row.mergeCommitSha),
+      merge_commit_sha: row.mergeCommitSha ?? null,
+      files_allowed: filesAllowed,
+      verify: row.verify,
+      review_status: latestReviewDto ? latestReviewDto.status : null,
+      review_rounds: row.reviewRounds,
+      review_findings: latestReviewDto ? latestReviewDto.contract.findings : [],
+      summary: coderResult?.summary ?? latestReviewDto?.contract.summary ?? null,
+      changed_files: coderResult?.changed_files ?? [],
+      error: row.rejectionNote ?? latestCoderRun?.failureReason ?? null,
+      created_at: row.createdAt,
+      updated_at: row.updatedAt,
+    };
   }
 
   async getRunLog(
@@ -3184,6 +4248,8 @@ export class ExecutionService {
 
     const guardTasks: GuardTaskEntryDTO[] = [];
     for (const task of plan?.tasks ?? []) {
+      // Delegated subtasks merge into their parent task's branch, not directly into main.
+      if (task.delegationDepth > 0) continue;
       const taskReviews = reviewsByTask.get(task.id) ?? [];
       const inGuard =
         task.status === 'awaiting_merge' ||
@@ -3326,6 +4392,9 @@ export class ExecutionService {
     if (!plan || !sid) throw new Error('No plan exists for this project.');
     const task = plan.tasks.find((t) => t.id === taskId || t.externalId === taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
+    if (task.delegationDepth > 0) {
+      throw new Error(`Subtask ${task.externalId} merges into its parent branch, not directly into ${project.mainBranch}.`);
+    }
     if (this.activeTasks.has(task.id) || task.status === 'running' || task.status === 'reviewing') {
       throw new Error(`Wait for ${task.externalId} to finish running before merging.`);
     }
@@ -3562,6 +4631,9 @@ export class ExecutionService {
     if (!plan || !sid) throw new Error('No plan exists for this project.');
     const task = plan.tasks.find((t) => t.id === taskId || t.externalId === taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
+    if (task.delegationDepth > 0) {
+      throw new Error(`Subtask ${task.externalId} cannot be rejected directly in Guard; reject its parent task instead.`);
+    }
     if (this.activeTasks.has(task.id) || task.status === 'running' || task.status === 'reviewing') {
       throw new Error(`Wait for ${task.externalId} to finish running before rejecting it.`);
     }
@@ -3587,7 +4659,16 @@ export class ExecutionService {
 
     const branchName = task.branchName ?? `dalang/${task.externalId}`;
     const worktreePath = getTaskWorktreeDir(this.worktreesRoot, projectId, task.externalId);
+    const childSubtasks = plan.tasks.filter((t) => t.parentTaskId === task.id && t.delegationDepth > 0);
     await this.withProjectGitLock(projectId, async () => {
+      for (const sub of childSubtasks) {
+        const subWt = getTaskWorktreeDir(this.worktreesRoot, projectId, sub.externalId);
+        await removeTaskWorktree(project.path, subWt).catch(() => undefined);
+        const subBranch = sub.branchName ?? `dalang/${sub.externalId}`;
+        if (await branchExists(project.path, subBranch).catch(() => false)) {
+          await deleteTaskBranch(project.path, project.mainBranch, subBranch).catch(() => undefined);
+        }
+      }
       await removeTaskWorktree(project.path, worktreePath).catch(() => undefined);
       await deleteTaskBranch(project.path, project.mainBranch, branchName);
     });
@@ -4103,6 +5184,8 @@ export class ExecutionService {
       taskId: row.taskId,
       taskExternalId: task?.externalId ?? row.taskId,
       taskTitle: task?.title ?? 'Task',
+      parentTaskId: task?.parentTaskId ?? null,
+      delegationDepth: task?.delegationDepth ?? 0,
       profileId: row.profileId,
       profileName: profile?.name ?? row.profileId,
       provider: row.provider as ProviderId,

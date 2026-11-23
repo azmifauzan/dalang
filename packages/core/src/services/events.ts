@@ -46,6 +46,29 @@ export type DalangEvent =
   | {
       type: 'provider.updated';
       provider: string;
+    }
+  | {
+      type: 'task.delegated';
+      projectId: string;
+      sessionId?: string;
+      parentTaskId: string;
+      parentExternalId: string;
+      taskId: string;
+      externalId: string;
+      title: string;
+      provider: string;
+      model: string | null;
+      profileName: string;
+    }
+  | {
+      type: 'task.subtask_merged';
+      projectId: string;
+      sessionId?: string;
+      parentTaskId: string;
+      taskId: string;
+      externalId: string;
+      targetBranch: string;
+      mergeCommitSha: string;
     };
 
 export class DalangEventBus extends EventEmitter {

@@ -6,7 +6,21 @@ export interface TurnLogger {
   close: () => void;
 }
 
-export function createTurnLogger(logFilePath?: string): TurnLogger {
+export function redactSecrets(text: string, secrets?: readonly (string | null | undefined)[]): string {
+  if (!secrets || secrets.length === 0 || !text) return text;
+  let out = text;
+  for (const secret of secrets) {
+    if (secret && secret.length >= 8 && out.includes(secret)) {
+      out = out.split(secret).join('[REDACTED]');
+    }
+  }
+  return out;
+}
+
+export function createTurnLogger(
+  logFilePath?: string,
+  secrets?: readonly (string | null | undefined)[],
+): TurnLogger {
   if (!logFilePath) {
     return {
       write: () => {},
@@ -26,7 +40,7 @@ export function createTurnLogger(logFilePath?: string): TurnLogger {
   return {
     write: (line: string) => {
       if (closed) return;
-      fs.writeSync(fd, `${line}\n`, undefined, 'utf8');
+      fs.writeSync(fd, `${redactSecrets(line, secrets)}\n`, undefined, 'utf8');
     },
     close: () => {
       if (closed) return;

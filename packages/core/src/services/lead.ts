@@ -428,15 +428,23 @@ export class LeadService {
       .all();
     if (sessionPlans.length === 0) return false;
     const taskRows = this.db
-      .select({ status: tasks.status, branchName: tasks.branchName })
+      .select({
+        status: tasks.status,
+        branchName: tasks.branchName,
+        delegationDepth: tasks.delegationDepth,
+      })
       .from(tasks)
       .where(inArray(tasks.planId, sessionPlans.map((p) => p.id)))
       .all();
-    return taskRows.some(
-      (t) =>
+    return taskRows.some((t) => {
+      if ((t.delegationDepth ?? 0) > 0) {
+        return t.status === 'running' || t.status === 'reviewing';
+      }
+      return (
         UNFINISHED_TASK_STATUSES.has(t.status) ||
-        (Boolean(t.branchName && t.branchName.trim()) && t.status !== 'done'),
-    );
+        (Boolean(t.branchName && t.branchName.trim()) && t.status !== 'done')
+      );
+    });
   }
 
   hasSessionCompletedWork(sessionId: string): boolean {
@@ -2541,6 +2549,9 @@ export class LeadService {
       needsSplit: Boolean(row.needsSplit),
       splitDepth: row.splitDepth,
       parentTaskId: row.parentTaskId,
+      delegatedByRunId: row.delegatedByRunId ?? null,
+      delegationDepth: row.delegationDepth ?? 0,
+      mergeTargetBranch: row.mergeTargetBranch ?? null,
       profileOverride: row.profileOverride,
       reviewRounds: row.reviewRounds,
       branchName: row.branchName ?? null,
@@ -2826,10 +2837,11 @@ export class LeadService {
 
     const planTasks = latestPlan
       ? this.db
-          .select({ status: tasks.status })
+          .select({ status: tasks.status, delegationDepth: tasks.delegationDepth })
           .from(tasks)
           .where(eq(tasks.planId, latestPlan.id))
           .all()
+          .filter((t) => (t.delegationDepth ?? 0) === 0)
       : [];
 
     const msgRows = this.db

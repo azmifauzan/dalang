@@ -431,6 +431,11 @@ function AppShell({ authEnabled }: { authEnabled: boolean }) {
             projectId?: string;
             sessionId?: string;
             taskId?: string;
+            parentTaskId?: string;
+            parentExternalId?: string;
+            externalId?: string;
+            title?: string;
+            targetBranch?: string;
             runId?: string;
             profileName?: string;
             provider?: string;
@@ -569,6 +574,37 @@ function AppShell({ authEnabled }: { authEnabled: boolean }) {
             qc.invalidateQueries({ queryKey: ['task-diff', msg.projectId] });
             qc.invalidateQueries({ queryKey: ['sessions', msg.projectId] });
             qc.invalidateQueries({ queryKey: ['projects'] });
+          } else if (msg.type === 'task.delegated' && msg.projectId) {
+            const provider = msg.provider as ProviderId | undefined;
+            pushActivity(msg.projectId, {
+              id: `delegated-${msg.taskId ?? ''}-${Date.now()}`,
+              timestamp: new Date().toISOString(),
+              projectId: msg.projectId,
+              taskId: msg.taskId,
+              taskExternalId: msg.externalId,
+              character: characterForProfile(msg.profileName ?? 'coder'),
+              provider,
+              kind: 'delegated',
+              title: msg.title,
+              target: msg.parentExternalId,
+            });
+            qc.invalidateQueries({ queryKey: ['execution', msg.projectId] });
+            qc.invalidateQueries({ queryKey: ['plan', msg.projectId] });
+            qc.invalidateQueries({ queryKey: ['session-detail', msg.projectId] });
+          } else if (msg.type === 'task.subtask_merged' && msg.projectId) {
+            pushActivity(msg.projectId, {
+              id: `submerged-${msg.taskId ?? ''}-${Date.now()}`,
+              timestamp: new Date().toISOString(),
+              projectId: msg.projectId,
+              taskId: msg.taskId,
+              taskExternalId: msg.externalId,
+              character: 'arjuna',
+              kind: 'subtask_merged',
+              target: msg.targetBranch,
+            });
+            qc.invalidateQueries({ queryKey: ['execution', msg.projectId] });
+            qc.invalidateQueries({ queryKey: ['plan', msg.projectId] });
+            qc.invalidateQueries({ queryKey: ['session-detail', msg.projectId] });
           } else if (msg.type === 'integration.finished' && msg.projectId) {
             pushActivity(msg.projectId, {
               id: `integration-${Date.now()}`,

@@ -3,7 +3,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ProjectSummary, TaskRunDTO } from '@dalang/shared';
 import { useI18n } from '../i18n/index.js';
-import { buildInitialFeedFromRuns, type ActivityFeedItem } from '../lib/activity.js';
+import {
+  buildInitialFeedFromRuns,
+  parseNativeSubagentsFromLog,
+  type ActivityFeedItem,
+} from '../lib/activity.js';
 import { api } from '../lib/api.js';
 import { DependencyGraph } from './DependencyGraph.js';
 import { EmptyPanel, ErrorPanel, LoadingPanel } from './StateViews.js';
@@ -185,8 +189,20 @@ export function WorkView({
     },
   });
 
-  const doneCount = previews.filter((p) => p.status === 'done').length;
-  const eligibleCount = previews.filter((p) => p.eligible).length;
+  const topLevelPreviews = previews.filter((p) => p.delegationDepth === 0);
+  const subtasksByParentId = useMemo(() => {
+    const map = new Map<string, typeof previews>();
+    for (const p of previews) {
+      if (p.delegationDepth > 0 && p.parentTaskId) {
+        const list = map.get(p.parentTaskId) ?? [];
+        list.push(p);
+        map.set(p.parentTaskId, list);
+      }
+    }
+    return map;
+  }, [previews]);
+  const doneCount = topLevelPreviews.filter((p) => p.status === 'done').length;
+  const eligibleCount = topLevelPreviews.filter((p) => p.eligible).length;
   const needsUnconfinedOptIn = Boolean(execution && !execution.sandboxReady);
   const canStartQueue =
     Boolean(execution) &&
@@ -200,6 +216,11 @@ export function WorkView({
     inspectedRun?.status === 'running'
       ? liveLines.join('\n')
       : logQuery.data?.content || liveLines.join('\n');
+  const nativeSubagents = useMemo(
+    () => parseNativeSubagentsFromLog(displayedLogText),
+    [displayedLogText],
+  );
+  const selectedSubtasks = selectedTask ? (subtasksByParentId.get(selectedTask.taskId) ?? []) : [];
 
   useEffect(() => {
     if (inspectedRun?.status === 'running' && logPreRef.current) {
@@ -229,7 +250,7 @@ export function WorkView({
             <h2 className="text-lg font-semibold">{t('work.title')}</h2>
             {execution && (
               <Badge style={hasActiveExecution ? statusColors('running') : undefined}>
-                {doneCount} / {previews.length}
+                {doneCount} / {topLevelPreviews.length}
               </Badge>
             )}
           </div>
@@ -383,7 +404,7 @@ export function WorkView({
               <section aria-labelledby="work-tasks-heading" className="min-w-0 space-y-3 lg:col-span-5">
                 <div className="flex items-center justify-between gap-2">
                   <h3 id="work-tasks-heading" className="text-base font-semibold">
-                    {t('work.tasksHeading', { count: previews.length })}
+                    {t('work.tasksHeading', { count: topLevelPreviews.length })}
                   </h3>
                   <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>
                     {t('work.waveOrder')}
@@ -391,7 +412,7 @@ export function WorkView({
                 </div>
 
                 <ul className="space-y-3">
-                  {previews.map((task) => {
+                  {topLevelPreviews.map((task) => {
                     const taskHistory = runs.filter((r) => r.taskId === task.taskId);
                     const latestRun = taskHistory[0] ?? null;
                     const resumableRun =
@@ -413,6 +434,7 @@ export function WorkView({
                       canRunFresh &&
                       Boolean(resumableRun) &&
                       (task.status === 'stopped' || task.status === 'failed');
+                    const childSubtasks = subtasksByParentId.get(task.taskId) ?? [];
 
                     return (
                       <li
@@ -523,6 +545,58 @@ export function WorkView({
                             </>
                           )}
                         </div>
+
+                        {childSubtasks.length > 0 && (
+                          <div
+                            className="mt-3 space-y-2 border-t pt-3"
+                            style={{ borderColor: 'var(--border-subtle)' }}
+                          >
+                            <div
+                              className="text-xs font-semibold uppercase tracking-wide"
+                              style={{ color: 'var(--text-secondary)' }}
+                            >
+                              {t('work.delegatedSubtasks', { count: childSubtasks.length })}
+                            </div>
+                            <ul className="space-y-1.5">
+                              {childSubtasks.map((sub) => {
+                                const subActive = activeRuns.find((r) => r.taskId === sub.taskId) ?? null;
+                                const subLatest = runs.find((r) => r.taskId === sub.taskId) ?? null;
+                                const subSelected = selectedTaskId === sub.taskId;
+                                return (
+                                  <li key={sub.taskId}>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setSelectedTaskId(sub.taskId);
+                                        setSelectedRunId(subActive?.id ?? subLatest?.id ?? null);
+                                        setConfirmRollbackRunId(null);
+                                      }}
+                                      className="flex min-h-[44px] w-full cursor-pointer flex-wrap items-center justify-between gap-2 rounded-[4px] border px-2.5 py-1.5 text-left text-xs transition-colors duration-150"
+                                      style={{
+                                        backgroundColor: subSelected ? 'var(--bg-well)' : 'transparent',
+                                        borderColor: subSelected ? 'var(--accent)' : 'var(--border-subtle)',
+                                      }}
+                                    >
+                                      <span className="min-w-0 flex-1">
+                                        <span className="font-mono-token font-bold">
+                                          [{sub.externalId}]
+                                        </span>{' '}
+                                        <span className="font-medium">{sub.title}</span>
+                                        <span
+                                          className="ml-1.5 font-mono-token"
+                                          style={{ color: 'var(--text-secondary)' }}
+                                        >
+                                          ({sub.resolvedProfileName} · {sub.resolvedProvider})
+                                        </span>
+                                      </span>
+                                      <Badge style={statusColors(sub.status)}>{te(sub.status)}</Badge>
+                                    </button>
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          </div>
+                        )}
                       </li>
                     );
                   })}
@@ -688,6 +762,96 @@ export function WorkView({
                             })}
                           </p>
                         )}
+                      </div>
+                    )}
+
+                    {selectedSubtasks.length > 0 && (
+                      <div
+                        className="space-y-2 rounded border p-3 text-xs"
+                        style={{
+                          backgroundColor: 'var(--bg-well)',
+                          borderColor: 'var(--border-subtle)',
+                        }}
+                      >
+                        <p className="font-semibold">
+                          {t('work.delegatedSubtasks', { count: selectedSubtasks.length })}
+                        </p>
+                        <ul className="space-y-1.5">
+                          {selectedSubtasks.map((sub) => {
+                            const subActive = activeRuns.find((r) => r.taskId === sub.taskId) ?? null;
+                            const subLatest = runs.find((r) => r.taskId === sub.taskId) ?? null;
+                            return (
+                              <li key={sub.taskId}>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSelectedTaskId(sub.taskId);
+                                    setSelectedRunId(subActive?.id ?? subLatest?.id ?? null);
+                                  }}
+                                  className="flex min-h-[44px] w-full cursor-pointer flex-wrap items-center justify-between gap-2 rounded-[4px] border px-2.5 py-1.5 text-left"
+                                  style={{
+                                    backgroundColor: 'var(--bg-surface)',
+                                    borderColor: 'var(--border-subtle)',
+                                  }}
+                                >
+                                  <span>
+                                    <span className="font-mono-token font-bold">[{sub.externalId}]</span>{' '}
+                                    {sub.title} · {sub.resolvedProfileName} ({sub.resolvedProvider})
+                                  </span>
+                                  <Badge style={statusColors(sub.status)}>{te(sub.status)}</Badge>
+                                </button>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </div>
+                    )}
+
+                    {nativeSubagents.length > 0 && (
+                      <div
+                        className="space-y-2 rounded border p-3 text-xs"
+                        style={{
+                          backgroundColor: 'var(--bg-well)',
+                          borderColor: 'var(--border-subtle)',
+                        }}
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <p className="font-semibold">
+                            {t('work.nativeSubagentsTitle', { count: nativeSubagents.length })}
+                          </p>
+                          <Badge>{t('work.readOnlyBadge')}</Badge>
+                        </div>
+                        <ul className="space-y-1.5">
+                          {nativeSubagents.map((entry) => (
+                            <li
+                              key={entry.id}
+                              className="flex flex-wrap items-start justify-between gap-2 rounded-[4px] border px-2.5 py-1.5"
+                              style={{
+                                backgroundColor: 'var(--bg-surface)',
+                                borderColor: 'var(--border-subtle)',
+                              }}
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <span className="font-mono-token font-semibold">
+                                    [{entry.source === 'claude' ? 'Claude' : 'Antigravity'} · {entry.toolName}]
+                                  </span>
+                                  <span className="font-medium">{entry.label}</span>
+                                </div>
+                                {entry.detail && (
+                                  <p
+                                    className="mt-0.5 truncate"
+                                    style={{ color: 'var(--text-secondary)' }}
+                                    title={entry.detail}
+                                  >
+                                    {entry.detail}
+                                  </p>
+                                )}
+                              </div>
+                              <Badge style={statusColors(entry.status)}>{te(entry.status)}</Badge>
+                            </li>
+                          ))}
+                        </ul>
                       </div>
                     )}
 

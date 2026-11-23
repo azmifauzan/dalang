@@ -11,6 +11,8 @@ interface DependencyNode {
   role: string;
   complexity: string;
   status: TaskStatus;
+  parentTaskId?: string | null;
+  delegationDepth?: number;
   dependsOn: string[];
   wave: number;
   profileLabel: string | null;
@@ -110,27 +112,40 @@ export function DependencyGraph({
 
   const nodes = useMemo<DependencyNode[]>(() => {
     if (previews && previews.length > 0) {
-      return previews.map((p) => ({
-        id: p.taskId,
-        externalId: p.externalId,
-        title: p.title,
-        milestone: p.milestone,
-        role: p.role,
-        complexity: p.complexity,
-        status: p.status,
-        dependsOn: p.dependsOn,
-        wave: p.wave,
-        profileLabel: `${p.resolvedProfileName} (${p.resolvedProvider})`,
-        quotaReroutedReason: p.quotaReroutedReason,
-        overlappingTasks: p.overlappingTasks,
-        blockedByOverlapWith: p.blockedByOverlapWith,
-        blockedReason: p.blockedReason,
-      }));
+      const extById = new Map(previews.map((p) => [p.taskId, p.externalId]));
+      return previews.map((p) => {
+        const parentExt = p.delegationDepth > 0 && p.parentTaskId ? extById.get(p.parentTaskId) : undefined;
+        const deps = parentExt && !p.dependsOn.includes(parentExt) ? [...p.dependsOn, parentExt] : p.dependsOn;
+        return {
+          id: p.taskId,
+          externalId: p.externalId,
+          title: p.title,
+          milestone: p.milestone,
+          role: p.role,
+          complexity: p.complexity,
+          status: p.status,
+          parentTaskId: p.parentTaskId,
+          delegationDepth: p.delegationDepth,
+          dependsOn: deps,
+          wave: parentExt ? Math.max(p.wave, (previews.find((x) => x.taskId === p.parentTaskId)?.wave ?? 0) + 1) : p.wave,
+          profileLabel: `${p.resolvedProfileName} (${p.resolvedProvider})`,
+          quotaReroutedReason: p.quotaReroutedReason,
+          overlappingTasks: p.overlappingTasks,
+          blockedByOverlapWith: p.blockedByOverlapWith,
+          blockedReason: p.blockedReason,
+        };
+      });
     }
 
     if (tasks && tasks.length > 0) {
-      const waves = computeTopologicalWaves(tasks);
-      return tasks.map((t) => ({
+      const extById = new Map(tasks.map((t) => [t.id, t.externalId]));
+      const augmented = tasks.map((t) => {
+        const parentExt = t.delegationDepth > 0 && t.parentTaskId ? extById.get(t.parentTaskId) : undefined;
+        const deps = parentExt && !t.dependsOn.includes(parentExt) ? [...t.dependsOn, parentExt] : t.dependsOn;
+        return { ...t, dependsOn: deps };
+      });
+      const waves = computeTopologicalWaves(augmented);
+      return augmented.map((t) => ({
         id: t.id,
         externalId: t.externalId,
         title: t.title,
@@ -138,6 +153,8 @@ export function DependencyGraph({
         role: t.role,
         complexity: t.complexity,
         status: t.status,
+        parentTaskId: t.parentTaskId,
+        delegationDepth: t.delegationDepth,
         dependsOn: t.dependsOn,
         wave: waves.get(t.externalId) ?? 0,
         profileLabel: t.profileOverride ?? null,
@@ -388,7 +405,10 @@ export function DependencyGraph({
                       }`}
                     >
                       <div className="flex flex-wrap items-center justify-between gap-1.5">
-                        <Badge>{node.externalId}</Badge>
+                        <div className="flex flex-wrap items-center gap-1">
+                          <Badge>{node.externalId}</Badge>
+                          {(node.delegationDepth ?? 0) > 0 && <Badge>{t('work.subtaskBadge')}</Badge>}
+                        </div>
                         <Badge className={statusBadgeStyle(node.status)}>{te(node.status)}</Badge>
                       </div>
 

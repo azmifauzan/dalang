@@ -99,6 +99,125 @@ export function globsOverlap(patternsA: string[], patternsB: string[]): boolean 
   return false;
 }
 
+function isUnsafeGlobPattern(raw: string): boolean {
+  const trimmed = raw.trim().replace(/\\/g, '/');
+  if (!trimmed) return true;
+  if (trimmed.startsWith('/') || /^[A-Za-z]:/.test(trimmed)) return true;
+  const segments = trimmed.replace(/^\.\//, '').split('/');
+  return segments.some((seg) => seg === '..');
+}
+
+/**
+ * True when every single path segment matched by `childSeg` is also matched by `parentSeg`.
+ */
+function segmentSubset(childSeg: string, parentSeg: string): boolean {
+  if (childSeg === parentSeg) return true;
+  const memo = new Map<number, boolean>();
+  const stride = parentSeg.length + 1;
+
+  const dfs = (i: number, j: number): boolean => {
+    const key = i * stride + j;
+    const cached = memo.get(key);
+    if (cached !== undefined) return cached;
+
+    let res = false;
+    if (i === childSeg.length && j === parentSeg.length) {
+      res = true;
+    } else if (j < parentSeg.length && parentSeg[j] === '*') {
+      // '*' in parent matches zero chars OR consumes any single char/wildcard in child.
+      res = dfs(i, j + 1) || (i < childSeg.length && dfs(i + 1, j));
+    } else if (i < childSeg.length && j < parentSeg.length) {
+      const c = childSeg[i];
+      const p = parentSeg[j];
+      if (p === '?') {
+        // '?' in parent matches a single literal char or '?' in child, never '*'.
+        res = c !== '*' && dfs(i + 1, j + 1);
+      } else {
+        // Literal char in parent matches only the exact same literal char in child.
+        res = c !== '*' && c !== '?' && c === p && dfs(i + 1, j + 1);
+      }
+    }
+
+    memo.set(key, res);
+    return res;
+  };
+
+  return dfs(0, 0);
+}
+
+/**
+ * True when every relative path matched by `childPattern` is also matched by `parentPattern`.
+ */
+function singleGlobSubset(childPattern: string, parentPattern: string): boolean {
+  const segsC = childPattern.split('/').filter(Boolean);
+  const segsP = parentPattern.split('/').filter(Boolean);
+  if (segsC.length === 0 || segsP.length === 0) return false;
+  const memo = new Map<number, boolean>();
+  const stride = segsP.length + 1;
+
+  const dfs = (i: number, j: number): boolean => {
+    const key = i * stride + j;
+    const cached = memo.get(key);
+    if (cached !== undefined) return cached;
+
+    let res = false;
+    if (i === segsC.length && j === segsP.length) {
+      res = true;
+    } else if (j < segsP.length && segsP[j] === '**') {
+      // '**' in parent matches 0 segments OR absorbs 1 segment of child (including child '**').
+      res = dfs(i, j + 1) || (i < segsC.length && dfs(i + 1, j));
+    } else if (i < segsC.length && segsC[i] === '**') {
+      // Parent segment is not '**', so it cannot cover arbitrary depth '**'.
+      res = false;
+    } else if (i < segsC.length && j < segsP.length) {
+      if (segmentSubset(segsC[i], segsP[j])) {
+        res = dfs(i + 1, j + 1);
+      }
+    }
+
+    memo.set(key, res);
+    return res;
+  };
+
+  return dfs(0, 0);
+}
+
+/**
+ * Check whether every pattern in `childPatterns` is a subset of `parentPatterns`.
+ * - Rejects empty/absolute/`..` traversal patterns.
+ * - An empty `parentPatterns` list means unrestricted workspace access, so any safe relative child pattern is allowed.
+ * - A non-empty `parentPatterns` list rejects an empty `childPatterns` list.
+ */
+export function isGlobSubset(
+  childPatterns: string[],
+  parentPatterns: string[],
+): { ok: boolean; invalidPatterns: string[] } {
+  const invalid: string[] = [];
+  for (const raw of childPatterns) {
+    if (isUnsafeGlobPattern(raw)) invalid.push(raw);
+  }
+  if (invalid.length > 0) {
+    return { ok: false, invalidPatterns: invalid };
+  }
+
+  const normParent = parentPatterns.flatMap(normalizePattern);
+  const normChild = childPatterns.flatMap(normalizePattern);
+
+  if (normParent.length === 0) {
+    return { ok: true, invalidPatterns: [] };
+  }
+  if (normChild.length === 0) {
+    return { ok: false, invalidPatterns: ['(empty files_allowed)'] };
+  }
+
+  for (const c of normChild) {
+    if (!normParent.some((p) => singleGlobSubset(c, p))) {
+      invalid.push(c);
+    }
+  }
+  return { ok: invalid.length === 0, invalidPatterns: invalid };
+}
+
 /**
  * Compute 0-based topological wave depth for every task (`0` = no dependencies).
  */

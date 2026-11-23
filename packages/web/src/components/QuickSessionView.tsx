@@ -77,7 +77,8 @@ export function QuickSessionView({
   });
 
   const plan = detailQuery.data?.plan ?? null;
-  const quickTask = plan?.tasks[0] ?? null;
+  const quickTask = plan?.tasks.find((t) => t.delegationDepth === 0) ?? plan?.tasks[0] ?? null;
+  const quickSubtasks = plan?.tasks.filter((t) => t.delegationDepth > 0) ?? [];
   const isFinished =
     session.workState === 'idle' &&
     Boolean(quickTask && quickTask.status === 'done');
@@ -472,6 +473,30 @@ export function QuickSessionView({
                 <p className="text-sm" style={{ color: 'var(--error)' }}>
                   {quickTask.rejectionNote}
                 </p>
+              )}
+
+              {quickSubtasks.length > 0 && (
+                <div
+                  className="space-y-2 rounded-[6px] border p-3"
+                  style={{
+                    backgroundColor: 'var(--bg-well)',
+                    borderColor: 'var(--border-subtle)',
+                  }}
+                >
+                  <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-secondary)' }}>
+                    {t('work.delegatedSubtasks', { count: quickSubtasks.length })}
+                  </div>
+                  <ul className="space-y-1.5 text-xs">
+                    {quickSubtasks.map((sub) => (
+                      <li key={sub.id} className="flex flex-wrap items-center justify-between gap-2">
+                        <span>
+                          <span className="font-mono-token font-bold">[{sub.externalId}]</span> {sub.title}
+                        </span>
+                        <Badge>{te(sub.status)}</Badge>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               )}
 
               {/* Live output while running/reviewing */}

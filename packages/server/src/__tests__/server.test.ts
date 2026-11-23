@@ -635,7 +635,7 @@ describe('@dalang/server API (v0.1 Rembuk)', () => {
     const dbDir = makeTempDir('dalang-db-');
     const { app, close } = await createDalangServer({
       dbPath: path.join(dbDir, 'dalang.db'),
-      updateFetcher: async () => '0.8.0',
+      updateFetcher: async () => '0.9.0',
     });
     try {
       const before = await app.inject({ method: 'GET', url: '/api/settings' });
@@ -672,7 +672,7 @@ describe('@dalang/server API (v0.1 Rembuk)', () => {
       expect(updateRes.statusCode).toBe(200);
       expect(updateRes.json().update).toMatchObject({
         currentVersion: DALANG_VERSION,
-        latestVersion: '0.8.0',
+        latestVersion: '0.9.0',
         updateAvailable: true,
         checkEnabled: true,
       });

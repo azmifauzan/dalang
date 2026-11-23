@@ -1,4 +1,6 @@
+import fs from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
 import {
   EFFORT_LEVEL_ORDER,
   splitEffortModel,
@@ -8,7 +10,7 @@ import {
   type ProviderUsage,
   type UsageWindow,
 } from '@dalang/shared';
-import { createTurnLogger } from './logger.js';
+import { createTurnLogger, redactSecrets } from './logger.js';
 import {
   buildProviderAccountEnv,
   detectSandboxEngine,
@@ -332,13 +334,38 @@ export class AntigravityAdapter implements CliAdapter {
     if (options.effort && !options.model) {
       args.push('--effort', options.effort);
     }
+    const secrets = options.mcp?.bearerToken ? [options.mcp.bearerToken] : undefined;
+    let mcpDir: string | undefined;
+    if (options.mcp) {
+      mcpDir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'dalang-mcp-'));
+      fs.chmodSync(mcpDir, 0o700);
+      const settingsPath = path.join(mcpDir, 'settings.json');
+      fs.writeFileSync(
+        settingsPath,
+        JSON.stringify({
+          mcpServers: {
+            dalang: {
+              type: 'http',
+              url: options.mcp.url,
+              headers: {
+                Authorization: `Bearer ${options.mcp.bearerToken}`,
+              },
+            },
+          },
+        }),
+        { mode: 0o600 },
+      );
+      args.push('--settings', settingsPath);
+    }
     args.push(`-p=${options.prompt}`);
 
     if (bwrapAvailable && !this.policy.antigravityKeyringAccess()) {
+      if (mcpDir) fs.rmSync(mcpDir, { recursive: true, force: true });
       throw new Error(KEYRING_OFF_MESSAGE);
     }
     const dbusProxy = bwrapAvailable ? await startDbusProxy(this.runner) : null;
     if (bwrapAvailable && !dbusProxy) {
+      if (mcpDir) fs.rmSync(mcpDir, { recursive: true, force: true });
       throw new Error(
         'Antigravity signs in through the desktop session bus, and a sandboxed run only gets a filtered one. Install xdg-dbus-proxy and run DALANG from a desktop session.',
       );
@@ -353,11 +380,12 @@ export class AntigravityAdapter implements CliAdapter {
         dbusSocket: dbusProxy?.socketPath,
         readOnly: options.permissionMode === 'read-only',
         configDir: options.configDir,
+        mcpDir,
       },
     );
     const env = buildProviderAccountEnv(this.id, options.configDir);
 
-    const logger = createTurnLogger(options.logFilePath);
+    const logger = createTurnLogger(options.logFilePath, secrets);
     let sessionId: string | null = options.sessionId ?? null;
     let resolvedModel: string | null = options.model ?? null;
     let responseText = '';
@@ -372,10 +400,12 @@ export class AntigravityAdapter implements CliAdapter {
         idleTimeoutMs: options.idleTimeoutMs ?? 180_000,
         signal: options.signal,
         env,
+        onKeepAlive: options.onKeepAlive,
         onStdoutLine: (line) => {
-          logger.write(line);
-          options.onLogLine?.(line);
-          const trimmed = line.trim();
+          const safeLine = redactSecrets(line, secrets);
+          logger.write(safeLine);
+          options.onLogLine?.(safeLine);
+          const trimmed = safeLine.trim();
           if (!trimmed.startsWith('{')) return;
           try {
             const ev = JSON.parse(trimmed) as Record<string, unknown>;
@@ -412,8 +442,9 @@ export class AntigravityAdapter implements CliAdapter {
           }
         },
         onStderrLine: (line) => {
-          logger.write(`[stderr] ${line}`);
-          options.onLogLine?.(`[stderr] ${line}`);
+          const safeLine = redactSecrets(line, secrets);
+          logger.write(`[stderr] ${safeLine}`);
+          options.onLogLine?.(`[stderr] ${safeLine}`);
         },
       });
 
@@ -422,17 +453,18 @@ export class AntigravityAdapter implements CliAdapter {
       }
 
       return {
-        text: responseText || textChunks.join('').trim(),
+        text: redactSecrets(responseText || textChunks.join('').trim(), secrets),
         sessionId,
         structuredOutput,
         exitCode: res.exitCode,
-        stdout: res.stdout,
-        stderr: res.stderr,
+        stdout: redactSecrets(res.stdout, secrets),
+        stderr: redactSecrets(res.stderr, secrets),
         logFilePath: options.logFilePath,
         aborted: Boolean(res.aborted),
         ...(usage ? { usage } : {}),
       };
     } finally {
+      if (mcpDir) fs.rmSync(mcpDir, { recursive: true, force: true });
       logger.close();
       dbusProxy?.stop();
     }

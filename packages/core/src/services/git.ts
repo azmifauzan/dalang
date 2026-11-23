@@ -568,10 +568,80 @@ export async function mergeTaskBranchToMain(
   return { beforeMergeSha, mergeCommitSha };
 }
 
+/**
+ * Merge a delegated subtask branch into its parent's branch inside the parent's worktree, since git
+ * will not check out a branch that is already checked out there. Removes the subtask worktree and branch.
+ */
+export async function mergeTaskBranchIntoWorktree(
+  mainProjectPath: string,
+  parentWorktreePath: string,
+  parentBranch: string,
+  subtaskBranch: string,
+  message: string,
+): Promise<{ beforeMergeSha: string; mergeCommitSha: string }> {
+  await assertWorktreeSafe(mainProjectPath, parentWorktreePath);
+  if (!(await branchExists(mainProjectPath, subtaskBranch))) {
+    throw new Error(`Subtask branch "${subtaskBranch}" does not exist.`);
+  }
+  const currentBranch = await getCurrentBranch(parentWorktreePath, mainProjectPath);
+  if (currentBranch !== parentBranch) {
+    throw new Error(
+      `Parent worktree is on "${currentBranch ?? 'detached'}" instead of expected branch "${parentBranch}".`,
+    );
+  }
+
+  const wtGit = openSafeGit(parentWorktreePath);
+  const beforeMergeSha = await getHeadCommit(parentWorktreePath);
+  if (!beforeMergeSha) {
+    throw new Error(`Parent branch "${parentBranch}" has no commits.`);
+  }
+
+  const identityArgs = await ensureGitIdentityArgs(wtGit);
+  let mergeOut = '';
+  try {
+    mergeOut = await wtGit.raw([...identityArgs, 'merge', '--no-ff', '--no-verify', subtaskBranch, '-m', message]);
+  } catch (err) {
+    await wtGit.raw(['merge', '--abort']).catch(() => undefined);
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `Merge conflict or failure merging subtask "${subtaskBranch}" into parent branch "${parentBranch}": ${detail}`,
+    );
+  }
+
+  const postMergeStatus = await wtGit.status();
+  const mergeCommitSha = await getHeadCommit(parentWorktreePath);
+  if (postMergeStatus.conflicted.length > 0) {
+    await wtGit.raw(['merge', '--abort']).catch(() => undefined);
+    const conflictList = ` (${postMergeStatus.conflicted.join(', ')})`;
+    throw new Error(
+      `Merge conflict merging subtask "${subtaskBranch}" into parent branch "${parentBranch}"${conflictList}: ${mergeOut.trim() || 'resolve conflicts before merging.'}`,
+    );
+  }
+  if (!mergeCommitSha) {
+    throw new Error('Failed to resolve HEAD in parent worktree after subtask merge.');
+  }
+
+  await removeWorktreesForBranch(mainProjectPath, subtaskBranch);
+  await openSafeGit(mainProjectPath).raw(['branch', '-d', subtaskBranch]).catch(() => undefined);
+  return { beforeMergeSha, mergeCommitSha };
+}
+
 export interface GitWorktreeInfo {
   path: string;
   head: string | null;
   branch: string | null;
+}
+
+/** Top-level folders of the project that are their own git repository, so a task worktree does not contain them. */
+export function findNestedRepos(projectPath: string): string[] {
+  try {
+    return fs
+      .readdirSync(projectPath, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && e.name !== '.git' && fs.existsSync(path.join(projectPath, e.name, '.git')))
+      .map((e) => e.name);
+  } catch {
+    return [];
+  }
 }
 
 export async function listGitWorktrees(mainProjectPath: string): Promise<GitWorktreeInfo[]> {

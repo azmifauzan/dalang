@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import {
   EFFORT_LEVEL_ORDER,
   splitEffortModel,
@@ -56,11 +57,23 @@ export function FallbackFields({
   value,
   onChange,
   providers,
+  showAccount = true,
+  compact = false,
+  ariaPrefix,
+  optionSuffix,
 }: {
   idPrefix: string;
   value: FallbackForm;
   onChange: (next: FallbackForm) => void;
   providers: ProviderStatus[];
+  /** The account directory is an advanced field; the first-run wizard leaves it out and keeps the saved one. */
+  showAccount?: boolean;
+  /** Same look as a primary model row in the wizard: no visible labels, model and effort side by side. */
+  compact?: boolean;
+  /** In the compact look there are no visible labels: this names the CLI select, and the model and effort selects extend it. */
+  ariaPrefix?: string;
+  /** Extra text after a CLI name, for example "(not ready)". */
+  optionSuffix?: (id: ProviderId) => string;
 }) {
   const { t } = useI18n();
   const models = value.provider ? (providers.find((p) => p.id === value.provider)?.models ?? []) : [];
@@ -74,12 +87,24 @@ export function FallbackFields({
     info && info.supportedEffortLevels.length > 0 ? info.supportedEffortLevels : EFFORT_LEVEL_ORDER;
   const effortOptions = efforts.includes(value.effort) ? efforts : [value.effort, ...efforts];
 
+  const field = (suffix: string, label: string, control: ReactNode, className = '') =>
+    compact ? (
+      control
+    ) : (
+      <div className={`space-y-1.5 ${className}`}>
+        <Label htmlFor={`${idPrefix}-${suffix}`}>{label}</Label>
+        {control}
+      </div>
+    );
+
   return (
-    <div className="space-y-3">
-      <div className="space-y-1.5">
-        <Label htmlFor={`${idPrefix}-provider`}>{t('fallback.provider')}</Label>
+    <div className={compact ? 'space-y-1.5' : 'space-y-3'}>
+      {field(
+        'provider',
+        t('fallback.provider'),
         <NativeSelect
           id={`${idPrefix}-provider`}
+          aria-label={compact ? (ariaPrefix ?? t('fallback.provider')) : undefined}
           value={value.provider}
           onChange={(e) => {
             const provider = e.target.value as ProviderId | '';
@@ -90,17 +115,24 @@ export function FallbackFields({
           {PROVIDERS.map((id) => (
             <option key={id} value={id}>
               {providerDisplayShort(id)}
+              {optionSuffix?.(id) ?? ''}
             </option>
           ))}
-        </NativeSelect>
-      </div>
+        </NativeSelect>,
+      )}
       {value.provider && (
         <>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto]">
-            <div className="space-y-1.5">
-              <Label htmlFor={`${idPrefix}-model`}>{t('config.team.fieldModel')}</Label>
+          <div
+            className={
+              compact ? 'grid grid-cols-[1fr_auto] gap-1.5' : 'grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto]'
+            }
+          >
+            {field(
+              'model',
+              t('config.team.fieldModel'),
               <NativeSelect
                 id={`${idPrefix}-model`}
+                aria-label={compact ? `${ariaPrefix ? `${ariaPrefix}: ` : ''}${t('config.team.fieldModel')}` : undefined}
                 value={selectModelValue}
                 onChange={(e) => {
                   const chosen = e.target.value;
@@ -131,12 +163,14 @@ export function FallbackFields({
                     {modelLabel(m)}
                   </option>
                 ))}
-              </NativeSelect>
-            </div>
-            <div className="space-y-1.5 sm:min-w-[8.5rem]">
-              <Label htmlFor={`${idPrefix}-effort`}>{t('config.team.fieldEffort')}</Label>
+              </NativeSelect>,
+            )}
+            {field(
+              'effort',
+              t('config.team.fieldEffort'),
               <NativeSelect
                 id={`${idPrefix}-effort`}
+                aria-label={compact ? `${ariaPrefix ? `${ariaPrefix}: ` : ''}${t('config.team.fieldEffort')}` : undefined}
                 value={value.effort}
                 onChange={(e) => {
                   const nextEffort = e.target.value as EffortLevel;
@@ -154,19 +188,22 @@ export function FallbackFields({
                     {t(`sessions.picker.effort.${lvl}`)}
                   </option>
                 ))}
-              </NativeSelect>
+              </NativeSelect>,
+              'sm:min-w-[8.5rem]',
+            )}
+          </div>
+          {showAccount && (
+            <div className="space-y-1.5">
+              <Label htmlFor={`${idPrefix}-dir`}>{t('config.team.fieldConfigDir')}</Label>
+              <Input
+                id={`${idPrefix}-dir`}
+                value={value.configDir}
+                onChange={(e) => onChange({ ...value, configDir: e.target.value })}
+                placeholder={t('config.team.configDirPlaceholder')}
+                className="font-mono-token text-sm"
+              />
             </div>
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor={`${idPrefix}-dir`}>{t('config.team.fieldConfigDir')}</Label>
-            <Input
-              id={`${idPrefix}-dir`}
-              value={value.configDir}
-              onChange={(e) => onChange({ ...value, configDir: e.target.value })}
-              placeholder={t('config.team.configDirPlaceholder')}
-              className="font-mono-token text-sm"
-            />
-          </div>
+          )}
         </>
       )}
     </div>

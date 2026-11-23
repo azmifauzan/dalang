@@ -15,6 +15,7 @@ import { useI18n } from '../i18n/index.js';
 import { providerBadgeStyle, providerDisplayShort } from '../lib/activity.js';
 import { api } from '../lib/api.js';
 import { modelLabel } from '../lib/modelLabel.js';
+import { FallbackFields, fallbackFromForm, fallbackToForm, type FallbackForm } from './FallbackFields.js';
 import { ErrorPanel, LoadingPanel } from './StateViews.js';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -165,7 +166,7 @@ export function WizardView({
   const [edits, setEdits] = useState<
     Record<string, { provider?: ProviderId; model?: string; effort?: EffortLevel }>
   >({});
-  const [fallbackEdits, setFallbackEdits] = useState<Record<string, ProviderId | ''>>({});
+  const [fallbackEdits, setFallbackEdits] = useState<Record<string, FallbackForm>>({});
 
   const modelsOf = (provider: ProviderId) => providers.find((p) => p.id === provider)?.models ?? [];
   const effortsFor = (provider: ProviderId, model: string): readonly EffortLevel[] => {
@@ -184,21 +185,21 @@ export function WizardView({
     return { provider, model, effort };
   };
 
-  /** Effective fallback CLI for a role profile (from user edit, profile/rule default, or another ready CLI). */
-  const fallbackProviderOf = (prof: AgentProfileDTO, primaryProvider: ProviderId): ProviderId | '' => {
-    if (prof.id in fallbackEdits) {
-      return fallbackEdits[prof.id];
+  /** The fallback shown for a role: the user's edit, else the saved target (model, effort, and account kept), else a suggestion. */
+  const fallbackFormOf = (prof: AgentProfileDTO, primaryProvider: ProviderId): FallbackForm => {
+    const saved = prof.fallback ?? rules.find((r) => r.profileId === prof.id && r.fallback !== null)?.fallback ?? null;
+    const edit = fallbackEdits[prof.id];
+    if (edit) {
+      return saved && saved.provider === edit.provider && !edit.configDir
+        ? { ...edit, configDir: saved.configDir ?? '' }
+        : edit;
     }
-    const existingRule = rules.find((r) => r.profileId === prof.id && r.fallback !== null)?.fallback ?? null;
-    const seedTarget = prof.fallback ?? existingRule;
-    if (seedTarget && usableIds.has(seedTarget.provider) && seedTarget.provider !== primaryProvider) {
-      return seedTarget.provider;
+    if (saved && usableIds.has(saved.provider) && saved.provider !== primaryProvider) {
+      return fallbackToForm(saved);
     }
-    return PROVIDER_ORDER.find((id) => usableIds.has(id) && id !== primaryProvider) ?? '';
+    const suggested = PROVIDER_ORDER.find((id) => usableIds.has(id) && id !== primaryProvider) ?? '';
+    return { provider: suggested, model: '', effort: 'high', configDir: '' };
   };
-
-  const toFallbackTarget = (provider: ProviderId | ''): FallbackTarget | null =>
-    provider ? { provider, model: '', effort: 'high', configDir: null } : null;
 
   const roleKeys = ['lead', 'coderLight', 'coderMedium', 'coderHeavy', 'qa', 'reviewer'] as const;
   const crossProvider =
@@ -217,7 +218,7 @@ export function WizardView({
         const prof = roleProfiles[key];
         if (!prof) continue;
         const v = valueOf(prof);
-        const fbTarget = toFallbackTarget(fallbackProviderOf(prof, v.provider));
+        const fbTarget = fallbackFromForm(fallbackFormOf(prof, v.provider));
         targetByProfileId.set(prof.id, fbTarget);
         if (
           v.provider !== prof.provider ||
@@ -603,7 +604,7 @@ export function WizardView({
             ).map((card) => {
               const prof = roleProfiles[card.key];
               const cur = prof ? valueOf(prof) : null;
-              const fbProvider = prof && cur ? fallbackProviderOf(prof, cur.provider) : '';
+              const fbForm = prof && cur ? fallbackFormOf(prof, cur.provider) : null;
               const models = cur ? modelsOf(cur.provider) : [];
               const efforts = cur ? effortsFor(cur.provider, cur.model) : EFFORT_LEVEL_ORDER;
               const patch = (next: { provider?: ProviderId; model?: string; effort?: EffortLevel }) =>
@@ -670,34 +671,27 @@ export function WizardView({
                           >
                             {efforts.map((lvl) => (
                               <option key={lvl} value={lvl}>
-                                {lvl}
+                                {t(`sessions.picker.effort.${lvl}`)}
                               </option>
                             ))}
                           </NativeSelect>
                         </div>
-                        <div className="flex items-center gap-2 pt-0.5">
-                          <span
-                            className="shrink-0 text-xs"
-                            style={{ color: 'var(--text-secondary)' }}
-                          >
-                            {t('config.agents.backupLabel')}:
-                          </span>
-                          <NativeSelect
-                            aria-label={`${card.label}: ${t('config.agents.backupLabel')}`}
-                            value={fbProvider}
-                            onChange={(e) => {
-                              const next = e.target.value as ProviderId | '';
-                              setFallbackEdits((prev) => ({ ...prev, [prof.id]: next }));
-                            }}
-                          >
-                            <option value="">{t('common.none')}</option>
-                            {PROVIDER_ORDER.map((id) => (
-                              <option key={id} value={id}>
-                                {providerDisplayShort(id)}
-                                {usableIds.has(id) ? '' : ` (${t('wizard.step3.notReady')})`}
-                              </option>
-                            ))}
-                          </NativeSelect>
+                        <div className="space-y-1.5 pt-1">
+                          <div className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>
+                            {t('config.agents.backupLabel')}
+                          </div>
+                          {fbForm && prof && (
+                            <FallbackFields
+                              idPrefix={`wizard-fallback-${prof.id}`}
+                              value={fbForm}
+                              providers={providers}
+                              showAccount={false}
+                              compact
+                              ariaPrefix={`${card.label}: ${t('config.agents.backupLabel')}`}
+                              optionSuffix={(id) => (usableIds.has(id) ? '' : ` (${t('wizard.step3.notReady')})`)}
+                              onChange={(next) => setFallbackEdits((prev) => ({ ...prev, [prof.id]: next }))}
+                            />
+                          )}
                         </div>
                       </>
                     ) : (

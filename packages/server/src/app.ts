@@ -85,8 +85,10 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
   const leadService = new LeadService(conn.db, registry, events, () =>
     settingsService.resolvedLanguage(),
   );
+  let mcpEndpointUrl: string | null = null;
   const executionService = new ExecutionService(conn.db, registry, leadService, events, {
     getLanguage: () => settingsService.resolvedLanguage(),
+    mcpEndpointUrl: () => mcpEndpointUrl,
   });
   const statsService = new StatisticsService(conn.db, () =>
     executionService.getProviderRuntimeStates(),
@@ -112,6 +114,13 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
   };
 
   const app = Fastify({ logger: false });
+
+  app.addHook('onListen', async () => {
+    const addr = app.server.address();
+    if (typeof addr === 'object' && addr && addr.port) {
+      mcpEndpointUrl = `http://127.0.0.1:${addr.port}/mcp`;
+    }
+  });
 
   // Binding to 127.0.0.1 is not enough: a web page can still reach it through DNS rebinding,
   // so only loopback host names and loopback origins are served.
@@ -149,6 +158,25 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     ok: true,
     version: options.currentVersion ?? DALANG_VERSION,
   }));
+
+  // Loopback MCP endpoint for run-scoped agent delegation (v0.8).
+  // Protected by global loopback Host/Origin hook + per-run bearer token authentication.
+  app.all('/mcp', async (req, reply) => {
+    const res = await executionService.handleMcpHttpRequest({
+      method: req.method,
+      authorizationHeader: req.headers.authorization,
+      body: req.body,
+    });
+    if (res.headers) {
+      for (const [k, v] of Object.entries(res.headers)) {
+        reply.header(k, v);
+      }
+    }
+    if (res.body === undefined) {
+      return reply.status(res.statusCode).send();
+    }
+    return reply.status(res.statusCode).send(res.body);
+  });
 
   app.get('/api/update-status', async (req) => {
     const query = z
@@ -681,7 +709,7 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     });
 
     app.setNotFoundHandler((req, reply) => {
-      if (req.url.startsWith('/api/') || req.url.startsWith('/ws')) {
+      if (req.url.startsWith('/api/') || req.url.startsWith('/ws') || req.url.startsWith('/mcp')) {
         return reply.status(404).send({ error: 'Not found' });
       }
       return reply.sendFile('index.html');

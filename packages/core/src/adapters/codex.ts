@@ -10,7 +10,7 @@ import {
   type ProviderUsage,
   type UsageWindow,
 } from '@dalang/shared';
-import { createTurnLogger } from './logger.js';
+import { createTurnLogger, redactSecrets } from './logger.js';
 import {
   buildProviderAccountEnv,
   detectSandboxEngine,
@@ -336,9 +336,23 @@ export class CodexAdapter implements CliAdapter {
     if (options.outputFilePath && !isReadOnly) {
       args.push('-o', options.outputFilePath);
     }
-    const env = buildProviderAccountEnv(this.id, options.configDir);
+    const secrets = options.mcp?.bearerToken ? [options.mcp.bearerToken] : undefined;
+    if (options.mcp) {
+      args.push(
+        '-c',
+        `mcp_servers.dalang.url="${options.mcp.url}"`,
+        '-c',
+        'mcp_servers.dalang.bearer_token_env_var="DALANG_MCP_TOKEN"',
+        '-c',
+        'mcp_servers.dalang.enabled=true',
+      );
+    }
+    const env: Record<string, string | undefined> = {
+      ...buildProviderAccountEnv(this.id, options.configDir),
+      ...(options.mcp ? { DALANG_MCP_TOKEN: options.mcp.bearerToken } : {}),
+    };
 
-    const logger = createTurnLogger(options.logFilePath);
+    const logger = createTurnLogger(options.logFilePath, secrets);
     let sessionId: string | null = options.sessionId ?? null;
     const messages: string[] = [];
     let usageAcc: TurnTokenUsage = {
@@ -373,10 +387,12 @@ export class CodexAdapter implements CliAdapter {
         idleTimeoutMs: options.idleTimeoutMs ?? 180_000,
         signal: options.signal,
         env,
+        onKeepAlive: options.onKeepAlive,
         onStdoutLine: (line) => {
-          logger.write(line);
-          options.onLogLine?.(line);
-          const trimmed = line.trim();
+          const safeLine = redactSecrets(line, secrets);
+          logger.write(safeLine);
+          options.onLogLine?.(safeLine);
+          const trimmed = safeLine.trim();
           if (!trimmed.startsWith('{')) return;
           try {
             const ev = JSON.parse(trimmed) as Record<string, unknown>;
@@ -405,8 +421,9 @@ export class CodexAdapter implements CliAdapter {
           }
         },
         onStderrLine: (line) => {
-          logger.write(`[stderr] ${line}`);
-          options.onLogLine?.(`[stderr] ${line}`);
+          const safeLine = redactSecrets(line, secrets);
+          logger.write(`[stderr] ${safeLine}`);
+          options.onLogLine?.(`[stderr] ${safeLine}`);
         },
       });
 
@@ -418,6 +435,7 @@ export class CodexAdapter implements CliAdapter {
       if (!finalMessage && options.outputFilePath && fs.existsSync(options.outputFilePath)) {
         finalMessage = fs.readFileSync(options.outputFilePath, 'utf8').trim();
       }
+      finalMessage = redactSecrets(finalMessage, secrets);
 
       let structuredOutput: unknown = undefined;
       if (finalMessage.startsWith('{')) {
@@ -433,8 +451,8 @@ export class CodexAdapter implements CliAdapter {
         sessionId,
         structuredOutput,
         exitCode: res.exitCode,
-        stdout: res.stdout,
-        stderr: res.stderr,
+        stdout: redactSecrets(res.stdout, secrets),
+        stderr: redactSecrets(res.stderr, secrets),
         logFilePath: options.logFilePath,
         aborted: Boolean(res.aborted),
         ...(sawUsage ? { usage: usageAcc } : {}),

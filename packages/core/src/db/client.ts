@@ -29,7 +29,7 @@ export function getDbDataDir(db: DalangDb): string | null {
   return dbDataDirs.get(db) ?? null;
 }
 
-const SCHEMA_VERSION = 11;
+const SCHEMA_VERSION = 12;
 
 const BOOTSTRAP_SQL = `
 PRAGMA journal_mode = WAL;
@@ -115,6 +115,9 @@ CREATE TABLE IF NOT EXISTS tasks (
   needs_split INTEGER NOT NULL DEFAULT 0,
   split_depth INTEGER NOT NULL DEFAULT 0,
   parent_task_id TEXT,
+  delegated_by_run_id TEXT,
+  delegation_depth INTEGER NOT NULL DEFAULT 0,
+  merge_target_branch TEXT,
   profile_override TEXT,
   review_rounds INTEGER NOT NULL DEFAULT 0,
   branch_name TEXT,
@@ -1245,6 +1248,7 @@ export function openDatabase(dbFilePath: string = getDbPath()): DbConnection {
   if (upgrading && storedVersion < 7) migrateToV7(sqlite);
   if (upgrading && storedVersion < 8) migrateToV8(sqlite);
   if (upgrading && storedVersion < 9) migrateToV9(sqlite);
+  if (upgrading && storedVersion < 12) migrateToV12(sqlite);
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS message_images (
       id TEXT PRIMARY KEY,
@@ -1281,6 +1285,15 @@ export function openDatabase(dbFilePath: string = getDbPath()): DbConnection {
     dataDir,
     close: () => sqlite.close(),
   };
+}
+
+/**
+ * v12: agent delegation metadata on tasks (delegated_by_run_id, delegation_depth, merge_target_branch).
+ */
+function migrateToV12(sqlite: Database.Database): void {
+  addColumnIfMissing(sqlite, 'tasks', 'delegated_by_run_id', 'TEXT');
+  addColumnIfMissing(sqlite, 'tasks', 'delegation_depth', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing(sqlite, 'tasks', 'merge_target_branch', 'TEXT');
 }
 
 /**

@@ -8,6 +8,7 @@ export interface RunCommandOptions {
   stdinData?: string;
   interactiveStdin?: boolean;
   onSpawn?: (controls: { writeStdin: (data: string) => void; endStdin: () => void; kill: () => void }) => void;
+  onKeepAlive?: (resetIdle: () => void) => void;
   env?: Record<string, string | undefined>;
   onStdoutLine?: (line: string) => void;
   onStderrLine?: (line: string) => void;
@@ -27,6 +28,13 @@ export interface CliRunner {
   run(command: string, args: string[], options: RunCommandOptions): Promise<RunCommandResult>;
 }
 
+export interface TurnMcpConfig {
+  /** Loopback URL of DALANG's MCP endpoint, e.g. http://127.0.0.1:4173/mcp */
+  url: string;
+  /** Run-scoped bearer token; never logged or written into prompts. */
+  bearerToken: string;
+}
+
 export interface AdapterTurnOptions {
   projectPath: string;
   prompt: string;
@@ -42,6 +50,8 @@ export interface AdapterTurnOptions {
   signal?: AbortSignal;
   logFilePath?: string;
   onLogLine?: (line: string) => void;
+  mcp?: TurnMcpConfig;
+  onKeepAlive?: (resetIdle: () => void) => void;
 }
 
 export interface TurnImage {

@@ -42,7 +42,7 @@ describe('database upgrade', () => {
     fresh.close();
 
     const upgraded = openDatabase(file);
-    expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(11);
+    expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(12);
     const runCols = (upgraded.sqlite.pragma('table_info(runs)') as Array<{ name: string }>).map((c) => c.name);
     expect(runCols).toContain('worktree_path');
     expect(runCols).toContain('input_tokens');
@@ -247,7 +247,7 @@ describe('database upgrade', () => {
     // Open and trigger v8 -> v9 upgrade
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(11);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(12);
 
       // Project A: 1 Full working session preserving brief, plan, tasks, messages, and moved artifacts
       const sessionsA = upgraded.sqlite
@@ -351,7 +351,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(11);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(12);
       const names = (
         upgraded.sqlite.prepare('SELECT name FROM agent_profiles ORDER BY name').all() as Array<{ name: string }>
       ).map((r) => r.name);
@@ -366,6 +366,31 @@ describe('database upgrade', () => {
         .prepare(`SELECT profile_id AS id FROM routing_rules WHERE role = 'qa'`)
         .get() as { id: string };
       expect(qaRule.id).toBe('profile-qa');
+    } finally {
+      upgraded.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('upgrades a v11 database to v12 by adding task delegation columns', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dalang-up12-'));
+    const file = path.join(dir, 'dalang.db');
+    const fresh = openDatabase(file);
+    fresh.sqlite.exec(`
+      ALTER TABLE tasks DROP COLUMN delegated_by_run_id;
+      ALTER TABLE tasks DROP COLUMN delegation_depth;
+      ALTER TABLE tasks DROP COLUMN merge_target_branch;
+    `);
+    fresh.sqlite.pragma('user_version = 11');
+    fresh.close();
+
+    const upgraded = openDatabase(file);
+    try {
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(12);
+      const taskCols = (upgraded.sqlite.pragma('table_info(tasks)') as Array<{ name: string }>).map((c) => c.name);
+      expect(taskCols).toContain('delegated_by_run_id');
+      expect(taskCols).toContain('delegation_depth');
+      expect(taskCols).toContain('merge_target_branch');
     } finally {
       upgraded.close();
       fs.rmSync(dir, { recursive: true, force: true });

@@ -1,4 +1,6 @@
+import fs from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
 import {
   EFFORT_LEVEL_ORDER,
   type EffortLevel,
@@ -7,7 +9,7 @@ import {
   type ProviderUsage,
   type UsageWindow,
 } from '@dalang/shared';
-import { createTurnLogger } from './logger.js';
+import { createTurnLogger, redactSecrets } from './logger.js';
 import {
   buildProviderAccountEnv,
   detectSandboxEngine,
@@ -439,17 +441,41 @@ export class ClaudeCodeAdapter implements CliAdapter {
       args.push('--effort', options.effort);
     }
 
+    const secrets = options.mcp?.bearerToken ? [options.mcp.bearerToken] : undefined;
+    let mcpDir: string | undefined;
+    if (options.mcp) {
+      mcpDir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'dalang-mcp-'));
+      fs.chmodSync(mcpDir, 0o700);
+      const mcpConfigPath = path.join(mcpDir, 'mcp.json');
+      fs.writeFileSync(
+        mcpConfigPath,
+        JSON.stringify({
+          mcpServers: {
+            dalang: {
+              type: 'http',
+              url: options.mcp.url,
+              headers: {
+                Authorization: `Bearer ${options.mcp.bearerToken}`,
+              },
+            },
+          },
+        }),
+        { mode: 0o600 },
+      );
+      args.push('--mcp-config', mcpConfigPath);
+    }
+
     const invocation = await wrapWithSandbox(
       this.runner,
       this.id,
       options.projectPath,
       binaryPath,
       args,
-      { readOnly: options.permissionMode === 'read-only', configDir: options.configDir },
+      { readOnly: options.permissionMode === 'read-only', configDir: options.configDir, mcpDir },
     );
     const env = buildProviderAccountEnv(this.id, options.configDir);
 
-    const logger = createTurnLogger(options.logFilePath);
+    const logger = createTurnLogger(options.logFilePath, secrets);
     let sessionId: string | null = options.sessionId ?? null;
     let resolvedModel: string | null = options.model ?? null;
     let resultText = '';
@@ -466,11 +492,13 @@ export class ClaudeCodeAdapter implements CliAdapter {
         signal: options.signal,
         env,
         stdinData,
+        onKeepAlive: options.onKeepAlive,
         onStdoutLine: (line) => {
           if (images.length && /"type"\s*:\s*"user"/.test(line.slice(0, 256))) return;
-          logger.write(line);
-          options.onLogLine?.(line);
-          const trimmed = line.trim();
+          const safeLine = redactSecrets(line, secrets);
+          logger.write(safeLine);
+          options.onLogLine?.(safeLine);
+          const trimmed = safeLine.trim();
           if (!trimmed.startsWith('{')) return;
           try {
             const ev = JSON.parse(trimmed) as Record<string, unknown>;
@@ -511,8 +539,9 @@ export class ClaudeCodeAdapter implements CliAdapter {
           }
         },
         onStderrLine: (line) => {
-          logger.write(`[stderr] ${line}`);
-          options.onLogLine?.(`[stderr] ${line}`);
+          const safeLine = redactSecrets(line, secrets);
+          logger.write(`[stderr] ${safeLine}`);
+          options.onLogLine?.(`[stderr] ${safeLine}`);
         },
       });
 
@@ -522,18 +551,19 @@ export class ClaudeCodeAdapter implements CliAdapter {
       }
 
       return {
-        text,
+        text: redactSecrets(text, secrets),
         sessionId,
         structuredOutput,
         exitCode: res.exitCode,
-        stdout: res.stdout,
-        stderr: res.stderr,
+        stdout: redactSecrets(res.stdout, secrets),
+        stderr: redactSecrets(res.stderr, secrets),
         logFilePath: options.logFilePath,
         aborted: Boolean(res.aborted),
         ...(rateLimitReason ? { rateLimitReason } : {}),
         ...(usage ? { usage } : {}),
       };
     } finally {
+      if (mcpDir) fs.rmSync(mcpDir, { recursive: true, force: true });
       logger.close();
     }
   }
