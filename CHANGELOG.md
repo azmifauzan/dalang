@@ -2,6 +2,12 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
+## 0.7.4, 23 Nov
+
+- Support database schema v11 and preserve the v11 profile and routing upgrades when reopening a database.
+- Add the `dalang update` command and improve the settings and setup experience.
+- If an older CLI cannot start with a newer database, install this release directly instead of running `dalang update` from that older CLI. Do not delete or downgrade the database.
+
 ## 0.7.3 (Native Windows support), 21 Nov
 
 - Fix native Windows PATH lookup, executable discovery, and quoted verification commands through `cmd.exe`.

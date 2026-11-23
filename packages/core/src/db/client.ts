@@ -1233,7 +1233,7 @@ export function openDatabase(dbFilePath: string = getDbPath()): DbConnection {
   if (storedVersion > SCHEMA_VERSION) {
     sqlite.close();
     throw new Error(
-      `Database schema v${storedVersion} is newer than this DALANG build (v${SCHEMA_VERSION}). Update DALANG.`,
+      `Database schema v${storedVersion} is newer than this DALANG build (v${SCHEMA_VERSION}). Install a newer DALANG release; see https://github.com/azmifauzan/dalang/releases.`,
     );
   }
   sqlite.exec(BOOTSTRAP_SQL);

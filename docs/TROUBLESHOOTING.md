@@ -22,7 +22,7 @@ Then open `http://127.0.0.1:4180`.
 
 ### Windows source install asks for C++ Build Tools
 
-Use the pinned pnpm version (`npm install -g pnpm@10.34.9`) and rerun `pnpm install --frozen-lockfile`. The workspace skips an unnecessary SQLite build because better-sqlite3 ships native binaries for the supported platforms. Use the [v0.7.3 GitHub tarball](INSTALL.md#native-windows) for a standalone install; `npm install -g dalang-cli` and `npx dalang-cli` currently select the older npm registry release.
+Use the pinned pnpm version (`npm install -g pnpm@10.34.9`) and rerun `pnpm install --frozen-lockfile`. The workspace skips an unnecessary SQLite build because better-sqlite3 ships native binaries for the supported platforms. For a standalone installation, follow the [Windows setup](INSTALL.md#native-windows).
 
 ### A Windows provider is installed but Dalang cannot find it
 
@@ -119,7 +119,7 @@ CLIs periodically retire or rename model ids. Click **Refresh CLI status** to re
 
 ### Database schema version error after downgrading
 
-If DALANG reports that the database schema is newer than the build, install the [current release tarball](INSTALL.md#update-dalang) or update your Docker checkout. Schema v10 requires v0.7.2 or later. To resume using an older build, restore the pre-migration backup of the data directory and project checkout. [Update and backup](INSTALL.md#update-dalang)
+If DALANG reports that the database schema is newer than the build, [install the current release directly](INSTALL.md#update-dalang) or update your Docker checkout. Schema v11 requires v0.7.4 or later. Older builds may not support `dalang update`, so use `npm install -g dalang-cli@latest` instead. To resume using an older build, restore the pre-migration backup of the data directory and project checkout. [Update and backup](INSTALL.md#update-dalang)
 
 ### A project opens into an empty chat after upgrading
 

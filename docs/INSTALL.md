@@ -38,10 +38,10 @@ Run `xcode-select --install` if Git is missing, then install a supported Node.js
 
 ### Native Windows
 
-Install Node.js 24+, Git, and at least one signed-in provider CLI in Windows. Use PowerShell to install the v0.7.3 release directly:
+Install Node.js 24+, Git, and at least one signed-in provider CLI in Windows. Use PowerShell to install the latest release:
 
 ```powershell
-npm install -g https://github.com/azmifauzan/dalang/releases/download/v0.7.3/dalang-cli-0.7.3.tgz
+npm install -g dalang-cli@latest
 dalang doctor
 dalang --no-open
 ```
@@ -58,17 +58,15 @@ Linux regression in a container passed 107 tests, with the two Windows-only test
 
 ## Start Dalang
 
-v0.7.3 is a GitHub release with an npm-installable tarball. It has not been published to the npm registry. Use this command on any supported platform to install this release:
+Install the latest release on any supported platform:
 
 ```bash
-npm install -g https://github.com/azmifauzan/dalang/releases/download/v0.7.3/dalang-cli-0.7.3.tgz
+npm install -g dalang-cli@latest
 dalang doctor
 dalang
 ```
 
-The release also includes `SHA256SUMS` for checking the downloaded tarball. To install a downloaded file, run `npm install -g ./dalang-cli-0.7.3.tgz`.
-
-The following npm registry commands currently install v0.7.2, which predates native Windows support. They remain available for Linux, macOS, and WSL 2:
+Alternatively, run Dalang without a global installation:
 
 ```bash
 npx dalang-cli doctor
@@ -126,13 +124,23 @@ Login starts off. In **Config → Security → DALANG login**, set a password of
 
 ## Update Dalang
 
-Let active tasks finish or stop them, then stop the server with Ctrl+C or `docker compose stop`. Back up the Dalang data directory and any project checkout you may need to restore. To update to v0.7.3, install its release tarball:
+If an older `dalang` reports that database schema v11 is newer than the build, do not delete the database. Install a release that supports v11 directly; `dalang update` is unavailable in older builds:
 
 ```bash
-npm install -g https://github.com/azmifauzan/dalang/releases/download/v0.7.3/dalang-cli-0.7.3.tgz
+npm install -g dalang-cli@latest
+dalang --version
+dalang
 ```
 
-For releases published to the npm registry, use the command that matches your installation. These commands currently install or check v0.7.2, which predates native Windows support:
+Confirm the installed version is v0.7.4 or newer before starting. If it is still older, check which executable your shell runs (`command -v dalang` on Linux/macOS or `where.exe dalang` in PowerShell).
+
+Let active tasks finish or stop them, then stop the server with Ctrl+C or `docker compose stop`. Back up the Dalang data directory and any project checkout you may need to restore. To update a global installation:
+
+```bash
+npm install -g dalang-cli@latest
+```
+
+Alternatively, use the command that matches your installation:
 
 ```bash
 npx dalang-cli@latest
@@ -142,7 +150,7 @@ npm install -g dalang-cli@latest
 
 With a global installation, start the updated app with `dalang`. For Docker, update the source checkout and rerun `docker compose up --build -d`. Keep the `dalang-home` volume to retain app data, provider sign-ins, and CLI updates.
 
-v0.7.3 keeps database schema v10; it introduces no additional schema migration.
+v0.7.4 upgrades the database to schema v11. Earlier builds cannot open it; keep a backup if you may need to return to an older build.
 
 Dalang v0.7.2 upgrades the database to schema v10 for chat images. When upgrading from v0.6 or earlier, it also organizes existing project history into a **Full** session and moves saved artifacts into `.dalang/sessions/<session-id>/`. Use your pre-upgrade backup to return to a build that requires an older schema.
 

@@ -34,10 +34,10 @@ The composer lets you choose a mode, CLI, model, and reasoning effort. Attach or
 
 You need **Node.js 24+**, **Git**, and at least one supported agent CLI installed and signed in. Linux and WSL 2 use `bubblewrap`; macOS uses `sandbox-exec`. Native Windows runs directly in PowerShell with explicit consent for task execution without a Dalang sandbox. [Platform requirements and CLI sign-in](docs/INSTALL.md)
 
-**v0.7.3 is distributed through GitHub Releases**, including its npm-installable tarball and SHA-256 checksum. The npm registry remains on v0.7.2; registry commands such as `npx dalang-cli` do not include the Windows fixes in this release.
+Install the latest release from npm:
 
 ```bash
-npm install -g https://github.com/azmifauzan/dalang/releases/download/v0.7.3/dalang-cli-0.7.3.tgz
+npm install -g dalang-cli@latest
 dalang doctor
 dalang
 ```
