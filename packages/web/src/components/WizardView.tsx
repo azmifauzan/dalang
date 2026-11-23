@@ -14,6 +14,7 @@ import { WayangFigure, type WayangCharacterId } from '../assets/wayang/WayangFig
 import { useI18n } from '../i18n/index.js';
 import { providerBadgeStyle, providerDisplayShort } from '../lib/activity.js';
 import { api } from '../lib/api.js';
+import { modelLabel } from '../lib/modelLabel.js';
 import { ErrorPanel, LoadingPanel } from './StateViews.js';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -658,7 +659,7 @@ export function WizardView({
                             )}
                             {models.map((m) => (
                               <option key={m.id} value={m.value}>
-                                {m.displayName}
+                                {modelLabel(m)}
                               </option>
                             ))}
                           </NativeSelect>

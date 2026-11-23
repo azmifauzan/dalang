@@ -16,6 +16,7 @@ import {
 } from '../../assets/wayang/WayangFigure.js';
 import { useI18n } from '../../i18n/index.js';
 import { providerBadgeStyle, providerDisplayShort } from '../../lib/activity.js';
+import { modelLabel } from '../../lib/modelLabel.js';
 import { describeFallback } from '../FallbackFields.js';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -384,7 +385,7 @@ function CoreRoleCard({
                 )}
                 {providerModels.map((m) => (
                   <option key={m.id} value={m.id}>
-                    {m.displayName}
+                    {modelLabel(m)}
                   </option>
                 ))}
               </NativeSelect>

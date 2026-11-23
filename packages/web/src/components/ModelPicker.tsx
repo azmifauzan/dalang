@@ -2,13 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { EffortLevel, ProviderId, ProviderModelInfo, ProviderStatus } from '@dalang/shared';
 import { ProviderIcon } from '../assets/providers/ProviderIcon.js';
 import { useI18n } from '../i18n/index.js';
-
-/** "claude-opus-5-5" reads as "Claude Opus 5.5", like T3 Code; other providers keep their own names. */
-function modelName(m: Pick<ProviderModelInfo, 'displayName' | 'resolvedModel'>): string {
-  const claude = /^claude-([a-z]+)-(\d+)-(\d+)$/.exec(m.resolvedModel ?? '');
-  if (!claude) return m.displayName;
-  return `Claude ${claude[1].charAt(0).toUpperCase()}${claude[1].slice(1)} ${claude[2]}.${claude[3]}`;
-}
+import { modelLabel } from '../lib/modelLabel.js';
 
 /** Levels offered for the CLI default model, which reports none of its own. */
 const BASE_LEVELS: EffortLevel[] = ['low', 'medium', 'high'];
@@ -53,7 +47,7 @@ export function ModelPicker({
 
   const viewModels = (providers.find((p) => p.id === viewProvider)?.models ?? []).filter((m) => {
     const q = query.trim().toLowerCase();
-    return !q || modelName(m).toLowerCase().includes(q) || m.value.toLowerCase().includes(q);
+    return !q || modelLabel(m).toLowerCase().includes(q) || m.value.toLowerCase().includes(q);
   });
 
   const close = (returnFocus: boolean) => {
@@ -82,7 +76,7 @@ export function ModelPicker({
   const effortLabel = (level: EffortLevel | '') =>
     level === '' ? t('sessions.picker.effortDefault') : t(`sessions.picker.effort.${level}`);
 
-  const chosenName = selectedInfo ? modelName(selectedInfo) : model || t('common.cliDefault');
+  const chosenName = selectedInfo ? modelLabel(selectedInfo) : model || t('common.cliDefault');
   const triggerLabel = effort ? `${chosenName} · ${effortLabel(effort)}` : chosenName;
 
   const pickModel = (nextProvider: ProviderId, value: string) => {
@@ -195,7 +189,7 @@ export function ModelPicker({
                       className="flex min-h-11 w-full cursor-pointer items-center justify-between gap-2 rounded-[6px] px-2.5 text-left text-sm"
                       style={rowStyle(active)}
                     >
-                      <span className="truncate">{modelName(m)}</span>
+                      <span className="truncate">{modelLabel(m)}</span>
                       {active && <span aria-hidden="true">✓</span>}
                     </button>
                   </li>

@@ -7,6 +7,7 @@ import {
   type ProviderStatus,
 } from '@dalang/shared';
 import { useI18n } from '../../i18n/index.js';
+import { modelLabel } from '../../lib/modelLabel.js';
 import { FallbackFields } from '../FallbackFields.js';
 import { ModalDialog } from '../StateViews.js';
 import { Button } from '@/components/ui/button';
@@ -259,7 +260,7 @@ export function ProfileEditorModal({
                 )}
                 {providerModels.map((m) => (
                   <option key={m.id} value={m.id}>
-                    {m.displayName}
+                    {modelLabel(m)}
                   </option>
                 ))}
               </NativeSelect>

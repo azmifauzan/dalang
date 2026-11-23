@@ -8,6 +8,7 @@ import {
 } from '@dalang/shared';
 import { useI18n } from '../i18n/index.js';
 import { providerDisplayShort } from '../lib/activity.js';
+import { modelLabel } from '../lib/modelLabel.js';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { NativeSelect } from '@/components/ui/native-select';
@@ -127,7 +128,7 @@ export function FallbackFields({
                 {value.model && !info && <option value={value.model}>{value.model}</option>}
                 {models.map((m) => (
                   <option key={m.id} value={isAgy ? m.id : m.value}>
-                    {m.displayName}
+                    {modelLabel(m)}
                   </option>
                 ))}
               </NativeSelect>

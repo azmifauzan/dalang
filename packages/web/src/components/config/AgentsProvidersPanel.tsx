@@ -8,6 +8,7 @@ import type {
 import { ProviderIcon } from '../../assets/providers/ProviderIcon.js';
 import { useI18n } from '../../i18n/index.js';
 import { providerDisplayShort } from '../../lib/activity.js';
+import { modelLabel } from '../../lib/modelLabel.js';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -375,7 +376,7 @@ export function AgentsProvidersPanel({
                             }}
                           >
                             <div className="flex flex-wrap items-center justify-between gap-1">
-                              <span className="font-medium text-foreground">{m.displayName}</span>
+                              <span className="font-medium text-foreground">{modelLabel(m)}</span>
                               {m.supportedEffortLevels.length > 0 && (
                                 <span
                                   className="font-mono-token text-[11px]"
@@ -397,7 +398,7 @@ export function AgentsProvidersPanel({
                       <p className="mt-1 font-mono-token text-foreground">
                         {p.models
                           .slice(0, 5)
-                          .map((m) => m.displayName)
+                          .map((m) => modelLabel(m))
                           .join(', ')}
                       </p>
                     )}
