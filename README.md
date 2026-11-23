@@ -25,7 +25,7 @@
 > dalang
 > ```
 >
-> The installed version must be 0.7.4 or newer for database schema v11. Do not delete your database. [More help](docs/TROUBLESHOOTING.md#database-schema-is-newer-than-this-dalang-build)
+> The installed version must support your database schema; the [upgrade table](docs/INSTALL.md#database-upgrades) lists which release added each schema. Do not delete your database. [More help](docs/TROUBLESHOOTING.md#database-schema-is-newer-than-this-dalang-build)
 
 ![Dalang in Ask mode with an attached screenshot, saved chats, and a paperclip button in the composer](docs/images/ask.webp)
 

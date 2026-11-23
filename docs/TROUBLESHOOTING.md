@@ -21,7 +21,7 @@ Find the message or symptom you see:
 
 ### Database schema is newer than this Dalang build
 
-If `dalang` prints `Database schema v11 is newer than this DALANG build (v10)`, the installed CLI is older than the database. Older builds can show the same error for `dalang update`. Install the latest version directly:
+If `dalang` prints an error such as `Database schema v12 is newer than this DALANG build (v11)`, the installed CLI is older than the database. Older builds can show the same error for `dalang update`. Install the latest version directly:
 
 ```bash
 npm install -g dalang-cli@latest
@@ -29,7 +29,7 @@ dalang --version
 dalang
 ```
 
-Version 0.7.4 or newer supports schema v11. If `dalang --version` still shows an older version, check which executable your terminal uses: `command -v dalang` on Linux/macOS or `where.exe dalang` in PowerShell. If you use Docker, update the source checkout and rebuild the container instead.
+The [upgrade table](INSTALL.md#database-upgrades) lists the release that supports each schema. If `dalang --version` still shows an older version, check which executable your terminal uses: `command -v dalang` on Linux/macOS or `where.exe dalang` in PowerShell. If you use Docker, update the source checkout and rebuild the container instead.
 
 Do not delete the database to fix this error. To return to an older build, restore a backup created before the schema upgrade. [Update and backup](INSTALL.md#update-dalang)
 
@@ -57,7 +57,7 @@ Commands run through `cmd.exe`, so POSIX syntax such as `VAR=value command` or `
 
 ### Windows project instructions report a link problem
 
-v0.7.3 creates instruction pointers when file-symlink privilege is unavailable. Existing `CLAUDE.md` or `AGENTS.md` files remain user-owned and are not replaced. Review those files and `PROJECT.md` from the project header. Developer Mode or administrator access is not required to use the instruction-pointer fallback.
+Since v0.7.3, Dalang creates instruction pointers when file-symlink privilege is unavailable. Existing `CLAUDE.md` or `AGENTS.md` files remain user-owned and are not replaced. Review those files and `PROJECT.md` from the project header. Developer Mode or administrator access is not required to use the instruction-pointer fallback.
 
 ### Docker fails to start
 

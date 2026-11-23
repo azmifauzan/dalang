@@ -44,7 +44,7 @@ Compose runs DALANG as an unprivileged user with all container capabilities drop
 
 ### Native Windows
 
-v0.7.3 runs directly on Windows without a Dalang OS sandbox. Quick and Full execution require explicit unconfined consent for each request. The Windows runner uses `cmd.exe /d /s /c` for verify and integration commands, preserving quoted executable paths. Provider read-only modes remain requested, and Git guards, isolated worktrees, scope checks, automated review, and the merge approval gate still apply. They do not provide filesystem confinement for unconfined processes.
+Since v0.7.3, Dalang runs directly on Windows without a Dalang OS sandbox. Quick and Full execution require explicit unconfined consent for each request. The Windows runner uses `cmd.exe /d /s /c` for verify and integration commands, preserving quoted executable paths. Provider read-only modes remain requested, and Git guards, isolated worktrees, scope checks, automated review, and the merge approval gate still apply. They do not provide filesystem confinement for unconfined processes.
 
 The Quick merge and Full integration controls forward their explicit consent to post-merge integration. If no sandbox or consent is available, the post-merge check is recorded as skipped; it does not count as a passing integration run. The API field is `allowUnconfined`, defaulting to `false`.
 

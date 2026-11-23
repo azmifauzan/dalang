@@ -16,7 +16,7 @@ Docker ships the three CLIs and keeps their sign-ins inside the container. [Dock
 
 ### Native Windows providers
 
-Start Dalang from PowerShell using the [v0.7.3 release tarball](INSTALL.md#native-windows). Install and sign in to Windows provider CLIs in Windows; WSL logins belong to the separate Linux environment. Dalang searches the Windows PATH for native `.exe` and `.com` binaries, including paths containing spaces. It also checks the native executable in Claude Code's standard npm installation directory. Arbitrary `.cmd` and `.ps1` launchers are not supported by the native runner; use a native provider executable or WSL 2.
+Start Dalang from PowerShell after [installing it on Windows](INSTALL.md#native-windows). Install and sign in to Windows provider CLIs in Windows; WSL logins belong to the separate Linux environment. Dalang searches the Windows PATH for native `.exe` and `.com` binaries, including paths containing spaces. It also checks the native executable in Claude Code's standard npm installation directory. Arbitrary `.cmd` and `.ps1` launchers are not supported by the native runner; use a native provider executable or WSL 2.
 
 Use `Get-Command claude,codex,agy -All` to inspect installed launchers, then `dalang doctor` to confirm what Dalang can run. The Linux desktop-keyring opt-in described below applies to Linux confinement. Windows task execution uses the separate unconfined consent control.
 

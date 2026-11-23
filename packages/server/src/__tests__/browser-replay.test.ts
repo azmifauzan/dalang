@@ -569,7 +569,7 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
           await waitForText('Notify me when a newer version of DALANG is published');
           await browser.cdp.evalJs(`document.querySelector('main input[type="checkbox"]')?.click()`);
           await new Promise((r) => setTimeout(r, 300));
-          expect(await browser.cdp.evalJs<string>('document.body.innerText')).not.toContain(
+          expect(await browser.cdp.evalJs<string>("document.body?.innerText ?? ''")).not.toContain(
             'Version 0.9.0 is available',
           );
           await browser.cdp.evalJs(`document.querySelector('main input[type="checkbox"]')?.click()`);
@@ -737,11 +737,11 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
         try {
           const waitForText = async (needle: string) => {
             for (let i = 0; i < 60; i++) {
-              const text = await browser.cdp.evalJs<string>('document.body.innerText');
+              const text = await browser.cdp.evalJs<string>("document.body?.innerText ?? ''");
               if (text.includes(needle)) return text;
               await new Promise((r) => setTimeout(r, 100));
             }
-            const last = await browser.cdp.evalJs<string>('document.body.innerText');
+            const last = await browser.cdp.evalJs<string>("document.body?.innerText ?? ''");
             throw new Error(`Timed out waiting for text "${needle}". Body: ${last.slice(0, 500)}`);
           };
 
@@ -1102,11 +1102,11 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
         try {
           const waitForText = async (needle: string, timeoutSteps = 80) => {
             for (let i = 0; i < timeoutSteps; i++) {
-              const text = await browser.cdp.evalJs<string>('document.body.innerText');
+              const text = await browser.cdp.evalJs<string>("document.body?.innerText ?? ''");
               if (text.includes(needle)) return text;
               await new Promise((r) => setTimeout(r, 100));
             }
-            const last = await browser.cdp.evalJs<string>('document.body.innerText');
+            const last = await browser.cdp.evalJs<string>("document.body?.innerText ?? ''");
             throw new Error(`Timed out waiting for text "${needle}". Body: ${last.slice(0, 600)}`);
           };
 
