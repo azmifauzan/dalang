@@ -9,10 +9,23 @@
 <p align="center">
   <a href="#install"><strong>Install</strong></a> ·
   <a href="./docs/USAGE.md">User guide</a> ·
+  <a href="./docs/TROUBLESHOOTING.md">Common errors</a> ·
   <a href="./docs/README.md">All docs</a> ·
   <a href="https://github.com/azmifauzan/dalang/releases">Releases</a> ·
   <a href="https://www.npmjs.com/package/dalang-cli">npm</a>
 </p>
+
+> [!IMPORTANT]
+> **Dalang does not start because the database schema is newer than your build?**
+> Older versions may also fail when you run `dalang update`. Stop Dalang and install the latest version directly:
+>
+> ```sh
+> npm install -g dalang-cli@latest
+> dalang --version
+> dalang
+> ```
+>
+> The installed version must be 0.7.4 or newer for database schema v11. Do not delete your database. [More help](docs/TROUBLESHOOTING.md#database-schema-is-newer-than-this-dalang-build)
 
 ![Dalang in Ask mode with an attached screenshot, saved chats, and a paperclip button in the composer](docs/images/ask.webp)
 

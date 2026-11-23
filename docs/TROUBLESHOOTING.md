@@ -10,6 +10,29 @@ It verifies Node.js, git, sandbox confinement, the data directory, `gh`, and eve
 
 ## Common issues
 
+Find the message or symptom you see:
+
+- [Database schema is newer than this Dalang build](#database-schema-is-newer-than-this-dalang-build)
+- [Browser did not open or the port is busy](#browser-did-not-open-or-the-port-is-busy)
+- [A Windows provider is installed but Dalang cannot find it](#a-windows-provider-is-installed-but-dalang-cannot-find-it)
+- [Docker fails to start](#docker-fails-to-start)
+- [Provider shows LOGIN NEEDED or runs fail with login_expired](#provider-shows-login-needed-or-runs-fail-with-login_expired)
+- [Update CLI fails](#update-cli-fails)
+
+### Database schema is newer than this Dalang build
+
+If `dalang` prints `Database schema v11 is newer than this DALANG build (v10)`, the installed CLI is older than the database. Older builds can show the same error for `dalang update`. Install the latest version directly:
+
+```bash
+npm install -g dalang-cli@latest
+dalang --version
+dalang
+```
+
+Version 0.7.4 or newer supports schema v11. If `dalang --version` still shows an older version, check which executable your terminal uses: `command -v dalang` on Linux/macOS or `where.exe dalang` in PowerShell. If you use Docker, update the source checkout and rebuild the container instead.
+
+Do not delete the database to fix this error. To return to an older build, restore a backup created before the schema upgrade. [Update and backup](INSTALL.md#update-dalang)
+
 ### Browser did not open or the port is busy
 
 Open the URL printed in the terminal, normally `http://127.0.0.1:4173`. If startup reports `EADDRINUSE`, use another loopback port:
@@ -116,10 +139,6 @@ DALANG refuses destructive `git reset --hard` rollbacks when you have uncommitte
 ### Saved model shows "(unavailable)" in Profile Editor
 
 CLIs periodically retire or rename model ids. Click **Refresh CLI status** to reload the latest list from the CLI, then pick a current model in the profile editor. DALANG keeps the saved value visible until you change it.
-
-### Database schema version error after downgrading
-
-If DALANG reports that the database schema is newer than the build, [install the current release directly](INSTALL.md#update-dalang) or update your Docker checkout. Schema v11 requires v0.7.4 or later. Older builds may not support `dalang update`, so use `npm install -g dalang-cli@latest` instead. To resume using an older build, restore the pre-migration backup of the data directory and project checkout. [Update and backup](INSTALL.md#update-dalang)
 
 ### A project opens into an empty chat after upgrading
 
