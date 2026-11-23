@@ -302,9 +302,10 @@ Each phase must be useful on its own before the next one starts.
 | v0.7 | Ask, Quick, and Full in a shared chat, saved sessions, one working session per project, and a provider limits bar | Read-only Q&A, a one-task fix from request to merge in one chat, and a five-step Full flow | Linux verification covers typecheck, build, database upgrades, CLI diagnostics, and all three modes in Chromium with replayed agents. [GitHub release](https://github.com/azmifauzan/dalang/releases/tag/v0.7.0) · [npm package](https://www.npmjs.com/package/dalang-cli/v/0.7.0) |
 | v0.7.2 | Chat image attachments, optional local login, Docker Compose, and provider CLI updates | Upload and reopen a chat image, protect app APIs and live connections when login is enabled, and launch the Docker image with all three updaters available | Implemented and covered by API, Chromium replay, and Linux Docker checks |
 | v0.7.3 | Native Windows execution, instruction pointers, platform shell commands, and review artifact scope | Install the tarball and complete a live Quick plan, code, verify, read-only review, merge, and integration on Windows; retain Linux regression coverage | Verified on Windows with Codex and Edge; 104 applicable Windows tests and 107 Linux tests passed. GitHub release and tarball distribution; npm publication is separate. |
-| v0.8 | Agent delegation: a running agent splits its own task into subtasks on other profiles through a DALANG MCP server | One task is split by its agent into at least two subtasks on two providers, and all of them pass review and merge | Planned |
-| v0.9 | Session protocols (Claude Agent SDK, `codex app-server`, ACP), steering a running task, context handoff on fallback, native Windows confinement | A fallback mid-task continues from the handoff instead of starting over, on all three providers | Planned |
-| v0.10 | Scheduled and webhook-triggered runs, outside agents over MCP | A scheduled run and a run started from a terminal agent both finish without opening the UI | Planned |
+| v0.8 | Agent delegation: a running agent splits its own task into subtasks on other profiles through a DALANG MCP server | One task is split by its agent into at least two subtasks on two providers, and all of them pass review and merge | Implemented (verified via core delegation tests and loopback HTTP `/mcp` server tests) |
+| v0.9 | Workspace projects: one project for a root folder whose top-level folders are their own git repositories, with worktrees, review, merge, and rollback per repo | A Quick task in a workspace edits a nested repo, passes review, and merges into that repo's branch | Planned |
+| v0.10 | Session protocols (Claude Agent SDK, `codex app-server`, ACP), steering a running task, context handoff on fallback, native Windows confinement | A fallback mid-task continues from the handoff instead of starting over, on all three providers | Planned |
+| v0.11 | Scheduled and webhook-triggered runs, outside agents over MCP | A scheduled run and a run started from a terminal agent both finish without opening the UI | Planned |
 
 See [Roadmap after v0.4](#roadmap-after-v04) for the detail and the research behind it.
 
@@ -695,20 +696,62 @@ The v0.6 flow always runs `Discuss → Brief → Plan → Work → Review & merg
 
 ### v0.8: agent delegation
 
-- DALANG serves an MCP endpoint on loopback. Each run gets a bearer token scoped to that run, which expires when the run ends; the token never enters logs.
-- Tools: `delegate_task` (prompt, optional profile or provider and model, `files_allowed` that must be a subset of the parent's), `task_status`, `task_cancel`, with `wait` and `async` modes.
-- A subtask is a real DALANG task: its own worktree from the parent branch, the same verify and review, and a result merged back into the parent branch, not into main. The parent's own review sees the combined diff.
-- Limits: depth 1 (a subtask cannot delegate), a cap on subtasks per task, subtasks count against the provider limiter, and stopping the parent stops its subtasks.
-- Native subagents (Claude's Task tool, Antigravity batches) are shown read-only in the run log.
+- DALANG serves an MCP endpoint on loopback (`/mcp`). Each depth-0 coder run gets a bearer token scoped to that run, which expires when the run ends; the token is redacted before writing logs or emitting events so it never enters logs.
+- Tools: `delegate_task` (prompt, optional title, profile or provider/model/effort, `files_allowed` validated as a subset of the parent's, optional acceptance criteria and verify command, `wait` and `async` modes), `task_status`, and `task_cancel`.
+- A subtask is a real DALANG task (schema v12: `delegated_by_run_id`, `delegation_depth`, `merge_target_branch`): its own worktree branched from the parent task branch, the same verify and automated review loop, and automatic merge back into the parent branch (inside the parent worktree), never directly into main. The parent's own review sees the combined diff before Gate 2 merge to main.
+- Limits: depth 1 (subtasks receive no MCP config and depth >= 1 delegation is refused server-side), a configurable cap on subtasks per task (default 6), subtasks count against the global `ProviderLimiter` (with deadlock-safe slot yielding for same-account `wait` calls), overlapping sibling subtasks serialize automatically, and stopping the parent stops its subtasks.
+- Native subagents (Claude's `Task`/`Agent` tool calls and Antigravity subagent/batch events) are parsed from run logs and shown read-only in the Work view run inspector and activity feed.
 
-### v0.9: session protocols and handoff
+### v0.9: workspace projects with nested repositories (planned, draft 23 Nov 2026)
+
+Goal: open a workspace folder such as `sei-office` as one project, where the root repo ignores `frontend/`, `backend/`, and `scheduling-service/` and each of those is its own git repository. This is how the owner already works with Claude Code, Codex, and Antigravity from the root folder. Today a Quick or Full task fails there because the task worktree only contains the root repo, so files under a nested repo are missing (seen on T-001, two failed runs on 23 Nov).
+
+Probes done on 23 Nov 2026 (clones of the real repos, git 2.53):
+
+- `git worktree add` of a nested repo inside the root task worktree works, and `git status` stays separate: the root worktree sees no change when a nested file is edited.
+- A `--no-ff` merge into a nested repo succeeds while unrelated files there have uncommitted changes. Git refuses only when an uncommitted file would be overwritten.
+- Sizes: `frontend` 4,001 tracked files, `backend` 1,695, `scheduling-service` 136. Ignored folders (logs, cache, `target/`, `secrets/`) are not in a worktree, as with the root today.
+- All three nested repos and the root have uncommitted changes, and `scheduling-service` is on a feature branch, not `dev`. The current Gate 2 rule refuses a merge when any file is dirty, so merging in `sei-office` fails today even for root-only tasks.
+
+Design:
+
+- At task start DALANG finds the top-level folders that contain their own `.git` (top level only). It creates the root worktree as now, then one worktree per nested repo at the same relative path, on branch `dalang/<task>` from that repo's checked-out branch.
+- Paths stay root-relative (`frontend/application/...`), so the Lead's plan, `files_allowed`, overlap checks, verify commands, and agent prompts need no change.
+- Checkpoints, changed files, scope checks, review diffs, and rollback run per repo and are joined with the repo prefix. The diff view labels each repo.
+- Gate 2 merges each changed repo into its base branch, one commit per repo, matching the workspace rule "one commit per repo". When a later repo fails, repos already merged return to their pre-merge commit with `git reset --keep`, which keeps uncommitted work.
+- The sandbox mounts each nested worktree's `.git` link file read-only, as it does for the root.
+- Delegated subtasks get nested worktrees from the parent task's branches and merge back per repo.
+- Out of scope: git submodules and nested repos below the top level.
+
+| Phase | Name | Scope | Depends on | Size |
+| --- | --- | --- | --- | --- |
+| 1 | Data model | Schema v13 table `task_repos` (task, repo path, base branch, base SHA, branch, worktree path) and per-run checkpoint SHAs per repo | none | M |
+| 2 | Worktree lifecycle | Detect nested repos, create and remove nested worktrees on start, stop, retry, cancel, merge, and cleanup; sandbox read-only binds | 1 | M |
+| 3 | Checkpoints and scope | Per-repo checkpoint commits and hidden refs, joined changed-file list, scope check | 2 | M |
+| 4 | Review and diff | Joined diff for the reviewer and the Work and Quick diff views, with repo labels | 3 | M |
+| 5 | Merge gate | Per-repo dirty-overlap check, merge, push and pull request per repo remote, all-or-nothing return | 4 | L |
+| 6 | Rollback and delegation | Rollback per repo, subtask worktrees and merges per repo | 5 | M |
+| 7 | Proof and docs | Replay E2E with a nested-repo fixture, a live Quick task on `sei-office` touching `frontend/`, docs | 6 | M |
+
+Milestones: phases 1 to 4 let a task edit and get reviewed across repos; phase 5 makes it mergeable; phases 6 and 7 complete the release.
+
+Decided 23 Nov 2026: this ships as v0.9, before session protocols (now v0.10) and automation (now v0.11).
+
+Decided 23 Nov 2026 by the owner:
+
+- Base branch: each nested repo uses the branch checked out when the task starts, and the task merges back into that branch. This matches how the owner works with other CLIs, which edit whatever branch is checked out.
+- Uncommitted changes at merge: a merge is refused only when an uncommitted file in the target repo is also changed by the task. Other uncommitted work stays in place. This applies to the root repo too.
+
+Interim: v0.8.0 fails a task at start, before any agent runs, when its `files_allowed` points into a nested repo. Phase 2 removes that check.
+
+### v0.10: session protocols and handoff
 
 - Adapters move to the session protocols (Claude Agent SDK, `codex app-server`, ACP where agy supports it) behind a capability shape, keeping the one-shot CLI path as a fallback for any capability a provider lacks.
 - Steer a running task with a message, and interrupt without losing the session.
 - Context handoff on fallback: the next provider gets the brief plus a budgeted selection of the previous run (its requests, command results, and partial diff) instead of starting over.
 - Native Windows OS confinement with a sandbox that meets the same tests; unconfined native execution is available in v0.7.3.
 
-### v0.10: automation
+### v0.11: automation
 
 - Scheduled and webhook-triggered runs (for example a nightly dependency update task), with signature checks on webhooks.
 - Outside agents over MCP: Claude Code or Codex in a terminal can read projects and start tasks, at read-only or full-access level, loopback only.

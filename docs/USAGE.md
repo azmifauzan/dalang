@@ -86,7 +86,8 @@ Click **Start work** to run the approved queue. Dalang uses a separate Git workt
 
 ![Work view showing an active task on the wayang stage above its activity feed and run inspector](images/work.webp)
 
-- Use **Stop** for an individual task or **Stop all runs** for the queue.
+- Use **Stop** for an individual task or **Stop all runs** for the queue. Stopping a parent task also stops any delegated subtasks it launched.
+- During execution, a running coder can split independent parts of its task onto other profiles or providers via DALANG's local MCP server (`delegate_task`, `task_status`, `task_cancel`). Each subtask runs in its own worktree branched from the parent branch, passes verify and automated review, and merges back into the parent branch so the parent's review and Gate 2 diff include the combined result. Delegated subtasks appear under their parent task in **Tasks & live logs** and **Dependency graph**. Native CLI subagents (Claude `Task` tool calls and Antigravity batches) appear read-only in the run inspector.
 - Use **Retry** for a failed or stopped task. Where **Resume session** is available, use it to continue the provider session.
 - To restore a pre-run state, select the run and use **Rollback to pre-run checkpoint**. Dalang can refuse a rollback when it would lose uncommitted work or commits made outside Dalang. [Rollback troubleshooting](TROUBLESHOOTING.md)
 - If the sandbox is unavailable, see **Config → Security** for platform setup. Dalang asks for explicit confirmation before running tasks without filesystem confinement. [Sandbox and permissions](SANDBOX.md)

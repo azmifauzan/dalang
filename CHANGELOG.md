@@ -2,6 +2,18 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
+## 0.8.0 (Agent delegation), 23 Nov
+
+Running coder tasks can now split independent work into delegated subtasks on other profiles or providers through DALANG's loopback MCP server.
+
+- **Loopback MCP endpoint (`/mcp`) with run-scoped bearer tokens.** Each depth-0 coder run receives a cryptographically random bearer token scoped to that run (validated with constant-time comparison) that expires as soon as the run ends. Adapters wire the MCP server via `--mcp-config` (Claude Code), `mcp_servers.dalang` with `DALANG_MCP_TOKEN` env var (Codex), or `--settings` (Antigravity), delete temporary config files on exit, and redact the token before writing logs or emitting events so it never enters logs.
+- **MCP delegation tools (`delegate_task`, `task_status`, `task_cancel`).** Supports `wait` and `async` modes, optional profile or provider/model/effort selection, and strict `files_allowed` subset validation against the parent task's allowed globs.
+- **Real DALANG subtasks merging into the parent branch (schema v12).** Adds `delegated_by_run_id`, `delegation_depth`, and `merge_target_branch` on `tasks` with an automatic v11 to v12 migration. Each subtask runs in its own worktree branched from the parent task branch, runs verify and automated review, and merges back into the parent branch (never directly into main), so the parent's own review and Gate 2 diff include the combined changes.
+- **Delegation limits and lifecycle.** Enforces depth 1 (subtasks receive no MCP config and cannot delegate further), a configurable subtask cap per task (default 6), global `ProviderLimiter` accounting with deadlock-safe slot yielding for same-account `wait` calls, serialization of overlapping sibling subtasks, and automatic cancellation of child subtasks whenever the parent task stops.
+- **Work UI and read-only native subagents.** Groups delegated subtasks under their parent task in **Work** and **Quick**, marks subtask nodes in **Dependency graph**, streams delegation/merge events into the **Activity feed**, and parses native CLI subagents (Claude `Task`/`Agent` tool calls and Antigravity batches) into a read-only panel in the run inspector.
+- **Model versions and wizard fallback.** Claude models are listed with their versions (for example Claude Opus 5.5) in every model list. The first-run wizard's fallback now has model and effort selects in the same layout as the primary row, and saving it keeps the model, effort, and account already set in Config.
+- **Upgrading.** Databases from v0.7.0 and later upgrade to schema v12 on first start with projects, sessions, settings, and profiles kept. Back up the data directory first; older builds cannot open a v12 database. [Update and backup](docs/INSTALL.md#database-upgrades)
+
 ## 0.7.4, 23 Nov
 
 - Support database schema v11 and preserve the v11 profile and routing upgrades when reopening a database.

@@ -124,7 +124,7 @@ Login starts off. In **Config → Security → DALANG login**, set a password of
 
 ## Update Dalang
 
-If an older `dalang` reports that database schema v11 is newer than the build, do not delete the database. Install a release that supports v11 directly; `dalang update` is unavailable in older builds:
+If an older `dalang` reports that the database schema is newer than the build, do not delete the database. `dalang update` is unavailable in older builds, so install the latest release directly:
 
 ```bash
 npm install -g dalang-cli@latest
@@ -132,15 +132,9 @@ dalang --version
 dalang
 ```
 
-Confirm the installed version is v0.7.4 or newer before starting. If it is still older, check which executable your shell runs (`command -v dalang` on Linux/macOS or `where.exe dalang` in PowerShell).
+Check that the installed version supports your schema in the [upgrade table](#database-upgrades). If it is still older, check which executable your shell runs (`command -v dalang` on Linux/macOS or `where.exe dalang` in PowerShell).
 
-Let active tasks finish or stop them, then stop the server with Ctrl+C or `docker compose stop`. Back up the Dalang data directory and any project checkout you may need to restore. To update a global installation:
-
-```bash
-npm install -g dalang-cli@latest
-```
-
-Alternatively, use the command that matches your installation:
+Let active tasks finish or stop them, then stop the server with Ctrl+C or `docker compose stop`. Back up the Dalang data directory and any project checkout you may need to restore. Then update with the command that matches your installation:
 
 ```bash
 npx dalang-cli@latest
@@ -148,11 +142,22 @@ dalang update
 npm install -g dalang-cli@latest
 ```
 
-With a global installation, start the updated app with `dalang`. For Docker, update the source checkout and rerun `docker compose up --build -d`. Keep the `dalang-home` volume to retain app data, provider sign-ins, and CLI updates.
+`dalang update --check` only reports whether a newer release exists. With a global installation, start the updated app with `dalang`. For Docker, update the source checkout and rerun `docker compose up --build -d`. Keep the `dalang-home` volume to retain app data, provider sign-ins, and CLI updates.
 
-v0.7.4 upgrades the database to schema v11. Earlier builds cannot open it; keep a backup if you may need to return to an older build.
+If the npm registry does not have the newest release yet, install the tarball attached to its [GitHub release](https://github.com/azmifauzan/dalang/releases) (`npm install -g <tarball URL>`).
 
-Dalang v0.7.2 upgrades the database to schema v10 for chat images. When upgrading from v0.6 or earlier, it also organizes existing project history into a **Full** session and moves saved artifacts into `.dalang/sessions/<session-id>/`. Use your pre-upgrade backup to return to a build that requires an older schema.
+### Database upgrades
+
+Dalang upgrades its database the first time a newer version starts, from any earlier release, and keeps your projects, sessions, briefs, plans, tasks, settings, and profiles. The current schema is v12:
+
+| Release | Schema | What the upgrade does |
+| --- | --- | --- |
+| v0.7.0 | v9 | Moves each project's history into a **Full** session and its saved artifacts into `.dalang/sessions/<session-id>/` |
+| v0.7.2 | v10 | Adds stored chat images |
+| v0.7.4 | v11 | Adds the `coder-medium` and `qa` profiles and points the medium and QA routing rules at them |
+| v0.8.0 | v12 | Adds the delegation fields on tasks |
+
+An upgrade is one way. An older build refuses a newer database with `Database schema vN is newer than this DALANG build`, so restore your pre-upgrade backup to go back. A server that is still running keeps the old code and schema in memory, so restart it after updating.
 
 Use **Config → About → Check now** to check for a release. Dalang can also notify you about updates when version checks are enabled in **Config → General**. [Release notes](https://github.com/azmifauzan/dalang/releases)
 
