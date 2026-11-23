@@ -11,7 +11,7 @@ import { useTheme } from '../lib/theme.js';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 
-export type ConfigTabId = 'general' | 'agents' | 'team' | 'routing' | 'security' | 'about';
+export type ConfigTabId = 'general' | 'agents' | 'security' | 'about';
 
 export interface SidebarProps {
   mode: 'workspace' | 'config';
@@ -42,13 +42,15 @@ export interface SidebarProps {
   onSelectConfigTab: (tab: ConfigTabId) => void;
 }
 
-const CONFIG_TABS: Array<{ id: ConfigTabId; key: `config.tab.${ConfigTabId}` }> = [
-  { id: 'general', key: 'config.tab.general' },
-  { id: 'agents', key: 'config.tab.agents' },
-  { id: 'team', key: 'config.tab.team' },
-  { id: 'routing', key: 'config.tab.routing' },
-  { id: 'security', key: 'config.tab.security' },
-  { id: 'about', key: 'config.tab.about' },
+const CONFIG_TABS: Array<{
+  id: ConfigTabId;
+  key: `config.tab.${ConfigTabId}`;
+  hintKey: `config.tab.${ConfigTabId}Hint`;
+}> = [
+  { id: 'general', key: 'config.tab.general', hintKey: 'config.tab.generalHint' },
+  { id: 'agents', key: 'config.tab.agents', hintKey: 'config.tab.agentsHint' },
+  { id: 'security', key: 'config.tab.security', hintKey: 'config.tab.securityHint' },
+  { id: 'about', key: 'config.tab.about', hintKey: 'config.tab.aboutHint' },
 ];
 
 function SidebarToggleIcon() {
@@ -315,14 +317,20 @@ function SidebarContent({
                       onSelectConfigTab(tab.id);
                       closeIfMobile();
                     }}
-                    className="flex min-h-[44px] w-full cursor-pointer items-center justify-between rounded-[6px] border px-3 text-left text-sm font-medium transition-colors duration-150"
+                    className="flex min-h-[52px] w-full cursor-pointer flex-col items-start justify-center rounded-[6px] border px-3 py-2 text-left transition-colors duration-150"
                     style={{
                       backgroundColor: isActive ? 'var(--accent-tint)' : 'transparent',
                       borderColor: isActive ? 'var(--accent)' : 'transparent',
                       color: isActive ? 'var(--accent)' : 'var(--text-primary)',
                     }}
                   >
-                    <span>{t(tab.key)}</span>
+                    <span className="text-sm font-semibold">{t(tab.key)}</span>
+                    <span
+                      className="text-xs font-normal"
+                      style={{ color: isActive ? 'var(--accent)' : 'var(--text-secondary)' }}
+                    >
+                      {t(tab.hintKey)}
+                    </span>
                   </button>
                 );
               })}

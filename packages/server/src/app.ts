@@ -47,6 +47,7 @@ import {
   StatisticsService,
   UpdateCheckService,
   openDatabase,
+  resetDatabaseToDefaults,
   type CliRunner,
   type UpdateRegistryFetcher,
 } from '@dalang/core';
@@ -552,6 +553,17 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
   app.patch('/api/settings', async (req) => {
     const body = UpdateSettingsInputSchema.parse(req.body ?? {});
     return { settings: settingsService.update(body) };
+  });
+
+  app.post('/api/factory-reset', async (_req, reply) => {
+    await executionService.stopAll();
+    for (const project of projectService.listProjects()) {
+      projectService.deleteProject(project.id);
+    }
+    resetDatabaseToDefaults(conn.db, conn.sqlite);
+    cachedProviderStatuses = null;
+    auth.reset(reply);
+    return { ok: true };
   });
 
   // Providers, Profiles & Routing (F-21, F-22, F-10, F-11, F-24)

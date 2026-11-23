@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { DALANG_VERSION } from '@dalang/core';
 import { startDalangServer } from '@dalang/server';
 import { formatDoctorReport, runDoctorChecks } from './doctor.js';
+import { formatUpdateReport, runUpdate } from './update.js';
 
 export { DALANG_VERSION };
 
@@ -36,14 +37,15 @@ function printHelp(): void {
   console.log(`DALANG v${DALANG_VERSION} - Local orchestrator for Claude Code, Codex, and Antigravity CLI
 
 Usage:
-  dalang [options]          Start the local DALANG server and open the browser
-  dalang doctor [--json]    Check Node, git, sandbox, data directory, and CLI logins
-  dalang --version          Print version
-  dalang --help             Show this help
+  dalang [options]                  Start the local DALANG server and open the browser
+  dalang doctor [--json]            Check Node, git, sandbox, data directory, and CLI logins
+  dalang update [--check] [--json]  Check for a newer version and install it via npm
+  dalang --version                  Print version
+  dalang --help                     Show this help
 
 Options:
-  --port <number>           Port to bind on 127.0.0.1 (default: 4173 or DALANG_PORT)
-  --no-open                 Do not open the browser automatically
+  --port <number>                   Port to bind on 127.0.0.1 (default: 4173 or DALANG_PORT)
+  --no-open                         Do not open the browser automatically
 `);
 }
 
@@ -64,6 +66,24 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       console.log(JSON.stringify(report, null, 2));
     } else {
       console.log(formatDoctorReport(report));
+    }
+    if (!report.ok) {
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  if (argv[0] === 'update') {
+    const asJson = argv.includes('--json');
+    const checkOnly = argv.includes('--check');
+    const report = await runUpdate(undefined, {
+      checkOnly,
+      onStatus: asJson ? undefined : (line) => console.log(line),
+    });
+    if (asJson) {
+      console.log(JSON.stringify(report, null, 2));
+    } else {
+      console.log(formatUpdateReport(report));
     }
     if (!report.ok) {
       process.exitCode = 1;

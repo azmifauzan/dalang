@@ -1,5 +1,6 @@
 import {
   EFFORT_LEVEL_ORDER,
+  splitEffortModel,
   type EffortLevel,
   type FallbackTarget,
   type ProviderId,
@@ -62,13 +63,18 @@ export function FallbackFields({
 }) {
   const { t } = useI18n();
   const models = value.provider ? (providers.find((p) => p.id === value.provider)?.models ?? []) : [];
-  const info = models.find((m) => m.value === value.model);
+  const isAgy = value.provider === 'antigravity';
+  const agySplit = isAgy ? splitEffortModel(value.model) : null;
+  const info = isAgy
+    ? models.find((m) => m.id === (agySplit ? agySplit.base : value.model) || m.value === value.model)
+    : models.find((m) => m.value === value.model || m.id === value.model);
+  const selectModelValue = info ? (isAgy ? info.id : info.value) : value.model;
   const efforts: readonly EffortLevel[] =
     info && info.supportedEffortLevels.length > 0 ? info.supportedEffortLevels : EFFORT_LEVEL_ORDER;
   const effortOptions = efforts.includes(value.effort) ? efforts : [value.effort, ...efforts];
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-3">
       <div className="space-y-1.5">
         <Label htmlFor={`${idPrefix}-provider`}>{t('fallback.provider')}</Label>
         <NativeSelect
@@ -89,41 +95,62 @@ export function FallbackFields({
       </div>
       {value.provider && (
         <>
-          <div className="grid grid-cols-[1fr_auto] gap-2">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto]">
             <div className="space-y-1.5">
               <Label htmlFor={`${idPrefix}-model`}>{t('config.team.fieldModel')}</Label>
               <NativeSelect
                 id={`${idPrefix}-model`}
-                value={value.model}
+                value={selectModelValue}
                 onChange={(e) => {
-                  const next = models.find((m) => m.value === e.target.value);
+                  const chosen = e.target.value;
+                  if (!chosen) {
+                    onChange({ ...value, model: '' });
+                    return;
+                  }
+                  const next = models.find((m) => (isAgy ? m.id === chosen : m.value === chosen));
                   const allowed = next && next.supportedEffortLevels.length > 0 ? next.supportedEffortLevels : EFFORT_LEVEL_ORDER;
+                  const nextEffort = allowed.includes(value.effort)
+                    ? value.effort
+                    : (next?.defaultEffort ?? (allowed[0] as EffortLevel));
+                  const nextModel =
+                    isAgy && next && next.supportedEffortLevels.length > 0
+                      ? `${next.id}-${nextEffort}`
+                      : chosen;
                   onChange({
                     ...value,
-                    model: e.target.value,
-                    effort: allowed.includes(value.effort) ? value.effort : (next?.defaultEffort ?? (allowed[0] as EffortLevel)),
+                    model: nextModel,
+                    effort: nextEffort,
                   });
                 }}
               >
                 <option value="">{t('common.cliDefault')}</option>
                 {value.model && !info && <option value={value.model}>{value.model}</option>}
                 {models.map((m) => (
-                  <option key={m.id} value={m.value}>
+                  <option key={m.id} value={isAgy ? m.id : m.value}>
                     {m.displayName}
                   </option>
                 ))}
               </NativeSelect>
             </div>
-            <div className="space-y-1.5">
+            <div className="space-y-1.5 sm:min-w-[8.5rem]">
               <Label htmlFor={`${idPrefix}-effort`}>{t('config.team.fieldEffort')}</Label>
               <NativeSelect
                 id={`${idPrefix}-effort`}
                 value={value.effort}
-                onChange={(e) => onChange({ ...value, effort: e.target.value as EffortLevel })}
+                onChange={(e) => {
+                  const nextEffort = e.target.value as EffortLevel;
+                  const nextModel =
+                    isAgy && info && info.supportedEffortLevels.length > 0
+                      ? `${info.id}-${nextEffort}`
+                      : isAgy && agySplit
+                        ? `${agySplit.base}-${nextEffort}`
+                        : value.model;
+                  onChange({ ...value, effort: nextEffort, model: nextModel });
+                }}
               >
                 {effortOptions.map((lvl) => (
                   <option key={lvl} value={lvl}>
-                    {lvl}
+                    {t(`sessions.picker.effort.${lvl}`)}
                   </option>
                 ))}
               </NativeSelect>

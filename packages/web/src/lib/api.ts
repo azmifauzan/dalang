@@ -387,6 +387,8 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(body),
     }),
+  factoryReset: () =>
+    request<{ ok: boolean }>('/api/factory-reset', { method: 'POST' }),
   getHealth: () => request<{ ok: boolean; version: string }>('/api/health'),
   getUpdateStatus: (force = false) =>
     request<{ update: UpdateStatusDTO }>(`/api/update-status${force ? '?force=1' : ''}`),

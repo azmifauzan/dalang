@@ -383,7 +383,9 @@ export class ProfileService {
     }
 
     const fallbackDefault =
-      (input.role === 'qa' ? byId.get('profile-reviewer') : byId.get('profile-coder-heavy')) ??
+      (input.role === 'qa'
+        ? (byId.get('profile-qa') ?? byId.get('profile-reviewer'))
+        : byId.get('profile-coder-heavy')) ??
       byId.get('profile-lead') ??
       profiles[0];
     return {

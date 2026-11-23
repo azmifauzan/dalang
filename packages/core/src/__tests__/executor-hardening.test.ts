@@ -210,7 +210,7 @@ describe('routing and scaffold', () => {
       const qa = svc.resolveProfileForTask({ role: 'qa', complexity: 'medium', profileOverride: null });
       expect(low.primary.name).toBe('coder-small');
       expect(high.primary.name).toBe('coder-heavy');
-      expect(qa.primary.name).toBe('reviewer');
+      expect(qa.primary.name).toBe('qa');
       expect(low.source).toBe('routing_rule');
     } finally {
       conn.close();

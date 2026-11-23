@@ -42,7 +42,7 @@ describe('database upgrade', () => {
     fresh.close();
 
     const upgraded = openDatabase(file);
-    expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(10);
+    expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(11);
     const runCols = (upgraded.sqlite.pragma('table_info(runs)') as Array<{ name: string }>).map((c) => c.name);
     expect(runCols).toContain('worktree_path');
     expect(runCols).toContain('input_tokens');
@@ -247,7 +247,7 @@ describe('database upgrade', () => {
     // Open and trigger v8 -> v9 upgrade
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(10);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(11);
 
       // Project A: 1 Full working session preserving brief, plan, tasks, messages, and moved artifacts
       const sessionsA = upgraded.sqlite
@@ -330,6 +330,42 @@ describe('database upgrade', () => {
       upgraded.sqlite
         .prepare(`UPDATE sessions SET work_state = 'working' WHERE id = ?`)
         .run(sessionsB[0].id);
+    } finally {
+      upgraded.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('upgrades a v10 database to v11 by provisioning coder-medium and qa profiles', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dalang-up11-'));
+    const file = path.join(dir, 'dalang.db');
+    const fresh = openDatabase(file);
+    // Simulate a v10 database that only had the 4 original profiles and shared rules.
+    fresh.sqlite.exec(`
+      UPDATE routing_rules SET profile_id = 'profile-coder-heavy' WHERE role = 'engineer' AND complexity = 'medium';
+      UPDATE routing_rules SET profile_id = 'profile-reviewer' WHERE role = 'qa';
+      DELETE FROM agent_profiles WHERE id IN ('profile-coder-medium', 'profile-qa');
+    `);
+    fresh.sqlite.pragma('user_version = 10');
+    fresh.close();
+
+    const upgraded = openDatabase(file);
+    try {
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(11);
+      const names = (
+        upgraded.sqlite.prepare('SELECT name FROM agent_profiles ORDER BY name').all() as Array<{ name: string }>
+      ).map((r) => r.name);
+      expect(names).toEqual(['coder-heavy', 'coder-medium', 'coder-small', 'lead', 'qa', 'reviewer']);
+
+      const mediumRule = upgraded.sqlite
+        .prepare(`SELECT profile_id AS id FROM routing_rules WHERE role = 'engineer' AND complexity = 'medium'`)
+        .get() as { id: string };
+      expect(mediumRule.id).toBe('profile-coder-medium');
+
+      const qaRule = upgraded.sqlite
+        .prepare(`SELECT profile_id AS id FROM routing_rules WHERE role = 'qa'`)
+        .get() as { id: string };
+      expect(qaRule.id).toBe('profile-qa');
     } finally {
       upgraded.close();
       fs.rmSync(dir, { recursive: true, force: true });

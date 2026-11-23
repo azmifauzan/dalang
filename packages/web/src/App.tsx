@@ -84,6 +84,19 @@ function AppShell({ authEnabled }: { authEnabled: boolean }) {
     },
   });
   const signOut = () => signOutMutation.mutate();
+  const factoryResetMutation = useMutation({
+    mutationFn: api.factoryReset,
+    onSuccess: () => {
+      writeStored('dalang.activeProjectId', null);
+      writeStored('dalang.activeSessionId', null);
+      writeStored('dalang.sidebarCollapsed', null);
+      writeStored('dalang.wizardDismissed', null);
+      writeStored('dalang.theme', null);
+      writeStored('dalang.language', null);
+      qc.clear();
+      window.location.reload();
+    },
+  });
 
   const [section, setSection] = useState<WorkspaceSection>('project');
   const [configTab, setConfigTab] = useState<ConfigTabId>('general');
@@ -776,7 +789,11 @@ function AppShell({ authEnabled }: { authEnabled: boolean }) {
             <ConfigView
               tab={configTab}
               updateStatus={updateStatusQuery.data?.update ?? null}
+              onSelectTab={(nextTab) => setConfigTab(nextTab)}
               onReopenWizard={handleReopenWizard}
+              onFactoryReset={() => factoryResetMutation.mutate()}
+              resettingFactory={factoryResetMutation.isPending}
+              factoryResetError={factoryResetMutation.isError ? factoryResetMutation.error.message : null}
               onSignOut={signOut}
               signingOut={signOutMutation.isPending}
             />

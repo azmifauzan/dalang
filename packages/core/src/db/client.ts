@@ -29,7 +29,7 @@ export function getDbDataDir(db: DalangDb): string | null {
   return dbDataDirs.get(db) ?? null;
 }
 
-const SCHEMA_VERSION = 10;
+const SCHEMA_VERSION = 11;
 
 const BOOTSTRAP_SQL = `
 PRAGMA journal_mode = WAL;
@@ -276,7 +276,9 @@ CREATE TABLE IF NOT EXISTS integration_runs (
 const DEFAULT_ROLE_PROMPTS: Record<string, string> = {
   'profile-lead': "You are the Lead: the architect and planner of this project, not its coder.\n- Clarify before you plan. Ask only questions whose answers change what gets built, one decision per question, and offer concrete options with the trade-off of each.\n- Write briefs a stranger could build from: goal, scope, non-goals, constraints, and measurable done-criteria. Never invent requirements the user did not state; mark your own assumptions as assumptions.\n- Split work into small tasks that one agent can finish and verify on its own. Give every task a precise goal, acceptance criteria that can be checked, the narrowest files_allowed that still works, dependencies only when one task truly needs another's output, and a verify command that fails when the work is wrong.\n- Keep tasks that touch the same files apart in time, not in parallel. Mark a task needs_split instead of handing a vague or oversized one to a coder.\n- Read PROJECT.md and the existing code before deciding on structure. Follow the project's conventions and reuse what exists before proposing something new.",
   'profile-coder-small': "You are a focused engineer working a small, well-scoped task.\n- Do exactly what the goal and acceptance criteria ask, with the smallest change that satisfies them. No refactors, renames, or cleanups outside the task, and no new dependencies.\n- Read PROJECT.md and the code around your change first. Match the existing style, naming, and patterns, and reuse existing helpers.\n- Stay inside files_allowed. If the task needs a file outside it, stop and report it as blocked instead of editing it.\n- Cover the new or changed behaviour with a test when the project has tests, then run the verify command and fix what it reports. Never weaken or delete a test to make it pass.\n- Report honestly: what you changed, which commands you ran and their results, and anything left undone. If the goal is ambiguous, contradictory, or larger than described, stop and report blocked with the reason rather than guessing.",
+  'profile-coder-medium': "You are a methodical engineer handling medium-complexity feature and integration work.\n- Read PROJECT.md and the affected modules before editing so your changes fit the existing architecture and helpers.\n- Stay within files_allowed; if correctness requires touching another file, stop and report blocked with the exact path and reason.\n- Handle edge cases, write or update tests for the new behavior, and run the verify command until it passes without weakening assertions.",
   'profile-coder-heavy': "You are a senior engineer taking on multi-file or high-complexity work.\n- Understand before you edit: read the relevant modules, trace the data flow and the callers of anything you change, and form a short plan first. Prefer the root cause over a patch on the symptom.\n- Keep the change cohesive. Put logic where it belongs, preserve public interfaces and existing behaviour that the task does not mention, and reuse existing abstractions before adding new ones. Add a dependency only when it clearly lowers total complexity.\n- Handle the edge cases: empty and invalid input, error paths, concurrency, partial failure, and data loss. Validate at trust boundaries and never log or commit secrets.\n- Write tests for the behaviour you add or change, including the failure cases, and update docs or types the change touches. Run the verify command and fix real causes; never weaken or delete a test to get green.\n- Stay inside files_allowed. If correctness needs a change beyond it, stop and report blocked with the exact file and reason. Finish by summarising what changed, how you verified it, and the risks or follow-ups that remain.",
+  'profile-qa': "You are a quality assurance engineer focused on verification, regression checks, and test coverage.\n- Read PROJECT.md, acceptance criteria, and the relevant implementation before writing or running tests.\n- Stay within files_allowed and verify edge cases, failure paths, and expected outputs with real test commands rather than assumptions.\n- Report concrete pass/fail command outputs and any uncovered risk clearly.",
   'profile-reviewer': "You are an independent reviewer. You did not write this code and you do not fix it; you judge it.\n- Start from the acceptance criteria. Check each one against the actual diff and, where possible, against real behaviour. Run the verify command yourself and report its real output; do not trust the coder's summary.\n- Check that every changed file is inside files_allowed and that nothing unrelated slipped in.\n- Hunt for real defects: logic errors, unhandled edge cases and error paths, race conditions, resource leaks, broken or missing tests, regressions in untouched callers, and security problems such as injection, path traversal, unsafe deserialisation, and leaked secrets.\n- Rate each finding honestly: critical (breaks correctness or security), major (a likely bug or a missed criterion), minor (small and safe to defer), info (an observation). Fail the review only for unmet acceptance criteria or critical and major defects. Do not fail on style or personal preference.\n- Every finding names the file and line, says what goes wrong and when, and suggests a concrete fix. No speculation and no vague advice. Never modify files.",
 };
 
@@ -335,6 +337,21 @@ function seedDefaults(db: DalangDb): void {
       createdAt: now,
     },
     {
+      id: 'profile-coder-medium',
+      name: 'coder-medium',
+      provider: 'codex',
+      model: '',
+      effort: 'medium',
+      rolePrompt: DEFAULT_ROLE_PROMPTS['profile-coder-medium'],
+      permissionMode: 'workspace-write',
+      timeoutMs: 1800000,
+      idleTimeoutMs: 180000,
+      maxParallel: 1,
+      maxReviewRounds: 2,
+      isDefault: true,
+      createdAt: now,
+    },
+    {
       id: 'profile-coder-heavy',
       name: 'coder-heavy',
       provider: 'claude-code',
@@ -343,6 +360,21 @@ function seedDefaults(db: DalangDb): void {
       rolePrompt: DEFAULT_ROLE_PROMPTS['profile-coder-heavy'],
       permissionMode: 'workspace-write',
       timeoutMs: 1800000,
+      idleTimeoutMs: 180000,
+      maxParallel: 1,
+      maxReviewRounds: 2,
+      isDefault: true,
+      createdAt: now,
+    },
+    {
+      id: 'profile-qa',
+      name: 'qa',
+      provider: 'antigravity',
+      model: 'gemini-4-hydrogen-high',
+      effort: 'high',
+      rolePrompt: DEFAULT_ROLE_PROMPTS['profile-qa'],
+      permissionMode: 'workspace-write',
+      timeoutMs: 1200000,
       idleTimeoutMs: 180000,
       maxParallel: 1,
       maxReviewRounds: 2,
@@ -396,8 +428,8 @@ function seedDefaults(db: DalangDb): void {
         sortOrder: 3,
         role: 'engineer',
         complexity: 'medium',
-        profileId: 'profile-coder-heavy',
-        fallbackProvider: 'codex',
+        profileId: 'profile-coder-medium',
+        fallbackProvider: 'claude-code',
         fallbackModel: '',
         fallbackEffort: 'high',
         fallbackConfigDir: null,
@@ -418,7 +450,7 @@ function seedDefaults(db: DalangDb): void {
         sortOrder: 5,
         role: 'qa',
         complexity: null,
-        profileId: 'profile-reviewer',
+        profileId: 'profile-qa',
         fallbackProvider: 'claude-code',
         fallbackModel: '',
         fallbackEffort: 'high',
@@ -1238,6 +1270,9 @@ export function openDatabase(dbFilePath: string = getDbPath()): DbConnection {
   if (upgrading && storedVersion < 4) {
     seedReviewerRule(db);
   }
+  if (upgrading && storedVersion < 11) {
+    migrateToV11(db);
+  }
   sqlite.pragma(`user_version = ${SCHEMA_VERSION}`);
 
   return {
@@ -1246,4 +1281,115 @@ export function openDatabase(dbFilePath: string = getDbPath()): DbConnection {
     dataDir,
     close: () => sqlite.close(),
   };
+}
+
+/**
+ * v11: ensures dedicated `coder-medium` and `qa` profiles exist on upgraded databases and
+ * points the seeded `engineer/medium` and `qa` routing rules at them when still using the
+ * older shared `profile-coder-heavy` / `profile-reviewer` bindings.
+ */
+function migrateToV11(db: DalangDb): void {
+  const existing = db.select().from(schema.agentProfiles).all();
+  const hasMedium = existing.some((p) => p.id === 'profile-coder-medium' || p.name === 'coder-medium');
+  const hasQa = existing.some((p) => p.id === 'profile-qa' || p.name === 'qa');
+  const now = new Date().toISOString();
+
+  if (!hasMedium) {
+    const heavy = existing.find((p) => p.id === 'profile-coder-heavy' || p.name === 'coder-heavy');
+    const primaryProvider = heavy?.provider ?? 'codex';
+    db.insert(schema.agentProfiles)
+      .values({
+        id: 'profile-coder-medium',
+        name: 'coder-medium',
+        provider: primaryProvider,
+        model: heavy?.model ?? '',
+        effort: 'medium',
+        rolePrompt: DEFAULT_ROLE_PROMPTS['profile-coder-medium'],
+        permissionMode: 'workspace-write',
+        timeoutMs: heavy?.timeoutMs ?? 1800000,
+        idleTimeoutMs: heavy?.idleTimeoutMs ?? 180000,
+        maxParallel: 1,
+        maxReviewRounds: heavy?.maxReviewRounds ?? 2,
+        fallbackProvider: heavy?.fallbackProvider ?? null,
+        fallbackModel: heavy?.fallbackModel ?? null,
+        fallbackEffort: heavy?.fallbackEffort ?? null,
+        fallbackConfigDir: heavy?.fallbackConfigDir ?? null,
+        configDir: heavy?.configDir ?? null,
+        isDefault: true,
+        createdAt: now,
+      })
+      .run();
+    db.update(schema.routingRules)
+      .set({ profileId: 'profile-coder-medium' })
+      .where(
+        and(
+          eq(schema.routingRules.role, 'engineer'),
+          eq(schema.routingRules.complexity, 'medium'),
+          eq(schema.routingRules.profileId, 'profile-coder-heavy'),
+        ),
+      )
+      .run();
+  }
+
+  if (!hasQa) {
+    const reviewer = existing.find((p) => p.id === 'profile-reviewer' || p.name === 'reviewer');
+    const primaryProvider = reviewer?.provider ?? 'antigravity';
+    db.insert(schema.agentProfiles)
+      .values({
+        id: 'profile-qa',
+        name: 'qa',
+        provider: primaryProvider,
+        model: reviewer?.model ?? 'gemini-4-hydrogen-high',
+        effort: reviewer?.effort ?? 'high',
+        rolePrompt: DEFAULT_ROLE_PROMPTS['profile-qa'],
+        permissionMode: 'workspace-write',
+        timeoutMs: reviewer?.timeoutMs ?? 1200000,
+        idleTimeoutMs: reviewer?.idleTimeoutMs ?? 180000,
+        maxParallel: 1,
+        maxReviewRounds: reviewer?.maxReviewRounds ?? 2,
+        fallbackProvider: reviewer?.fallbackProvider ?? null,
+        fallbackModel: reviewer?.fallbackModel ?? null,
+        fallbackEffort: reviewer?.fallbackEffort ?? null,
+        fallbackConfigDir: reviewer?.fallbackConfigDir ?? null,
+        configDir: reviewer?.configDir ?? null,
+        isDefault: true,
+        createdAt: now,
+      })
+      .run();
+    db.update(schema.routingRules)
+      .set({ profileId: 'profile-qa' })
+      .where(
+        and(
+          eq(schema.routingRules.role, 'qa'),
+          eq(schema.routingRules.profileId, 'profile-reviewer'),
+        ),
+      )
+      .run();
+  }
+}
+
+/**
+ * Clears all persisted rows across every table and re-seeds the default
+ * agent profiles and routing rules, returning the database to a clean factory state.
+ */
+export function resetDatabaseToDefaults(db: DalangDb, sqlite: Database.Database): void {
+  sqlite.transaction(() => {
+    db.delete(schema.integrationRuns).run();
+    db.delete(schema.reviews).run();
+    db.delete(schema.runs).run();
+    db.delete(schema.leadTurns).run();
+    db.delete(schema.taskDependencies).run();
+    db.delete(schema.tasks).run();
+    db.delete(schema.plans).run();
+    db.delete(schema.briefs).run();
+    db.delete(schema.messageImages).run();
+    db.delete(schema.messages).run();
+    db.delete(schema.sessions).run();
+    db.delete(schema.projects).run();
+    db.delete(schema.routingRules).run();
+    db.delete(schema.agentProfiles).run();
+    db.delete(schema.providerEvents).run();
+    db.delete(schema.settings).run();
+    seedDefaults(db);
+  })();
 }

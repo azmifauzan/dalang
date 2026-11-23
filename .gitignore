@@ -11,3 +11,5 @@ packages/cli/web-dist/
 packages/cli/README.md
 packages/cli/LICENSE
 packages/cli/bundle/
+
+/video*/

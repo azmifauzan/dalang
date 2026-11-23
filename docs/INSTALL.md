@@ -93,6 +93,8 @@ Open the URL printed in the terminal, normally `http://127.0.0.1:4173`. Keep the
 | `npx dalang-cli --no-open` | Start without opening a browser tab |
 | `npx dalang-cli --port 4180` | Use another loopback port if 4173 is busy |
 | `npx dalang-cli doctor --json` | Get machine-readable diagnostics |
+| `dalang update --check` | Check whether a newer version is available |
+| `dalang update` | Check and install the latest global release via npm |
 
 Use `dalang` in place of `npx dalang-cli` after a global install. You can also set `DALANG_PORT` to choose a default port.
 
@@ -128,6 +130,14 @@ Let active tasks finish or stop them, then stop the server with Ctrl+C or `docke
 
 ```bash
 npm install -g https://github.com/azmifauzan/dalang/releases/download/v0.7.3/dalang-cli-0.7.3.tgz
+```
+
+For releases published to the npm registry, use the command that matches your installation. These commands currently install or check v0.7.2, which predates native Windows support:
+
+```bash
+npx dalang-cli@latest
+dalang update
+npm install -g dalang-cli@latest
 ```
 
 With a global installation, start the updated app with `dalang`. For Docker, update the source checkout and rerun `docker compose up --build -d`. Keep the `dalang-home` volume to retain app data, provider sign-ins, and CLI updates.

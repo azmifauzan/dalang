@@ -4,6 +4,7 @@ import {
   EFFORT_LEVEL_ORDER,
   type AgentProfileDTO,
   type EffortLevel,
+  type FallbackTarget,
   type ProjectSummary,
   type ProviderId,
   type ProviderStatus,
@@ -13,7 +14,6 @@ import { WayangFigure, type WayangCharacterId } from '../assets/wayang/WayangFig
 import { useI18n } from '../i18n/index.js';
 import { providerBadgeStyle, providerDisplayShort } from '../lib/activity.js';
 import { api } from '../lib/api.js';
-import { FallbackFields, fallbackFromForm, type FallbackForm } from './FallbackFields.js';
 import { ErrorPanel, LoadingPanel } from './StateViews.js';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -32,13 +32,15 @@ function fixCommandForProvider(p: ProviderStatus): string {
   return p.installed ? 'agy' : 'https://antigravity.google/cli';
 }
 
-type RoleKey = 'lead' | 'coderLight' | 'coderHeavy' | 'reviewer';
+type RoleKey = 'lead' | 'coderLight' | 'coderMedium' | 'coderHeavy' | 'qa' | 'reviewer';
 
 /** Seeded profile that carries each role. The wizard edits these profiles in place. */
 const ROLE_PROFILE_NAME: Record<RoleKey, string> = {
   lead: 'lead',
   coderLight: 'coder-small',
+  coderMedium: 'coder-medium',
   coderHeavy: 'coder-heavy',
+  qa: 'qa',
   reviewer: 'reviewer',
 };
 const PROVIDER_ORDER: ProviderId[] = ['claude-code', 'codex', 'antigravity'];
@@ -100,6 +102,33 @@ export function WizardView({
     onSuccess: (data) => qc.setQueryData(['settings'], data),
   });
 
+  const restoreRoleMutation = useMutation({
+    mutationFn: async (key: RoleKey) => {
+      const fallbackCli = PROVIDER_ORDER.find((id) => usableIds.has(id)) ?? 'claude-code';
+      const defaultEffort: EffortLevel =
+        key === 'coderLight' ? 'low' : key === 'coderMedium' ? 'medium' : 'high';
+      const created = await api.createProfile({
+        name: ROLE_PROFILE_NAME[key],
+        provider: fallbackCli,
+        model: '',
+        effort: defaultEffort,
+        rolePrompt: '',
+        permissionMode: key === 'reviewer' ? 'read-only' : 'workspace-write',
+        timeoutMs: key === 'reviewer' || key === 'qa' ? 1_200_000 : 1_800_000,
+        idleTimeoutMs: 180_000,
+        maxParallel: key === 'coderLight' ? 2 : 1,
+        maxReviewRounds: 2,
+        fallback: null,
+        configDir: null,
+      });
+      return created.profile;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['profiles'] });
+      qc.invalidateQueries({ queryKey: ['routing'] });
+    },
+  });
+
   const providers = providersQuery.data?.providers ?? [];
   const profiles = profilesQuery.data?.profiles ?? [];
   const rules = routingQuery.data?.rules ?? [];
@@ -124,16 +153,18 @@ export function WizardView({
     return {
       lead: byName(ROLE_PROFILE_NAME.lead),
       coderLight: byName(ROLE_PROFILE_NAME.coderLight),
+      coderMedium: byName(ROLE_PROFILE_NAME.coderMedium),
       coderHeavy: byName(ROLE_PROFILE_NAME.coderHeavy),
+      qa: byName(ROLE_PROFILE_NAME.qa),
       reviewer: byName(ROLE_PROFILE_NAME.reviewer),
     } satisfies Record<RoleKey, AgentProfileDTO | null>;
   }, [profiles]);
 
-  // Provider, model, and effort chosen per role profile; saved only when the team is accepted.
+  // Provider, model, effort, and optional fallback chosen per role profile; saved only when the team is accepted.
   const [edits, setEdits] = useState<
     Record<string, { provider?: ProviderId; model?: string; effort?: EffortLevel }>
   >({});
-  const [fallbackPick, setFallbackPick] = useState<FallbackForm | undefined>(undefined);
+  const [fallbackEdits, setFallbackEdits] = useState<Record<string, ProviderId | ''>>({});
 
   const modelsOf = (provider: ProviderId) => providers.find((p) => p.id === provider)?.models ?? [];
   const effortsFor = (provider: ProviderId, model: string): readonly EffortLevel[] => {
@@ -152,50 +183,72 @@ export function WizardView({
     return { provider, model, effort };
   };
 
-  const roleKeys = ['lead', 'coderLight', 'coderHeavy', 'reviewer'] as const;
-  // Default fallback: a ready CLI other than the complex-task coder's, so one provider's limit does not stop work.
-  const heavyCli = roleProfiles.coderHeavy ? valueOf(roleProfiles.coderHeavy).provider : null;
-  const fallbackForm: FallbackForm =
-    fallbackPick ?? {
-      provider: PROVIDER_ORDER.find((id) => usableIds.has(id) && id !== heavyCli) ?? '',
-      model: '',
-      effort: 'high',
-      configDir: '',
-    };
+  /** Effective fallback CLI for a role profile (from user edit, profile/rule default, or another ready CLI). */
+  const fallbackProviderOf = (prof: AgentProfileDTO, primaryProvider: ProviderId): ProviderId | '' => {
+    if (prof.id in fallbackEdits) {
+      return fallbackEdits[prof.id];
+    }
+    const existingRule = rules.find((r) => r.profileId === prof.id && r.fallback !== null)?.fallback ?? null;
+    const seedTarget = prof.fallback ?? existingRule;
+    if (seedTarget && usableIds.has(seedTarget.provider) && seedTarget.provider !== primaryProvider) {
+      return seedTarget.provider;
+    }
+    return PROVIDER_ORDER.find((id) => usableIds.has(id) && id !== primaryProvider) ?? '';
+  };
+
+  const toFallbackTarget = (provider: ProviderId | ''): FallbackTarget | null =>
+    provider ? { provider, model: '', effort: 'high', configDir: null } : null;
+
+  const roleKeys = ['lead', 'coderLight', 'coderMedium', 'coderHeavy', 'qa', 'reviewer'] as const;
   const crossProvider =
-    Boolean(roleProfiles.coderLight && roleProfiles.reviewer) &&
-    valueOf(roleProfiles.coderLight!).provider !== valueOf(roleProfiles.reviewer!).provider;
+    Boolean(roleProfiles.reviewer) &&
+    [roleProfiles.coderLight, roleProfiles.coderMedium, roleProfiles.coderHeavy].some((p) =>
+      Boolean(p && valueOf(p).provider !== valueOf(roleProfiles.reviewer!).provider),
+    );
   const leadProvider: ProviderId = roleProfiles.lead
     ? valueOf(roleProfiles.lead).provider
     : (PROVIDER_ORDER.find((id) => usableIds.has(id)) ?? 'claude-code');
 
   const applyTeamMutation = useMutation({
     mutationFn: async () => {
+      const targetByProfileId = new Map<string, FallbackTarget | null>();
       for (const key of roleKeys) {
         const prof = roleProfiles[key];
         if (!prof) continue;
         const v = valueOf(prof);
-        if (v.provider !== prof.provider || v.model !== prof.model || v.effort !== prof.effort) {
-          await api.updateProfile(prof.id, v);
+        const fbTarget = toFallbackTarget(fallbackProviderOf(prof, v.provider));
+        targetByProfileId.set(prof.id, fbTarget);
+        if (
+          v.provider !== prof.provider ||
+          v.model !== prof.model ||
+          v.effort !== prof.effort ||
+          JSON.stringify(fbTarget) !== JSON.stringify(prof.fallback)
+        ) {
+          await api.updateProfile(prof.id, { ...v, fallback: fbTarget });
         }
       }
-      // Only updates seeded routing rules' primary/fallback profiles; never deletes profiles or rules.
+      // Keep seeded routing rules aligned with each role's profile and fallback provider.
       for (const rule of rules) {
         let nextPrimary = rule.profileId;
-        let nextFallback = rule.fallback;
         if (rule.role === 'lead' && roleProfiles.lead) {
           nextPrimary = roleProfiles.lead.id;
         } else if (rule.role === 'engineer') {
-          const light = rule.complexity === 'low';
-          const primary = light ? roleProfiles.coderLight : roleProfiles.coderHeavy;
+          const primary =
+            rule.complexity === 'low'
+              ? roleProfiles.coderLight
+              : rule.complexity === 'medium'
+                ? (roleProfiles.coderMedium ?? roleProfiles.coderHeavy)
+                : roleProfiles.coderHeavy;
           if (primary) nextPrimary = primary.id;
-          // Simple tasks escalate to the complex-task coder's CLI and model; everything else uses the fallback.
-          const heavy = roleProfiles.coderHeavy ? valueOf(roleProfiles.coderHeavy) : null;
-          nextFallback = light && heavy ? { ...heavy, configDir: null } : fallbackFromForm(fallbackForm);
-        } else if ((rule.role === 'qa' || rule.role === 'reviewer') && roleProfiles.reviewer) {
+        } else if (rule.role === 'qa') {
+          const primary = roleProfiles.qa ?? roleProfiles.reviewer;
+          if (primary) nextPrimary = primary.id;
+        } else if (rule.role === 'reviewer' && roleProfiles.reviewer) {
           nextPrimary = roleProfiles.reviewer.id;
-          nextFallback = fallbackFromForm(fallbackForm);
         }
+        const nextFallback = targetByProfileId.has(nextPrimary)
+          ? targetByProfileId.get(nextPrimary)!
+          : rule.fallback;
         if (
           nextPrimary !== rule.profileId ||
           JSON.stringify(nextFallback) !== JSON.stringify(rule.fallback)
@@ -248,9 +301,10 @@ export function WizardView({
   const castIntro: Array<{ id: WayangCharacterId; name: string; role: string }> = [
     { id: 'semar', name: t('wizard.cast.semar'), role: t('wizard.cast.semarRole') },
     { id: 'bima', name: t('wizard.cast.bima'), role: t('wizard.cast.bimaRole') },
-    { id: 'kresna', name: t('wizard.cast.kresna'), role: t('wizard.cast.kresnaRole') },
-    { id: 'arjuna', name: t('wizard.cast.arjuna'), role: t('wizard.cast.arjunaRole') },
     { id: 'gatotkaca', name: t('wizard.cast.gatotkaca'), role: t('wizard.cast.gatotkacaRole') },
+    { id: 'kresna', name: t('wizard.cast.kresna'), role: t('wizard.cast.kresnaRole') },
+    { id: 'srikandi', name: t('wizard.cast.srikandi'), role: t('wizard.cast.srikandiRole') },
+    { id: 'arjuna', name: t('wizard.cast.arjuna'), role: t('wizard.cast.arjunaRole') },
   ];
 
   return (
@@ -313,7 +367,7 @@ export function WizardView({
             className="rounded-[8px] border p-5"
             style={{ backgroundColor: 'var(--bg-well)', borderColor: 'var(--border-subtle)' }}
           >
-            <div className="grid grid-cols-3 items-end gap-3 sm:grid-cols-6">
+            <div className="grid grid-cols-2 items-end gap-3 sm:grid-cols-4 lg:grid-cols-7">
               <div className="col-span-2 flex flex-col items-center sm:col-span-1">
                 <GununganDetailed size={108} label={t('common.gunungan')} />
               </div>
@@ -540,12 +594,15 @@ export function WizardView({
               [
                 { key: 'lead', cast: 'semar', label: t('wizard.step3.leadRole') },
                 { key: 'coderLight', cast: 'bima', label: t('wizard.step3.coderRole') },
+                { key: 'coderMedium', cast: 'gatotkaca', label: t('wizard.step3.coderMediumRole') },
                 { key: 'coderHeavy', cast: 'kresna', label: t('wizard.step3.coderHeavyRole') },
+                { key: 'qa', cast: 'srikandi', label: t('wizard.step3.qaRole') },
                 { key: 'reviewer', cast: 'arjuna', label: t('wizard.step3.reviewerRole') },
               ] as const
             ).map((card) => {
               const prof = roleProfiles[card.key];
               const cur = prof ? valueOf(prof) : null;
+              const fbProvider = prof && cur ? fallbackProviderOf(prof, cur.provider) : '';
               const models = cur ? modelsOf(cur.provider) : [];
               const efforts = cur ? effortsFor(cur.provider, cur.model) : EFFORT_LEVEL_ORDER;
               const patch = (next: { provider?: ProviderId; model?: string; effort?: EffortLevel }) =>
@@ -617,41 +674,50 @@ export function WizardView({
                             ))}
                           </NativeSelect>
                         </div>
+                        <div className="flex items-center gap-2 pt-0.5">
+                          <span
+                            className="shrink-0 text-xs"
+                            style={{ color: 'var(--text-secondary)' }}
+                          >
+                            {t('config.agents.backupLabel')}:
+                          </span>
+                          <NativeSelect
+                            aria-label={`${card.label}: ${t('config.agents.backupLabel')}`}
+                            value={fbProvider}
+                            onChange={(e) => {
+                              const next = e.target.value as ProviderId | '';
+                              setFallbackEdits((prev) => ({ ...prev, [prof.id]: next }));
+                            }}
+                          >
+                            <option value="">{t('common.none')}</option>
+                            {PROVIDER_ORDER.map((id) => (
+                              <option key={id} value={id}>
+                                {providerDisplayShort(id)}
+                                {usableIds.has(id) ? '' : ` (${t('wizard.step3.notReady')})`}
+                              </option>
+                            ))}
+                          </NativeSelect>
+                        </div>
                       </>
                     ) : (
-                      <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-                        {t('wizard.step3.profileMissing')}
-                      </p>
+                      <div className="space-y-2">
+                        <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+                          {t('wizard.step3.profileMissing')}
+                        </p>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          disabled={restoreRoleMutation.isPending}
+                          onClick={() => restoreRoleMutation.mutate(card.key)}
+                        >
+                          {t('config.agents.restoreRole', { name: ROLE_PROFILE_NAME[card.key] })}
+                        </Button>
+                      </div>
                     )}
                   </div>
                 </div>
               );
             })}
-
-            {/* Fallback: which team member steps in when a provider hits a limit */}
-            <div
-              className="flex items-start gap-4 rounded-[6px] border p-4"
-              style={{ borderColor: 'var(--border-subtle)', backgroundColor: 'var(--bg-canvas)' }}
-            >
-              <div
-                className="flex h-20 w-20 shrink-0 items-center justify-center rounded-[6px] border"
-                style={{ borderColor: 'var(--border-subtle)', backgroundColor: 'var(--bg-well)' }}
-              >
-                <WayangFigure character="gatotkaca" variant="sungging" size={72} />
-              </div>
-              <div className="min-w-0 flex-1 space-y-1.5">
-                <div className="text-sm font-semibold">{t('wizard.step3.fallbackRole')}</div>
-                <FallbackFields
-                  idPrefix="team-fallback"
-                  value={fallbackForm}
-                  onChange={setFallbackPick}
-                  providers={providers}
-                />
-                <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-                  {t('wizard.step3.fallbackHint')}
-                </p>
-              </div>
-            </div>
           </div>
 
           {applyTeamMutation.isError && (

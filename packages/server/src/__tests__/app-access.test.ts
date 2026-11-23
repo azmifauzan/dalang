@@ -159,3 +159,85 @@ it('uses the official update command for each installed CLI, with a concurrent u
     await close();
   }
 });
+
+it('resets the database and settings to factory defaults via POST /api/factory-reset', async () => {
+  const dbDir = tempDir();
+  const dbPath = path.join(dbDir, 'dalang.db');
+  const repoDir = tempDir();
+  const { app, close } = await createDalangServer({ dbPath });
+  try {
+    // Reject cross-origin reset requests even when login is disabled
+    const crossOrigin = await app.inject({
+      method: 'POST',
+      url: '/api/factory-reset',
+      headers: { origin: 'http://localhost:9999' },
+    });
+    expect(crossOrigin.statusCode).toBe(403);
+
+    // Populate projects, settings, custom profiles, and app login password
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/projects',
+      payload: { mode: 'create', name: 'Sample Project', path: repoDir },
+    });
+    expect(created.statusCode).toBe(201);
+
+    await app.inject({
+      method: 'PATCH',
+      url: '/api/settings',
+      payload: { language: 'id', checkForUpdates: false, usageRefreshMinutes: 15 },
+    });
+    const customProfile = await app.inject({
+      method: 'POST',
+      url: '/api/profiles',
+      payload: { name: 'custom-worker', provider: 'codex' },
+    });
+    expect(customProfile.statusCode).toBe(201);
+
+    const authEnabled = await app.inject({
+      method: 'PUT',
+      url: '/api/auth/settings',
+      payload: { enabled: true, password },
+    });
+    expect(authEnabled.statusCode).toBe(200);
+    const cookie = String(authEnabled.headers['set-cookie']).split(';')[0];
+
+    // Unauthenticated reset is rejected when login is active
+    expect((await app.inject({ method: 'POST', url: '/api/factory-reset' })).statusCode).toBe(401);
+
+    // Authenticated factory reset clears all projects/custom profiles/settings and re-seeds defaults
+    const resetRes = await app.inject({
+      method: 'POST',
+      url: '/api/factory-reset',
+      headers: { cookie },
+    });
+    expect(resetRes.statusCode).toBe(200);
+    expect(resetRes.json()).toEqual({ ok: true });
+
+    expect((await app.inject('/api/auth/status')).json()).toMatchObject({
+      enabled: false,
+      authenticated: true,
+      language: null,
+    });
+    expect((await app.inject('/api/projects')).json().projects).toEqual([]);
+    expect((await app.inject('/api/settings')).json().settings).toEqual({
+      antigravityKeyringAccess: false,
+      language: null,
+      checkForUpdates: true,
+      usageRefreshMinutes: 5,
+    });
+
+    const profiles = (await app.inject('/api/profiles')).json().profiles as Array<{ name: string }>;
+    expect(profiles.map((p) => p.name).sort()).toEqual([
+      'coder-heavy',
+      'coder-medium',
+      'coder-small',
+      'lead',
+      'qa',
+      'reviewer',
+    ]);
+    expect((await app.inject('/api/routing')).json().rules).toHaveLength(6);
+  } finally {
+    await close();
+  }
+});

@@ -65,10 +65,12 @@ export function WorkStage({
   const actors: StageActor[] = [];
 
   for (const run of activeRuns) {
+    const preview = previews.find((p) => p.taskId === run.taskId);
     const ch = characterForProfile(
       run.profileName,
-      run.kind === 'review' ? 'reviewer' : 'engineer',
+      preview?.role ?? (run.kind === 'review' ? 'reviewer' : 'engineer'),
       run.usedFallback,
+      preview?.complexity ?? null,
     );
     actors.push({
       key: `run-${run.id}`,

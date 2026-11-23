@@ -61,7 +61,11 @@ export function registerAuth(app: FastifyInstance, settings: SettingsService) {
     if (!route || (!route.startsWith('/api/') && route !== '/ws')) return;
     const enabled = Boolean(settings.loginPasswordHash());
     if (enabled || route.startsWith('/api/auth/')) reply.header('Cache-Control', 'no-store');
-    const restrictedOrigin = enabled || route.startsWith('/api/auth/') || route === '/api/providers/:provider/update';
+    const restrictedOrigin =
+      enabled ||
+      route.startsWith('/api/auth/') ||
+      route === '/api/providers/:provider/update' ||
+      route === '/api/factory-reset';
     if (restrictedOrigin && req.headers.origin && req.headers.origin !== `${req.protocol}://${req.headers.host}`) {
       return reply.code(403).send({ error: 'Forbidden: use the DALANG page to make this request.' });
     }
@@ -130,6 +134,11 @@ export function registerAuth(app: FastifyInstance, settings: SettingsService) {
       const socket = { token: readToken(req), close };
       sockets.add(socket);
       return () => sockets.delete(socket);
+    },
+    reset(reply?: FastifyReply) {
+      sessions.clear();
+      if (reply) setCookie(reply, '', 0);
+      closeRevokedSockets();
     },
   };
 }

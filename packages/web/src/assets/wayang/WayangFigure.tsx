@@ -56,6 +56,13 @@ const SUNGGING_PALETTE: Record<
     stroke: '#E07A38',
     pin: '#FDE68A',
   },
+  srikandi: {
+    body: '#2B1F28',
+    frontArm: '#9A3412',
+    backArm: '#0F766E',
+    stroke: '#D97706',
+    pin: '#FEF3C7',
+  },
 };
 
 export function WayangFigure({
@@ -177,26 +184,32 @@ export function WayangFigure({
 export function characterForProfile(
   profileName: string,
   role?: string,
-  usedFallback?: boolean,
+  _usedFallback?: boolean,
   complexity?: string | null,
 ): WayangCharacterId {
-  if (usedFallback) return 'gatotkaca';
   const lower = `${profileName} ${role ?? ''}`.toLowerCase();
-  if (lower.includes('fallback') || lower.includes('backup') || lower.includes('gatot')) {
-    return 'gatotkaca';
+  if (lower.includes('srikandi') || /\bqa\b/.test(lower) || lower.includes('tester')) {
+    return 'srikandi';
   }
-  if (lower.includes('review') || lower.includes('qa') || lower.includes('guard')) {
+  if (lower.includes('review') || lower.includes('guard')) {
     return 'arjuna';
   }
   if (lower.includes('lead') || lower.includes('plan') || lower.includes('semar')) {
     return 'semar';
   }
-  // Kresna, the strategist, takes the complex work; Bima the straightforward tasks.
+  // Gatotkaca handles medium tasks; Kresna handles high/complex; Bima handles low/simple.
+  if (
+    lower.includes('medium') ||
+    lower.includes('gatot') ||
+    (role === 'engineer' && complexity === 'medium')
+  ) {
+    return 'gatotkaca';
+  }
   if (
     lower.includes('heavy') ||
     lower.includes('complex') ||
     lower.includes('kresna') ||
-    (role === 'engineer' && (complexity === 'medium' || complexity === 'high'))
+    (role === 'engineer' && complexity === 'high')
   ) {
     return 'kresna';
   }
@@ -204,5 +217,12 @@ export function characterForProfile(
 }
 
 export function castDisplayName(cast: WayangCharacterId): string {
-  return { semar: 'Semar', bima: 'Bima', arjuna: 'Arjuna', gatotkaca: 'Gatotkaca', kresna: 'Kresna' }[cast];
+  return {
+    semar: 'Semar',
+    bima: 'Bima',
+    gatotkaca: 'Gatotkaca',
+    kresna: 'Kresna',
+    srikandi: 'Srikandi',
+    arjuna: 'Arjuna',
+  }[cast];
 }

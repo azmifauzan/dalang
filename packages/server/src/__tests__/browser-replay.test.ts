@@ -473,22 +473,18 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
           expect(statsText).toContain('5.4k');
           expect(statsText).toContain('2 / 0 / 0 / 1');
 
-          // Sidebar -> Config swaps sidebar to Back + 6 tabs.
+          // Sidebar -> Config swaps sidebar to Back + 4 unified sections.
           await clickButton('Config');
           await waitForText('Check for new versions');
 
-          // Config -> Agents: verify provider status & rich model display names.
-          await clickButton('Agents', true);
-          const agentsText = await waitForText('Refresh CLI status');
-          expect(agentsText).toContain('Opus');
-          expect(agentsText).toContain('Fable');
-          expect(agentsText).toContain('Update CLI');
-
-          // Config -> Team: sungging wayang cards + New profile modal (Fable 1M, max effort, configDir).
-          await clickButton('Team', true);
+          // Config -> Agents unified hub: live CLI strip + 3 sub-tabs (Team & roles, CLIs & quotas, Task routing).
+          await clickButton('Agents');
+          await waitForText('Team & roles');
           await waitForText('New profile');
+
+          // Team & roles: core role cards + New profile modal (Fable 1M, max effort, collapsible advanced configDir).
           await clickButton('New profile', true);
-          await waitForText('Account config directory (optional)');
+          await waitForText('Identity & model');
           const modelOptions = await browser.cdp.evalJs<string[]>(
             `[...document.querySelectorAll('#prof-model option')].map(o => o.textContent?.trim() || '')`,
           );
@@ -506,15 +502,25 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
             `[...document.querySelectorAll('#prof-effort option')].map(o => o.value)`,
           );
           expect(effortOptions).toContain('max');
+          await clickButton('Advanced settings');
+          await waitForText('Account config directory (optional)');
           await clickButton('Cancel', true);
 
-          // Config -> Task routing: plain sentences.
-          await clickButton('Task routing', true);
-          const routingText = await waitForText('New routing rule');
+          // Agents -> CLIs & quotas sub-tab: verify provider status, rich model display names & Update CLI.
+          await clickButton('CLIs & quotas');
+          const agentsText = await waitForText('Update CLI');
+          expect(agentsText).toContain('Refresh CLI status');
+          expect(agentsText).toContain('Opus');
+          expect(agentsText).toContain('Fable');
+
+          // Agents -> Task routing sub-tab: route simulator + ordered rules.
+          await clickButton('Task routing');
+          const routingText = await waitForText('Test a task route');
+          expect(routingText).toContain('New routing rule');
           expect(routingText).toContain('->');
 
           // Config -> Security: sandbox + keyring toggle.
-          await clickButton('Security', true);
+          await clickButton('Security');
           await waitForText('Allow Antigravity to read the desktop keyring');
           const signOutSelector = 'aside button[aria-label="Sign out"]';
           expect(await browser.cdp.evalJs<boolean>(`Boolean(document.querySelector(${JSON.stringify(signOutSelector)}))`)).toBe(false);
@@ -545,19 +551,19 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
           await waitForText('Browser Replay App');
           await clickButton('Statistics');
           await clickButton('Config');
-          await clickButton('Security', true);
+          await clickButton('Security');
           await clickButton('Disable login', true);
           await waitForText('Enable login');
 
           // Config -> About: Gunungan + update commands + Tropenmuseum CC BY-SA 3.0 credits.
-          await clickButton('About', true);
+          await clickButton('About');
           const aboutText = await waitForText('Tropenmuseum');
           expect(aboutText).toContain('npx dalang-cli@latest');
           expect(aboutText).toContain('npm install -g dalang-cli@latest');
           expect(aboutText).toContain('CC BY-SA 3.0');
 
           // Config -> General: toggle update check off hides sidebar notice, back on restores it.
-          await clickButton('General', true);
+          await clickButton('General');
           await waitForText('Notify me when a newer version of DALANG is published');
           await browser.cdp.evalJs(`document.querySelector('main input[type="checkbox"]')?.click()`);
           await new Promise((r) => setTimeout(r, 300));
@@ -632,10 +638,17 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
           await new Promise((r) => setTimeout(r, 300));
           await collect('Statistik');
           await clickButton('Pengaturan', true);
-          for (const tab of ['Umum', 'Agen', 'Tim', 'Rute tugas', 'Keamanan', 'Tentang']) {
-            await clickButton(tab, true);
+          for (const tab of ['Umum', 'Agen', 'Keamanan', 'Tentang']) {
+            await clickButton(tab);
             await new Promise((r) => setTimeout(r, 300));
             await collect(tab);
+            if (tab === 'Agen') {
+              for (const sub of ['Tim & peran', 'CLI & kuota', 'Rute tugas']) {
+                await clickButton(sub);
+                await new Promise((r) => setTimeout(r, 250));
+                await collect(`Agen / ${sub}`);
+              }
+            }
           }
           const leaks: string[] = [];
           for (const block of seen) {
@@ -773,12 +786,18 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
           const labels = await browser.cdp.evalJs<string[]>(
             `[...document.querySelectorAll('select')].map((s) => s.getAttribute('aria-label') || s.id)`,
           );
-          for (const role of ['Lead (Semar)', 'Coder, simple tasks (Bima)', 'Coder, complex tasks (Kresna)', 'Reviewer (Arjuna)']) {
-            for (const field of ['CLI', 'Model', 'Reasoning effort']) {
+          for (const role of [
+            'Lead (Semar)',
+            'Coder, simple tasks (Bima)',
+            'Coder, medium tasks (Gatotkaca)',
+            'Coder, complex tasks (Kresna)',
+            'QA (Srikandi)',
+            'Reviewer (Arjuna)',
+          ]) {
+            for (const field of ['CLI', 'Model', 'Reasoning effort', 'Fallback']) {
               expect(labels.some((l) => l === `${role}: ${field === 'CLI' ? 'Provider' : field}`)).toBe(true);
             }
           }
-          expect(labels).toContain('team-fallback-provider');
 
           // Switch the simple-task coder to Claude Code and give the complex-task coder a model.
           await setSelect('Coder, simple tasks (Bima): Provider', 'claude-code');
