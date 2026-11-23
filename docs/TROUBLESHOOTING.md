@@ -21,7 +21,7 @@ Find the message or symptom you see:
 
 ### Database schema is newer than this Dalang build
 
-If `dalang` prints an error such as `Database schema v12 is newer than this DALANG build (v11)`, the installed CLI is older than the database. Older builds can show the same error for `dalang update`. Install the latest version directly:
+If `dalang` prints an error such as `Database schema v13 is newer than this DALANG build (v12)`, the installed CLI is older than the database. Older builds can show the same error for `dalang update`. Install the latest version directly:
 
 ```bash
 npm install -g dalang-cli@latest

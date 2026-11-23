@@ -303,7 +303,7 @@ Each phase must be useful on its own before the next one starts.
 | v0.7.2 | Chat image attachments, optional local login, Docker Compose, and provider CLI updates | Upload and reopen a chat image, protect app APIs and live connections when login is enabled, and launch the Docker image with all three updaters available | Implemented and covered by API, Chromium replay, and Linux Docker checks |
 | v0.7.3 | Native Windows execution, instruction pointers, platform shell commands, and review artifact scope | Install the tarball and complete a live Quick plan, code, verify, read-only review, merge, and integration on Windows; retain Linux regression coverage | Verified on Windows with Codex and Edge; 104 applicable Windows tests and 107 Linux tests passed. GitHub release and tarball distribution; npm publication is separate. |
 | v0.8 | Agent delegation: a running agent splits its own task into subtasks on other profiles through a DALANG MCP server | One task is split by its agent into at least two subtasks on two providers, and all of them pass review and merge | Implemented. Verified on 23 Nov 2026 with replay providers in the core delegation tests and over real HTTP in the loopback `/mcp` server test; a run on live provider CLIs is not yet done |
-| v0.9 | Workspace projects: one project for a root folder whose top-level folders are their own git repositories, with worktrees, review, merge, and rollback per repo | A Quick task in a workspace edits a nested repo, passes review, and merges into that repo's branch | Planned |
+| v0.9 | Workspace projects: one project for a root folder whose top-level folders are their own git repositories, with worktrees, review, merge, and rollback per repo | A Quick task in a workspace edits a nested repo, passes review, and merges into that repo's branch | Implemented. Verified on 23 Nov 2026 with a schema v12 to v13 upgrade test, core nested-repo lifecycle, merge, push, rollback, and delegation tests, and a Chromium replay E2E Quick task touching a nested repo; a live Quick task on the `sei-office` workspace (copy of app data, Claude coder, Antigravity review) changed `frontend/` and `scheduling-service/`, merged one commit into each repo's checked-out branch, left `backend/` untouched, and was then reverted. Antigravity as coder fails on `agy` 1.5.15 (see CHANGELOG known issue) |
 | v0.10 | Session protocols (Claude Agent SDK, `codex app-server`, ACP), steering a running task, context handoff on fallback, native Windows confinement | A fallback mid-task continues from the handoff instead of starting over, on all three providers | Planned |
 | v0.11 | Scheduled and webhook-triggered runs, outside agents over MCP | A scheduled run and a run started from a terminal agent both finish without opening the UI | Planned |
 
@@ -702,7 +702,7 @@ The v0.6 flow always runs `Discuss → Brief → Plan → Work → Review & merg
 - Limits: depth 1 (subtasks receive no MCP config and depth >= 1 delegation is refused server-side), a configurable cap on subtasks per task (default 6), subtasks count against the global `ProviderLimiter` (with deadlock-safe slot yielding for same-account `wait` calls), overlapping sibling subtasks serialize automatically, and stopping the parent stops its subtasks.
 - Native subagents (Claude's `Task`/`Agent` tool calls and Antigravity subagent/batch events) are parsed from run logs and shown read-only in the Work view run inspector and activity feed.
 
-### v0.9: workspace projects with nested repositories (planned, draft 23 Nov 2026)
+### v0.9: workspace projects with nested repositories (released, 23 Nov 2026)
 
 Goal: open a workspace folder such as `sei-office` as one project, where the root repo ignores `frontend/`, `backend/`, and `scheduling-service/` and each of those is its own git repository. This is how the owner already works with Claude Code, Codex, and Antigravity from the root folder. Today a Quick or Full task fails there because the task worktree only contains the root repo, so files under a nested repo are missing (seen on T-001, two failed runs on 23 Nov).
 
@@ -742,7 +742,7 @@ Decided 23 Nov 2026 by the owner:
 - Base branch: each nested repo uses the branch checked out when the task starts, and the task merges back into that branch. This matches how the owner works with other CLIs, which edit whatever branch is checked out.
 - Uncommitted changes at merge: a merge is refused only when an uncommitted file in the target repo is also changed by the task. Other uncommitted work stays in place. This applies to the root repo too.
 
-Interim: v0.8.0 fails a task at start, before any agent runs, when its `files_allowed` points into a nested repo. Phase 2 removes that check.
+Interim: v0.8.0 failed a task at start when its `files_allowed` pointed into a nested repo. Phase 2 removed that check now that nested worktrees are managed end to end.
 
 ### v0.10: session protocols and handoff
 

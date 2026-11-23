@@ -148,7 +148,7 @@ If the npm registry does not have the newest release yet, install the tarball at
 
 ### Database upgrades
 
-Dalang upgrades its database the first time a newer version starts, from any earlier release, and keeps your projects, sessions, briefs, plans, tasks, settings, and profiles. The current schema is v12:
+Dalang upgrades its database the first time a newer version starts, from any earlier release, and keeps your projects, sessions, briefs, plans, tasks, settings, and profiles. The current schema is v13:
 
 | Release | Schema | What the upgrade does |
 | --- | --- | --- |
@@ -156,6 +156,7 @@ Dalang upgrades its database the first time a newer version starts, from any ear
 | v0.7.2 | v10 | Adds stored chat images |
 | v0.7.4 | v11 | Adds the `coder-medium` and `qa` profiles and points the medium and QA routing rules at them |
 | v0.8.0 | v12 | Adds the delegation fields on tasks |
+| v0.9.0 | v13 | Adds per-repo task and checkpoint records for workspace projects |
 
 An upgrade is one way. An older build refuses a newer database with `Database schema vN is newer than this DALANG build`, so restore your pre-upgrade backup to go back. A server that is still running keeps the old code and schema in memory, so restart it after updating.
 

@@ -794,6 +794,17 @@ export function GuardView({ project, sessionId, onGoToWork }: GuardViewProps) {
                   <p className="mt-4 text-sm text-muted-foreground">{t('guard.noFileChanges')}</p>
                 ) : (
                   <div className="mt-4 space-y-3">
+                    {diffQuery.data?.diff.repos && diffQuery.data.diff.repos.length > 1 && (
+                      <div className="flex flex-wrap items-center gap-2 font-mono-token text-xs">
+                        {diffQuery.data.diff.repos
+                          .filter((r) => r.fileCount > 0)
+                          .map((r) => (
+                            <Badge key={r.repoPath}>
+                              {r.repoPath === '.' ? t('guard.repoRoot') : `${r.repoPath}/`} · {r.baseBranch} (+{r.additions}/-{r.deletions})
+                            </Badge>
+                          ))}
+                      </div>
+                    )}
                     {diffQuery.data?.diff.truncated && (
                       <p className="text-xs text-muted-foreground">{t('guard.diffTruncated')}</p>
                     )}
@@ -815,6 +826,9 @@ export function GuardView({ project, sessionId, onGoToWork }: GuardViewProps) {
                               className="flex min-h-11 w-full cursor-pointer flex-wrap items-center justify-between gap-2 bg-muted/50 px-3 py-2 text-left hover:bg-muted"
                             >
                               <div className="flex min-w-0 items-center gap-2">
+                                {file.repo && (
+                                  <Badge>{file.repo === '.' ? t('guard.repoRoot') : `${file.repo}/`}</Badge>
+                                )}
                                 <Badge>{te(file.status)}</Badge>
                                 <span className="truncate font-mono-token text-xs font-medium">{file.path}</span>
                               </div>

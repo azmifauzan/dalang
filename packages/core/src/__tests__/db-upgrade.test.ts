@@ -42,7 +42,7 @@ describe('database upgrade', () => {
     fresh.close();
 
     const upgraded = openDatabase(file);
-    expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(12);
+    expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(13);
     const runCols = (upgraded.sqlite.pragma('table_info(runs)') as Array<{ name: string }>).map((c) => c.name);
     expect(runCols).toContain('worktree_path');
     expect(runCols).toContain('input_tokens');
@@ -247,7 +247,7 @@ describe('database upgrade', () => {
     // Open and trigger v8 -> v9 upgrade
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(12);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(13);
 
       // Project A: 1 Full working session preserving brief, plan, tasks, messages, and moved artifacts
       const sessionsA = upgraded.sqlite
@@ -351,7 +351,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(12);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(13);
       const names = (
         upgraded.sqlite.prepare('SELECT name FROM agent_profiles ORDER BY name').all() as Array<{ name: string }>
       ).map((r) => r.name);
@@ -372,7 +372,7 @@ describe('database upgrade', () => {
     }
   });
 
-  it('upgrades a v11 database to v12 by adding task delegation columns', () => {
+  it('upgrades a v11 database to v12+ by adding task delegation columns', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dalang-up12-'));
     const file = path.join(dir, 'dalang.db');
     const fresh = openDatabase(file);
@@ -386,11 +386,62 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(12);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(13);
       const taskCols = (upgraded.sqlite.pragma('table_info(tasks)') as Array<{ name: string }>).map((c) => c.name);
       expect(taskCols).toContain('delegated_by_run_id');
       expect(taskCols).toContain('delegation_depth');
       expect(taskCols).toContain('merge_target_branch');
+    } finally {
+      upgraded.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('upgrades a v12 database to v13 by creating task_repos and run_repo_checkpoints', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dalang-up13-'));
+    const file = path.join(dir, 'dalang.db');
+    const fresh = openDatabase(file);
+    fresh.sqlite.exec(`
+      DROP TABLE IF EXISTS run_repo_checkpoints;
+      DROP TABLE IF EXISTS task_repos;
+    `);
+    fresh.sqlite.pragma('user_version = 12');
+    fresh.close();
+
+    const upgraded = openDatabase(file);
+    try {
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(13);
+      const taskRepoCols = (
+        upgraded.sqlite.pragma('table_info(task_repos)') as Array<{ name: string }>
+      ).map((c) => c.name);
+      expect(taskRepoCols).toEqual(
+        expect.arrayContaining([
+          'id',
+          'task_id',
+          'repo_path',
+          'base_branch',
+          'base_sha',
+          'branch_name',
+          'worktree_path',
+          'merge_commit_sha',
+          'pr_url',
+          'pushed_at',
+        ]),
+      );
+      const cpCols = (
+        upgraded.sqlite.pragma('table_info(run_repo_checkpoints)') as Array<{ name: string }>
+      ).map((c) => c.name);
+      expect(cpCols).toEqual(
+        expect.arrayContaining([
+          'id',
+          'run_id',
+          'repo_path',
+          'commit_before',
+          'commit_after',
+          'checkpoint_before_ref',
+          'checkpoint_after_ref',
+        ]),
+      );
     } finally {
       upgraded.close();
       fs.rmSync(dir, { recursive: true, force: true });

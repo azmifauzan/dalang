@@ -29,7 +29,7 @@
 
 ![Dalang in Ask mode with an attached screenshot, saved chats, and a paperclip button in the composer](docs/images/ask.webp)
 
-Dalang runs **Claude Code, Codex CLI, and Antigravity CLI** from a browser workspace on your machine. Open a Git repository and start a chat with the Lead. Ask a question, plan a small fix, or work through a larger feature. When agents change code, Dalang runs each task in a separate Git worktree and brings the verification output, review, and diff back for your merge decision.
+Dalang runs **Claude Code, Codex CLI, and Antigravity CLI** from a browser workspace on your machine. Open a Git repository and start a chat with the Lead. Ask a question, plan a small fix, or work through a larger feature. When agents change code, Dalang runs each task in a separate Git worktree and brings the verification output, review, and diff back for your merge decision. A workspace folder whose top-level folders are their own Git repositories opens as one project, with a worktree, diff, and merge per repository ([how it works](docs/USAGE.md#workspace-projects-with-nested-repositories)).
 
 Start with one signed-in CLI or give planning, coding, and review to different providers. Dalang uses the logins you already have. You can work in English or Indonesian.
 

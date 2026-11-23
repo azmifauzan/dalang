@@ -11,6 +11,80 @@ const DALANG_COMMITTER_ARGS = ['-c', 'user.name=DALANG', '-c', 'user.email=dalan
 const SAFE_GIT_CONFIG = ['core.hooksPath=/dev/null', 'core.fsmonitor=false', 'commit.gpgsign=false'];
 const MAX_DIFF_CHARS = 200_000;
 
+function normalizeRelGitPath(p: string): string {
+  return p.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '');
+}
+
+function isPathExcluded(filePath: string, excludePaths?: string[]): boolean {
+  if (!excludePaths || excludePaths.length === 0) return false;
+  const norm = normalizeRelGitPath(filePath);
+  for (const rawEx of excludePaths) {
+    const ex = normalizeRelGitPath(rawEx);
+    if (!ex) continue;
+    if (norm === ex || norm.startsWith(`${ex}/`)) return true;
+  }
+  return false;
+}
+
+function buildExcludePathspecs(excludePaths?: string[]): string[] {
+  if (!excludePaths || excludePaths.length === 0) return [];
+  const specs: string[] = [];
+  for (const rawEx of excludePaths) {
+    const ex = normalizeRelGitPath(rawEx);
+    if (ex) specs.push(`:(exclude)${ex}`);
+  }
+  return specs;
+}
+
+/**
+ * Passing `:(exclude)<dir>` to `git add` fails if `<dir>` is already matched by `.gitignore`.
+ * Keep only non-ignored paths so `git add -A` skips both ignored and unignored nested repos cleanly.
+ */
+async function filterUnignoredPaths(git: SimpleGit, excludePaths?: string[]): Promise<string[]> {
+  if (!excludePaths || excludePaths.length === 0) return [];
+  const normalized = excludePaths.map(normalizeRelGitPath).filter(Boolean);
+  if (normalized.length === 0) return [];
+  try {
+    const ignoredOut = await git.raw(['check-ignore', '--', ...normalized]);
+    const ignored = new Set(
+      ignoredOut
+        .split(/\r?\n/)
+        .map((line) => normalizeRelGitPath(line.trim()))
+        .filter(Boolean),
+    );
+    return normalized.filter((p) => !ignored.has(p));
+  } catch {
+    // Exit code 1 means none of the paths are ignored.
+    return normalized;
+  }
+}
+
+export function prefixUnifiedDiff(rawDiff: string, repoPath: string): string {
+  const normRepo = normalizeRelGitPath(repoPath);
+  if (!normRepo || normRepo === '.' || !rawDiff) return rawDiff;
+  return rawDiff
+    .split('\n')
+    .map((line) => {
+      if (line.startsWith('diff --git ')) {
+        return line.replace(/^diff --git a\/(.+) b\/(.+)$/, `diff --git a/${normRepo}/$1 b/${normRepo}/$2`);
+      }
+      if (line.startsWith('--- a/')) {
+        return `--- a/${normRepo}/${line.slice('--- a/'.length)}`;
+      }
+      if (line.startsWith('+++ b/')) {
+        return `+++ b/${normRepo}/${line.slice('+++ b/'.length)}`;
+      }
+      if (line.startsWith('rename from ')) {
+        return `rename from ${normRepo}/${line.slice('rename from '.length)}`;
+      }
+      if (line.startsWith('rename to ')) {
+        return `rename to ${normRepo}/${line.slice('rename to '.length)}`;
+      }
+      return line;
+    })
+    .join('\n');
+}
+
 /**
  * DALANG runs git outside the sandbox on a repo the agent can edit. A clean/smudge filter defined in
  * the repo config or a worktree config (and selected by a `.gitattributes` the agent also controls)
@@ -164,23 +238,45 @@ export async function branchExists(projectPath: string, branchName: string): Pro
   }
 }
 
+export async function getBranchHeadCommit(projectPath: string, branchName: string): Promise<string | null> {
+  await assertRepoConfigSafe(projectPath);
+  const git = openSafeGit(projectPath);
+  try {
+    const sha = (await git.raw(['rev-parse', '--verify', `refs/heads/${branchName}`])).trim();
+    return sha || null;
+  } catch {
+    return null;
+  }
+}
+
 export async function createGitCheckpoint(
   projectPath: string,
   message: string,
   mainProjectPath?: string,
+  excludePaths?: string[],
 ): Promise<{ commitSha: string; createdCommit: boolean }> {
   await assertGitTargetSafe(projectPath, mainProjectPath);
   const git = openSafeGit(projectPath);
   const identityArgs = await ensureGitIdentityArgs(git);
   const head = await getHeadCommit(projectPath);
   const status = await git.status();
+  const relevantFiles = status.files.filter((f) => !isPathExcluded(f.path, excludePaths));
 
-  if (!head || status.files.length > 0) {
-    await git.raw(['add', '-A']);
+  if (!head || relevantFiles.length > 0) {
+    const unignoredExcludes = await filterUnignoredPaths(git, excludePaths);
+    const excludeSpecs = buildExcludePathspecs(unignoredExcludes);
+    if (excludeSpecs.length > 0) {
+      await git.raw(['add', '-A', '--', '.', ...excludeSpecs]);
+    } else {
+      await git.raw(['add', '-A']);
+    }
     const afterAddStatus = await git.status();
-    if (!head || afterAddStatus.staged.length > 0 || afterAddStatus.created.length > 0) {
+    const stagedRelevant = afterAddStatus.staged.filter((p) => !isPathExcluded(p, excludePaths));
+    const createdRelevant = afterAddStatus.created.filter((p) => !isPathExcluded(p, excludePaths));
+    const relevantAfter = afterAddStatus.files.filter((f) => !isPathExcluded(f.path, excludePaths));
+    if (!head || stagedRelevant.length > 0 || createdRelevant.length > 0) {
       const commitArgs = [...identityArgs, 'commit', '--no-verify', '-m', message];
-      if (!head && afterAddStatus.files.length === 0) {
+      if (!head && relevantAfter.length === 0) {
         commitArgs.push('--allow-empty');
       }
       await git.raw(commitArgs);
@@ -207,6 +303,7 @@ export async function createHiddenCheckpointRef(
   refId: string,
   message: string,
   mainProjectPath?: string,
+  excludePaths?: string[],
 ): Promise<{ commitSha: string; refName: string }> {
   await assertGitTargetSafe(projectPath, mainProjectPath);
   const safeId = refId.replace(/[^A-Za-z0-9._/-]/g, '-');
@@ -243,7 +340,13 @@ export async function createHiddenCheckpointRef(
     if (head) {
       await envGit.raw(['read-tree', head]);
     }
-    await envGit.raw(['add', '-A']);
+    const unignoredExcludes = await filterUnignoredPaths(git, excludePaths);
+    const excludeSpecs = buildExcludePathspecs(unignoredExcludes);
+    if (excludeSpecs.length > 0) {
+      await envGit.raw(['add', '-A', '--', '.', ...excludeSpecs]);
+    } else {
+      await envGit.raw(['add', '-A']);
+    }
     const treeSha = (await envGit.raw(['write-tree'])).trim();
     const commitArgs = ['commit-tree', treeSha];
     if (head) {
@@ -287,12 +390,13 @@ export async function listHiddenCheckpointRefs(projectPath: string): Promise<Arr
 export async function ensureMainBaseline(
   projectPath: string,
   mainBranch: string,
+  excludePaths?: string[],
 ): Promise<{ mainBranch: string; baseMainSha: string; checkpointRef: string | null }> {
   await assertRepoConfigSafe(projectPath);
   const git = openSafeGit(projectPath);
   const head = await getHeadCommit(projectPath);
   if (!head) {
-    const ck = await createGitCheckpoint(projectPath, 'dalang: initial baseline');
+    const ck = await createGitCheckpoint(projectPath, 'dalang: initial baseline', undefined, excludePaths);
     const current = await getCurrentBranch(projectPath);
     if (current && current !== mainBranch) {
       await git.raw(['branch', '-M', current, mainBranch]);
@@ -302,7 +406,7 @@ export async function ensureMainBaseline(
 
   const current = await getCurrentBranch(projectPath);
   if (current !== mainBranch && (await branchExists(projectPath, mainBranch))) {
-    const state = await getRepoState(projectPath);
+    const state = await getRepoState(projectPath, undefined, excludePaths);
     if (state.dirtyFiles.length > 0) {
       throw new Error(
         `Cannot switch to ${mainBranch}: uncommitted edits would be lost (${state.dirtyFiles.slice(0, 3).join(', ')}).`,
@@ -319,6 +423,8 @@ export async function ensureMainBaseline(
     projectPath,
     `baseline-${Date.now()}-${crypto.randomUUID().slice(0, 6)}`,
     'dalang: hidden baseline checkpoint',
+    undefined,
+    excludePaths,
   );
   return { mainBranch, baseMainSha: mainHead, checkpointRef: hidden.refName };
 }
@@ -376,6 +482,7 @@ export async function getChangedFilesBetween(
   baseSha: string | null,
   headSha: string | null,
   mainProjectPath?: string,
+  excludePaths?: string[],
 ): Promise<string[]> {
   await assertGitTargetSafe(projectPath, mainProjectPath);
   const git = openSafeGit(projectPath);
@@ -385,19 +492,19 @@ export async function getChangedFilesBetween(
     const diffOut = await git.diff(['--name-only', baseSha, headSha]);
     for (const line of diffOut.split(/\r?\n/)) {
       const trimmed = line.trim();
-      if (trimmed) changed.add(trimmed);
+      if (trimmed && !isPathExcluded(trimmed, excludePaths)) changed.add(trimmed);
     }
   } else if (baseSha) {
     const diffOut = await git.diff(['--name-only', baseSha, 'HEAD']);
     for (const line of diffOut.split(/\r?\n/)) {
       const trimmed = line.trim();
-      if (trimmed) changed.add(trimmed);
+      if (trimmed && !isPathExcluded(trimmed, excludePaths)) changed.add(trimmed);
     }
   }
 
   const status = await git.status();
   for (const file of status.files) {
-    if (file.path) changed.add(file.path);
+    if (file.path && !isPathExcluded(file.path, excludePaths)) changed.add(file.path);
   }
   return [...changed];
 }
@@ -406,14 +513,63 @@ export async function getChangedFilesSinceCommit(
   projectPath: string,
   baseCommitSha: string | null,
   mainProjectPath?: string,
+  excludePaths?: string[],
 ): Promise<string[]> {
-  return getChangedFilesBetween(projectPath, baseCommitSha, null, mainProjectPath);
+  return getChangedFilesBetween(projectPath, baseCommitSha, null, mainProjectPath, excludePaths);
 }
 
-/** HEAD and the files changed outside `.dalang/`, so rollback can refuse to discard work DALANG did not make. */
+/** Files modified on `headRef` relative to its merge-base with `baseRef` (for merge dirty-overlap checks). */
+export async function getBranchChangedFiles(
+  projectPath: string,
+  baseRef: string,
+  headRef: string,
+  excludePaths?: string[],
+): Promise<string[]> {
+  await assertRepoConfigSafe(projectPath);
+  const git = openSafeGit(projectPath);
+  let diffOut = '';
+  try {
+    diffOut = await git.raw(['diff', '--name-only', `${baseRef}...${headRef}`]);
+  } catch {
+    diffOut = await git.raw(['diff', '--name-only', baseRef, headRef]).catch(() => '');
+  }
+  const files: string[] = [];
+  for (const line of diffOut.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed && !isPathExcluded(trimmed, excludePaths)) {
+      files.push(trimmed);
+    }
+  }
+  return files;
+}
+
+/** True when `branchName` exists and has commits ahead of `baseSha` (with non-excluded changes when exclusions apply). */
+export async function hasBranchChanges(
+  projectPath: string,
+  baseSha: string,
+  branchName: string,
+  excludePaths?: string[],
+): Promise<boolean> {
+  if (!(await branchExists(projectPath, branchName))) return false;
+  const branchHead = await getBranchHeadCommit(projectPath, branchName);
+  if (!branchHead || branchHead === baseSha) return false;
+  const git = openSafeGit(projectPath);
+  const countStr = await git.raw(['rev-list', '--count', `${baseSha}..${branchName}`]).catch(() => '0');
+  if (Number(countStr.trim()) <= 0) return false;
+  const excludeSpecs = buildExcludePathspecs(excludePaths);
+  const diffArgs =
+    excludeSpecs.length > 0
+      ? ['diff', '--name-only', baseSha, branchName, '--', '.', ...excludeSpecs]
+      : ['diff', '--name-only', baseSha, branchName];
+  const diffOut = await git.raw(diffArgs).catch(() => '');
+  return diffOut.trim().length > 0;
+}
+
+/** HEAD and the files changed outside `.dalang/`, so rollback and merge can protect user work. */
 export async function getRepoState(
   projectPath: string,
   mainProjectPath?: string,
+  excludePaths?: string[],
 ): Promise<{ head: string | null; branch: string | null; dirtyFiles: string[] }> {
   await assertGitTargetSafe(projectPath, mainProjectPath);
   const status = await openSafeGit(projectPath).status();
@@ -422,7 +578,7 @@ export async function getRepoState(
     branch: await getCurrentBranch(projectPath, mainProjectPath),
     dirtyFiles: status.files
       .map((f) => f.path)
-      .filter((f) => f !== '.dalang' && !f.startsWith('.dalang/')),
+      .filter((f) => f !== '.dalang' && !f.startsWith('.dalang/') && !isPathExcluded(f, excludePaths)),
   };
 }
 
@@ -472,6 +628,7 @@ export async function getTaskDiff(
   branchName: string | null,
   baseRef: string,
   headRef: string,
+  opts?: { excludePaths?: string[]; repoPath?: string },
 ): Promise<TaskDiffDTO> {
   await assertRepoConfigSafe(projectPath);
   const git = openSafeGit(projectPath);
@@ -483,17 +640,31 @@ export async function getTaskDiff(
     ':(exclude).dalang/tmp',
     ':(glob,exclude).dalang/sessions/*/logs/**',
     ':(glob,exclude).dalang/sessions/*/tmp/**',
+    ...buildExcludePathspecs(opts?.excludePaths),
   ];
   const [nameStatusOut, diffOut] = await Promise.all([
     git.raw(['diff', '--name-status', baseRef, headRef, ...pathExcludes]).catch(() => ''),
     git.raw(['diff', '--unified=3', baseRef, headRef, ...pathExcludes]).catch(() => ''),
   ]);
 
-  const truncated = diffOut.length > MAX_DIFF_CHARS;
+  const repoPath = opts?.repoPath;
+  const normRepo = repoPath && repoPath !== '.' ? normalizeRelGitPath(repoPath) : null;
+  const prefixedDiffOut = normRepo ? prefixUnifiedDiff(diffOut, normRepo) : diffOut;
+
+  const truncated = prefixedDiffOut.length > MAX_DIFF_CHARS;
   const rawDiff = truncated
-    ? `${diffOut.slice(0, MAX_DIFF_CHARS)}\n\n... [diff truncated at ${MAX_DIFF_CHARS} characters]`
-    : diffOut;
-  const files = parseUnifiedDiffFiles(rawDiff, nameStatusOut);
+    ? `${prefixedDiffOut.slice(0, MAX_DIFF_CHARS)}\n\n... [diff truncated at ${MAX_DIFF_CHARS} characters]`
+    : prefixedDiffOut;
+  const parsedFiles = parseUnifiedDiffFiles(
+    truncated ? diffOut.slice(0, MAX_DIFF_CHARS) : diffOut,
+    nameStatusOut,
+  );
+  const files: TaskDiffFileDTO[] = parsedFiles.map((f) => ({
+    ...f,
+    path: normRepo ? `${normRepo}/${f.path}` : f.path,
+    ...(repoPath ? { repo: repoPath } : {}),
+    patch: normRepo ? prefixUnifiedDiff(f.patch, normRepo) : f.patch,
+  }));
   const totalAdditions = files.reduce((sum, f) => sum + f.additions, 0);
   const totalDeletions = files.reduce((sum, f) => sum + f.deletions, 0);
 
@@ -511,28 +682,64 @@ export async function getTaskDiff(
   };
 }
 
+async function hasMergeInProgress(git: SimpleGit): Promise<boolean> {
+  try {
+    await git.raw(['rev-parse', '--verify', 'MERGE_HEAD']);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function mergeTaskBranchToMain(
   projectPath: string,
   mainBranch: string,
   taskBranch: string,
   message: string,
+  opts?: {
+    excludePaths?: string[];
+    cleanupWorktreeAndBranch?: boolean;
+    repoLabel?: string;
+  },
 ): Promise<{ beforeMergeSha: string; mergeCommitSha: string }> {
   await assertRepoConfigSafe(projectPath);
-  const state = await getRepoState(projectPath);
-  if (state.dirtyFiles.length > 0) {
-    throw new Error(
-      `Cannot merge while the working tree has uncommitted changes (${state.dirtyFiles.slice(0, 3).join(', ')}).`,
-    );
-  }
-
+  const label = opts?.repoLabel || path.basename(projectPath);
   const git = openSafeGit(projectPath);
   if (!(await branchExists(projectPath, taskBranch))) {
-    throw new Error(`Task branch "${taskBranch}" does not exist.`);
+    throw new Error(`Task branch "${taskBranch}" does not exist in ${label}.`);
   }
-  await checkoutBranch(projectPath, mainBranch);
+
+  const state = await getRepoState(projectPath, undefined, opts?.excludePaths);
+  if (state.branch !== mainBranch) {
+    if (state.dirtyFiles.length > 0) {
+      throw new Error(
+        `Cannot switch ${label} from "${state.branch ?? 'detached'}" to "${mainBranch}" while the working tree has uncommitted changes (${state.dirtyFiles.slice(0, 3).join(', ')}).`,
+      );
+    }
+    await checkoutBranch(projectPath, mainBranch);
+  }
+
+  // Refuse merge only when an uncommitted file in the target repo is also modified by the task.
+  // Unrelated uncommitted work stays in place.
+  if (state.dirtyFiles.length > 0) {
+    const taskChangedFiles = await getBranchChangedFiles(
+      projectPath,
+      mainBranch,
+      taskBranch,
+      opts?.excludePaths,
+    );
+    const taskChangedSet = new Set(taskChangedFiles.map(normalizeRelGitPath));
+    const overlapping = state.dirtyFiles.filter((f) => taskChangedSet.has(normalizeRelGitPath(f)));
+    if (overlapping.length > 0) {
+      throw new Error(
+        `Cannot merge into ${label} (${mainBranch}): uncommitted changes overlap files modified by this task (${overlapping.slice(0, 5).join(', ')}). Commit or stash them first.`,
+      );
+    }
+  }
+
   const beforeMergeSha = await getHeadCommit(projectPath);
   if (!beforeMergeSha) {
-    throw new Error(`Main branch "${mainBranch}" has no commits.`);
+    throw new Error(`Target branch "${mainBranch}" in ${label} has no commits.`);
   }
 
   const identityArgs = await ensureGitIdentityArgs(git);
@@ -540,37 +747,62 @@ export async function mergeTaskBranchToMain(
   try {
     mergeOut = await git.raw([...identityArgs, 'merge', '--no-ff', '--no-verify', taskBranch, '-m', message]);
   } catch (err) {
-    await git.raw(['merge', '--abort']).catch(() => undefined);
+    if (await hasMergeInProgress(git)) {
+      await git.raw(['merge', '--abort']).catch(() => undefined);
+    }
     const detail = err instanceof Error ? err.message : String(err);
-    throw new Error(`Merge conflict or failure merging "${taskBranch}" into "${mainBranch}": ${detail}`);
+    throw new Error(`Merge conflict or failure merging "${taskBranch}" into ${label} ("${mainBranch}"): ${detail}`);
   }
 
   // `simple-git.raw(['merge', ...])` can resolve with MERGE_HEAD left on disk when conflicts occur.
-  const mergeHeadExists = fs.existsSync(path.join(projectPath, '.git', 'MERGE_HEAD'));
+  const mergeHeadExists = await hasMergeInProgress(git);
   const postMergeStatus = await git.status();
   const mergeCommitSha = await getHeadCommit(projectPath);
   if (mergeHeadExists || postMergeStatus.conflicted.length > 0) {
-    await git.raw(['merge', '--abort']).catch(() => undefined);
+    if (mergeHeadExists) {
+      await git.raw(['merge', '--abort']).catch(() => undefined);
+    }
     const conflictList =
       postMergeStatus.conflicted.length > 0
         ? ` (${postMergeStatus.conflicted.join(', ')})`
         : '';
     throw new Error(
-      `Merge conflict merging "${taskBranch}" into "${mainBranch}"${conflictList}: ${mergeOut.trim() || 'resolve conflicts before merging.'}`,
+      `Merge conflict merging "${taskBranch}" into ${label} ("${mainBranch}")${conflictList}: ${mergeOut.trim() || 'resolve conflicts before merging.'}`,
     );
   }
   if (!mergeCommitSha) {
-    throw new Error('Failed to resolve HEAD after merge.');
+    throw new Error(`Failed to resolve HEAD in ${label} after merge.`);
   }
 
-  await removeWorktreesForBranch(projectPath, taskBranch);
-  await git.raw(['branch', '-d', taskBranch]).catch(() => undefined);
+  if (opts?.cleanupWorktreeAndBranch !== false) {
+    await removeWorktreesForBranch(projectPath, taskBranch);
+    await git.raw(['branch', '-d', taskBranch]).catch(() => undefined);
+  }
   return { beforeMergeSha, mergeCommitSha };
 }
 
 /**
+ * Reset a repo back to `targetCommitSha` using `git reset --keep`, which preserves unrelated
+ * uncommitted work in the working tree. Used for all-or-nothing multi-repo merge rollback.
+ */
+export async function resetRepoKeep(projectPath: string, targetCommitSha: string): Promise<void> {
+  await assertRepoConfigSafe(projectPath);
+  await openSafeGit(projectPath).raw(['reset', '--keep', targetCommitSha]);
+}
+
+export async function resetWorktreeKeep(
+  mainProjectPath: string,
+  worktreePath: string,
+  targetCommitSha: string,
+): Promise<void> {
+  await assertWorktreeSafe(mainProjectPath, worktreePath);
+  await openSafeGit(worktreePath).raw(['reset', '--keep', targetCommitSha]);
+}
+
+/**
  * Merge a delegated subtask branch into its parent's branch inside the parent's worktree, since git
- * will not check out a branch that is already checked out there. Removes the subtask worktree and branch.
+ * will not check out a branch that is already checked out there. Removes the subtask worktree and branch
+ * unless `cleanupWorktreeAndBranch` is false.
  */
 export async function mergeTaskBranchIntoWorktree(
   mainProjectPath: string,
@@ -578,6 +810,7 @@ export async function mergeTaskBranchIntoWorktree(
   parentBranch: string,
   subtaskBranch: string,
   message: string,
+  opts?: { cleanupWorktreeAndBranch?: boolean },
 ): Promise<{ beforeMergeSha: string; mergeCommitSha: string }> {
   await assertWorktreeSafe(mainProjectPath, parentWorktreePath);
   if (!(await branchExists(mainProjectPath, subtaskBranch))) {
@@ -601,18 +834,24 @@ export async function mergeTaskBranchIntoWorktree(
   try {
     mergeOut = await wtGit.raw([...identityArgs, 'merge', '--no-ff', '--no-verify', subtaskBranch, '-m', message]);
   } catch (err) {
-    await wtGit.raw(['merge', '--abort']).catch(() => undefined);
+    if (await hasMergeInProgress(wtGit)) {
+      await wtGit.raw(['merge', '--abort']).catch(() => undefined);
+    }
     const detail = err instanceof Error ? err.message : String(err);
     throw new Error(
       `Merge conflict or failure merging subtask "${subtaskBranch}" into parent branch "${parentBranch}": ${detail}`,
     );
   }
 
+  const mergeHeadExists = await hasMergeInProgress(wtGit);
   const postMergeStatus = await wtGit.status();
   const mergeCommitSha = await getHeadCommit(parentWorktreePath);
-  if (postMergeStatus.conflicted.length > 0) {
-    await wtGit.raw(['merge', '--abort']).catch(() => undefined);
-    const conflictList = ` (${postMergeStatus.conflicted.join(', ')})`;
+  if (mergeHeadExists || postMergeStatus.conflicted.length > 0) {
+    if (mergeHeadExists) {
+      await wtGit.raw(['merge', '--abort']).catch(() => undefined);
+    }
+    const conflictList =
+      postMergeStatus.conflicted.length > 0 ? ` (${postMergeStatus.conflicted.join(', ')})` : '';
     throw new Error(
       `Merge conflict merging subtask "${subtaskBranch}" into parent branch "${parentBranch}"${conflictList}: ${mergeOut.trim() || 'resolve conflicts before merging.'}`,
     );
@@ -621,8 +860,10 @@ export async function mergeTaskBranchIntoWorktree(
     throw new Error('Failed to resolve HEAD in parent worktree after subtask merge.');
   }
 
-  await removeWorktreesForBranch(mainProjectPath, subtaskBranch);
-  await openSafeGit(mainProjectPath).raw(['branch', '-d', subtaskBranch]).catch(() => undefined);
+  if (opts?.cleanupWorktreeAndBranch !== false) {
+    await removeWorktreesForBranch(mainProjectPath, subtaskBranch);
+    await openSafeGit(mainProjectPath).raw(['branch', '-d', subtaskBranch]).catch(() => undefined);
+  }
   return { beforeMergeSha, mergeCommitSha };
 }
 
@@ -632,13 +873,25 @@ export interface GitWorktreeInfo {
   branch: string | null;
 }
 
-/** Top-level folders of the project that are their own git repository, so a task worktree does not contain them. */
+/**
+ * Top-level folders of the project that are their own standalone git repository (with a `.git`
+ * directory, excluding git submodules whose `.git` is a gitdir file).
+ */
 export function findNestedRepos(projectPath: string): string[] {
   try {
     return fs
       .readdirSync(projectPath, { withFileTypes: true })
-      .filter((e) => e.isDirectory() && e.name !== '.git' && fs.existsSync(path.join(projectPath, e.name, '.git')))
-      .map((e) => e.name);
+      .filter((e) => {
+        if (!e.isDirectory() || e.name === '.git' || e.name === '.dalang') return false;
+        const dotGit = path.join(projectPath, e.name, '.git');
+        try {
+          return fs.lstatSync(dotGit).isDirectory();
+        } catch {
+          return false;
+        }
+      })
+      .map((e) => e.name)
+      .sort();
   } catch {
     return [];
   }
@@ -782,6 +1035,7 @@ export async function deleteTaskBranch(
 export async function rollbackGitToCheckpoint(
   projectPath: string,
   targetCommitSha: string,
+  excludePaths?: string[],
 ): Promise<void> {
   await assertRepoConfigSafe(projectPath);
   const git = openSafeGit(projectPath);
@@ -816,9 +1070,14 @@ export async function rollbackGitToCheckpoint(
   }
 
   // Reset tracked files to the pre-run checkpoint and clean untracked agent outputs,
-  // while preserving `.dalang/` artifacts (brief, plan, logs, and task results) for inspection.
+  // while preserving `.dalang/` artifacts and any nested repository folders.
   await git.raw(['reset', '--hard', targetCommitSha]);
-  await git.raw(['clean', '-fd', '-e', '.dalang']);
+  const cleanArgs = ['clean', '-fd', '-e', '.dalang'];
+  for (const rawEx of excludePaths ?? []) {
+    const ex = normalizeRelGitPath(rawEx);
+    if (ex) cleanArgs.push('-e', ex);
+  }
+  await git.raw(cleanArgs);
 
   for (const log of savedLogs) {
     const target = path.join(projectPath, log.relPath);

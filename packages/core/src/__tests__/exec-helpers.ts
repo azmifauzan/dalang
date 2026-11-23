@@ -174,7 +174,7 @@ export function handleVerifyAndReviewCalls(
     return { exitCode: 0, stdout: 'Tests passed\n', stderr: '', timedOut: false, idleTimedOut: false };
   }
 
-  const reviewMatch = joined.match(/code review round \d+ of \d+ for task ([A-Za-z0-9_-]+)/i);
+  const reviewMatch = joined.match(/code review round \d+ of \d+ for task ([A-Za-z0-9_.-]+)/i);
   if (reviewMatch) {
     const extId = reviewMatch[1];
     const payload = JSON.stringify({

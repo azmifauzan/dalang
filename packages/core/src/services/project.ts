@@ -16,7 +16,7 @@ import {
   getWorktreesRoot,
 } from '../paths.js';
 import { ensureDalangIgnore, readArtifactFile, writeArtifactFile } from '../safe-fs.js';
-import { removeTaskWorktree } from './git.js';
+import { findNestedRepos, removeTaskWorktree } from './git.js';
 
 const PROJECT_INSTRUCTION_POINTER = 'Read and follow the project instructions in PROJECT.md.\n';
 
@@ -299,9 +299,14 @@ export class ProjectService {
     const row = this.getProjectRow(id);
     const worktreeDir = getProjectWorktreesDir(getWorktreesRoot(getDbDataDir(this.db)), row.id);
     if (fs.existsSync(worktreeDir)) {
+      const nestedRepos = findNestedRepos(row.path);
       for (const entry of fs.readdirSync(worktreeDir, { withFileTypes: true })) {
         if (entry.isDirectory()) {
-          void removeTaskWorktree(row.path, path.join(worktreeDir, entry.name)).catch(() => undefined);
+          const taskWt = path.join(worktreeDir, entry.name);
+          for (const nested of nestedRepos) {
+            void removeTaskWorktree(path.join(row.path, nested), path.join(taskWt, nested)).catch(() => undefined);
+          }
+          void removeTaskWorktree(row.path, taskWt).catch(() => undefined);
         }
       }
       fs.rmSync(worktreeDir, { recursive: true, force: true });

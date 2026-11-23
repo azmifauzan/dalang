@@ -2,6 +2,18 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
+## 0.9.0 (Workspace projects with nested repositories), 23 Nov
+
+Workspace folders whose top-level subdirectories are their own standalone Git repositories (such as a root repo ignoring `frontend/`, `backend/`, and `scheduling-service/`) can now be opened and worked on as a single DALANG project.
+
+- **Schema v13 (`task_repos` and `run_repo_checkpoints`).** Records each task's root and nested repositories (base branch, base SHA, task branch, worktree path, per-repo merge commit, push timestamp, and PR URL) plus per-run checkpoint SHAs and hidden refs per repo, with an automatic v12 to v13 upgrade.
+- **Nested worktree lifecycle & sandbox confinement.** Detects top-level standalone repositories (excluding git submodules and deeper repos), creates root and nested worktrees from each repo's currently checked-out branch, removes nested worktrees before root on merge/reject/discard/retry/cleanup/delete, and binds each nested worktree's `.git` link file read-only in both Linux `bwrap` and macOS `sandbox-exec`. Removes the v0.8.0 interim block on nested-repo `files_allowed`.
+- **Per-repo checkpoints, scope checks, and labeled diffs.** Runs checkpoint commits, hidden checkpoint refs, changed-file collection, and `files_allowed` scope validation across all repos with root-relative paths. Joins diffs with repository headers for the reviewer and shows repo badges in the **Review & merge** and **Quick** diff views.
+- **Per-repo Gate 2 merge, dirty-overlap check, and push/PR.** Refuses merges only when uncommitted edits in a target repo overlap files modified by the task (leaving unrelated uncommitted edits intact, including in the root repo), creates one `--no-ff` merge commit per changed repo, restores earlier merged repos with `git reset --keep` if a later repo fails, and pushes / opens pull requests against each changed repo's own Git remote.
+- **Live check.** On 23 Nov a Quick task on the `sei-office` workspace (against a copy of the app data) changed `frontend/` and `scheduling-service/` through a Claude coder with an Antigravity review. Gate 2 merged one commit into `dev` and one into `feat/employee-sync-tanpa-email`, left `backend/` untouched, and kept unrelated uncommitted files. Discarding a task removed every worktree and task branch.
+- **Known issue (since 0.8.0).** Antigravity coder runs fail at start with `--settings: unknown setting "mcpServers"` on `agy` 1.5.15, because the delegation MCP config is passed through `--settings`. Antigravity reviews are unaffected, and a Claude or Codex coder works. Until this is fixed, route coder profiles to Claude Code or Codex.
+- **Per-repo rollback and delegation.** Rolls back merged or unmerged runs across every affected repo with dirty/external-commit safety checks, and gives delegated subtasks nested worktrees branched from the parent task's branches that merge back per repo.
+
 ## 0.8.0 (Agent delegation), 23 Nov
 
 Running coder tasks can now split independent work into delegated subtasks on other profiles or providers through DALANG's loopback MCP server.

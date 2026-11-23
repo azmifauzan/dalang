@@ -274,6 +274,35 @@ export const integrationRuns = sqliteTable('integration_runs', {
   finishedAt: text('finished_at').notNull(),
 });
 
+export const taskRepos = sqliteTable('task_repos', {
+  id: text('id').primaryKey(),
+  taskId: text('task_id')
+    .notNull()
+    .references(() => tasks.id, { onDelete: 'cascade' }),
+  repoPath: text('repo_path').notNull(),
+  baseBranch: text('base_branch').notNull(),
+  baseSha: text('base_sha').notNull(),
+  branchName: text('branch_name').notNull(),
+  worktreePath: text('worktree_path').notNull(),
+  mergeCommitSha: text('merge_commit_sha'),
+  prUrl: text('pr_url'),
+  pushedAt: text('pushed_at'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+export const runRepoCheckpoints = sqliteTable('run_repo_checkpoints', {
+  id: text('id').primaryKey(),
+  runId: text('run_id')
+    .notNull()
+    .references(() => runs.id, { onDelete: 'cascade' }),
+  repoPath: text('repo_path').notNull(),
+  commitBefore: text('commit_before'),
+  commitAfter: text('commit_after'),
+  checkpointBeforeRef: text('checkpoint_before_ref'),
+  checkpointAfterRef: text('checkpoint_after_ref'),
+});
+
 export const settings = sqliteTable('settings', {
   key: text('key').primaryKey(),
   value: text('value').notNull(),

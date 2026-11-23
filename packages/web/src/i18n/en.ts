@@ -453,6 +453,7 @@ export const en = {
   'guard.noIssuesRound': 'No issues reported in round {round}.',
   'guard.branchDiffTitle': 'Branch diff',
   'guard.branchDiffDesc': 'Changes introduced on {branch} relative to {main}.',
+  'guard.repoRoot': 'root',
   'guard.filesCount': '{count} file(s)',
   'guard.noDiffAvailable': 'No unmerged or recorded branch commits are available for diff inspection.',
   'guard.loadingDiff': 'Computing unified diff...',

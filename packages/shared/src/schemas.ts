@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const DALANG_VERSION = '0.8.0';
+export const DALANG_VERSION = '0.9.0';
 
 export const MAX_DELEGATION_DEPTH = 1;
 export const DEFAULT_MAX_SUBTASKS_PER_TASK = 6;
@@ -800,12 +800,20 @@ export const PushPrInputSchema = z.object({
 });
 export type PushPrInput = z.infer<typeof PushPrInputSchema>;
 
+export interface PushPrRepoResultDTO {
+  repoPath: string;
+  remote: string;
+  branch: string;
+  prUrl: string | null;
+}
+
 export interface PushPrResultDTO {
   pushed: boolean;
   remote: string;
   branch: string;
   prUrl: string | null;
   message: string;
+  repos?: PushPrRepoResultDTO[];
 }
 
 export const RunIntegrationInputSchema = z.object({
@@ -963,10 +971,22 @@ export interface TaskReviewDTO {
 
 export interface TaskDiffFileDTO {
   path: string;
+  repo?: string;
   status: 'added' | 'modified' | 'deleted' | 'renamed';
   additions: number;
   deletions: number;
   patch: string;
+}
+
+export interface TaskRepoDiffSummaryDTO {
+  repoPath: string;
+  baseBranch: string;
+  branchName: string | null;
+  baseCommitSha: string | null;
+  headCommitSha: string | null;
+  fileCount: number;
+  additions: number;
+  deletions: number;
 }
 
 export interface TaskDiffDTO {
@@ -976,6 +996,7 @@ export interface TaskDiffDTO {
   baseCommitSha: string | null;
   headCommitSha: string | null;
   files: TaskDiffFileDTO[];
+  repos?: TaskRepoDiffSummaryDTO[];
   rawDiff: string;
   totalAdditions: number;
   totalDeletions: number;

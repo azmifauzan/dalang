@@ -27,7 +27,7 @@ On Linux and WSL 2, Dalang wraps agent turns and verify and integration commands
 - `/run/user` and `/run/docker.sock` are hidden so sandboxed agents cannot reach user systemd units or container daemons.
 - The sandbox masks the DALANG database and its SQLite sidecar files, Linux keyring files, and credentials under `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.docker`, `~/.kube`, `~/.config/gcloud`, `~/.git-credentials`, and `~/.netrc`. `~/.npmrc` stays readable for private npm registries.
 - Only the active provider's state directory (or the profile's custom `configDir`) is mounted writable for token refresh and session state.
-- `.git/hooks` (main repo) and `.git` (worktree gitdir file) are mounted read-only inside the sandbox so an agent cannot plant executable git hooks or redirect worktree metadata.
+- `.git/hooks` (main repo) and `.git` (worktree gitdir file) are mounted read-only inside the sandbox for both the workspace root and every top-level nested repository worktree so an agent cannot plant executable git hooks or redirect worktree metadata.
 
 ### macOS (`sandbox-exec` / Seatbelt)
 
@@ -35,7 +35,7 @@ On macOS (`darwin`), DALANG wraps runs in `/usr/bin/sandbox-exec` with a dynamic
 
 - Denies all file writes by default (`(deny file-write*)`).
 - Allows file writes only to the active project/worktree (omitted for read-only reviews), `/tmp`, `/private/tmp`, `$TMPDIR`, `/dev/null`, and the active provider state/config directory.
-- Explicitly denies file writes to `.git/hooks` and worktree `.git` link files.
+- Explicitly denies file writes to `.git/hooks` and worktree `.git` link files for both the root and any top-level nested repositories.
 - Denies reads of the same credential paths and DALANG database files.
 
 ### Docker

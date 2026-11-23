@@ -29,7 +29,7 @@ export function getDbDataDir(db: DalangDb): string | null {
   return dbDataDirs.get(db) ?? null;
 }
 
-const SCHEMA_VERSION = 12;
+const SCHEMA_VERSION = 13;
 
 const BOOTSTRAP_SQL = `
 PRAGMA journal_mode = WAL;
@@ -272,6 +272,31 @@ CREATE TABLE IF NOT EXISTS integration_runs (
   output TEXT NOT NULL DEFAULT '',
   started_at TEXT NOT NULL,
   finished_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS task_repos (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  repo_path TEXT NOT NULL,
+  base_branch TEXT NOT NULL,
+  base_sha TEXT NOT NULL,
+  branch_name TEXT NOT NULL,
+  worktree_path TEXT NOT NULL,
+  merge_commit_sha TEXT,
+  pr_url TEXT,
+  pushed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS run_repo_checkpoints (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+  repo_path TEXT NOT NULL,
+  commit_before TEXT,
+  commit_after TEXT,
+  checkpoint_before_ref TEXT,
+  checkpoint_after_ref TEXT
 );
 `;
 
@@ -1249,6 +1274,11 @@ export function openDatabase(dbFilePath: string = getDbPath()): DbConnection {
   if (upgrading && storedVersion < 8) migrateToV8(sqlite);
   if (upgrading && storedVersion < 9) migrateToV9(sqlite);
   if (upgrading && storedVersion < 12) migrateToV12(sqlite);
+  if (upgrading && storedVersion < 13) migrateToV13(sqlite);
+  sqlite.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_task_repos_task_repo ON task_repos(task_id, repo_path);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_run_repo_checkpoints_run_repo ON run_repo_checkpoints(run_id, repo_path);
+  `);
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS message_images (
       id TEXT PRIMARY KEY,
@@ -1285,6 +1315,40 @@ export function openDatabase(dbFilePath: string = getDbPath()): DbConnection {
     dataDir,
     close: () => sqlite.close(),
   };
+}
+
+/**
+ * v13: workspace projects with nested repositories (`task_repos` and `run_repo_checkpoints`).
+ */
+function migrateToV13(sqlite: Database.Database): void {
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS task_repos (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      repo_path TEXT NOT NULL,
+      base_branch TEXT NOT NULL,
+      base_sha TEXT NOT NULL,
+      branch_name TEXT NOT NULL,
+      worktree_path TEXT NOT NULL,
+      merge_commit_sha TEXT,
+      pr_url TEXT,
+      pushed_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_task_repos_task_repo ON task_repos(task_id, repo_path);
+
+    CREATE TABLE IF NOT EXISTS run_repo_checkpoints (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+      repo_path TEXT NOT NULL,
+      commit_before TEXT,
+      commit_after TEXT,
+      checkpoint_before_ref TEXT,
+      checkpoint_after_ref TEXT
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_run_repo_checkpoints_run_repo ON run_repo_checkpoints(run_id, repo_path);
+  `);
 }
 
 /**
@@ -1389,8 +1453,10 @@ export function resetDatabaseToDefaults(db: DalangDb, sqlite: Database.Database)
   sqlite.transaction(() => {
     db.delete(schema.integrationRuns).run();
     db.delete(schema.reviews).run();
+    db.delete(schema.runRepoCheckpoints).run();
     db.delete(schema.runs).run();
     db.delete(schema.leadTurns).run();
+    db.delete(schema.taskRepos).run();
     db.delete(schema.taskDependencies).run();
     db.delete(schema.tasks).run();
     db.delete(schema.plans).run();

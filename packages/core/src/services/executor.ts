@@ -21,6 +21,7 @@ import {
   type ProviderId,
   type ProviderRuntimeStateDTO,
   type PushPrInput,
+  type PushPrRepoResultDTO,
   type PushPrResultDTO,
   type RejectTaskInput,
   type ReviewContract,
@@ -30,8 +31,10 @@ import {
   type StartExecutionInput,
   type TaskCancelInput,
   type TaskDiffDTO,
+  type TaskDiffFileDTO,
   type TaskDispatchPreviewDTO,
   type TaskDTO,
+  type TaskRepoDiffSummaryDTO,
   type TaskResultContract,
   type TaskReviewDTO,
   type TaskRunDTO,
@@ -49,8 +52,10 @@ import {
   projects,
   providerEvents,
   reviews,
+  runRepoCheckpoints,
   runs,
   sessions,
+  taskRepos,
   tasks,
 } from '../db/schema.js';
 import {
@@ -70,24 +75,30 @@ import {
 import { formatZodError } from './contract.js';
 import type { DalangEventBus } from './events.js';
 import {
+  assertRepoConfigSafe,
   branchExists,
   createGitCheckpoint,
   createGitHubPullRequest,
   createHiddenCheckpointRef,
   createTaskWorktree,
-  findNestedRepos,
   deleteTaskBranch,
   detectDefaultGitRemote,
   ensureMainBaseline,
+  findNestedRepos,
+  getBranchChangedFiles,
   getChangedFilesBetween,
+  getCurrentBranch,
   getHeadCommit,
   getRepoState,
   getTaskDiff,
+  hasBranchChanges,
   isAncestorCommit,
   mergeTaskBranchIntoWorktree,
   mergeTaskBranchToMain,
   pushRefToRemote,
   removeTaskWorktree,
+  resetRepoKeep,
+  resetWorktreeKeep,
   rollbackGitToCheckpoint,
 } from './git.js';
 import type { LeadService } from './lead.js';
@@ -148,6 +159,30 @@ interface ProviderUsability {
   usable: boolean;
   kind: 'ok' | 'blocked' | 'quota' | 'cooldown';
   reason: string | null;
+}
+
+interface TaskRepoContext {
+  id?: string;
+  repoPath: string;
+  mainRepoPath: string;
+  worktreePath: string;
+  baseBranch: string;
+  baseSha: string;
+  branchName: string;
+  mergeCommitSha: string | null;
+  prUrl: string | null;
+  pushedAt: string | null;
+}
+
+const MAX_JOINED_DIFF_CHARS = 200_000;
+
+function formatRepoLabel(repoPath: string): string {
+  return repoPath === '.' ? 'root (.)' : `${repoPath}/`;
+}
+
+function prefixRepoFile(repoPath: string, filePath: string): string {
+  const clean = filePath.replace(/^\.\//, '');
+  return repoPath === '.' ? clean : `${repoPath}/${clean}`;
 }
 
 const DEFAULT_QUOTA_COOLDOWN_MS = 5 * 60_000;
@@ -354,6 +389,573 @@ export class ExecutionService {
     const row = this.db.select().from(projects).where(eq(projects.id, projectId)).get();
     if (!row) throw new Error(`Project not found: ${projectId}`);
     return row;
+  }
+
+  private getTaskRepos(
+    taskId: string,
+    projectPath: string,
+    fallback?: {
+      baseBranch: string;
+      baseSha: string;
+      branchName: string;
+      worktreePath: string;
+      mergeCommitSha?: string | null;
+      prUrl?: string | null;
+      pushedAt?: string | null;
+    },
+  ): TaskRepoContext[] {
+    const rows = this.db.select().from(taskRepos).where(eq(taskRepos.taskId, taskId)).all();
+    if (rows.length > 0) {
+      return rows
+        .map((r) => ({
+          id: r.id,
+          repoPath: r.repoPath,
+          mainRepoPath: r.repoPath === '.' ? projectPath : path.join(projectPath, r.repoPath),
+          worktreePath: r.worktreePath,
+          baseBranch: r.baseBranch,
+          baseSha: r.baseSha,
+          branchName: r.branchName,
+          mergeCommitSha: r.mergeCommitSha ?? null,
+          prUrl: r.prUrl ?? null,
+          pushedAt: r.pushedAt ?? null,
+        }))
+        .sort((a, b) => {
+          if (a.repoPath === '.') return -1;
+          if (b.repoPath === '.') return 1;
+          return a.repoPath.localeCompare(b.repoPath);
+        });
+    }
+    if (!fallback) return [];
+    return [
+      {
+        repoPath: '.',
+        mainRepoPath: projectPath,
+        worktreePath: fallback.worktreePath,
+        baseBranch: fallback.baseBranch,
+        baseSha: fallback.baseSha,
+        branchName: fallback.branchName,
+        mergeCommitSha: fallback.mergeCommitSha ?? null,
+        prUrl: fallback.prUrl ?? null,
+        pushedAt: fallback.pushedAt ?? null,
+      },
+    ];
+  }
+
+  private getNestedRepoNames(repos: TaskRepoContext[]): string[] {
+    return repos.filter((r) => r.repoPath !== '.').map((r) => r.repoPath);
+  }
+
+  private saveTaskRepos(
+    taskId: string,
+    entries: Array<{
+      repoPath: string;
+      baseBranch: string;
+      baseSha: string;
+      branchName: string;
+      worktreePath: string;
+      mergeCommitSha?: string | null;
+    }>,
+    resetExisting: boolean,
+  ): void {
+    const now = new Date().toISOString();
+    const existing = this.db.select().from(taskRepos).where(eq(taskRepos.taskId, taskId)).all();
+    const existingByPath = new Map(existing.map((r) => [r.repoPath, r]));
+    const keepPaths = new Set(entries.map((e) => e.repoPath));
+
+    for (const old of existing) {
+      if (!keepPaths.has(old.repoPath)) {
+        this.db.delete(taskRepos).where(eq(taskRepos.id, old.id)).run();
+      }
+    }
+
+    for (const entry of entries) {
+      const prev = existingByPath.get(entry.repoPath);
+      if (prev) {
+        this.db
+          .update(taskRepos)
+          .set({
+            baseBranch: resetExisting ? entry.baseBranch : prev.baseBranch,
+            baseSha: resetExisting ? entry.baseSha : prev.baseSha,
+            branchName: entry.branchName,
+            worktreePath: entry.worktreePath,
+            mergeCommitSha: resetExisting ? null : (entry.mergeCommitSha ?? prev.mergeCommitSha),
+            updatedAt: now,
+          })
+          .where(eq(taskRepos.id, prev.id))
+          .run();
+      } else {
+        this.db
+          .insert(taskRepos)
+          .values({
+            id: crypto.randomUUID(),
+            taskId,
+            repoPath: entry.repoPath,
+            baseBranch: entry.baseBranch,
+            baseSha: entry.baseSha,
+            branchName: entry.branchName,
+            worktreePath: entry.worktreePath,
+            mergeCommitSha: entry.mergeCommitSha ?? null,
+            prUrl: null,
+            pushedAt: null,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .run();
+      }
+    }
+  }
+
+  private upsertRunRepoCheckpoint(
+    runId: string,
+    repoPath: string,
+    fields: {
+      commitBefore?: string | null;
+      commitAfter?: string | null;
+      checkpointBeforeRef?: string | null;
+      checkpointAfterRef?: string | null;
+    },
+  ): void {
+    const existing = this.db
+      .select()
+      .from(runRepoCheckpoints)
+      .where(and(eq(runRepoCheckpoints.runId, runId), eq(runRepoCheckpoints.repoPath, repoPath)))
+      .get();
+    if (existing) {
+      this.db
+        .update(runRepoCheckpoints)
+        .set({
+          ...(fields.commitBefore !== undefined ? { commitBefore: fields.commitBefore } : {}),
+          ...(fields.commitAfter !== undefined ? { commitAfter: fields.commitAfter } : {}),
+          ...(fields.checkpointBeforeRef !== undefined
+            ? { checkpointBeforeRef: fields.checkpointBeforeRef }
+            : {}),
+          ...(fields.checkpointAfterRef !== undefined
+            ? { checkpointAfterRef: fields.checkpointAfterRef }
+            : {}),
+        })
+        .where(eq(runRepoCheckpoints.id, existing.id))
+        .run();
+    } else {
+      this.db
+        .insert(runRepoCheckpoints)
+        .values({
+          id: crypto.randomUUID(),
+          runId,
+          repoPath,
+          commitBefore: fields.commitBefore ?? null,
+          commitAfter: fields.commitAfter ?? null,
+          checkpointBeforeRef: fields.checkpointBeforeRef ?? null,
+          checkpointAfterRef: fields.checkpointAfterRef ?? null,
+        })
+        .run();
+    }
+  }
+
+  private recordInitialRunCheckpoints(
+    runId: string,
+    repos: TaskRepoContext[],
+    beforeShas?: Map<string, string | null>,
+    beforeRefs?: Map<string, string | null>,
+  ): void {
+    for (const repo of repos) {
+      this.upsertRunRepoCheckpoint(runId, repo.repoPath, {
+        commitBefore: beforeShas?.get(repo.repoPath) ?? repo.baseSha,
+        checkpointBeforeRef: beforeRefs?.get(repo.repoPath) ?? null,
+      });
+    }
+  }
+
+  /**
+   * Copy task result/review JSON artifacts from the task worktree into the main project `.dalang/`
+   * directory when missing so post-merge inspection still works if the root repo had no merge commit
+   * (for example, when root ignores `.dalang/` and only a nested repo changed).
+   */
+  private preserveWorktreeTaskArtifacts(
+    projectPath: string,
+    worktreePath: string,
+    taskId: string,
+  ): void {
+    if (!fs.existsSync(worktreePath)) return;
+    const relPaths = new Set<string>();
+    for (const r of this.db.select().from(runs).where(eq(runs.taskId, taskId)).all()) {
+      if (r.resultPath) relPaths.add(r.resultPath);
+    }
+    for (const rev of this.db.select().from(reviews).where(eq(reviews.taskId, taskId)).all()) {
+      if (rev.filePath) relPaths.add(rev.filePath);
+    }
+    for (const rel of relPaths) {
+      const dest = path.join(projectPath, rel);
+      if (fs.existsSync(dest)) continue;
+      const src = path.join(worktreePath, rel);
+      if (!fs.existsSync(src)) continue;
+      try {
+        const content = readArtifactFile(worktreePath, src);
+        writeArtifactFile(projectPath, dest, content, 'refuse');
+      } catch {
+        // Best effort only.
+      }
+    }
+  }
+
+  /**
+   * Remove nested repo worktrees before removing the root task worktree so each nested repo's
+   * worktree metadata is cleanly pruned and never orphaned. Optionally deletes task branches too.
+   */
+  private async removeWorkspaceWorktreesAndBranches(
+    projectPath: string,
+    worktreePath: string,
+    repos: TaskRepoContext[],
+    opts: { deleteBranches: boolean; defaultMainBranch: string; branchName?: string },
+  ): Promise<void> {
+    const nestedByPath = new Map<string, TaskRepoContext>();
+    for (const r of repos) {
+      if (r.repoPath !== '.') nestedByPath.set(r.repoPath, r);
+    }
+    for (const diskNested of findNestedRepos(projectPath)) {
+      if (!nestedByPath.has(diskNested)) {
+        nestedByPath.set(diskNested, {
+          repoPath: diskNested,
+          mainRepoPath: path.join(projectPath, diskNested),
+          worktreePath: path.join(worktreePath, diskNested),
+          baseBranch: opts.defaultMainBranch,
+          baseSha: '',
+          branchName: opts.branchName ?? '',
+          mergeCommitSha: null,
+          prUrl: null,
+          pushedAt: null,
+        });
+      }
+    }
+
+    // Remove nested worktrees FIRST before touching the parent root worktree.
+    for (const nested of nestedByPath.values()) {
+      await removeTaskWorktree(nested.mainRepoPath, nested.worktreePath).catch(() => undefined);
+      if (opts.deleteBranches && nested.branchName) {
+        if (await branchExists(nested.mainRepoPath, nested.branchName).catch(() => false)) {
+          const fallbackBranch = nested.baseBranch && nested.baseBranch !== 'HEAD'
+            ? nested.baseBranch
+            : opts.defaultMainBranch;
+          await deleteTaskBranch(nested.mainRepoPath, fallbackBranch, nested.branchName).catch(() => undefined);
+        }
+      }
+    }
+
+    const rootRepo = repos.find((r) => r.repoPath === '.');
+    await removeTaskWorktree(projectPath, worktreePath).catch(() => undefined);
+    const rootBranch = rootRepo?.branchName || opts.branchName;
+    if (opts.deleteBranches && rootBranch) {
+      if (await branchExists(projectPath, rootBranch).catch(() => false)) {
+        await deleteTaskBranch(
+          projectPath,
+          rootRepo?.baseBranch && rootRepo.baseBranch !== 'HEAD' ? rootRepo.baseBranch : opts.defaultMainBranch,
+          rootBranch,
+        ).catch(() => undefined);
+      }
+    }
+  }
+
+  private async createWorkspaceWorktreesForTask(
+    taskId: string,
+    projectPath: string,
+    worktreePath: string,
+    mainBranch: string,
+    branchName: string,
+    resetToBase: boolean,
+  ): Promise<{
+    repos: TaskRepoContext[];
+    baseMainSha: string;
+    baselineCheckpointRef: string | null;
+    baselineRefsByRepo: Map<string, string | null>;
+  }> {
+    const nestedNames = findNestedRepos(projectPath);
+    const existingRepos = this.getTaskRepos(taskId, projectPath);
+    if (resetToBase) {
+      await this.removeWorkspaceWorktreesAndBranches(projectPath, worktreePath, existingRepos, {
+        deleteBranches: false,
+        defaultMainBranch: mainBranch,
+        branchName,
+      });
+    }
+
+    const baseline = await ensureMainBaseline(projectPath, mainBranch, nestedNames);
+    const rootWt = await createTaskWorktree(
+      projectPath,
+      worktreePath,
+      branchName,
+      mainBranch,
+      resetToBase,
+    );
+
+    const existingByPath = new Map(existingRepos.map((r) => [r.repoPath, r]));
+    const baselineRefsByRepo = new Map<string, string | null>([['.', baseline.checkpointRef]]);
+    const createdEntries: Array<{
+      repoPath: string;
+      baseBranch: string;
+      baseSha: string;
+      branchName: string;
+      worktreePath: string;
+    }> = [
+      {
+        repoPath: '.',
+        baseBranch: mainBranch,
+        baseSha: resetToBase ? baseline.baseMainSha : (existingByPath.get('.')?.baseSha ?? baseline.baseMainSha),
+        branchName,
+        worktreePath: rootWt.worktreePath,
+      },
+    ];
+
+    const createdNested: Array<{ mainRepoPath: string; worktreePath: string }> = [];
+    try {
+      for (const repoName of nestedNames) {
+        const nestedMainPath = path.join(projectPath, repoName);
+        const nestedWtPath = path.join(worktreePath, repoName);
+        await assertRepoConfigSafe(nestedMainPath);
+        const nestedHead = await getHeadCommit(nestedMainPath);
+        if (!nestedHead) {
+          throw new Error(
+            `Nested repository "${repoName}/" has no commits yet. Create an initial commit before running tasks.`,
+          );
+        }
+        const checkedOutBranch = (await getCurrentBranch(nestedMainPath)) ?? 'HEAD';
+        const baseRef = checkedOutBranch === 'HEAD' ? nestedHead : checkedOutBranch;
+        const hiddenBaseline = await createHiddenCheckpointRef(
+          nestedMainPath,
+          `baseline-${Date.now()}-${crypto.randomUUID().slice(0, 6)}`,
+          `dalang: hidden baseline checkpoint (${repoName})`,
+        ).catch(() => null);
+        baselineRefsByRepo.set(repoName, hiddenBaseline?.refName ?? null);
+
+        const nestedReset = resetToBase || !(await branchExists(nestedMainPath, branchName));
+        await createTaskWorktree(nestedMainPath, nestedWtPath, branchName, baseRef, nestedReset);
+        createdNested.push({ mainRepoPath: nestedMainPath, worktreePath: nestedWtPath });
+
+        const prev = existingByPath.get(repoName);
+        createdEntries.push({
+          repoPath: repoName,
+          baseBranch: resetToBase ? checkedOutBranch : (prev?.baseBranch ?? checkedOutBranch),
+          baseSha: resetToBase ? nestedHead : (prev?.baseSha ?? nestedHead),
+          branchName,
+          worktreePath: nestedWtPath,
+        });
+      }
+    } catch (err) {
+      for (const created of createdNested.reverse()) {
+        await removeTaskWorktree(created.mainRepoPath, created.worktreePath).catch(() => undefined);
+      }
+      if (resetToBase) {
+        await removeTaskWorktree(projectPath, worktreePath).catch(() => undefined);
+      }
+      throw err;
+    }
+
+    this.saveTaskRepos(taskId, createdEntries, resetToBase);
+    const repos = this.getTaskRepos(taskId, projectPath);
+    return {
+      repos,
+      baseMainSha: baseline.baseMainSha,
+      baselineCheckpointRef: baseline.checkpointRef,
+      baselineRefsByRepo,
+    };
+  }
+
+  private async getWorkspaceChangedFiles(
+    repos: TaskRepoContext[],
+    headByRepo?: Map<string, string | null>,
+  ): Promise<string[]> {
+    const nestedNames = this.getNestedRepoNames(repos);
+    const joined = new Set<string>();
+    for (const repo of repos) {
+      if (!fs.existsSync(repo.worktreePath)) continue;
+      const headSha = headByRepo?.has(repo.repoPath) ? (headByRepo.get(repo.repoPath) ?? null) : null;
+      const files = await getChangedFilesBetween(
+        repo.worktreePath,
+        repo.baseSha,
+        headSha,
+        repo.mainRepoPath,
+        repo.repoPath === '.' ? nestedNames : undefined,
+      );
+      for (const f of files) {
+        joined.add(prefixRepoFile(repo.repoPath, f));
+      }
+    }
+    return [...joined];
+  }
+
+  private async createWorkspaceHiddenCheckpoints(
+    runId: string,
+    repos: TaskRepoContext[],
+    refId: string,
+    message: string,
+    fallbackRootSha: string,
+  ): Promise<{ commitSha: string; refName: string | null }> {
+    const nestedNames = this.getNestedRepoNames(repos);
+    let rootResult: { commitSha: string; refName: string | null } = {
+      commitSha: fallbackRootSha,
+      refName: null,
+    };
+    for (const repo of repos) {
+      if (!fs.existsSync(repo.worktreePath)) continue;
+      const hidden = await createHiddenCheckpointRef(
+        repo.worktreePath,
+        refId,
+        repo.repoPath === '.' ? message : `${message} (${repo.repoPath})`,
+        repo.mainRepoPath,
+        repo.repoPath === '.' ? nestedNames : undefined,
+      ).catch(() => ({ commitSha: repo.baseSha, refName: null as string | null }));
+      this.upsertRunRepoCheckpoint(runId, repo.repoPath, {
+        commitAfter: hidden.commitSha,
+        checkpointAfterRef: hidden.refName,
+      });
+      if (repo.repoPath === '.') {
+        rootResult = hidden;
+      }
+    }
+    return rootResult;
+  }
+
+  private async createWorkspaceGitCheckpoints(
+    runId: string,
+    repos: TaskRepoContext[],
+    commitMessage: string,
+    hiddenRefId: string,
+    hiddenMessage: string,
+  ): Promise<{ rootCommitSha: string; rootHiddenRef: string | null }> {
+    const nestedNames = this.getNestedRepoNames(repos);
+    let rootCommitSha = '';
+    let rootHiddenRef: string | null = null;
+    for (const repo of repos) {
+      if (!fs.existsSync(repo.worktreePath)) continue;
+      const ck = await createGitCheckpoint(
+        repo.worktreePath,
+        repo.repoPath === '.' ? commitMessage : `${commitMessage} [${repo.repoPath}]`,
+        repo.mainRepoPath,
+        repo.repoPath === '.' ? nestedNames : undefined,
+      );
+      const hidden = await createHiddenCheckpointRef(
+        repo.worktreePath,
+        hiddenRefId,
+        repo.repoPath === '.' ? hiddenMessage : `${hiddenMessage} [${repo.repoPath}]`,
+        repo.mainRepoPath,
+        repo.repoPath === '.' ? nestedNames : undefined,
+      ).catch(() => null);
+      this.upsertRunRepoCheckpoint(runId, repo.repoPath, {
+        commitAfter: ck.commitSha,
+        checkpointAfterRef: hidden?.refName ?? null,
+      });
+      if (repo.repoPath === '.') {
+        rootCommitSha = ck.commitSha;
+        rootHiddenRef = hidden?.refName ?? null;
+      }
+    }
+    return { rootCommitSha, rootHiddenRef };
+  }
+
+  private async buildWorkspaceTaskDiff(
+    task: TaskDTO,
+    repos: TaskRepoContext[],
+    opts?: {
+      liveWorktree?: boolean;
+      runCheckpoints?: Map<string, { before: string | null; after: string | null }>;
+    },
+  ): Promise<TaskDiffDTO> {
+    const nestedNames = this.getNestedRepoNames(repos);
+    const hasNested = nestedNames.length > 0;
+    const allFiles: TaskDiffFileDTO[] = [];
+    const repoSummaries: TaskRepoDiffSummaryDTO[] = [];
+    const rawDiffParts: string[] = [];
+    let rootBaseSha: string | null = null;
+    let rootHeadSha: string | null = null;
+    let truncated = false;
+
+    for (const repo of repos) {
+      let baseRef: string | null = null;
+      let headRef: string | null = null;
+
+      if (opts?.liveWorktree) {
+        if (!fs.existsSync(repo.worktreePath)) continue;
+        baseRef = repo.baseSha;
+        headRef = (await getHeadCommit(repo.worktreePath)) ?? repo.baseSha;
+      } else if (repo.mergeCommitSha) {
+        baseRef = `${repo.mergeCommitSha}^1`;
+        headRef = repo.mergeCommitSha;
+      } else if (repo.branchName && (await branchExists(repo.mainRepoPath, repo.branchName).catch(() => false))) {
+        baseRef = repo.baseSha || repo.baseBranch;
+        headRef = repo.branchName;
+      } else {
+        const ck = opts?.runCheckpoints?.get(repo.repoPath);
+        if (ck?.before && ck?.after) {
+          baseRef = ck.before;
+          headRef = ck.after;
+        }
+      }
+
+      if (!baseRef || !headRef) continue;
+      if (repo.repoPath === '.') {
+        rootBaseSha = baseRef;
+        rootHeadSha = headRef;
+      }
+
+      const part = await getTaskDiff(
+        repo.mainRepoPath,
+        task.id,
+        task.externalId,
+        repo.branchName,
+        baseRef,
+        headRef,
+        {
+          excludePaths: repo.repoPath === '.' ? nestedNames : undefined,
+          repoPath: hasNested ? repo.repoPath : undefined,
+        },
+      ).catch(() => null);
+      if (!part) continue;
+
+      if (part.truncated) truncated = true;
+      allFiles.push(...part.files);
+      if (hasNested) {
+        repoSummaries.push({
+          repoPath: repo.repoPath,
+          baseBranch: repo.baseBranch,
+          branchName: repo.branchName,
+          baseCommitSha: baseRef,
+          headCommitSha: headRef,
+          fileCount: part.files.length,
+          additions: part.totalAdditions,
+          deletions: part.totalDeletions,
+        });
+      }
+      if (part.rawDiff.trim()) {
+        rawDiffParts.push(
+          hasNested
+            ? `=== Repository: ${formatRepoLabel(repo.repoPath)} [base: ${repo.baseBranch}] ===\n${part.rawDiff}`
+            : part.rawDiff,
+        );
+      }
+    }
+
+    const joinedRaw = rawDiffParts.join('\n\n');
+    if (joinedRaw.length > MAX_JOINED_DIFF_CHARS) {
+      truncated = true;
+    }
+    const rawDiff =
+      joinedRaw.length > MAX_JOINED_DIFF_CHARS
+        ? `${joinedRaw.slice(0, MAX_JOINED_DIFF_CHARS)}\n\n... [diff truncated at ${MAX_JOINED_DIFF_CHARS} characters]`
+        : joinedRaw;
+    const totalAdditions = allFiles.reduce((sum, f) => sum + f.additions, 0);
+    const totalDeletions = allFiles.reduce((sum, f) => sum + f.deletions, 0);
+
+    return {
+      taskId: task.id,
+      externalId: task.externalId,
+      branchName: task.branchName,
+      baseCommitSha: rootBaseSha,
+      headCommitSha: rootHeadSha,
+      files: allFiles,
+      ...(hasNested ? { repos: repoSummaries } : {}),
+      rawDiff,
+      totalAdditions,
+      totalDeletions,
+      truncated,
+    };
   }
 
   private recordProviderEvent(
@@ -1452,35 +2054,21 @@ export class ExecutionService {
     const routing = this.routeTask(task, sandboxReady);
     if (routing.blocked) throw new Error(routing.blocked);
 
-    // A nested repo is not part of the project's git tree, so it is missing from the task worktree.
-    const nested = findNestedRepos(project.path);
-    const inNested = nested.filter((dir) =>
-      task.filesAllowed.some((p) => p === dir || p.startsWith(`${dir}/`)),
-    );
-    if (inNested.length > 0) {
-      throw new Error(
-        `${task.externalId} edits ${inNested.map((d) => `${d}/`).join(', ')}, which is its own git repository and is not in the task worktree. Open ${inNested.map((d) => `${d}/`).join(', ')} as a separate DALANG project and run the task there.`,
-      );
-    }
-
     const branchName = `dalang/${task.externalId}`;
     const worktreePath = getTaskWorktreeDir(this.worktreesRoot, projectId, task.externalId);
     const resetToBase = !resumeSessionId || !(await branchExists(project.path, branchName));
 
-    const { baseMainSha, checkpointRef: baselineCheckpointRef } = await this.withProjectGitLock(
-      projectId,
-      async () => {
-        const baseline = await ensureMainBaseline(project.path, project.mainBranch);
-        await createTaskWorktree(
+    const { repos: taskRepoList, baseMainSha, baselineCheckpointRef, baselineRefsByRepo } =
+      await this.withProjectGitLock(projectId, async () => {
+        return this.createWorkspaceWorktreesForTask(
+          task.id,
           project.path,
           worktreePath,
-          branchName,
           project.mainBranch,
+          branchName,
           resetToBase,
         );
-        return baseline;
-      },
-    );
+      });
 
     const logsDir = sessionId
       ? getSessionLogsDir(project.path, sessionId)
@@ -1543,6 +2131,7 @@ export class ExecutionService {
       checkpointBeforeRef: baselineCheckpointRef,
       logPath: relLogPath,
     });
+    this.recordInitialRunCheckpoints(runId, taskRepoList, undefined, baselineRefsByRepo);
     execHandle.runId = runId;
     execHandle.taskId = task.id;
     execHandle.sessionId = sessionId;
@@ -1783,6 +2372,14 @@ export class ExecutionService {
         });
       };
 
+      const getReposForCoder = () =>
+        this.getTaskRepos(opts.task.id, opts.projectPath, {
+          baseBranch: opts.branchName,
+          baseSha: opts.baseMainSha,
+          branchName: opts.branchName,
+          worktreePath: opts.worktreePath,
+        });
+
       const markRunStopped = async (): Promise<{
         status: RunStatus;
         canFallback: false;
@@ -1791,12 +2388,13 @@ export class ExecutionService {
         result: null;
         scopeWarnings: string[];
       }> => {
-        const hidden = await createHiddenCheckpointRef(
-          opts.worktreePath,
+        const hidden = await this.createWorkspaceHiddenCheckpoints(
+          runId,
+          getReposForCoder(),
           `stopped-${runId}`,
           `dalang: hidden checkpoint stopped ${opts.task.externalId}`,
-          opts.projectPath,
-        ).catch(() => ({ commitSha: opts.baseMainSha, refName: null as string | null }));
+          opts.baseMainSha,
+        );
         const finishedAt = new Date().toISOString();
         const usageFields = usageDbFields(profile.provider, profile.model || null, capturedUsage);
         this.db
@@ -2075,12 +2673,13 @@ export class ExecutionService {
           : classifyProviderFailure(exitCode, stdout, stderr, thrownError);
         this.recordProviderEvent(profile.provider, classified.eventType, classified.reason, profile.configDir);
 
-        const hidden = await createHiddenCheckpointRef(
-          opts.worktreePath,
+        const hidden = await this.createWorkspaceHiddenCheckpoints(
+          runId,
+          getReposForCoder(),
           `failed-${runId}`,
           `dalang: hidden checkpoint failed ${opts.task.externalId}`,
-          opts.projectPath,
-        ).catch(() => ({ commitSha: opts.baseMainSha, refName: null as string | null }));
+          opts.baseMainSha,
+        );
         const finishedAt = new Date().toISOString();
         const usageFields = usageDbFields(profile.provider, profile.model || null, capturedUsage);
         this.db
@@ -2131,12 +2730,7 @@ export class ExecutionService {
 
       let scopeWarnings: string[];
       try {
-        const changedFiles = await getChangedFilesBetween(
-          opts.worktreePath,
-          opts.baseMainSha,
-          null,
-          opts.projectPath,
-        );
+        const changedFiles = await this.getWorkspaceChangedFiles(getReposForCoder());
         scopeWarnings = findScopeViolations(changedFiles, opts.task.filesAllowed);
       } catch (err) {
         scopeWarnings = [
@@ -2148,12 +2742,13 @@ export class ExecutionService {
       }
 
       if (!validation.ok) {
-        const hidden = await createHiddenCheckpointRef(
-          opts.worktreePath,
+        const hidden = await this.createWorkspaceHiddenCheckpoints(
+          runId,
+          getReposForCoder(),
           `invalid-${runId}`,
           `dalang: hidden checkpoint invalid-result ${opts.task.externalId}`,
-          opts.projectPath,
-        ).catch(() => ({ commitSha: opts.baseMainSha, refName: null as string | null }));
+          opts.baseMainSha,
+        );
         const finishedAt = new Date().toISOString();
         const usageFields = usageDbFields(profile.provider, profile.model || null, capturedUsage);
         this.db
@@ -2202,17 +2797,14 @@ export class ExecutionService {
         ? null
         : resultData.blockers.join('; ') || `Task reported status "${resultData.status}"`;
 
-      const checkpointAfter = await createGitCheckpoint(
-        opts.worktreePath,
-        `dalang: ${opts.task.externalId} (${opts.kind} ${succeeded ? 'completed' : 'failed'})`,
-        opts.projectPath,
-      );
-      const hiddenAfter = await createHiddenCheckpointRef(
-        opts.worktreePath,
-        `after-${runId}`,
-        `dalang: hidden checkpoint ${opts.task.externalId} (${opts.kind} ${finalRunStatus})`,
-        opts.projectPath,
-      ).catch(() => null);
+      const { rootCommitSha: checkpointAfterSha, rootHiddenRef } =
+        await this.createWorkspaceGitCheckpoints(
+          runId,
+          getReposForCoder(),
+          `dalang: ${opts.task.externalId} (${opts.kind} ${succeeded ? 'completed' : 'failed'})`,
+          `after-${runId}`,
+          `dalang: hidden checkpoint ${opts.task.externalId} (${opts.kind} ${finalRunStatus})`,
+        );
       const finishedAt = new Date().toISOString();
       const usageFields = usageDbFields(profile.provider, profile.model || null, capturedUsage);
 
@@ -2223,8 +2815,8 @@ export class ExecutionService {
           finishedAt,
           exitCode,
           failureReason,
-          commitAfter: checkpointAfter.commitSha,
-          checkpointAfterRef: hiddenAfter?.refName ?? null,
+          commitAfter: checkpointAfterSha,
+          checkpointAfterRef: rootHiddenRef,
           resultPath: opts.relResultPath,
           scopeWarningsJson: JSON.stringify(scopeWarnings),
           ...usageFields,
@@ -2241,7 +2833,7 @@ export class ExecutionService {
       }
 
       emitDalangLine(
-        `[dalang] Finished ${opts.kind} for ${opts.task.externalId} -> ${finalRunStatus} (checkpoint ${checkpointAfter.commitSha.slice(0, 7)})`,
+        `[dalang] Finished ${opts.kind} for ${opts.task.externalId} -> ${finalRunStatus} (checkpoint ${checkpointAfterSha.slice(0, 7)})`,
       );
       this.events?.emitEvent({
         type: 'run.finished',
@@ -2257,7 +2849,7 @@ export class ExecutionService {
         status: finalRunStatus,
         canFallback: false,
         sessionId: capturedSessionId,
-        commitAfter: checkpointAfter.commitSha,
+        commitAfter: checkpointAfterSha,
         result: resultData,
         scopeWarnings,
         failureReason: failureReason ?? undefined,
@@ -2310,6 +2902,15 @@ export class ExecutionService {
         commitBefore: opts.baseMainSha,
         logPath: fbRelLog,
       });
+      this.recordInitialRunCheckpoints(
+        fbRunId,
+        this.getTaskRepos(opts.task.id, opts.projectPath, {
+          baseBranch: opts.branchName,
+          baseSha: opts.baseMainSha,
+          branchName: opts.branchName,
+          worktreePath: opts.worktreePath,
+        }),
+      );
 
       this.db
         .update(tasks)
@@ -2507,29 +3108,32 @@ export class ExecutionService {
         .run();
       this.events?.emitEvent({ type: 'plan.updated', projectId: ctx.projectId });
 
-      const currentHead = (await getHeadCommit(ctx.worktreePath)) ?? ctx.baseMainSha;
+      const taskRepoList = this.getTaskRepos(ctx.task.id, ctx.projectPath, {
+        baseBranch: ctx.mainBranch,
+        baseSha: ctx.baseMainSha,
+        branchName: ctx.branchName,
+        worktreePath: ctx.worktreePath,
+      });
+      const headByRepo = new Map<string, string | null>();
+      for (const repo of taskRepoList) {
+        const repoHead = fs.existsSync(repo.worktreePath)
+          ? (await getHeadCommit(repo.worktreePath)) ?? repo.baseSha
+          : repo.baseSha;
+        headByRepo.set(repo.repoPath, repoHead);
+      }
+      const currentHead = headByRepo.get('.') ?? ctx.baseMainSha;
       let changedFiles: string[] = [];
       try {
-        changedFiles = await getChangedFilesBetween(
-          ctx.worktreePath,
-          ctx.baseMainSha,
-          currentHead,
-          ctx.projectPath,
-        );
+        changedFiles = await this.getWorkspaceChangedFiles(taskRepoList, headByRepo);
         activeScopeWarnings = findScopeViolations(changedFiles, ctx.task.filesAllowed);
       } catch (err) {
         activeScopeWarnings = [
           `Could not verify files_allowed: ${err instanceof Error ? err.message : String(err)}`,
         ];
       }
-      const diffData = await getTaskDiff(
-        ctx.projectPath,
-        ctx.task.id,
-        ctx.task.externalId,
-        ctx.branchName,
-        ctx.baseMainSha,
-        currentHead,
-      ).catch(() => null);
+      const diffData = await this.buildWorkspaceTaskDiff(ctx.task, taskRepoList, {
+        liveWorktree: true,
+      }).catch(() => null);
 
       const reviewOutcome = await this.executeSingleReviewRound({
         projectId: ctx.projectId,
@@ -2578,20 +3182,108 @@ export class ExecutionService {
       const reviewData = reviewOutcome.contract;
       if (reviewData.status === 'pass') {
         if (ctx.subtaskMergeTarget) {
-          // Delegated subtasks merge back into the parent task's branch (never into main).
+          // Delegated subtasks merge back into the parent task's branch per changed repo (never into main).
           try {
-            const merged = await this.withProjectGitLock(ctx.projectId, async () => {
-              const result = await mergeTaskBranchIntoWorktree(
-                ctx.projectPath,
-                ctx.subtaskMergeTarget!.parentWorktreePath,
-                ctx.subtaskMergeTarget!.parentBranch,
-                ctx.branchName,
-                `dalang: merge subtask ${ctx.task.externalId} (${ctx.task.title}) into ${ctx.subtaskMergeTarget!.parentBranch}`,
-              );
-              await removeTaskWorktree(ctx.projectPath, ctx.worktreePath).catch(() => undefined);
-              return result;
+            const subRepos = this.getTaskRepos(ctx.task.id, ctx.projectPath, {
+              baseBranch: ctx.subtaskMergeTarget.parentBranch,
+              baseSha: ctx.baseMainSha,
+              branchName: ctx.branchName,
+              worktreePath: ctx.worktreePath,
             });
+            const parentRepos = this.getTaskRepos(ctx.subtaskMergeTarget.parentTaskId, ctx.projectPath, {
+              baseBranch: ctx.subtaskMergeTarget.parentBranch,
+              baseSha: ctx.baseMainSha,
+              branchName: ctx.subtaskMergeTarget.parentBranch,
+              worktreePath: ctx.subtaskMergeTarget.parentWorktreePath,
+            });
+            const parentRepoByPath = new Map(parentRepos.map((r) => [r.repoPath, r]));
+            const nestedNames = this.getNestedRepoNames(subRepos);
+
+            const merged = await this.withProjectGitLock(ctx.projectId, async () => {
+              const changedSubRepos: TaskRepoContext[] = [];
+              for (const repo of subRepos) {
+                const changed = await hasBranchChanges(
+                  repo.mainRepoPath,
+                  repo.baseSha,
+                  repo.branchName,
+                  repo.repoPath === '.' ? nestedNames : undefined,
+                );
+                if (changed) changedSubRepos.push(repo);
+              }
+              if (changedSubRepos.length === 0 && subRepos.length === 1) {
+                changedSubRepos.push(subRepos[0]);
+              }
+
+              const mergedSoFar: Array<{
+                subRepo: TaskRepoContext;
+                parentRepo: TaskRepoContext;
+                beforeMergeSha: string;
+                mergeCommitSha: string;
+              }> = [];
+              try {
+                for (const subRepo of changedSubRepos) {
+                  const parentRepo = parentRepoByPath.get(subRepo.repoPath);
+                  if (!parentRepo) {
+                    throw new Error(
+                      `Parent task worktree is missing repository ${formatRepoLabel(subRepo.repoPath)} for subtask merge.`,
+                    );
+                  }
+                  const res = await mergeTaskBranchIntoWorktree(
+                    subRepo.mainRepoPath,
+                    parentRepo.worktreePath,
+                    parentRepo.branchName,
+                    subRepo.branchName,
+                    `dalang: merge subtask ${ctx.task.externalId} (${ctx.task.title}) into ${parentRepo.branchName}`,
+                    { cleanupWorktreeAndBranch: false },
+                  );
+                  mergedSoFar.push({
+                    subRepo,
+                    parentRepo,
+                    beforeMergeSha: res.beforeMergeSha,
+                    mergeCommitSha: res.mergeCommitSha,
+                  });
+                }
+              } catch (err) {
+                for (const prev of [...mergedSoFar].reverse()) {
+                  await resetWorktreeKeep(
+                    prev.parentRepo.mainRepoPath,
+                    prev.parentRepo.worktreePath,
+                    prev.beforeMergeSha,
+                  ).catch(() => undefined);
+                }
+                throw err;
+              }
+
+              await this.removeWorkspaceWorktreesAndBranches(
+                ctx.projectPath,
+                ctx.worktreePath,
+                subRepos,
+                {
+                  deleteBranches: true,
+                  defaultMainBranch: ctx.subtaskMergeTarget!.parentBranch,
+                  branchName: ctx.branchName,
+                },
+              );
+
+              const rootMerged = mergedSoFar.find((m) => m.subRepo.repoPath === '.');
+              const primarySha =
+                rootMerged?.mergeCommitSha ??
+                mergedSoFar[0]?.mergeCommitSha ??
+                (await getHeadCommit(ctx.subtaskMergeTarget!.parentWorktreePath)) ??
+                ctx.baseMainSha;
+              return { mergeCommitSha: primarySha, mergedRepos: mergedSoFar };
+            });
+
             const mergedAt = new Date().toISOString();
+            for (const m of merged.mergedRepos) {
+              if (m.subRepo.id) {
+                this.db
+                  .update(taskRepos)
+                  .set({ mergeCommitSha: m.mergeCommitSha, updatedAt: mergedAt })
+                  .where(eq(taskRepos.id, m.subRepo.id))
+                  .run();
+              }
+            }
             this.db
               .update(reviews)
               .set({ humanDecision: 'approved', decidedAt: mergedAt })
@@ -2733,6 +3425,7 @@ export class ExecutionService {
         commitBefore: ctx.baseMainSha,
         logPath: fixRelLog,
       });
+      this.recordInitialRunCheckpoints(fixRunId, taskRepoList);
 
       this.db
         .update(tasks)
@@ -3219,11 +3912,31 @@ export class ExecutionService {
       writeArtifactFile(opts.worktreePath, opts.absReviewPath, serialized, 'replace');
       writeArtifactFile(opts.worktreePath, absRoundReviewPath, serialized, 'replace');
 
+      const reviewTaskRepos = this.getTaskRepos(opts.task.id, opts.projectPath, {
+        baseBranch: opts.branchName,
+        baseSha: opts.baseMainSha,
+        branchName: opts.branchName,
+        worktreePath: opts.worktreePath,
+      });
+      const reviewNestedNames = this.getNestedRepoNames(reviewTaskRepos);
       const checkpointAfter = await createGitCheckpoint(
         opts.worktreePath,
         `dalang: ${opts.task.externalId} review round ${opts.round} (${finalContract.status})`,
         opts.projectPath,
+        reviewNestedNames,
       );
+      for (const repo of reviewTaskRepos) {
+        const afterSha =
+          repo.repoPath === '.'
+            ? checkpointAfter.commitSha
+            : fs.existsSync(repo.worktreePath)
+              ? (await getHeadCommit(repo.worktreePath)) ?? repo.baseSha
+              : repo.baseSha;
+        this.upsertRunRepoCheckpoint(reviewRunId, repo.repoPath, {
+          commitBefore: repo.repoPath === '.' ? opts.currentHead : afterSha,
+          commitAfter: afterSha,
+        });
+      }
       const finishedAt = new Date().toISOString();
 
       this.db
@@ -3822,11 +4535,18 @@ export class ExecutionService {
           }
         }
       }
+      const subRepos = this.getTaskRepos(subtask.id, projectPath, {
+        baseBranch: mainBranch,
+        baseSha: scope.baseMainSha,
+        branchName,
+        worktreePath,
+      });
       await this.withProjectGitLock(scope.projectId, async () => {
-        await removeTaskWorktree(projectPath, worktreePath).catch(() => undefined);
-        if (await branchExists(projectPath, branchName).catch(() => false)) {
-          await deleteTaskBranch(projectPath, mainBranch, branchName).catch(() => undefined);
-        }
+        await this.removeWorkspaceWorktreesAndBranches(projectPath, worktreePath, subRepos, {
+          deleteBranches: true,
+          defaultMainBranch: mainBranch,
+          branchName,
+        });
       });
     };
 
@@ -3848,9 +4568,72 @@ export class ExecutionService {
         return 'stopped';
       }
 
-      const { headSha: subBaseSha } = await this.withProjectGitLock(scope.projectId, async () => {
-        return createTaskWorktree(projectPath, worktreePath, branchName, scope.branchName, true);
-      });
+      const { headSha: subBaseSha, subRepos } = await this.withProjectGitLock(
+        scope.projectId,
+        async () => {
+          const parentRepos = this.getTaskRepos(scope.taskId, projectPath, {
+            baseBranch: mainBranch,
+            baseSha: scope.baseMainSha,
+            branchName: scope.branchName,
+            worktreePath: scope.worktreePath,
+          });
+          const existingSubRepos = this.getTaskRepos(subtask.id, projectPath);
+          await this.removeWorkspaceWorktreesAndBranches(projectPath, worktreePath, existingSubRepos, {
+            deleteBranches: false,
+            defaultMainBranch: mainBranch,
+            branchName,
+          });
+
+          const rootWt = await createTaskWorktree(projectPath, worktreePath, branchName, scope.branchName, true);
+          const entries: Array<{
+            repoPath: string;
+            baseBranch: string;
+            baseSha: string;
+            branchName: string;
+            worktreePath: string;
+          }> = [
+            {
+              repoPath: '.',
+              baseBranch: scope.branchName,
+              baseSha: rootWt.headSha,
+              branchName,
+              worktreePath: rootWt.worktreePath,
+            },
+          ];
+
+          const createdNested: Array<{ mainRepoPath: string; worktreePath: string }> = [];
+          try {
+            for (const parentRepo of parentRepos) {
+              if (parentRepo.repoPath === '.') continue;
+              const subNestedWt = path.join(worktreePath, parentRepo.repoPath);
+              const nestedWt = await createTaskWorktree(
+                parentRepo.mainRepoPath,
+                subNestedWt,
+                branchName,
+                parentRepo.branchName,
+                true,
+              );
+              createdNested.push({ mainRepoPath: parentRepo.mainRepoPath, worktreePath: subNestedWt });
+              entries.push({
+                repoPath: parentRepo.repoPath,
+                baseBranch: parentRepo.branchName,
+                baseSha: nestedWt.headSha,
+                branchName,
+                worktreePath: nestedWt.worktreePath,
+              });
+            }
+          } catch (err) {
+            for (const created of createdNested.reverse()) {
+              await removeTaskWorktree(created.mainRepoPath, created.worktreePath).catch(() => undefined);
+            }
+            await removeTaskWorktree(projectPath, worktreePath).catch(() => undefined);
+            throw err;
+          }
+
+          this.saveTaskRepos(subtask.id, entries, true);
+          return { headSha: rootWt.headSha, subRepos: this.getTaskRepos(subtask.id, projectPath) };
+        },
+      );
 
       const logsDir = scope.sessionId
         ? getSessionLogsDir(projectPath, scope.sessionId)
@@ -3908,6 +4691,7 @@ export class ExecutionService {
         commitBefore: subBaseSha,
         logPath: relLogPath,
       });
+      this.recordInitialRunCheckpoints(runId, subRepos);
       subHandle.runId = runId;
 
       this.events?.emitEvent({
@@ -4262,8 +5046,12 @@ export class ExecutionService {
       const taskRuns = runsByTask.get(task.id) ?? [];
       const latestRun = taskRuns[0] ?? null;
       const latestReview = taskReviews[0] ?? null;
+      const storedRepos = this.db.select().from(taskRepos).where(eq(taskRepos.taskId, task.id)).all();
       const diffAvailable = Boolean(
-        task.branchName || task.mergeCommitSha || (latestRun?.commitBefore && latestRun?.commitAfter),
+        task.branchName ||
+          task.mergeCommitSha ||
+          storedRepos.some((r) => Boolean(r.branchName || r.mergeCommitSha)) ||
+          (latestRun?.commitBefore && latestRun?.commitAfter),
       );
       guardTasks.push({
         task,
@@ -4327,38 +5115,49 @@ export class ExecutionService {
     const latestRun = taskRuns[0];
     const earliestCoderRun = [...taskRuns].reverse().find((r) => r.status !== 'rolled_back');
 
-    if (task.mergeCommitSha) {
-      return getTaskDiff(
-        project.path,
-        task.id,
-        task.externalId,
-        task.branchName,
-        `${task.mergeCommitSha}^1`,
-        task.mergeCommitSha,
-      );
+    const worktreePath = getTaskWorktreeDir(this.worktreesRoot, projectId, task.externalId);
+    const repos = this.getTaskRepos(task.id, project.path, {
+      baseBranch: project.mainBranch,
+      baseSha: earliestCoderRun?.commitBefore ?? project.mainBranch,
+      branchName: task.branchName ?? `dalang/${task.externalId}`,
+      worktreePath,
+      mergeCommitSha: task.mergeCommitSha ?? null,
+      prUrl: task.prUrl ?? null,
+      pushedAt: task.pushedAt ?? null,
+    });
+
+    const runCheckpoints = new Map<string, { before: string | null; after: string | null }>();
+    if (earliestCoderRun) {
+      for (const cp of this.db
+        .select()
+        .from(runRepoCheckpoints)
+        .where(eq(runRepoCheckpoints.runId, earliestCoderRun.id))
+        .all()) {
+        runCheckpoints.set(cp.repoPath, { before: cp.commitBefore ?? null, after: null });
+      }
+      if (!runCheckpoints.has('.') && earliestCoderRun.commitBefore) {
+        runCheckpoints.set('.', { before: earliestCoderRun.commitBefore, after: null });
+      }
+    }
+    if (latestRun) {
+      for (const cp of this.db
+        .select()
+        .from(runRepoCheckpoints)
+        .where(eq(runRepoCheckpoints.runId, latestRun.id))
+        .all()) {
+        const prev = runCheckpoints.get(cp.repoPath) ?? { before: cp.commitBefore ?? null, after: null };
+        runCheckpoints.set(cp.repoPath, { before: prev.before ?? cp.commitBefore ?? null, after: cp.commitAfter ?? null });
+      }
+      if (latestRun.commitAfter) {
+        const prev = runCheckpoints.get('.') ?? { before: earliestCoderRun?.commitBefore ?? null, after: null };
+        if (!prev.after) {
+          runCheckpoints.set('.', { before: prev.before, after: latestRun.commitAfter });
+        }
+      }
     }
 
-    if (task.branchName && (await branchExists(project.path, task.branchName))) {
-      const baseRef = earliestCoderRun?.commitBefore ?? project.mainBranch;
-      return getTaskDiff(
-        project.path,
-        task.id,
-        task.externalId,
-        task.branchName,
-        baseRef,
-        task.branchName,
-      );
-    }
-
-    if (earliestCoderRun?.commitBefore && latestRun?.commitAfter) {
-      return getTaskDiff(
-        project.path,
-        task.id,
-        task.externalId,
-        task.branchName,
-        earliestCoderRun.commitBefore,
-        latestRun.commitAfter,
-      );
+    if (repos.length > 0) {
+      return this.buildWorkspaceTaskDiff(task, repos, { runCheckpoints });
     }
 
     return {
@@ -4412,19 +5211,144 @@ export class ExecutionService {
 
     const branchName = task.branchName ?? `dalang/${task.externalId}`;
     const worktreePath = getTaskWorktreeDir(this.worktreesRoot, projectId, task.externalId);
+    const repos = this.getTaskRepos(task.id, project.path, {
+      baseBranch: project.mainBranch,
+      baseSha: (await getHeadCommit(project.path)) ?? project.mainBranch,
+      branchName,
+      worktreePath,
+      mergeCommitSha: task.mergeCommitSha ?? null,
+    });
+    const nestedNames = this.getNestedRepoNames(repos);
 
-    const { mergeCommitSha } = await this.withProjectGitLock(projectId, async () => {
-      const merged = await mergeTaskBranchToMain(
-        project.path,
-        project.mainBranch,
+    const { mergeCommitSha, mergedRepos } = await this.withProjectGitLock(projectId, async () => {
+      const changedRepos: TaskRepoContext[] = [];
+      for (const repo of repos) {
+        const changed = await hasBranchChanges(
+          repo.mainRepoPath,
+          repo.baseSha,
+          repo.branchName,
+          repo.repoPath === '.' ? nestedNames : undefined,
+        );
+        if (changed) changedRepos.push(repo);
+      }
+      if (changedRepos.length === 0 && repos.length === 1 && (await branchExists(project.path, branchName))) {
+        changedRepos.push(repos[0]);
+      }
+      if (changedRepos.length === 0) {
+        throw new Error(`No repository changes found on "${branchName}" to merge.`);
+      }
+
+      // Check every changed repo before mutating any of them.
+      for (const repo of changedRepos) {
+        const label = formatRepoLabel(repo.repoPath);
+        await assertRepoConfigSafe(repo.mainRepoPath);
+        if (repo.baseBranch === 'HEAD') {
+          throw new Error(
+            `Cannot merge ${label}: repository was on a detached HEAD when the task started. Check out a branch first.`,
+          );
+        }
+        if (!(await branchExists(repo.mainRepoPath, repo.branchName))) {
+          throw new Error(`Task branch "${repo.branchName}" does not exist in ${label}.`);
+        }
+        const excludePaths = repo.repoPath === '.' ? nestedNames : undefined;
+        const state = await getRepoState(repo.mainRepoPath, undefined, excludePaths);
+        if (state.branch !== repo.baseBranch && state.dirtyFiles.length > 0) {
+          throw new Error(
+            `Cannot switch ${label} from "${state.branch ?? 'detached'}" to "${repo.baseBranch}" while the working tree has uncommitted changes (${state.dirtyFiles.slice(0, 3).join(', ')}).`,
+          );
+        }
+        if (state.dirtyFiles.length > 0) {
+          const taskChanged = await getBranchChangedFiles(
+            repo.mainRepoPath,
+            repo.baseBranch,
+            repo.branchName,
+            excludePaths,
+          );
+          const taskSet = new Set(taskChanged.map((p) => p.replace(/\\/g, '/').replace(/^\.\//, '')));
+          const overlapping = state.dirtyFiles.filter((f) =>
+            taskSet.has(f.replace(/\\/g, '/').replace(/^\.\//, '')),
+          );
+          if (overlapping.length > 0) {
+            throw new Error(
+              `Cannot merge into ${label} (${repo.baseBranch}): uncommitted changes overlap files modified by this task (${overlapping.slice(0, 5).join(', ')}). Commit or stash them first.`,
+            );
+          }
+        }
+      }
+
+      // One merge commit per repo; a failure unwinds earlier repos with `git reset --keep`.
+      const mergedSoFar: Array<{
+        repo: TaskRepoContext;
+        beforeMergeSha: string;
+        mergeCommitSha: string;
+      }> = [];
+      try {
+        for (const repo of changedRepos) {
+          const excludePaths = repo.repoPath === '.' ? nestedNames : undefined;
+          const res = await mergeTaskBranchToMain(
+            repo.mainRepoPath,
+            repo.baseBranch,
+            repo.branchName,
+            `dalang: merge ${task.externalId} (${task.title})`,
+            {
+              excludePaths,
+              cleanupWorktreeAndBranch: false,
+              repoLabel: formatRepoLabel(repo.repoPath),
+            },
+          );
+          mergedSoFar.push({
+            repo,
+            beforeMergeSha: res.beforeMergeSha,
+            mergeCommitSha: res.mergeCommitSha,
+          });
+        }
+      } catch (err) {
+        const unwindErrors: string[] = [];
+        for (const prev of [...mergedSoFar].reverse()) {
+          try {
+            await resetRepoKeep(prev.repo.mainRepoPath, prev.beforeMergeSha);
+          } catch (resetErr) {
+            unwindErrors.push(
+              `${formatRepoLabel(prev.repo.repoPath)}: ${resetErr instanceof Error ? resetErr.message : String(resetErr)}`,
+            );
+          }
+        }
+        const baseMsg = err instanceof Error ? err.message : String(err);
+        if (mergedSoFar.length > 0) {
+          const suffix =
+            unwindErrors.length > 0
+              ? ` Failed to unwind earlier merges (${unwindErrors.join('; ')}).`
+              : ` Earlier merges (${mergedSoFar.map((m) => formatRepoLabel(m.repo.repoPath)).join(', ')}) were rolled back with git reset --keep.`;
+          throw new Error(`${baseMsg}${suffix}`);
+        }
+        throw err;
+      }
+
+      // All repos merged: keep task artifacts, then remove nested worktrees before the root and delete the branches.
+      this.preserveWorktreeTaskArtifacts(project.path, worktreePath, task.id);
+      await this.removeWorkspaceWorktreesAndBranches(project.path, worktreePath, repos, {
+        deleteBranches: true,
+        defaultMainBranch: project.mainBranch,
         branchName,
-        `dalang: merge ${task.externalId} (${task.title})`,
-      );
-      await removeTaskWorktree(project.path, worktreePath).catch(() => undefined);
-      return merged;
+      });
+
+      const rootMerged = mergedSoFar.find((m) => m.repo.repoPath === '.');
+      return {
+        mergeCommitSha: rootMerged?.mergeCommitSha ?? mergedSoFar[0].mergeCommitSha,
+        mergedRepos: mergedSoFar,
+      };
     });
 
     const now = new Date().toISOString();
+    for (const m of mergedRepos) {
+      if (m.repo.id) {
+        this.db
+          .update(taskRepos)
+          .set({ mergeCommitSha: m.mergeCommitSha, updatedAt: now })
+          .where(eq(taskRepos.id, m.repo.id))
+          .run();
+      }
+    }
     this.db
       .update(reviews)
       .set({ humanDecision: 'approved', decidedAt: now })
@@ -4538,38 +5462,57 @@ export class ExecutionService {
       throw new Error(`Task ${task.externalId} must be awaiting merge or merged before pushing.`);
     }
 
-    const remote =
-      input.remote?.trim() ||
-      project.gitRemote?.trim() ||
-      (await detectDefaultGitRemote(project.path));
-    if (!remote) {
-      throw new Error(
-        'No git remote is configured for this repository. Add a remote (e.g. `git remote add origin <url>`) first.',
-      );
-    }
-
     const createPr = input.createPr !== false;
     const taskBranch = task.branchName ?? `dalang/${task.externalId}`;
-    let pushedBranch = project.mainBranch;
-    let prUrl: string | null = task.prUrl ?? null;
-
-    await this.withProjectGitLock(projectId, async () => {
-      if (createPr) {
-        // Push the task branch tip (parent 2 of merge commit if already merged, else the live branch).
-        const hasLocalBranch = await branchExists(project.path, taskBranch);
-        const refspec = hasLocalBranch
-          ? taskBranch
-          : task.mergeCommitSha
-            ? `${task.mergeCommitSha}^2:refs/heads/${taskBranch}`
-            : taskBranch;
-        await pushRefToRemote(project.path, remote, refspec);
-        pushedBranch = taskBranch;
-      } else {
-        await pushRefToRemote(project.path, remote, project.mainBranch);
-        pushedBranch = project.mainBranch;
-      }
+    const worktreePath = getTaskWorktreeDir(this.worktreesRoot, projectId, task.externalId);
+    const repos = this.getTaskRepos(task.id, project.path, {
+      baseBranch: project.mainBranch,
+      baseSha: project.mainBranch,
+      branchName: taskBranch,
+      worktreePath,
+      mergeCommitSha: task.mergeCommitSha ?? null,
+      prUrl: task.prUrl ?? null,
+      pushedAt: task.pushedAt ?? null,
     });
+    const nestedNames = this.getNestedRepoNames(repos);
 
+    let targetRepos: TaskRepoContext[];
+    if (task.status === 'done') {
+      targetRepos = repos.filter((r) => Boolean(r.mergeCommitSha));
+      if (targetRepos.length === 0 && repos.length > 0) {
+        targetRepos = [repos[0]];
+      }
+    } else {
+      targetRepos = [];
+      for (const repo of repos) {
+        const changed = await hasBranchChanges(
+          repo.mainRepoPath,
+          repo.baseSha,
+          repo.branchName,
+          repo.repoPath === '.' ? nestedNames : undefined,
+        ).catch(() => false);
+        if (changed) targetRepos.push(repo);
+      }
+      if (targetRepos.length === 0 && repos.length > 0) {
+        targetRepos = [repos[0]];
+      }
+    }
+
+    const repoRemotes: Array<{ repo: TaskRepoContext; remote: string }> = [];
+    for (const repo of targetRepos) {
+      const remote =
+        input.remote?.trim() ||
+        (repo.repoPath === '.' ? project.gitRemote?.trim() : undefined) ||
+        (await detectDefaultGitRemote(repo.mainRepoPath));
+      if (!remote) {
+        throw new Error(
+          `No git remote is configured for ${formatRepoLabel(repo.repoPath)}. Add a remote (e.g. \`git remote add origin <url>\`) first.`,
+        );
+      }
+      repoRemotes.push({ repo, remote });
+    }
+
+    let prBody: string | null = null;
     if (createPr) {
       const reviewRows = this.db
         .select()
@@ -4586,21 +5529,70 @@ export class ExecutionService {
             profileById.get(reviewRows[0].reviewerProfileId),
           )
         : null;
-      const body = this.buildPullRequestBody(task, latestReview);
-      const pr = await createGitHubPullRequest(this.registry.getRunner(), project.path, {
-        baseBranch: project.mainBranch,
-        headBranch: taskBranch,
-        title: `${task.externalId}: ${task.title}`,
-        body,
-      });
-      prUrl = pr.prUrl || prUrl;
+      prBody = this.buildPullRequestBody(task, latestReview);
     }
 
+    const repoResults: PushPrRepoResultDTO[] = [];
     const pushedAt = new Date().toISOString();
+
+    for (const { repo, remote } of repoRemotes) {
+      const repoTaskBranch = repo.branchName || taskBranch;
+      let pushedBranch = repo.baseBranch;
+      let repoPrUrl: string | null = repo.prUrl ?? null;
+
+      await this.withProjectGitLock(projectId, async () => {
+        if (createPr) {
+          const hasLocalBranch = await branchExists(repo.mainRepoPath, repoTaskBranch);
+          const mergeSha = repo.mergeCommitSha ?? (repo.repoPath === '.' ? task.mergeCommitSha : null);
+          const refspec = hasLocalBranch
+            ? repoTaskBranch
+            : mergeSha
+              ? `${mergeSha}^2:refs/heads/${repoTaskBranch}`
+              : repoTaskBranch;
+          await pushRefToRemote(repo.mainRepoPath, remote, refspec);
+          pushedBranch = repoTaskBranch;
+        } else {
+          await pushRefToRemote(repo.mainRepoPath, remote, repo.baseBranch);
+          pushedBranch = repo.baseBranch;
+        }
+      });
+
+      if (createPr) {
+        const pr = await createGitHubPullRequest(this.registry.getRunner(), repo.mainRepoPath, {
+          baseBranch: repo.baseBranch,
+          headBranch: repoTaskBranch,
+          title: `${task.externalId}: ${task.title}`,
+          body: prBody ?? '',
+        });
+        repoPrUrl = pr.prUrl || repoPrUrl;
+      }
+
+      if (repo.id) {
+        this.db
+          .update(taskRepos)
+          .set({
+            ...(repoPrUrl ? { prUrl: repoPrUrl } : {}),
+            pushedAt,
+            updatedAt: pushedAt,
+          })
+          .where(eq(taskRepos.id, repo.id))
+          .run();
+      }
+
+      repoResults.push({
+        repoPath: repo.repoPath,
+        remote,
+        branch: pushedBranch,
+        prUrl: repoPrUrl,
+      });
+    }
+
+    const primaryResult = repoResults[0];
+    const firstPrUrl = repoResults.find((r) => r.prUrl)?.prUrl ?? task.prUrl ?? null;
     this.db
       .update(tasks)
       .set({
-        ...(prUrl ? { prUrl } : {}),
+        ...(firstPrUrl ? { prUrl: firstPrUrl } : {}),
         pushedAt,
         updatedAt: pushedAt,
       })
@@ -4608,14 +5600,26 @@ export class ExecutionService {
       .run();
     this.events?.emitEvent({ type: 'plan.updated', projectId });
 
+    const message =
+      repoResults.length > 1
+        ? repoResults
+            .map((r) =>
+              r.prUrl
+                ? `${formatRepoLabel(r.repoPath)}: pushed ${r.branch} to ${r.remote} (${r.prUrl})`
+                : `${formatRepoLabel(r.repoPath)}: pushed ${r.branch} to ${r.remote}`,
+            )
+            .join('; ')
+        : primaryResult.prUrl
+          ? `Pushed ${primaryResult.branch} to ${primaryResult.remote} and opened PR: ${primaryResult.prUrl}`
+          : `Pushed ${primaryResult.branch} to ${primaryResult.remote}.`;
+
     return {
       pushed: true,
-      remote,
-      branch: pushedBranch,
-      prUrl,
-      message: prUrl
-        ? `Pushed ${pushedBranch} to ${remote} and opened PR: ${prUrl}`
-        : `Pushed ${pushedBranch} to ${remote}.`,
+      remote: primaryResult.remote,
+      branch: primaryResult.branch,
+      prUrl: firstPrUrl,
+      message,
+      ...(repoResults.length > 1 ? { repos: repoResults } : {}),
     };
   }
 
@@ -4660,17 +5664,33 @@ export class ExecutionService {
     const branchName = task.branchName ?? `dalang/${task.externalId}`;
     const worktreePath = getTaskWorktreeDir(this.worktreesRoot, projectId, task.externalId);
     const childSubtasks = plan.tasks.filter((t) => t.parentTaskId === task.id && t.delegationDepth > 0);
+    const taskRepoList = this.getTaskRepos(task.id, project.path, {
+      baseBranch: project.mainBranch,
+      baseSha: project.mainBranch,
+      branchName,
+      worktreePath,
+    });
     await this.withProjectGitLock(projectId, async () => {
       for (const sub of childSubtasks) {
         const subWt = getTaskWorktreeDir(this.worktreesRoot, projectId, sub.externalId);
-        await removeTaskWorktree(project.path, subWt).catch(() => undefined);
         const subBranch = sub.branchName ?? `dalang/${sub.externalId}`;
-        if (await branchExists(project.path, subBranch).catch(() => false)) {
-          await deleteTaskBranch(project.path, project.mainBranch, subBranch).catch(() => undefined);
-        }
+        const subRepos = this.getTaskRepos(sub.id, project.path, {
+          baseBranch: project.mainBranch,
+          baseSha: project.mainBranch,
+          branchName: subBranch,
+          worktreePath: subWt,
+        });
+        await this.removeWorkspaceWorktreesAndBranches(project.path, subWt, subRepos, {
+          deleteBranches: true,
+          defaultMainBranch: project.mainBranch,
+          branchName: subBranch,
+        });
       }
-      await removeTaskWorktree(project.path, worktreePath).catch(() => undefined);
-      await deleteTaskBranch(project.path, project.mainBranch, branchName);
+      await this.removeWorkspaceWorktreesAndBranches(project.path, worktreePath, taskRepoList, {
+        deleteBranches: true,
+        defaultMainBranch: project.mainBranch,
+        branchName,
+      });
     });
 
     const now = new Date().toISOString();
@@ -4755,11 +5775,18 @@ export class ExecutionService {
 
         const branchName = task.branchName ?? `dalang/${task.externalId}`;
         const worktreePath = getTaskWorktreeDir(this.worktreesRoot, projectId, task.externalId);
+        const taskRepoList = this.getTaskRepos(task.id, project.path, {
+          baseBranch: project.mainBranch,
+          baseSha: project.mainBranch,
+          branchName,
+          worktreePath,
+        });
         await this.withProjectGitLock(projectId, async () => {
-          await removeTaskWorktree(project.path, worktreePath).catch(() => undefined);
-          if (await branchExists(project.path, branchName)) {
-            await deleteTaskBranch(project.path, project.mainBranch, branchName).catch(() => undefined);
-          }
+          await this.removeWorkspaceWorktreesAndBranches(project.path, worktreePath, taskRepoList, {
+            deleteBranches: true,
+            defaultMainBranch: project.mainBranch,
+            branchName,
+          });
         });
 
         this.db
@@ -4949,10 +5976,32 @@ export class ExecutionService {
     const targetTask = plan?.tasks.find((t) => t.id === row.taskId);
 
     const taskBranch = targetTask?.branchName ?? row.branchName;
-    const isUnmergedBranchRun =
-      Boolean(taskBranch) &&
-      !targetTask?.mergeCommitSha &&
-      (await branchExists(project.path, taskBranch!));
+    const worktreePath = getTaskWorktreeDir(
+      this.worktreesRoot,
+      projectId,
+      targetTask?.externalId ?? row.taskId,
+    );
+    const taskRepoList = this.getTaskRepos(row.taskId, project.path, {
+      baseBranch: project.mainBranch,
+      baseSha: commitBefore,
+      branchName: taskBranch ?? `dalang/${targetTask?.externalId ?? row.taskId}`,
+      worktreePath,
+      mergeCommitSha: targetTask?.mergeCommitSha ?? null,
+    });
+    const nestedNames = this.getNestedRepoNames(taskRepoList);
+
+    const anyRepoMerged =
+      Boolean(targetTask?.mergeCommitSha) || taskRepoList.some((r) => Boolean(r.mergeCommitSha));
+    let anyTaskBranchExists = false;
+    if (taskBranch) {
+      for (const repo of taskRepoList) {
+        if (await branchExists(repo.mainRepoPath, repo.branchName).catch(() => false)) {
+          anyTaskBranchExists = true;
+          break;
+        }
+      }
+    }
+    const isUnmergedBranchRun = !anyRepoMerged && anyTaskBranchExists;
 
     if (isUnmergedBranchRun) {
       if (this.activeTasks.has(row.taskId)) {
@@ -4966,15 +6015,14 @@ export class ExecutionService {
     const rolledBackRunIds: string[] = [];
 
     await this.withProjectGitLock(projectId, async () => {
-      // `git reset --hard` is destructive: only run it when the repo still ends where DALANG left it.
-      const state = await getRepoState(project.path);
-      if (state.dirtyFiles.length > 0) {
-        throw new Error(
-          `Uncommitted changes would be lost (${state.dirtyFiles.slice(0, 3).join(', ')}). Commit or stash them first.`,
-        );
-      }
-
       if (isUnmergedBranchRun && taskBranch) {
+        // Check root repo state so rollback still guards against unexpected uncommitted work or external commits.
+        const state = await getRepoState(project.path, undefined, nestedNames);
+        if (state.dirtyFiles.length > 0) {
+          throw new Error(
+            `Uncommitted changes would be lost (${state.dirtyFiles.slice(0, 3).join(', ')}). Commit or stash them first.`,
+          );
+        }
         const mainHead = state.head;
         const lastMergedOrMain = this.db
           .select()
@@ -5001,42 +6049,107 @@ export class ExecutionService {
           );
         }
 
-        const worktreePath = getTaskWorktreeDir(
-          this.worktreesRoot,
-          projectId,
-          targetTask?.externalId ?? row.taskId,
-        );
-        await removeTaskWorktree(project.path, worktreePath).catch(() => undefined);
-        await deleteTaskBranch(project.path, project.mainBranch, taskBranch);
+        await this.removeWorkspaceWorktreesAndBranches(project.path, worktreePath, taskRepoList, {
+          deleteBranches: true,
+          defaultMainBranch: project.mainBranch,
+          branchName: taskBranch,
+        });
       } else {
-        const lastKnown = this.db
+        const runCpRows = this.db
+          .select()
+          .from(runRepoCheckpoints)
+          .where(eq(runRepoCheckpoints.runId, row.id))
+          .all();
+        const runCpByRepo = new Map(runCpRows.map((c) => [c.repoPath, c]));
+
+        const reposToRollback = taskRepoList.filter((r) => Boolean(r.mergeCommitSha));
+        if (reposToRollback.length === 0 && taskRepoList.length > 0) {
+          reposToRollback.push(taskRepoList[0]);
+        }
+
+        const planTaskIds = (plan?.tasks ?? []).map((t) => t.id);
+        const allPlanTaskRepos =
+          planTaskIds.length > 0
+            ? this.db.select().from(taskRepos).where(inArray(taskRepos.taskId, planTaskIds)).all()
+            : [];
+        const projectNonRolledRuns = this.db
           .select()
           .from(runs)
           .where(and(eq(runs.projectId, projectId), ne(runs.status, 'rolled_back'), ne(runs.status, 'running')))
           .orderBy(desc(runs.startedAt), desc(runs.attempt))
-          .all()
-          .find((r) => r.commitAfter);
-        const knownTips = new Set<string>(
-          [
-            lastKnown?.commitAfter,
-            ...(plan?.tasks.map((t) => t.mergeCommitSha) ?? []),
-          ].filter((c): c is string => Boolean(c)),
-        );
-        if (knownTips.size > 0 && state.head && !knownTips.has(state.head)) {
-          throw new Error(
-            'The repository has commits that DALANG did not create after the last run. Roll back manually with git.',
-          );
-        }
+          .all();
+        const projectRunIds = projectNonRolledRuns.map((r) => r.id);
+        const allRunRepoCps =
+          projectRunIds.length > 0
+            ? this.db
+                .select()
+                .from(runRepoCheckpoints)
+                .where(inArray(runRepoCheckpoints.runId, projectRunIds))
+                .all()
+            : [];
 
-        // Identify any other merged tasks whose merge commit will be rewound by resetting to `commitBefore`.
-        for (const t of plan?.tasks ?? []) {
-          if (t.mergeCommitSha) {
-            const kept = await isAncestorCommit(project.path, t.mergeCommitSha, commitBefore);
-            if (!kept) affectedTaskIds.add(t.id);
+        // Pre-flight check EVERY affected repo before resetting any of them.
+        const rollbackPlan: Array<{
+          repo: TaskRepoContext;
+          targetSha: string;
+          excludePaths?: string[];
+        }> = [];
+        for (const repo of reposToRollback) {
+          const excludePaths = repo.repoPath === '.' ? nestedNames : undefined;
+          const label = formatRepoLabel(repo.repoPath);
+          const state = await getRepoState(repo.mainRepoPath, undefined, excludePaths);
+          if (state.dirtyFiles.length > 0) {
+            throw new Error(
+              `Uncommitted changes would be lost in ${label} (${state.dirtyFiles.slice(0, 3).join(', ')}). Commit or stash them first.`,
+            );
           }
+
+          const knownTips = new Set<string>(
+            [
+              ...allRunRepoCps
+                .filter((c) => c.repoPath === repo.repoPath)
+                .map((c) => c.commitAfter),
+              ...allPlanTaskRepos
+                .filter((tr) => tr.repoPath === repo.repoPath)
+                .map((tr) => tr.mergeCommitSha),
+              ...(repo.repoPath === '.'
+                ? [
+                    projectNonRolledRuns.find((r) => r.commitAfter)?.commitAfter,
+                    ...(plan?.tasks.map((t) => t.mergeCommitSha) ?? []),
+                  ]
+                : []),
+            ].filter((c): c is string => Boolean(c)),
+          );
+          if (knownTips.size > 0 && state.head && !knownTips.has(state.head)) {
+            throw new Error(
+              `Repository ${label} has commits that DALANG did not create after the last run. Roll back manually with git.`,
+            );
+          }
+
+          const targetSha =
+            runCpByRepo.get(repo.repoPath)?.commitBefore ??
+            repo.baseSha ??
+            (repo.repoPath === '.' ? commitBefore : null);
+          if (!targetSha) {
+            throw new Error(`No pre-run checkpoint commit found for ${label}.`);
+          }
+
+          // Identify any other merged tasks whose merge commit in this repo will be rewound.
+          for (const t of plan?.tasks ?? []) {
+            const tr = allPlanTaskRepos.find((x) => x.taskId === t.id && x.repoPath === repo.repoPath);
+            const mergeSha = tr?.mergeCommitSha ?? (repo.repoPath === '.' ? t.mergeCommitSha : null);
+            if (mergeSha) {
+              const kept = await isAncestorCommit(repo.mainRepoPath, mergeSha, targetSha);
+              if (!kept) affectedTaskIds.add(t.id);
+            }
+          }
+
+          rollbackPlan.push({ repo, targetSha, excludePaths });
         }
 
-        await rollbackGitToCheckpoint(project.path, commitBefore);
+        for (const item of rollbackPlan) {
+          await rollbackGitToCheckpoint(item.repo.mainRepoPath, item.targetSha, item.excludePaths);
+        }
       }
     });
 
@@ -5093,6 +6206,11 @@ export class ExecutionService {
     }
 
     if (affectedTaskIds.size > 0) {
+      this.db
+        .update(taskRepos)
+        .set({ mergeCommitSha: null, updatedAt: now })
+        .where(inArray(taskRepos.taskId, [...affectedTaskIds]))
+        .run();
       this.db
         .update(tasks)
         .set({

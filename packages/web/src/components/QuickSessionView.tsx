@@ -578,6 +578,17 @@ export function QuickSessionView({
                         borderColor: 'var(--border-subtle)',
                       }}
                     >
+                      {diffQuery.data.diff.repos && diffQuery.data.diff.repos.length > 1 && (
+                        <div className="flex flex-wrap items-center gap-1.5 font-mono-token text-xs">
+                          {diffQuery.data.diff.repos
+                            .filter((r) => r.fileCount > 0)
+                            .map((r) => (
+                              <Badge key={r.repoPath}>
+                                {r.repoPath === '.' ? t('guard.repoRoot') : `${r.repoPath}/`} · {r.baseBranch} (+{r.additions}/-{r.deletions})
+                              </Badge>
+                            ))}
+                        </div>
+                      )}
                       {diffQuery.data.diff.files.length === 0 ? (
                         <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
                           {t('sessions.quick.noDiffFiles')}
@@ -585,8 +596,13 @@ export function QuickSessionView({
                       ) : (
                         diffQuery.data.diff.files.map((file) => (
                           <div key={file.path} className="space-y-1">
-                            <div className="flex items-center justify-between text-xs font-mono-token">
-                              <span>{file.path}</span>
+                            <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-mono-token">
+                              <div className="flex min-w-0 items-center gap-1.5">
+                                {file.repo && (
+                                  <Badge>{file.repo === '.' ? t('guard.repoRoot') : `${file.repo}/`}</Badge>
+                                )}
+                                <span className="truncate">{file.path}</span>
+                              </div>
                               <span>
                                 +{file.additions} / -{file.deletions}
                               </span>

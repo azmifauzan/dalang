@@ -455,6 +455,7 @@ export const id: Record<TranslationKey, string> = {
   'guard.noIssuesRound': 'Tidak ada masalah pada putaran {round}.',
   'guard.branchDiffTitle': 'Diff cabang',
   'guard.branchDiffDesc': 'Perubahan di {branch} dibandingkan dengan {main}.',
+  'guard.repoRoot': 'akar',
   'guard.filesCount': '{count} berkas',
   'guard.noDiffAvailable': 'Belum ada commit cabang yang tersedia untuk diperiksa diff-nya.',
   'guard.loadingDiff': 'Menghitung diff terpadu...',

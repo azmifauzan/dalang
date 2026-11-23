@@ -369,6 +369,31 @@ function escapeSbpl(value: string): string {
 }
 
 /**
+ * Collect the root `.git` entry and any top-level nested repository `.git` entries inside
+ * `workspacePath` so both root and nested worktree `.git` link files (or `.git/hooks`) are
+ * protected read-only inside the sandbox.
+ */
+function findTopLevelGitEntries(workspacePath: string): string[] {
+  const entries: string[] = [];
+  const rootDotGit = path.join(workspacePath, '.git');
+  if (fs.existsSync(rootDotGit)) {
+    entries.push(rootDotGit);
+  }
+  try {
+    for (const dirEntry of fs.readdirSync(workspacePath, { withFileTypes: true })) {
+      if (!dirEntry.isDirectory() || dirEntry.name === '.git' || dirEntry.name === '.dalang') continue;
+      const nestedDotGit = path.join(workspacePath, dirEntry.name, '.git');
+      if (fs.existsSync(nestedDotGit)) {
+        entries.push(nestedDotGit);
+      }
+    }
+  } catch {
+    // Best effort if workspace directory is unreadable.
+  }
+  return entries;
+}
+
+/**
  * Build a macOS Seatbelt (SBPL) profile with the same confinement guarantees as `bwrap`:
  * - Deny writes everywhere by default; allow writes only to projectPath (unless readOnly), temp dirs, /dev/null,
  *   and the active provider state/config directory.
@@ -422,14 +447,15 @@ export function buildMacOsSeatbeltProfile(
     rules.push(`(deny file-read* (literal "${escapeSbpl(abs)}"))`);
   }
 
-  // Prevent sandboxed agents from writing `.git/hooks` or tampering with a worktree `.git` file.
-  const dotGit = path.join(resolvedProject, '.git');
-  if (!options.readOnly && fs.existsSync(dotGit)) {
-    const stat = fs.lstatSync(dotGit);
-    if (stat.isFile() || stat.isSymbolicLink()) {
-      rules.push(`(deny file-write* (literal "${escapeSbpl(dotGit)}"))`);
-    } else if (stat.isDirectory()) {
-      rules.push(`(deny file-write* (subpath "${escapeSbpl(path.join(dotGit, 'hooks'))}"))`);
+  // Prevent sandboxed agents from writing `.git/hooks` or tampering with root/nested worktree `.git` files.
+  if (!options.readOnly) {
+    for (const dotGit of findTopLevelGitEntries(resolvedProject)) {
+      const stat = fs.lstatSync(dotGit);
+      if (stat.isFile() || stat.isSymbolicLink()) {
+        rules.push(`(deny file-write* (literal "${escapeSbpl(dotGit)}"))`);
+      } else if (stat.isDirectory()) {
+        rules.push(`(deny file-write* (subpath "${escapeSbpl(path.join(dotGit, 'hooks'))}"))`);
+      }
     }
   }
 
@@ -545,16 +571,17 @@ export async function wrapWithBwrap(
     }
   }
 
-  // Prevent sandboxed agents from writing executable hooks into `.git/hooks` or tampering with a worktree `.git` link file.
-  const dotGit = path.join(projectPath, '.git');
-  if (!options.readOnly && fs.existsSync(dotGit)) {
-    const stat = fs.lstatSync(dotGit);
-    if (stat.isFile() || stat.isSymbolicLink()) {
-      bwrapArgs.push('--ro-bind', dotGit, dotGit);
-    } else if (stat.isDirectory()) {
-      const gitHooksDir = path.join(dotGit, 'hooks');
-      if (fs.existsSync(gitHooksDir)) {
-        bwrapArgs.push('--ro-bind', gitHooksDir, gitHooksDir);
+  // Prevent sandboxed agents from writing executable hooks into `.git/hooks` or tampering with root/nested worktree `.git` link files.
+  if (!options.readOnly) {
+    for (const dotGit of findTopLevelGitEntries(projectPath)) {
+      const stat = fs.lstatSync(dotGit);
+      if (stat.isFile() || stat.isSymbolicLink()) {
+        bwrapArgs.push('--ro-bind', dotGit, dotGit);
+      } else if (stat.isDirectory()) {
+        const gitHooksDir = path.join(dotGit, 'hooks');
+        if (fs.existsSync(gitHooksDir)) {
+          bwrapArgs.push('--ro-bind', gitHooksDir, gitHooksDir);
+        }
       }
     }
   }
