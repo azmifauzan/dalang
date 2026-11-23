@@ -2,6 +2,10 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
+## 0.9.2 (Verify commands run in the task worktree), 23 Nov
+
+- **Verify commands no longer check your real checkout.** A planned verify command such as `cd /home/you/project && tail -n1 README.md` ran against the project folder instead of the task worktree, so it could pass or fail on files the task never touched, and agents reported the task as blocked. DALANG now rewrites the project's absolute path to a relative one when a task starts, for stored tasks and delegated subtasks too, and tells the Lead to write relative verify commands.
+
 ## 0.9.1 (Antigravity coder fix), 23 Nov
 
 - **Antigravity coder runs start again.** Since 0.8.0 every Antigravity coder run failed at start with `--settings: unknown setting "mcpServers"` on `agy` 1.5.15, so the default coder profiles could not run and fell back to another provider. `agy` takes MCP servers only from its saved config, so DALANG no longer passes delegation settings to it. Agent delegation therefore works from Claude Code and Codex coders; an Antigravity coder works on its task without the delegation tools and without the delegation instructions in its prompt. Delegated subtasks can still run on Antigravity. Antigravity reviews were never affected.

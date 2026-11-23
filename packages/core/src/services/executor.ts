@@ -73,6 +73,7 @@ import {
   writeArtifactFile,
 } from '../safe-fs.js';
 import { formatZodError } from './contract.js';
+import { localizeVerifyCommand } from './verify-command.js';
 import type { DalangEventBus } from './events.js';
 import {
   assertRepoConfigSafe,
@@ -2045,7 +2046,7 @@ export class ExecutionService {
   private async prepareTaskExecution(
     projectId: string,
     sessionId: string,
-    task: TaskDTO,
+    plannedTask: TaskDTO,
     execHandle: ActiveTaskExecution,
     resumeSessionId: string | null,
     preAcquiredLease: SlotLease | null,
@@ -2055,6 +2056,7 @@ export class ExecutionService {
     executeFn: () => Promise<RunStatus>;
   }> {
     const project = this.getProjectRow(projectId);
+    const task = { ...plannedTask, verify: localizeVerifyCommand(plannedTask.verify, project.path) };
     const sandboxReady = await this.registry.isSandboxReady();
     const routing = this.routeTask(task, sandboxReady);
     if (routing.blocked) throw new Error(routing.blocked);
@@ -4382,7 +4384,7 @@ export class ExecutionService {
     const externalId = this.nextSubtaskExternalId(plan, parentTask.externalId);
     const firstLine = input.prompt.split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? 'Delegated subtask';
     const title = (input.title?.trim() || firstLine).slice(0, 120);
-    const verifyCmd = input.verify?.trim() || parentTask.verify;
+    const verifyCmd = localizeVerifyCommand(input.verify?.trim() || parentTask.verify, project.path);
     const acceptanceCriteria =
       input.acceptance_criteria && input.acceptance_criteria.length > 0
         ? input.acceptance_criteria

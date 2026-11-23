@@ -1014,6 +1014,7 @@ export class LeadService {
       `- Inspect the codebase to understand the exact files involved.`,
       `- If this request can be completed safely in ONE focused task (narrow files_allowed, concrete acceptance criteria, exact verify command), set "verdict": "ready" and fill "task" (with id "T-001", milestone "Quick", role "engineer", complexity "low" or "medium", depends_on [], needs_split false).`,
       `- If this request genuinely needs more than one task, touches many unrelated areas, or has major open design decisions, set "verdict": "too_large", omit "task", explain why in "reason", and list key observations in "findings".`,
+      `- The verify command runs inside the task worktree. Use paths relative to the project root; never cd into or reference the project's absolute path.`,
       `- Do NOT edit application source files yourself. Write ONLY the JSON contract to "${relDraftPath}".`,
       `- Schema: ${JSON.stringify(z.toJSONSchema(QuickPlanContractSchema))}`,
     ]
@@ -2091,6 +2092,7 @@ export class LeadService {
       `Task design rules:`,
       `- Each task needs an id like "T-001", "T-002", a milestone id ("M1", "M2"...), role ("engineer" or "qa"), complexity ("low", "medium", "high"), depends_on (array of task ids), goal, files_allowed, files_reference, acceptance_criteria, verify (exact test/check command), and needs_split (boolean).`,
       `- Set needs_split: true if a task is still too large for one focused coding run.`,
+      `- Verify commands run inside the task worktree. Use paths relative to the project root; never cd into or reference the project's absolute path.`,
       `- Write the plan JSON directly to "${relDraftPath}" with version = ${nextPlanVersion} and brief_version = ${briefDto.version}.`,
       `- Task ids must be unique, every milestone must exist in "milestones", and every depends_on id must be another task in the plan with no cycles.`,
       `- Schema: ${JSON.stringify(z.toJSONSchema(PlanContractSchema))}`,

@@ -163,11 +163,17 @@ async function launchBrowser(chromeBin: string, url: string) {
     });
   });
 
-  const pages = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()) as Array<{
-    type: string;
-    webSocketDebuggerUrl: string;
-  }>;
-  const page = pages.find((p) => p.type === 'page') ?? pages[0];
+  // The page target can appear a moment after the DevTools port opens.
+  let page: { type: string; webSocketDebuggerUrl: string } | undefined;
+  for (let i = 0; i < 50 && !page; i++) {
+    const pages = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()) as Array<{
+      type: string;
+      webSocketDebuggerUrl: string;
+    }>;
+    page = pages.find((p) => p.type === 'page') ?? pages[0];
+    if (!page) await new Promise((r) => setTimeout(r, 100));
+  }
+  if (!page) throw new Error('Chrome opened no page target');
   const cdp = await SimpleCdpClient.connect(page.webSocketDebuggerUrl);
   await cdp.send('Runtime.enable');
   await cdp.send('Page.enable');

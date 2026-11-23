@@ -41,7 +41,7 @@ Choose Claude Code or Codex, then click the paperclip at the lower left of the c
 
 ### Run a Quick fix
 
-1. Select **Quick** and describe the change. Check the proposed task, allowed files, acceptance criteria, and verify command.
+1. Select **Quick** and describe the change. Check the proposed task, allowed files, acceptance criteria, and verify command. The verify command runs inside the task worktree, and Dalang rewrites the project's absolute path in it to a relative one.
 2. On native Windows, select **Run without sandbox confinement on this host** before clicking **Run**. Dalang runs the task in a Git worktree, executes the verify command, and runs automated review. Linux and macOS use their configured platform sandbox when available.
 3. Open **Show diff** and inspect the review. Click **Approve & merge** when ready, or send the task back with feedback.
 
