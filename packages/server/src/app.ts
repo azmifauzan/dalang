@@ -497,6 +497,18 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
   );
 
   app.post<{ Params: { id: string; taskId: string } }>(
+    '/api/projects/:id/tasks/:taskId/steer',
+    async (req) => {
+      const { runId, message } = z.object({
+        runId: z.string().uuid(),
+        message: z.string().trim().min(1).max(8000),
+      }).parse(req.body);
+      await executionService.steerTask(req.params.id, req.params.taskId, runId, message);
+      return { accepted: true };
+    },
+  );
+
+  app.post<{ Params: { id: string; taskId: string } }>(
     '/api/projects/:id/tasks/:taskId/stop',
     async (req) => {
       return executionService.stopExecution(req.params.id, req.params.taskId);

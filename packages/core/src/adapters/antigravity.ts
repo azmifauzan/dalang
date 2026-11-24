@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  DALANG_VERSION,
   EFFORT_LEVEL_ORDER,
   splitEffortModel,
   type EffortLevel,
@@ -11,12 +12,14 @@ import {
   type UsageWindow,
 } from '@dalang/shared';
 import { createTurnLogger, redactSecrets } from './logger.js';
+import { object, SessionRpcError, withSessionRpc } from './session-rpc.js';
 import {
   buildProviderAccountEnv,
   detectSandboxEngine,
   findBwrap,
   startDbusProxy,
   wrapWithSandbox,
+  type DbusProxy,
 } from './sandbox.js';
 import type {
   AdapterTurnOptions,
@@ -339,24 +342,7 @@ export class AntigravityAdapter implements CliAdapter {
     if (bwrapAvailable && !this.policy.antigravityKeyringAccess()) {
       throw new Error(KEYRING_OFF_MESSAGE);
     }
-    const dbusProxy = bwrapAvailable ? await startDbusProxy(this.runner) : null;
-    if (bwrapAvailable && !dbusProxy) {
-      throw new Error(
-        'Antigravity signs in through the desktop session bus, and a sandboxed run only gets a filtered one. Install xdg-dbus-proxy and run DALANG from a desktop session.',
-      );
-    }
-    const invocation = await wrapWithSandbox(
-      this.runner,
-      this.id,
-      options.projectPath,
-      binaryPath,
-      args,
-      {
-        dbusSocket: dbusProxy?.socketPath,
-        readOnly: options.permissionMode === 'read-only',
-        configDir: options.configDir,
-      },
-    );
+    let dbusProxy: DbusProxy | null = null;
     const env = buildProviderAccountEnv(this.id, options.configDir);
 
     const logger = createTurnLogger(options.logFilePath);
@@ -368,6 +354,26 @@ export class AntigravityAdapter implements CliAdapter {
     const textChunks: string[] = [];
 
     try {
+      if (bwrapAvailable) {
+        dbusProxy = await startDbusProxy(this.runner);
+        if (!dbusProxy) {
+          throw new Error(
+            'Antigravity signs in through the desktop session bus, and a sandboxed run only gets a filtered one. Install xdg-dbus-proxy and run DALANG from a desktop session.',
+          );
+        }
+      }
+      if (this.runner.supportsInteractiveStdin) {
+        const session = await this.runAcpTurn(binaryPath, options, dbusProxy, sandboxAvailable, logger);
+        if (session) return session;
+      }
+      const invocation = await wrapWithSandbox(this.runner, this.id, options.projectPath, binaryPath, args, {
+        dbusSocket: dbusProxy?.socketPath,
+        readOnly: options.permissionMode === 'read-only',
+        configDir: options.configDir,
+      });
+      if (args.includes('--dangerously-skip-permissions') && !invocation.sandboxed) {
+        throw new Error('The platform sandbox became unavailable before starting Antigravity.');
+      }
       const res = await this.runner.run(invocation.command, invocation.args, {
         cwd: options.projectPath,
         timeoutMs: options.timeoutMs ?? 600_000,
@@ -440,6 +446,127 @@ export class AntigravityAdapter implements CliAdapter {
     } finally {
       logger.close();
       dbusProxy?.stop();
+    }
+  }
+
+  private async runAcpTurn(
+    binary: string,
+    options: AdapterTurnOptions,
+    dbusProxy: DbusProxy | null,
+    sandboxAvailable: boolean,
+    logger: ReturnType<typeof createTurnLogger>,
+  ): Promise<AdapterTurnResult | null> {
+    const readOnly = options.permissionMode === 'read-only';
+    const args = ['acp', '--stdio'];
+    if (options.permissionMode === 'workspace-write' && sandboxAvailable) {
+      args.push('--dangerously-skip-permissions');
+    }
+    const invocation = await wrapWithSandbox(this.runner, this.id, options.projectPath, binary, args, {
+      readOnly, configDir: options.configDir, dbusSocket: dbusProxy?.socketPath,
+    });
+    if (args.includes('--dangerously-skip-permissions') && !invocation.sandboxed) {
+      throw new Error('The platform sandbox became unavailable before starting Antigravity.');
+    }
+    const log = (event: unknown) => {
+      const line = JSON.stringify(event);
+      logger.write(line);
+      options.onLogLine?.(line);
+    };
+    let sessionId = options.sessionId ?? null;
+    let submitted = false;
+    let cancelled = false;
+    let text = '';
+    let usage: TurnTokenUsage | undefined;
+    try {
+      const result = await withSessionRpc(this.runner, invocation.command, invocation.args, {
+        cwd: options.projectPath,
+        env: buildProviderAccountEnv(this.id, options.configDir),
+        timeoutMs: options.timeoutMs,
+        idleTimeoutMs: options.idleTimeoutMs,
+        signal: options.signal,
+        onKeepAlive: options.onKeepAlive,
+      }, (method, params) => {
+        if (method !== 'session/update' || params.sessionId !== sessionId || !submitted) return;
+        const update = object(params.update);
+        const content = object(update.content);
+        if (update.sessionUpdate === 'agent_message_chunk' && typeof content.text === 'string') {
+          text += content.text;
+          log({ type: 'message', role: 'assistant', text: content.text });
+        } else if (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') {
+          log(update);
+        }
+        usage = extractAgyUsage(update, options.model ?? null) ?? usage;
+      }, async (rpc) => {
+        const init = await rpc.request('initialize', {
+          protocolVersion: 1, clientCapabilities: {},
+          clientInfo: { name: 'dalang', version: DALANG_VERSION },
+        });
+        if (init.protocolVersion !== 1) throw new Error('Unsupported Antigravity ACP version.');
+        const capabilities = object(init.agentCapabilities);
+        const sessionCapabilities = object(capabilities.sessionCapabilities);
+        const resume = sessionId && sessionCapabilities.resume;
+        if (sessionId && !resume && capabilities.loadSession !== true) {
+          throw new Error('Antigravity ACP cannot resume this conversation.');
+        }
+        const session = await rpc.request(resume ? 'session/resume' : sessionId ? 'session/load' : 'session/new', {
+          cwd: options.projectPath, mcpServers: [], ...(sessionId ? { sessionId } : {}),
+        });
+        sessionId = sessionId ?? (typeof session.sessionId === 'string' ? session.sessionId : null);
+        if (!sessionId) throw new Error('Antigravity ACP did not return a session ID.');
+        const id = sessionId;
+        const mode = readOnly ? 'plan' : 'accept-edits';
+        const configOptions = Array.isArray(session.configOptions) ? session.configOptions.map(object) : [];
+        const select = async (category: string, value: string, legacy?: { method: string; key: string; state: unknown }) => {
+          const config = configOptions.find((option) => option.category === category);
+          if (config && typeof config.id === 'string') {
+            if (config.currentValue !== value) {
+              await rpc.request('session/set_config_option', { sessionId: id, configId: config.id, value });
+            }
+          } else if (legacy && legacy.state) {
+            await rpc.request(legacy.method, { sessionId: id, [legacy.key]: value });
+          } else {
+            throw new Error(`Antigravity ACP does not support ${category} selection.`);
+          }
+        };
+        await select('mode', mode, { method: 'session/set_mode', key: 'modeId', state: session.modes });
+        if (options.model) {
+          await select('model', options.model, { method: 'session/set_model', key: 'modelId', state: session.models });
+        } else if (options.effort) {
+          await select('thought_level', options.effort);
+        }
+        submitted = true;
+        const prompt = rpc.request('session/prompt', {
+          sessionId: id,
+          prompt: [
+            { type: 'text', text: options.prompt },
+            ...(options.images ?? []).map((image) => ({
+              type: 'image', data: image.data.toString('base64'), mimeType: image.mimeType,
+            })),
+          ],
+        });
+        options.onControls?.({
+          interrupt: async () => {
+            rpc.notify('session/cancel', { sessionId: id });
+            cancelled = true;
+          },
+        });
+        return prompt;
+      }, (method) => method === 'session/request_permission' ? { outcome: { outcome: 'cancelled' } } : undefined);
+      let structuredOutput: unknown;
+      try { structuredOutput = JSON.parse(text); } catch { /* Plain text is valid. */ }
+      const aborted = result.stopReason === 'cancelled' || cancelled;
+      return {
+        text: text.trim(), sessionId, aborted, structuredOutput,
+        exitCode: result.stopReason === 'end_turn' || aborted ? 0 : 1,
+        stdout: '', stderr: aborted ? '' : String(result.stopReason ?? ''), usage,
+        logFilePath: options.logFilePath,
+      };
+    } catch (error) {
+      if (options.signal?.aborted) return { text, sessionId, aborted: true, exitCode: null, stdout: '', stderr: '', usage };
+      if (!submitted || error instanceof SessionRpcError && error.code === -32601) return null;
+      return { text, sessionId, aborted: cancelled, exitCode: 1, stdout: '', stderr: String(error), usage };
+    } finally {
+      options.onControls?.(null);
     }
   }
 }

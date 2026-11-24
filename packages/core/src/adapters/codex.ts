@@ -11,10 +11,10 @@ import {
   type UsageWindow,
 } from '@dalang/shared';
 import { createTurnLogger, redactSecrets } from './logger.js';
+import { object, SessionRpcError, withSessionRpc } from './session-rpc.js';
 import {
   buildProviderAccountEnv,
   detectSandboxEngine,
-  findBwrap,
   wrapWithSandbox,
 } from './sandbox.js';
 import type {
@@ -312,16 +312,20 @@ export class CodexAdapter implements CliAdapter {
       throw new Error('Codex CLI (codex) is not installed');
     }
 
+    if (this.runner.supportsInteractiveStdin && !options.outputFilePath) {
+      const turn = await this.runSessionTurn(binaryPath, options);
+      if (turn) return turn;
+    }
+
     // `exec resume` has no --sandbox flag, so the mode goes through -c for both paths.
     const args: string[] = options.sessionId
       ? ['exec', 'resume', options.sessionId, '--json', '--skip-git-repo-check']
       : ['exec', '--json', '--skip-git-repo-check'];
 
-    // Codex's own sandbox cannot nest inside bwrap ("No permissions to create a new namespace"),
-    // so when bwrap is the boundary Codex runs unsandboxed inside it (with bwrap enforcing ro/rw).
-    const bwrapAvailable = Boolean(await findBwrap(this.runner));
+    // Bubblewrap and MXC enforce the workspace boundary outside Codex.
+    const { engine } = await detectSandboxEngine(this.runner);
     const isReadOnly = options.permissionMode === 'read-only';
-    const sandboxMode = bwrapAvailable
+    const sandboxMode = engine === 'bwrap' || engine === 'windows-mxc'
       ? 'danger-full-access'
       : isReadOnly
         ? 'read-only'
@@ -381,6 +385,9 @@ export class CodexAdapter implements CliAdapter {
         this.runner, this.id, options.projectPath, binaryPath, args,
         { readOnly: isReadOnly, configDir: options.configDir, imageDir },
       );
+      if (sandboxMode === 'danger-full-access' && !invocation.sandboxed) {
+        throw new Error('The platform sandbox became unavailable before starting Codex.');
+      }
       const res = await this.runner.run(invocation.command, invocation.args, {
         cwd: options.projectPath,
         timeoutMs: options.timeoutMs ?? 600_000,
@@ -459,6 +466,136 @@ export class CodexAdapter implements CliAdapter {
       };
     } finally {
       if (imageDir) fs.rmSync(imageDir, { recursive: true, force: true });
+      logger.close();
+    }
+  }
+
+  private async runSessionTurn(binary: string, options: AdapterTurnOptions): Promise<AdapterTurnResult | null> {
+    const readOnly = options.permissionMode === 'read-only';
+    const secrets = [options.mcp?.bearerToken];
+    const args = ['app-server'];
+    if (options.mcp) {
+      args.push(
+        '-c', `mcp_servers.dalang.url=${JSON.stringify(options.mcp.url)}`,
+        '-c', 'mcp_servers.dalang.bearer_token_env_var="DALANG_MCP_TOKEN"',
+        '-c', 'mcp_servers.dalang.enabled=true',
+      );
+    }
+    const invocation = await wrapWithSandbox(this.runner, this.id, options.projectPath, binary, args,
+      { readOnly, configDir: options.configDir });
+    const logger = createTurnLogger(options.logFilePath, secrets);
+    const log = (event: unknown) => {
+      const line = redactSecrets(JSON.stringify(event), secrets);
+      logger.write(line);
+      options.onLogLine?.(line);
+    };
+    const controller = new AbortController();
+    const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
+    let sessionId = options.sessionId ?? null;
+    let turnId: string | undefined;
+    let submitted = false;
+    let complete!: (turn: Record<string, unknown>) => void;
+    const completion = new Promise<Record<string, unknown>>((resolve) => { complete = resolve; });
+    const messages: string[] = [];
+    let usage: TurnTokenUsage | undefined;
+    let stderr = '';
+    try {
+      const turn = await withSessionRpc(this.runner, invocation.command, invocation.args, {
+        cwd: options.projectPath,
+        env: { ...buildProviderAccountEnv(this.id, options.configDir), DALANG_MCP_TOKEN: options.mcp?.bearerToken },
+        timeoutMs: options.timeoutMs,
+        idleTimeoutMs: options.idleTimeoutMs,
+        signal,
+        onKeepAlive: options.onKeepAlive,
+        onStderrLine: (line) => {
+          const safe = redactSecrets(line, secrets);
+          stderr = (stderr + safe + '\n').slice(-8000);
+          logger.write(`[stderr] ${safe}`);
+          options.onLogLine?.(`[stderr] ${safe}`);
+        },
+      }, (method, params) => {
+        if (params.threadId !== sessionId) return;
+        if (method === 'turn/completed') {
+          const finished = object(params.turn);
+          if (!turnId || finished.id === turnId) complete(finished);
+        }
+        if (method === 'item/completed' || method === 'item/started') {
+          const item = object(params.item);
+          if (item.type === 'userMessage') return;
+          if (method === 'item/completed' && item.type === 'agentMessage' && typeof item.text === 'string') {
+            messages.push(redactSecrets(item.text, secrets));
+          }
+          const type = typeof item.type === 'string' ? item.type.replace(/[A-Z]/g, (c) => '_' + c.toLowerCase()) : item.type;
+          log({ type: method.replace('/', '.'), item: { ...item, type, aggregated_output: item.aggregatedOutput } });
+        }
+        if (method === 'thread/tokenUsage/updated') {
+          const last = object(object(params.tokenUsage).last);
+          const count = (key: string) => typeof last[key] === 'number' ? last[key] as number : 0;
+          if (Object.keys(last).length) {
+            usage = {
+              inputTokens: count('inputTokens'), outputTokens: count('outputTokens'),
+              cacheReadTokens: count('cachedInputTokens'), cacheWriteTokens: count('cacheWriteInputTokens'),
+              model: options.model, costUsd: null,
+            };
+          }
+        }
+      }, async (rpc) => {
+        await rpc.request('initialize', { clientInfo: { name: 'dalang', version: DALANG_VERSION } });
+        rpc.notify('initialized', {});
+        const thread = await rpc.request(sessionId ? 'thread/resume' : 'thread/start', {
+          ...(sessionId ? { threadId: sessionId, excludeTurns: true } : {}),
+          cwd: options.projectPath,
+          model: options.model ?? null,
+          approvalPolicy: 'never',
+          sandbox: invocation.engine === 'bwrap' || invocation.engine === 'windows-mxc'
+            ? 'danger-full-access' : readOnly ? 'read-only' : 'workspace-write',
+        });
+        const id = object(thread.thread).id;
+        if (typeof id !== 'string') throw new Error('Codex did not return a thread ID.');
+        sessionId = id;
+        const textInput = (text: string) => ({ type: 'text', text, text_elements: [] });
+        submitted = true;
+        const started = await rpc.request('turn/start', {
+          threadId: id,
+          effort: options.effort,
+          input: [
+            textInput(options.prompt),
+            ...(options.images ?? []).map((image) => ({
+              type: 'image', url: `data:${image.mimeType};base64,${image.data.toString('base64')}`,
+            })),
+          ],
+        });
+        const activeId = object(started.turn).id;
+        if (typeof activeId !== 'string') throw new Error('Codex did not return a turn ID.');
+        turnId = activeId;
+        options.onControls?.({
+          steer: async (text) => {
+            await rpc.request('turn/steer', { threadId: id, expectedTurnId: activeId, input: [textInput(text)] });
+            log({ type: 'user.steer', text });
+          },
+          interrupt: async () => {
+            await rpc.request('turn/interrupt', { threadId: id, turnId: activeId });
+          },
+        });
+        return completion;
+      });
+      const aborted = turn.status === 'interrupted';
+      const text = messages.join('\n').trim();
+      let structuredOutput: unknown;
+      try { structuredOutput = JSON.parse(text); } catch { /* A text response is valid. */ }
+      const error = object(turn.error).message;
+      return {
+        text, sessionId, structuredOutput, aborted, usage, logFilePath: options.logFilePath, stdout: '',
+        stderr: redactSecrets(typeof error === 'string' ? error : stderr, secrets),
+        exitCode: turn.status === 'completed' || aborted ? 0 : 1,
+      };
+    } catch (error) {
+      if (options.signal?.aborted) return { text: '', sessionId, aborted: true, exitCode: null, stdout: '', stderr };
+      if (!submitted || error instanceof SessionRpcError && error.code === -32601) return null;
+      return { text: messages.join('\n'), sessionId, exitCode: 1, stdout: '', stderr: redactSecrets(String(error), secrets), usage };
+    } finally {
+      options.onControls?.(null);
+      controller.abort();
       logger.close();
     }
   }

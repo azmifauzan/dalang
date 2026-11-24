@@ -12,6 +12,7 @@ import { api } from '../lib/api.js';
 import { DependencyGraph } from './DependencyGraph.js';
 import { EmptyPanel, ErrorPanel, LoadingPanel } from './StateViews.js';
 import { WorkStage } from './WorkStage.js';
+import { TaskSteering } from './TaskSteering.js';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
@@ -489,6 +490,7 @@ export function WorkView({
                           </p>
                         )}
 
+                        {activeForThisTask?.canSteer && <TaskSteering key={activeForThisTask.id} run={activeForThisTask} />}
                         <div className="mt-3 flex flex-wrap items-center gap-2">
                           {isRunningThis ? (
                             <Button

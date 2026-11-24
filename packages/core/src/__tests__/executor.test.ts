@@ -1,10 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import type { CliRunner, RunCommandResult } from '../adapters/types.js';
 import { providerEvents, runs, tasks } from '../db/schema.js';
 import { ProviderRegistry } from '../adapters/registry.js';
+import { ProfileService } from '../services/profiles.js';
 import type { DalangEvent } from '../services/events.js';
 import { ExecutionService } from '../services/executor.js';
 import {
@@ -135,11 +136,19 @@ describe('ExecutionService (v0.2 Jalan + v0.3 Kawal)', () => {
     }
   }, process.platform === 'win32' ? 60_000 : 15_000);
 
-  it('falls back to backup profile when primary hits rate limit (F-13)', async () => {
+  it.each([
+    ['codex', 'claude-code'],
+    ['claude-code', 'antigravity'],
+    ['antigravity', 'codex'],
+  ] as const)('hands off a partially completed task from %s to %s', async (primary, fallback) => {
     const providersUsed: string[] = [];
+    let fallbackPrompt = '';
+    let fullHandoff = '';
+    let handoffPath = '';
 
     const runner: CliRunner = {
       async which(bin) {
+        if (bin === 'bwrap' || bin === 'sandbox-exec') return null;
         return `/usr/bin/${bin}`;
       },
       async run(cmd, args, opts): Promise<RunCommandResult> {
@@ -151,18 +160,26 @@ describe('ExecutionService (v0.2 Jalan + v0.3 Kawal)', () => {
         if (reviewRes) return reviewRes;
 
         const joined = `${cmd} ${args.join(' ')}`;
-        const isCodex = joined.includes('codex');
-        providersUsed.push(isCodex ? 'codex' : 'claude');
+        const provider = cmd.endsWith('/agy') ? 'antigravity' : cmd.endsWith('/claude') ? 'claude-code' : 'codex';
+        providersUsed.push(provider);
 
-        if (isCodex) {
+        if (provider === primary) {
+          fs.mkdirSync(path.join(cwd, 'src'), { recursive: true });
+          fs.writeFileSync(path.join(cwd, 'src', 'partial.ts'), 'export const partialHandoff = true;\n');
+          opts.onStdoutLine?.('earlier-event-' + 'x'.repeat(20_000));
+          opts.onStdoutLine?.(JSON.stringify({ type: 'item.completed', item: { type: 'command_execution', command: 'npm test', aggregated_output: 'test failed' } }));
           return {
             exitCode: 1,
             stdout: '',
-            stderr: '429 rate limit exceeded for codex',
+            stderr: `429 rate limit exceeded for ${primary}`,
             timedOut: false,
             idleTimedOut: false,
           };
         }
+
+        fallbackPrompt = args.join(' ');
+        handoffPath = fallbackPrompt.match(/\.dalang\/tmp\/handoff-[\w-]+\.log/)?.[0] ?? '';
+        if (handoffPath) fullHandoff = fs.readFileSync(path.join(cwd, handoffPath), 'utf8');
 
         const taskMatch = joined.match(/(\.dalang\/(?:sessions\/[A-Za-z0-9_-]+\/)?tasks\/([A-Za-z0-9_-]+)\/result\.json)/);
         const extId = taskMatch ? taskMatch[2] : 'T-001';
@@ -179,7 +196,10 @@ describe('ExecutionService (v0.2 Jalan + v0.3 Kawal)', () => {
             blockers: [],
           }),
         );
-        const line = JSON.stringify({ type: 'result', session_id: 'fb-sess-1', result: 'done' });
+        const line = JSON.stringify({
+          type: 'result', session_id: 'fb-sess-1', conversation_id: 'fb-sess-1',
+          thread_id: 'fb-sess-1', result: 'done',
+        });
         opts.onStdoutLine?.(line);
         return { exitCode: 0, stdout: `${line}\n`, stderr: '', timedOut: false, idleTimedOut: false };
       },
@@ -188,10 +208,22 @@ describe('ExecutionService (v0.2 Jalan + v0.3 Kawal)', () => {
     const { conn, project, plan, execSvc } = await setupApprovedProject(runner);
 
     try {
+      const profiles = new ProfileService(conn.db);
+      const rule = profiles.listRoutingRules().find((rule) => rule.role === 'engineer' && rule.complexity === 'low')!;
+      profiles.updateProfile(rule.profileId, { provider: primary, model: '' });
+      profiles.updateRoutingRule(rule.id, {
+        fallback: { provider: fallback, model: '', effort: 'medium', configDir: null },
+      });
       await execSvc.startExecution(project.id, { taskId: plan.tasks[0].id, allowUnconfined: true });
       await execSvc.waitForProjectExecution(project.id);
 
-      expect(providersUsed).toEqual(['codex', 'claude']);
+      expect(providersUsed).toEqual([primary, fallback]);
+      expect(fallbackPrompt).toContain('test failed');
+      expect(fallbackPrompt).toContain('Continue from the existing worktree');
+      expect(fallbackPrompt).toContain('+export const partialHandoff = true;');
+      expect(fullHandoff).toContain('test failed');
+      expect(fullHandoff).toContain('earlier-event-');
+      expect(fallbackPrompt).not.toContain('earlier-event-');
 
       const state = await execSvc.getExecutionState(project.id);
       const coderRuns = state.runs.filter((r) => r.kind === 'execute');
@@ -202,11 +234,58 @@ describe('ExecutionService (v0.2 Jalan + v0.3 Kawal)', () => {
       expect(primaryRun.failureReason).toMatch(/rate limit/i);
       expect(fbRun.status).toBe('completed');
       expect(fbRun.usedFallback).toBe(true);
-      expect(fbRun.provider).toBe('claude-code');
+      expect(fbRun.provider).toBe(fallback);
+      expect(fs.existsSync(path.join(fbRun.worktreePath!, handoffPath))).toBe(false);
 
       const eventsRows = conn.db.select().from(providerEvents).all();
-      expect(eventsRows.some((e) => e.provider === 'codex' && e.type === 'rate_limit')).toBe(true);
+      expect(eventsRows.some((e) => e.provider === primary && e.type === 'rate_limit')).toBe(true);
     } finally {
+      conn.close();
+    }
+  });
+
+  it('steers only the active task run and uses its provider interrupt control', async () => {
+    const runner: CliRunner = {
+      async which(binary) { return `/usr/bin/${binary}`; },
+      async run(_command, args, options) {
+        return handleLeadCalls(options.cwd, args, options) ??
+          { exitCode: 0, stdout: '', stderr: '', timedOut: false, idleTimedOut: false };
+      },
+    };
+    const { conn, project, plan, execSvc, registry } = await setupApprovedProject(runner);
+    const taskId = plan.tasks[0].id;
+    const steer = vi.fn(async (_message: string) => {});
+    let ready!: () => void;
+    const active = new Promise<void>((resolve) => { ready = resolve; });
+    const adapter = registry.getAdapter('codex');
+    let interrupted = false;
+    const mock = vi.spyOn(adapter, 'runTurn').mockImplementationOnce(async (options) => {
+      await new Promise<void>((finish) => {
+        options.onControls?.({
+          steer,
+          interrupt: async () => { interrupted = true; finish(); },
+        });
+        ready();
+      });
+      options.onControls?.(null);
+      return { text: '', sessionId: 'interrupted-session', exitCode: 0, stdout: '', stderr: '', aborted: true };
+    });
+    try {
+      const started = await execSvc.startExecution(project.id, { taskId, allowUnconfined: true });
+      await active;
+      const runId = started.run!.id;
+      expect((await execSvc.getExecutionState(project.id)).activeRun?.canSteer).toBe(true);
+      await expect(execSvc.steerTask(project.id, taskId, 'stale-run', 'Wrong turn')).rejects.toMatchObject({ statusCode: 409 });
+      await expect(execSvc.steerTask('different-project', taskId, runId, 'Wrong project')).rejects.toMatchObject({ statusCode: 409 });
+      await execSvc.steerTask(project.id, taskId, runId, 'Keep the current tests');
+      expect(steer).toHaveBeenCalledExactlyOnceWith('Keep the current tests');
+      expect(await execSvc.stopExecution(project.id, taskId)).toEqual({ stopped: true });
+      expect(interrupted).toBe(true);
+      expect((await execSvc.getExecutionState(project.id)).runs[0]).toMatchObject({
+        status: 'stopped', cliSessionId: 'interrupted-session',
+      });
+    } finally {
+      mock.mockRestore();
       conn.close();
     }
   });

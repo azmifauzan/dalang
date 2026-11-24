@@ -138,6 +138,13 @@ export async function runDoctorChecks(
       status: 'pass',
       detail: `sandbox-exec ready (${sandbox.binaryPath})`,
     });
+  } else if (sandbox.engine === 'windows-mxc') {
+    checks.push({
+      id: 'sandbox',
+      label: 'Sandbox (Windows MXC)',
+      status: 'pass',
+      detail: `Windows confinement checks passed (${sandbox.binaryPath})`,
+    });
   } else {
     checks.push({
       id: 'sandbox',
@@ -145,7 +152,7 @@ export async function runDoctorChecks(
       status: 'warn',
       detail:
         platform === 'win32'
-          ? 'No native Windows sandbox; runs require unconfined opt-in.'
+          ? 'Windows MXC is unavailable or did not pass confinement checks; runs require unconfined opt-in.'
           : `No sandbox binary found on ${platform}. Runs require unconfined opt-in.`,
       fix:
         platform === 'linux'

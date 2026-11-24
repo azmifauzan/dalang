@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const DALANG_VERSION = '0.9.2';
+export const DALANG_VERSION = '0.10.0';
 
 export const MAX_DELEGATION_DEPTH = 1;
 export const DEFAULT_MAX_SUBTASKS_PER_TASK = 6;
@@ -11,7 +11,7 @@ export type UiLanguage = z.infer<typeof UiLanguageSchema>;
 export const ProviderIdSchema = z.enum(['claude-code', 'codex', 'antigravity']);
 export type ProviderId = z.infer<typeof ProviderIdSchema>;
 
-export const SandboxEngineSchema = z.enum(['bwrap', 'sandbox-exec', 'none']);
+export const SandboxEngineSchema = z.enum(['bwrap', 'sandbox-exec', 'windows-mxc', 'none']);
 export type SandboxEngine = z.infer<typeof SandboxEngineSchema>;
 
 export const EFFORT_LEVEL_ORDER = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
@@ -903,6 +903,7 @@ export interface TaskDispatchPreviewDTO {
 }
 
 export interface TaskRunDTO {
+  canSteer?: boolean;
   id: string;
   projectId: string;
   taskId: string;

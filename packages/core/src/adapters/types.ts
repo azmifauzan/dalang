@@ -24,6 +24,7 @@ export interface RunCommandResult {
 }
 
 export interface CliRunner {
+  readonly supportsInteractiveStdin?: boolean;
   which(binary: string): Promise<string | null>;
   run(command: string, args: string[], options: RunCommandOptions): Promise<RunCommandResult>;
 }
@@ -52,6 +53,12 @@ export interface AdapterTurnOptions {
   onLogLine?: (line: string) => void;
   mcp?: TurnMcpConfig;
   onKeepAlive?: (resetIdle: () => void) => void;
+  onControls?: (controls: ActiveTurnControls | null) => void;
+}
+
+export interface ActiveTurnControls {
+  steer?: (message: string) => Promise<void>;
+  interrupt: () => Promise<void>;
 }
 
 export interface TurnImage {

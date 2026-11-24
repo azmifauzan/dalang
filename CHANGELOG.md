@@ -2,6 +2,14 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
+## 0.10.0 (Session protocols and handoff), 24 Nov
+
+- **Session protocols.** Claude runs keep one `claude` process open over stream-json input, Codex runs use `codex app-server`, and Antigravity runs use ACP (`agy acp`). Each adapter falls back to the one-shot CLI when the protocol is unavailable.
+- **Steer and interrupt.** Send a message to a running Claude or Codex task from the Work or Quick view. Stop interrupts the turn and keeps the session, so **Resume session** continues it. Antigravity can be interrupted but not steered.
+- **Handoff on fallback.** A backup provider receives the brief, recent run events, and the partial diff instead of starting over.
+- **Native Windows confinement.** Codex's MXC backend confines provider, verify, and integration processes after local confinement checks pass. Not yet run on native Windows.
+- **No schema change.** The database stays at v13.
+
 ## 0.9.2 (Verify commands run in the task worktree), 23 Nov
 
 - **Verify commands no longer check your real checkout.** A planned verify command such as `cd /home/you/project && tail -n1 README.md` ran against the project folder instead of the task worktree, so it could pass or fail on files the task never touched, and agents reported the task as blocked. DALANG now rewrites the project's absolute path to a relative one when a task starts, for stored tasks and delegated subtasks too, and tells the Lead to write relative verify commands.

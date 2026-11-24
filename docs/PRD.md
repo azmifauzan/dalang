@@ -12,7 +12,7 @@ Dalang runs on the user's machine and uses the official CLI logins. The name com
 
 ## Background and problem
 
-Current platform support (v0.7.3): Linux and WSL 2 use bubblewrap, macOS uses sandbox-exec, and native Windows supports unconfined execution with explicit consent. Windows verification and integration commands use `cmd.exe`; Linux and macOS retain `/bin/sh`. Instruction pointers replace symlinks only on Windows when symlink privilege is unavailable. [Platform setup](INSTALL.md)
+Linux and WSL 2 use bubblewrap, macOS uses sandbox-exec, and native Windows can use Codex's MXC launcher after passing confinement checks on the host. When confinement is unavailable, execution requires explicit consent. Windows verification and integration commands use `cmd.exe`. Instruction pointers replace symlinks on Windows when symlink privileges are unavailable. [Platform setup](INSTALL.md)
 
 Developers who have several coding-agent subscriptions currently run them by hand, one after another. Planning happens in one tool, coding in another, then testing and review in a third, all in the same workspace.
 
@@ -304,7 +304,7 @@ Each phase must be useful on its own before the next one starts.
 | v0.7.3 | Native Windows execution, instruction pointers, platform shell commands, and review artifact scope | Install the tarball and complete a live Quick plan, code, verify, read-only review, merge, and integration on Windows; retain Linux regression coverage | Verified on Windows with Codex and Edge; 104 applicable Windows tests and 107 Linux tests passed. GitHub release and tarball distribution; npm publication is separate. |
 | v0.8 | Agent delegation: a running agent splits its own task into subtasks on other profiles through a DALANG MCP server | One task is split by its agent into at least two subtasks on two providers, and all of them pass review and merge | Implemented. Verified on 23 Nov 2026 with replay providers in the core delegation tests and over real HTTP in the loopback `/mcp` server test; a run on live provider CLIs is not yet done |
 | v0.9 | Workspace projects: one project for a root folder whose top-level folders are their own git repositories, with worktrees, review, merge, and rollback per repo | A Quick task in a workspace edits a nested repo, passes review, and merges into that repo's branch | Implemented. Verified on 23 Nov 2026 with a schema v12 to v13 upgrade test, core nested-repo lifecycle, merge, push, rollback, and delegation tests, and a Chromium replay E2E Quick task touching a nested repo; a live Quick task on the `sei-office` workspace (copy of app data, Claude coder, Antigravity review) changed `frontend/` and `scheduling-service/`, merged one commit into each repo's checked-out branch, left `backend/` untouched, and was then reverted. that run also found Antigravity coder runs failing on `agy` 1.5.15, fixed in 0.9.1 |
-| v0.10 | Session protocols (Claude Agent SDK, `codex app-server`, ACP), steering a running task, context handoff on fallback, native Windows confinement | A fallback mid-task continues from the handoff instead of starting over, on all three providers | Planned |
+| v0.10 | Session protocols (Claude Code stream-json sessions, `codex app-server`, ACP), steering a running task, context handoff on fallback, native Windows confinement | A fallback mid-task continues from the handoff instead of starting over, on all three providers | Released in 0.10.0. Linux regression and live provider checks passed. Native Windows verification pending. |
 | v0.11 | Scheduled and webhook-triggered runs, outside agents over MCP | A scheduled run and a run started from a terminal agent both finish without opening the UI | Planned |
 
 See [Roadmap after v0.4](#roadmap-after-v04) for the detail and the research behind it.
@@ -747,10 +747,12 @@ Interim: v0.8.0 failed a task at start when its `files_allowed` pointed into a n
 
 ### v0.10: session protocols and handoff
 
-- Adapters move to the session protocols (Claude Agent SDK, `codex app-server`, ACP where agy supports it) behind a capability shape, keeping the one-shot CLI path as a fallback for any capability a provider lacks.
+- Adapters move to the session protocols (Claude Code's stream-json session, `codex app-server`, ACP where agy supports it) behind a capability shape, keeping the one-shot CLI path as a fallback for any capability a provider lacks.
 - Steer a running task with a message, and interrupt without losing the session.
 - Context handoff on fallback: the next provider gets the brief plus a budgeted selection of the previous run (its requests, command results, and partial diff) instead of starting over.
 - Native Windows OS confinement with a sandbox that meets the same tests; unconfined native execution is available in v0.7.3.
+
+Scripted runs cover handoff from each of the three providers, including recent command output and the partial diff. Live sessions on Linux verified resume and interrupt for all three providers. Claude and Codex also passed live steering checks. The Windows MXC implementation runs local confinement checks before enabling the backend. It still needs a run on native Windows.
 
 ### v0.11: automation
 

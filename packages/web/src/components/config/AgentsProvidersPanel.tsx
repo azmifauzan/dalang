@@ -243,7 +243,9 @@ export function AgentsProvidersPanel({
                       {p.sandboxReady
                         ? p.sandboxEngine === 'sandbox-exec'
                           ? 'sandbox-exec (macOS)'
-                          : 'bwrap (Linux)'
+                          : p.sandboxEngine === 'windows-mxc'
+                            ? 'MXC (Windows)'
+                            : 'bwrap (Linux)'
                         : t('config.agents.sandboxUnavailable')}
                     </dd>
                   </div>

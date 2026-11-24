@@ -18,6 +18,7 @@ import { useChatScroll } from './chat/useChatScroll.js';
 import { useComposerChoice } from './chat/useComposerChoice.js';
 import { ModeComposer } from './ModeComposer.js';
 import { QuickTimeline } from './QuickTimeline.js';
+import { TaskSteering } from './TaskSteering.js';
 import { ErrorPanel, LoadingPanel } from './StateViews.js';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -162,14 +163,14 @@ export function QuickSessionView({
   });
 
   const stopMutation = useMutation({
-    mutationFn: () => api.stopExecution(project.id, { sessionId: session.id }),
+    mutationFn: () => api.stopExecution(project.id, { sessionId: session.id, taskId: quickTask?.id }),
     onSuccess: invalidateAll,
     onError: (err) => setActionError((err as Error).message),
   });
 
   const retryMutation = useMutation({
-    mutationFn: () =>
-      api.runTask(project.id, quickTask!.id, { allowUnconfined }),
+    mutationFn: (resumeSession: boolean) =>
+      api.runTask(project.id, quickTask!.id, { allowUnconfined, resumeSession }),
     onMutate: () => setActionError(null),
     onSuccess: invalidateAll,
     onError: (err) => setActionError((err as Error).message),
@@ -211,7 +212,8 @@ export function QuickSessionView({
   const lastReplyRef = useChatScroll(messages, turnRunning, live?.turn);
   const execution = executionQuery.data?.execution ?? null;
   const guardEntry = guardQuery.data?.guard.tasks.find((e) => e.task.id === quickTask?.id) ?? null;
-  const activeRun = execution?.activeRuns?.[0] ?? execution?.activeRun ?? null;
+  const activeRun = execution?.activeRuns?.find((run) => run.taskId === quickTask?.id) ?? execution?.activeRun ?? null;
+  const lastCoderRun = execution?.runs.find((run) => run.kind !== 'review' && run.taskId === quickTask?.id);
   const liveRunLines = activeRun ? (liveLogsByRunId[activeRun.id] ?? []) : [];
   const otherWorkingTitle =
     project.workingSessionId && project.workingSessionId !== session.id
@@ -462,12 +464,19 @@ export function QuickSessionView({
                   <Button
                     type="button"
                     disabled={retryMutation.isPending}
-                    onClick={() => retryMutation.mutate()}
+                    onClick={() => retryMutation.mutate(false)}
                   >
                     {t('sessions.quick.retryRun')}
                   </Button>
                 )}
+                {quickTask.status === 'stopped' && lastCoderRun?.cliSessionId && (
+                  <Button type="button" variant="outline" disabled={retryMutation.isPending}
+                    onClick={() => retryMutation.mutate(true)}>
+                    {t('work.resumeSession')}
+                  </Button>
+                )}
               </div>
+              {activeRun?.canSteer && activeRun.taskId === quickTask.id && <TaskSteering key={activeRun.id} run={activeRun} />}
 
               {quickTask.rejectionNote && (
                 <p className="text-sm" style={{ color: 'var(--error)' }}>

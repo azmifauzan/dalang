@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -20,6 +21,8 @@ import type {
   AdapterTurnResult,
   CliAdapter,
   CliRunner,
+  RunCommandOptions,
+  RunCommandResult,
   TurnTokenUsage,
 } from './types.js';
 
@@ -404,9 +407,12 @@ export class ClaudeCodeAdapter implements CliAdapter {
             : 'auto'
           : 'acceptEdits';
     const images = options.images ?? [];
+    // A long-lived session needs stream-json input so steering messages can follow the prompt.
+    const interactive = Boolean(this.runner.supportsInteractiveStdin);
+    const streamInput = interactive || images.length > 0;
     const args: string[] = [
       '-p',
-      ...(images.length ? ['--input-format', 'stream-json'] : [options.prompt]),
+      ...(streamInput ? ['--input-format', 'stream-json'] : [options.prompt]),
       '--output-format',
       'stream-json',
       '--verbose',
@@ -417,7 +423,7 @@ export class ClaudeCodeAdapter implements CliAdapter {
       '--permission-mode',
       permissionFlag,
     ];
-    const stdinData = images.length ? JSON.stringify({
+    const stdinData = streamInput ? JSON.stringify({
       type: 'user',
       message: {
         role: 'user',
@@ -465,14 +471,6 @@ export class ClaudeCodeAdapter implements CliAdapter {
       args.push('--mcp-config', mcpConfigPath);
     }
 
-    const invocation = await wrapWithSandbox(
-      this.runner,
-      this.id,
-      options.projectPath,
-      binaryPath,
-      args,
-      { readOnly: options.permissionMode === 'read-only', configDir: options.configDir, mcpDir },
-    );
     const env = buildProviderAccountEnv(this.id, options.configDir);
 
     const logger = createTurnLogger(options.logFilePath, secrets);
@@ -485,7 +483,7 @@ export class ClaudeCodeAdapter implements CliAdapter {
     const assistantChunks: string[] = [];
 
     try {
-      const res = await this.runner.run(invocation.command, invocation.args, {
+      const runOptions: RunCommandOptions = {
         cwd: options.projectPath,
         timeoutMs: options.timeoutMs ?? 600_000,
         idleTimeoutMs: options.idleTimeoutMs ?? 180_000,
@@ -494,8 +492,8 @@ export class ClaudeCodeAdapter implements CliAdapter {
         stdinData,
         onKeepAlive: options.onKeepAlive,
         onStdoutLine: (line) => {
-          if (images.length && /"type"\s*:\s*"user"/.test(line.slice(0, 256))) return;
           const safeLine = redactSecrets(line, secrets);
+          if (images.length && /"type"\s*:\s*"user"/.test(line.slice(0, 256)) && /"type"\s*:\s*"image"/.test(line)) return;
           logger.write(safeLine);
           options.onLogLine?.(safeLine);
           const trimmed = safeLine.trim();
@@ -543,7 +541,15 @@ export class ClaudeCodeAdapter implements CliAdapter {
           logger.write(`[stderr] ${safeLine}`);
           options.onLogLine?.(`[stderr] ${safeLine}`);
         },
-      });
+      };
+      const invocation = await wrapWithSandbox(this.runner, this.id, options.projectPath, binaryPath, args,
+        { readOnly: options.permissionMode === 'read-only', configDir: options.configDir, mcpDir });
+      if (permissionFlag === 'bypassPermissions' && !invocation.sandboxed) {
+        throw new Error('The platform sandbox became unavailable before starting Claude.');
+      }
+      const res = interactive
+        ? await this.runSession(invocation.command, invocation.args, stdinData!, options, runOptions)
+        : await this.runner.run(invocation.command, invocation.args, runOptions);
 
       const text = resultText || assistantChunks.join('\n').trim();
       if (!res.aborted && (res.timedOut || res.idleTimedOut)) {
@@ -566,5 +572,74 @@ export class ClaudeCodeAdapter implements CliAdapter {
       if (mcpDir) fs.rmSync(mcpDir, { recursive: true, force: true });
       logger.close();
     }
+  }
+
+  /**
+   * Keeps the stream-json process open after the prompt so a message can steer the turn and an
+   * interrupt control request can stop it without ending the session.
+   */
+  private async runSession(
+    command: string,
+    args: string[],
+    firstMessage: string,
+    options: AdapterTurnOptions,
+    runOptions: RunCommandOptions,
+  ): Promise<RunCommandResult> {
+    let write: ((data: string) => void) | undefined;
+    let endInput: (() => void) | undefined;
+    let interrupted = false;
+    const pendingSteering = new Set<string>();
+    const send = (message: unknown) => {
+      if (!write) throw new Error('Claude session has stopped accepting messages.');
+      write(JSON.stringify(message) + '\n');
+    };
+    const userMessage = (content: string, extra: object = {}) => ({
+      type: 'user', message: { role: 'user', content }, parent_tool_use_id: null, ...extra,
+    });
+    const result = await this.runner.run(command, args, {
+      ...runOptions,
+      stdinData: undefined,
+      interactiveStdin: true,
+      onSpawn: (controls) => {
+        write = controls.writeStdin;
+        endInput = controls.endStdin;
+        write(firstMessage);
+      },
+      onStdoutLine: (line) => {
+        runOptions.onStdoutLine?.(line);
+        if (!line.startsWith('{')) return;
+        let event: Record<string, unknown>;
+        try {
+          event = JSON.parse(line) as Record<string, unknown>;
+        } catch {
+          return;
+        }
+        if (event.type === 'system' && event.subtype === 'init') {
+          options.onControls?.({
+            steer: async (text) => {
+              const uuid = randomUUID();
+              pendingSteering.add(uuid);
+              try {
+                send(userMessage(text, { uuid, priority: 'now' }));
+              } catch (error) {
+                pendingSteering.delete(uuid);
+                throw error;
+              }
+              runOptions.onStdoutLine?.(JSON.stringify({ type: 'user.steer', text }));
+            },
+            interrupt: async () => {
+              interrupted = true;
+              send({ type: 'control_request', request_id: randomUUID(), request: { subtype: 'interrupt' } });
+            },
+          });
+        } else if (event.type === 'result') {
+          // A steering message can end the earlier prompt before its own result arrives.
+          const ids = [event.user_message_uuid, ...(Array.isArray(event.user_message_uuids) ? event.user_message_uuids : [])];
+          for (const id of ids) if (typeof id === 'string') pendingSteering.delete(id);
+          if (pendingSteering.size === 0 || event.is_error === true || interrupted) endInput?.();
+        }
+      },
+    }).finally(() => options.onControls?.(null));
+    return interrupted ? { ...result, aborted: true } : result;
   }
 }

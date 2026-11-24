@@ -2,13 +2,42 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import { buildPathEnv, NodeCliRunner } from '../adapters/sandbox.js';
+import { buildPathEnv, detectSandboxEngine, NodeCliRunner, wrapWithSandbox } from '../adapters/sandbox.js';
+import type { CliRunner } from '../adapters/types.js';
 import { ProviderRegistry } from '../adapters/registry.js';
 import { ensureSymlinks } from '../services/project.js';
 
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
+});
+
+it.each([true, false])('reports MXC ready only when both confinement probes pass (%s)', async (readOnlyPasses) => {
+  const profiles: string[] = [];
+  const runner: CliRunner = {
+    supportsInteractiveStdin: true,
+    async which(name) { return name === 'codex' ? 'codex.exe' : null; },
+    async run(command, args) {
+      expect(command).toBe('codex.exe');
+      expect(args).toContain('windows.sandbox="mxc"');
+      profiles.push(args.find((arg) => arg.startsWith('permissions.dalang-runtime='))!);
+      const ok = args.at(-1) === 'write' || readOnlyPasses;
+      return { exitCode: ok ? 0 : 1, stdout: ok ? 'dalang-mxc-ok\r\n' : '', stderr: '',
+        timedOut: false, idleTimedOut: false };
+    },
+  };
+  const status = await detectSandboxEngine(runner, 'win32');
+  expect(status.engine).toBe(readOnlyPasses ? 'windows-mxc' : 'none');
+  expect(profiles).toHaveLength(2);
+  expect(profiles[0]).toMatch(/workspace"="write"/);
+  expect(profiles[1]).toMatch(/workspace"="read"/);
+  expect(profiles[1]).toMatch(/credential"="deny"/);
+  const invocation = await wrapWithSandbox(runner, null, process.cwd(), 'cmd.exe', ['/d', '/s', '/c', '"npm test"'], {
+    bindProviderDirs: false, platform: 'win32',
+  });
+  expect(invocation.sandboxed).toBe(readOnlyPasses);
+  expect(invocation.args.slice(-5)).toEqual(readOnlyPasses
+    ? ['cmd.exe', '/d', '/s', '/c', '"npm test"'] : ['/d', '/s', '/c', '"npm test"']);
 });
 
 it('preserves platform PATH entries including spaces and drive letters', () => {

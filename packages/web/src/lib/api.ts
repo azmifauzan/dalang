@@ -296,6 +296,11 @@ export const api = {
     request<{ stopped: boolean }>(`/api/projects/${id}/tasks/${taskId}/stop`, {
       method: 'POST',
     }),
+  steerTask: (id: string, taskId: string, runId: string, message: string) =>
+    request<{ accepted: boolean }>(`/api/projects/${id}/tasks/${taskId}/steer`, {
+      method: 'POST',
+      body: JSON.stringify({ runId, message }),
+    }),
   runTask: (
     id: string,
     taskId: string,

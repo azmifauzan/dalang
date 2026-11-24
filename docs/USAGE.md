@@ -42,7 +42,7 @@ Choose Claude Code or Codex, then click the paperclip at the lower left of the c
 ### Run a Quick fix
 
 1. Select **Quick** and describe the change. Check the proposed task, allowed files, acceptance criteria, and verify command. The verify command runs inside the task worktree, and Dalang rewrites the project's absolute path in it to a relative one.
-2. On native Windows, select **Run without sandbox confinement on this host** before clicking **Run**. Dalang runs the task in a Git worktree, executes the verify command, and runs automated review. Linux and macOS use their configured platform sandbox when available.
+2. Click **Run**. Dalang runs the task in a Git worktree, executes the verify command, and runs automated review. If the host sandbox is unavailable, the run requires explicit unconfined consent.
 3. Open **Show diff** and inspect the review. Click **Approve & merge** when ready, or send the task back with feedback.
 
 ![Quick chat with the Request, Work, Review, and Merge timeline and a one-task plan ready to run](images/quick.webp)
@@ -86,7 +86,9 @@ Click **Start work** to run the approved queue. Dalang uses a separate Git workt
 
 ![Work view showing an active task on the wayang stage above its activity feed and run inspector](images/work.webp)
 
-- Use **Stop** for an individual task or **Stop all runs** for the queue. Stopping a parent task also stops any delegated subtasks it launched.
+- When **Message to the running agent** appears, use it to add a clarification to the active task. Claude and Codex support this with their session protocols.
+- Use **Stop** to interrupt an individual task or **Stop all runs** for the queue. Stopping a parent task also stops its delegated subtasks. Use **Resume session** when available to continue a stopped task with its existing worktree and conversation.
+- If a provider fails during coding and a backup is available, the backup gets recent run events and a partial diff along with the task brief.
 - During execution, a running coder can split independent parts of its task onto other profiles or providers via DALANG's local MCP server (`delegate_task`, `task_status`, `task_cancel`). Each subtask runs in its own worktree branched from the parent branch, passes verify and automated review, and merges back into the parent branch so the parent's review and Gate 2 diff include the combined result. Delegated subtasks appear under their parent task in **Tasks & live logs** and **Dependency graph**. Delegation is available to Claude Code and Codex coders; Antigravity cannot receive a per-run MCP server, so its coders work without the delegation tools. Native CLI subagents (Claude `Task` tool calls and Antigravity batches) appear read-only in the run inspector.
 - Use **Retry** for a failed or stopped task. Where **Resume session** is available, use it to continue the provider session.
 - To restore a pre-run state, select the run and use **Rollback to pre-run checkpoint**. Dalang can refuse a rollback when it would lose uncommitted work or commits made outside Dalang. [Rollback troubleshooting](TROUBLESHOOTING.md)
@@ -112,7 +114,7 @@ You can open a workspace folder whose top-level subdirectories are their own sta
 - Push and pull request actions push each changed repository to its own configured Git remote and open a PR per repository when requested.
 - Delegated subtasks receive nested worktrees branched from the parent task's branches and merge back per repository. Git submodules and nested repositories below the top level are not managed as workspace repos.
 
-On native Windows, post-merge integration needs explicit unconfined consent in the current view. Without confinement or consent, the check is marked **skipped**. You can grant consent and run it manually. Required task `result.json` files are orchestration metadata; their presence does not violate a task's application-file scope.
+If the platform sandbox is unavailable, post-merge integration needs explicit unconfined consent in the current view. Without confinement or consent, the check is marked **skipped**. You can grant consent and run it manually. Required task `result.json` files are orchestration metadata.
 
 ### Push or open a pull request
 

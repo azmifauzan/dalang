@@ -3,9 +3,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ReplayCliRunner,
+  ProviderRegistry,
   type CliRunner,
   type ReplayTranscript,
   type RunCommandOptions,
@@ -1099,6 +1100,35 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
       const chromeBin = findChromeBinary();
       if (chromeBin && fs.existsSync(path.join(WEB_DIST_DIR, 'index.html'))) {
         const browser = await launchHeadlessChrome(chromeBin, server.url);
+        const steeringMessages: string[] = [];
+        const getAdapter = ProviderRegistry.prototype.getAdapter;
+        const adapterSpy = vi.spyOn(ProviderRegistry.prototype, 'getAdapter').mockImplementation(function (
+          this: ProviderRegistry, provider,
+        ) {
+          const adapter = getAdapter.call(this, provider);
+          return {
+            ...adapter,
+            runTurn: async (options) => {
+              if (!options.onControls) return adapter.runTurn(options);
+              await new Promise<void>((resolve) => {
+                let timeout: NodeJS.Timeout;
+                const settle = () => {
+                  clearTimeout(timeout);
+                  options.signal?.removeEventListener('abort', settle);
+                  resolve();
+                };
+                timeout = setTimeout(settle, 15_000);
+                options.signal?.addEventListener('abort', settle, { once: true });
+                options.onControls?.({
+                  steer: async (message) => { steeringMessages.push(message); settle(); },
+                  interrupt: async () => { settle(); },
+                });
+              });
+              options.onControls(null);
+              return adapter.runTurn(options);
+            },
+          };
+        });
         try {
           const waitForText = async (needle: string, timeoutSteps = 80) => {
             for (let i = 0; i < timeoutSteps; i++) {
@@ -1196,7 +1226,22 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
             if (checkbox && !checkbox.checked) checkbox.click();
           })()`);
           await clickButton('Run', true);
+          await waitForText('Message to the running agent');
+          await browser.cdp.evalJs(`(() => {
+            const label = [...document.querySelectorAll('label')]
+              .find((item) => item.textContent?.trim() === 'Message to the running agent');
+            const input = label?.control;
+            if (!input) throw new Error('Steering input missing');
+            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'Keep the arithmetic tests');
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+          })()`);
+          await browser.cdp.evalJs(`(() => {
+            const label = [...document.querySelectorAll('label')]
+              .find((item) => item.textContent?.trim() === 'Message to the running agent');
+            label?.control?.form?.querySelector('button[type="submit"]')?.click();
+          })()`);
           await waitForText('Approve & merge', 120);
+          expect(steeringMessages).toEqual(['Keep the arithmetic tests']);
 
           // A question can always be asked, even while work is running; the session mode does not change.
           const askRadioDisabled = await browser.cdp.evalJs<boolean>(`(() => {
@@ -1355,6 +1400,7 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
           expect(browser.cdp.consoleErrors).toEqual([]);
           expect(browser.cdp.pageErrors).toEqual([]);
         } finally {
+          adapterSpy.mockRestore();
           await browser.close();
         }
       }

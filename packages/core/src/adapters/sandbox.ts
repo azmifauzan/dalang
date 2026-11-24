@@ -29,6 +29,7 @@ export function buildPathEnv(extraEnv?: Record<string, string | undefined>): Nod
 }
 
 export class NodeCliRunner implements CliRunner {
+  readonly supportsInteractiveStdin = true;
   async which(binary: string): Promise<string | null> {
     const env = buildPathEnv();
     const pathEntries = (env.PATH ?? '').split(path.delimiter).filter(Boolean);
@@ -140,16 +141,14 @@ export class NodeCliRunner implements CliRunner {
         }
       };
 
-      child.stdout?.on('data', (buf: Buffer) => {
+      child.stdout?.setEncoding('utf8').on('data', (text: string) => {
         resetIdle();
-        const text = buf.toString('utf8');
         stdout += text;
         flushLines(text, false);
       });
 
-      child.stderr?.on('data', (buf: Buffer) => {
+      child.stderr?.setEncoding('utf8').on('data', (text: string) => {
         resetIdle();
-        const text = buf.toString('utf8');
         stderr += text;
         flushLines(text, true);
       });
@@ -190,16 +189,21 @@ export class NodeCliRunner implements CliRunner {
             }
           },
           kill: () => {
-            if (!settled) child.kill('SIGTERM');
+            if (!settled) {
+              child.kill('SIGTERM');
+              setTimeout(() => {
+                if (!settled) child.kill('SIGKILL');
+              }, 2000).unref();
+            }
           },
         });
       }
 
-      if (options.stdinData !== undefined && child.stdin) {
+      if (child.stdin) {
         child.stdin.on('error', (err: NodeJS.ErrnoException) => {
           if (err.code !== 'EPIPE') child.kill('SIGTERM');
         });
-        child.stdin.end(options.stdinData);
+        if (options.stdinData !== undefined) child.stdin.end(options.stdinData);
       }
     });
   }
@@ -326,6 +330,10 @@ export async function detectSandboxEngine(
     const sbPath = await findSandboxExec(runner, platform);
     return sbPath ? { engine: 'sandbox-exec', binaryPath: sbPath } : { engine: 'none', binaryPath: null };
   }
+  if (platform === 'win32' && runner.supportsInteractiveStdin) {
+    const binary = await findWindowsSandbox(runner);
+    if (binary) return { engine: 'windows-mxc', binaryPath: binary };
+  }
   return { engine: 'none', binaryPath: null };
 }
 
@@ -391,6 +399,100 @@ function findTopLevelGitEntries(workspacePath: string): string[] {
     // Best effort if workspace directory is unreadable.
   }
   return entries;
+}
+
+function windowsSandboxArgs(
+  projectPath: string,
+  command: string,
+  args: string[],
+  options: SandboxWrapOptions,
+  provider: ProviderId | null,
+  probeRules: Record<string, 'read' | 'deny'> = {},
+): string[] {
+  const home = os.homedir();
+  const customConfig = normalizeConfigDir(options.configDir);
+  const filesystem: Record<string, 'read' | 'write' | 'deny'> = {
+    ':root': 'read',
+    [os.tmpdir()]: 'write',
+    [projectPath]: options.readOnly ? 'read' : 'write',
+  };
+  if (provider && options.bindProviderDirs !== false) {
+    assertSafeConfigDir(options.configDir);
+    const state = customConfig ? [customConfig] : PROVIDER_STATE_DIRS[provider].map((rel) => path.join(home, rel));
+    for (const location of state) filesystem[location] = 'write';
+  }
+  for (const directory of [options.imageDir, options.mcpDir]) {
+    if (directory) filesystem[directory] = 'read';
+  }
+  for (const entry of findTopLevelGitEntries(projectPath)) {
+    const protectedPath = fs.lstatSync(entry).isDirectory() ? path.join(entry, 'hooks') : entry;
+    filesystem[protectedPath] = 'read';
+  }
+  for (const entry of [...MASKED_CREDENTIAL_DIRS.map((rel) => path.join(home, rel)), ...maskedFiles(home)]) {
+    filesystem[entry] = 'deny';
+  }
+  const rules = Object.entries({ ...filesystem, ...probeRules })
+    .map(([target, mode]) => `${JSON.stringify(target)}=${JSON.stringify(mode)}`);
+  return [
+    'sandbox', '-C', projectPath, '-P', 'dalang-runtime',
+    '-c', 'windows.sandbox="mxc"',
+    '-c', `permissions.dalang-runtime={filesystem={${rules.join(',')}},network={enabled=true}}`,
+    '--', command, ...args,
+  ];
+}
+
+const windowsSandboxProbes = new WeakMap<CliRunner, Promise<string | null>>();
+
+function findWindowsSandbox(runner: CliRunner): Promise<string | null> {
+  let probe = windowsSandboxProbes.get(runner);
+  if (!probe) {
+    probe = probeWindowsSandbox(runner);
+    windowsSandboxProbes.set(runner, probe);
+  }
+  return probe;
+}
+
+async function probeWindowsSandbox(runner: CliRunner): Promise<string | null> {
+  const binary = await runner.which('codex');
+  if (!binary) return null;
+  let root: string | undefined;
+  try {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'dalang-mxc-'));
+    const workspace = path.join(root, 'workspace');
+    fs.mkdirSync(workspace);
+    const git = path.join(workspace, '.git');
+    const nestedHooks = path.join(workspace, 'nested', '.git', 'hooks');
+    fs.mkdirSync(nestedHooks, { recursive: true });
+    const credential = path.join(root, 'credential');
+    const outside = path.join(root, 'outside');
+    for (const location of [git, credential, outside]) fs.writeFileSync(location, 'probe');
+    const script = [
+      'const fs = require("node:fs");',
+      'const [workspace, git, nestedHook, credential, outside, mode] = process.argv.slice(1);',
+      'function allowed(fn) { try { fn(); return true; } catch { return false; } }',
+      'const workspaceWritable = allowed(() => fs.writeFileSync(workspace, "probe"));',
+      'if (workspaceWritable !== (mode === "write") ||',
+      '    allowed(() => fs.writeFileSync(git, "bad")) ||',
+      '    allowed(() => fs.renameSync(git, git + ".backup")) ||',
+      '    allowed(() => fs.writeFileSync(nestedHook, "bad")) ||',
+      '    allowed(() => fs.writeFileSync(outside, "bad")) ||',
+      '    allowed(() => fs.readFileSync(credential))) process.exit(1);',
+      'console.log("dalang-mxc-ok");',
+    ].join('\n');
+    for (const readOnly of [false, true]) {
+      const args = windowsSandboxArgs(workspace, process.execPath, [
+        '-e', script, path.join(workspace, 'writable'), git,
+        path.join(nestedHooks, 'pre-commit'), credential, outside, readOnly ? 'read' : 'write',
+      ], { readOnly }, null, { [root]: 'read', [credential]: 'deny' });
+      const result = await runner.run(binary, args, { cwd: workspace, timeoutMs: 8000, idleTimeoutMs: 4000 });
+      if (result.exitCode !== 0 || !result.stdout.split(/\r?\n/).includes('dalang-mxc-ok')) return null;
+    }
+    return binary;
+  } catch {
+    return null;
+  } finally {
+    if (root) fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 });
+  }
 }
 
 /**
@@ -613,6 +715,17 @@ export async function wrapWithSandbox(
   }
   if (platform === 'darwin') {
     return wrapWithSandboxExec(runner, provider, projectPath, command, args, options);
+  }
+  if (platform === 'win32' && runner.supportsInteractiveStdin) {
+    const binary = await findWindowsSandbox(runner);
+    if (binary) {
+      return {
+        command: binary,
+        args: windowsSandboxArgs(projectPath, command, args, options, provider),
+        sandboxed: true,
+        engine: 'windows-mxc',
+      };
+    }
   }
   return { command, args, sandboxed: false, engine: 'none' };
 }
