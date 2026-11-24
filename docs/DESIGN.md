@@ -3,7 +3,7 @@
 ## Product Identity
 DALANG is a local-only developer workbench that orchestrates official coding CLIs (`claude`, `codex`, `agy`) in a terminal room and a browser workspace. Its visual language takes cues from a wayang kulit puppeteer's workbench. The browser uses warm paper, charcoal ink, and terracotta for approvals. The terminal uses the terminal's own background and a copper gunungan to identify Dalang.
 
-## Terminal team room (v0.11.2)
+## Terminal team room (v0.12.0)
 
 - The header puts the project, chat, mode, quota, and active models alongside a 5-column by 4-row Braille Kayon Gapuran. Its silhouette includes the tree, gate, and handle. [Museum Wayang reference](https://artsandculture.google.com/story/eAWB3fIM41Ytkg?hl=id) · [Museum of International Folk Art reference](https://collection.moifa.org/objects/25167/gunugan-gapuran)
 - The timeline uses role names, colors, and text badges for reports and approvals. Markdown headings, emphasis, code, and lists remain readable when a reply wraps across rows.

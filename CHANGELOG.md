@@ -2,7 +2,7 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
-## 0.11.2 (Terminal team room), 24 Nov
+## 0.12.0 (Terminal team room), 24 Nov
 
 - **`dalang` opens a team room in the terminal.** The Lead, coders, and reviewer post under their own profile names in one timeline: plans, task start, task finish with diff stats, verify results, review verdicts, merges, and rejections. Gates are answered with `y` or `n`; `n` leaves the item waiting, and only `/reject` discards a task. The header shows the Dalang mark, the 5 hour and weekly limit left for each installed provider as in the web usage bar, the model the Lead will answer with (and whether it was chosen with `/model`, comes from the session, or from the Lead profile), and the agents running now with their models. The room opens on a new session; `/resume` picks an earlier one and `/new` starts another. Slash commands also cover modes, projects, `/diff` in `$PAGER`, merge, reject, stop, `/web` to open the same session in the browser, and `/exit`. The room attaches to a server already running on the port, or starts one and stops it on exit.
 - **Live progress in the terminal.** A spinner and elapsed timer show who is working, with a short status such as reading files or running verification. The timeline formats Markdown replies, and `↑` / `↓` recall earlier prompts or restore the draft. `/resume` loads prompt history from the selected chat.

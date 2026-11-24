@@ -152,7 +152,7 @@ Dalang upgrades its database the first time a newer version starts, from any ear
 | v0.8.0 | v12 | Adds the delegation fields on tasks |
 | v0.9.0 | v13 | Adds per-repo task and checkpoint records for workspace projects |
 | v0.11.0 | v14 | Adds schedules, webhooks, their run history, and outside-agent MCP tokens |
-| v0.11.2 | v15 | Adds `author_profile_id` and `kind` to messages for role reports and team-room feeds |
+| v0.12.0 | v15 | Adds `author_profile_id` and `kind` to messages for role reports and team-room feeds |
 
 An upgrade is one way. An older build refuses a newer database with `Database schema vN is newer than this DALANG build`, so restore your pre-upgrade backup to go back. A server that is still running keeps the old code and schema in memory, so restart it after updating.
 
