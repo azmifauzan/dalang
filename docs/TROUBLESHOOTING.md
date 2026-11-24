@@ -16,9 +16,11 @@ Find the message or symptom you see:
 - [Browser did not open or the port is busy](#browser-did-not-open-or-the-port-is-busy)
 - [dalang starts the web server instead of the terminal room](#dalang-starts-the-web-server-instead-of-the-terminal-room)
 - [Text in the terminal room cannot be selected](#text-in-the-terminal-room-cannot-be-selected)
+- [Up and Down move through suggestions instead of prompts](#up-and-down-move-through-suggestions-instead-of-prompts)
 - [A Windows provider is installed but Dalang cannot find it](#a-windows-provider-is-installed-but-dalang-cannot-find-it)
 - [Docker fails to start](#docker-fails-to-start)
 - [Provider shows LOGIN NEEDED or runs fail with login_expired](#provider-shows-login-needed-or-runs-fail-with-login_expired)
+- [Claude reached its limit and the Lead fallback did not run](#claude-reached-its-limit-and-the-lead-fallback-did-not-run)
 - [Update CLI fails](#update-cli-fails)
 - [A schedule or webhook run was skipped](#a-schedule-or-webhook-run-was-skipped)
 - [An outside agent cannot reach /mcp](#an-outside-agent-cannot-reach-mcp)
@@ -55,6 +57,10 @@ Then open `http://127.0.0.1:4180`. To use the terminal room against that server,
 
 The room asks the terminal to report the mouse wheel so it can scroll older messages, and that stops plain click-and-drag selection. Hold `Shift` while you drag (most terminals), or start Dalang with `DALANG_NO_MOUSE=1 dalang` to leave the mouse to the terminal. `PageUp` and `PageDown` scroll either way. If a crash leaves the terminal printing odd characters when you move the mouse, run `reset`.
 
+### Up and Down move through suggestions instead of prompts
+
+While the `/` or `@` suggestions are open, arrow keys move the selection. Press Esc to clear the composer, then use `↑` to recall prompts. Use `/resume` first if the prompt is in an older session. [Terminal shortcuts](USAGE.md#commands-and-keyboard-shortcuts)
+
 ### Windows source install asks for C++ Build Tools
 
 Use the pinned pnpm version (`npm install -g pnpm@10.34.9`) and rerun `pnpm install --frozen-lockfile`. The workspace skips an unnecessary SQLite build because better-sqlite3 ships native binaries for the supported platforms. For a standalone installation, follow the [Windows setup](INSTALL.md#native-windows).
@@ -77,7 +83,7 @@ Check `docker compose logs dalang`. If bubblewrap cannot create a namespace or m
 
 ### The DALANG login page asks for a password
 
-Use the password you set in **Config → Security → DALANG login**. Restarting DALANG ends existing browser sessions. A signed-in browser can disable the password from the same menu. The DALANG password and provider account credentials are separate. [App login](INSTALL.md#require-a-dalang-password)
+Use the password you set in **Config → Security → DALANG login**. The same password unlocks the terminal room. Restarting the server expires existing logins. A signed-in browser can disable the password from the same menu. [App login](INSTALL.md#require-a-dalang-password)
 
 ### The image attachment icon is disabled
 
@@ -100,7 +106,7 @@ On Linux, sandboxed Antigravity runs require desktop keyring access via `xdg-dbu
 
 ### Provider shows "LOGIN NEEDED" or runs fail with `login_expired`
 
-Sign in again with the official CLI, then click **Refresh CLI status** in Config → Agents:
+Sign in again with the official CLI, then recheck CLI status in `/config` or refresh it in the browser under **Config → Agents**.
 
 ```bash
 claude auth login
@@ -125,6 +131,10 @@ Wait for that provider's active turns to finish, then retry **Update CLI**. If t
 ### Provider stays in cooldown after quota resets
 
 DALANG automatically expires a cached "0% remaining" reading at its reset time (or after 15 minutes if no reset time is reported), and reactive rate-limit cooldowns last 5 minutes. You can clear a cooldown immediately from **Config → Agents** using **Clear cooldown** (or **Refresh CLI status**).
+
+### Claude reached its limit and the Lead fallback did not run
+
+Check the Lead's fallback in the browser under **Config → Agents → Team**. A backup model on the same Claude account shares the account limit. Choose another provider or a separate signed-in account directory. If you need to continue the current chat with a specific provider, use `/model` in the terminal or the browser's model picker. [Configure an Ask fallback](PROVIDERS.md#fallback-for-the-lead-in-ask)
 
 ### "Repository config defines settings that can run commands"
 
@@ -154,7 +164,7 @@ CLIs periodically retire or rename model ids. Click **Refresh CLI status** to re
 
 ### A project opens into an empty chat after upgrading
 
-Open the project's saved **Full** session in the sidebar to find the conversation, brief, and tasks from v0.6. A project with no saved history opens with an empty composer. [Work with saved chats](USAGE.md#continue-or-manage-a-chat)
+The terminal room opens a new chat. Use `/resume` to find an earlier session for the project. In the browser, the sidebar lists saved sessions. For a v0.6 upgrade, open the saved **Full** session to find the original conversation, brief, and tasks. [Work with saved chats](USAGE.md#continue-or-manage-a-chat)
 
 ### Another session has unfinished work
 

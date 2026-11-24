@@ -3,7 +3,7 @@ import React from 'react';
 import { render } from 'ink';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { AgentProfileDTO, ProviderModelInfo, ProviderStatus } from '@dalang/shared';
-import type { RoomApiClient } from '../tui/client.js';
+import type { RoomApiClient, ServerEvent } from '../tui/client.js';
 import { RoomApp } from '../tui/RoomApp.js';
 
 const cleanups: Array<() => void> = [];
@@ -12,6 +12,7 @@ afterEach(() => {
 });
 
 const DOWN = '\x1b[B';
+const UP = '\x1b[A';
 const PAGE_UP = '\x1b[5~';
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -158,6 +159,94 @@ function mountRoom(client: RoomApiClient, extra: Record<string, unknown> = {}) {
 }
 
 describe('room screens (Ink, stub server)', () => {
+  it('recalls prior prompts with Up and restores the draft with Down', async () => {
+    const messages = ['older question', 'recent question'].map((content, index) => ({
+      id: `prompt-${index}`, sessionId: 's1', role: 'user', type: 'text', content,
+      createdAt: session.updatedAt,
+    }));
+    const { client, sent } = roomClient({
+      getSessionDetail: async () => ({ session, messages, briefs: [], plan: null }),
+    });
+    const ui = mountRoom(client);
+    await ui.waitFor('Lead Claude');
+    await ui.press('/resume 1', '\r');
+    await ui.waitFor('Resumed');
+    await ui.press('draft');
+    const mark = ui.mark();
+    await ui.press(UP, UP, DOWN, DOWN);
+    expect(ui.since(mark)).toContain('[ask] > older question');
+    expect(ui.since(mark)).toContain('[ask] > recent question');
+    expect(ui.since(mark)).toContain('[ask] > draft');
+    expect(sent).toEqual([]);
+  });
+
+  it('shows elapsed work and safe activity, then renders the finished reply as Markdown', async () => {
+    let emit!: (event: ServerEvent) => void;
+    let turn: { phase: string; provider: string; startedAt: string } | null = null;
+    const { client } = roomClient({
+      connectEvents: (listener: typeof emit) => {
+        emit = listener;
+        return () => {};
+      },
+      listSessions: async () => ({ sessions: [{ ...session, turn }] }),
+      getSessionDetail: async () => ({
+        session: { ...session, turn },
+        messages: turn ? [] : [{
+          id: 'reply', sessionId: 's1', role: 'lead', type: 'ask', createdAt: session.updatedAt,
+          content: { text: '### Result\n\n- **Ready** in `src`\n- [README](file:///work/demo/README.md)\n\n```sh\n  echo done\n```' },
+        }],
+        briefs: [],
+        plan: null,
+      }),
+    });
+    const ui = mountRoom(client);
+    await ui.waitFor('Lead Claude');
+    turn = { phase: 'ask', provider: 'claude-code', startedAt: new Date(Date.now() - 65_000).toISOString() };
+    await ui.press('/resume 1', '\r');
+    await ui.waitFor('1:05 · @lead (Claude) · Working');
+    const working = ui.mark();
+    emit({ type: 'lead.log', projectId: 'p1', sessionId: 'other', line: '{"type":"item.started","item":{"type":"web_search"}}' });
+    emit({ type: 'lead.log', projectId: 'p1', sessionId: 's1', line: '{"type":"item.started","item":{"type":"command_execution","command":"private command"}}' });
+    await ui.waitFor('1:06 · @lead (Claude) · Running a command', working);
+    const frames = ui.since(working).match(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏](?= 1:0[56] · @lead)/g);
+    expect(new Set(frames).size).toBeGreaterThan(1);
+    expect(ui.since(working)).not.toMatch(/private command|Searching the web/);
+
+    const finished = ui.mark();
+    turn = null;
+    emit({ type: 'lead.turn_finished', projectId: 'p1', sessionId: 's1' });
+    await ui.waitFor('• Ready in src', finished);
+    await ui.waitFor('• README', finished);
+    await ui.waitFor('│   echo done', finished);
+    expect(ui.since(finished)).not.toMatch(/### Result|\*\*Ready\*\*|file:\/\/\/|Running a command/);
+  });
+
+  it('keeps showing work when one of two parallel runs finishes', async () => {
+    let emit!: (event: ServerEvent) => void;
+    const coder = { id: 'r1', status: 'running', kind: 'execute', profileName: 'coder-small', provider: 'codex', taskExternalId: 'T-001', startedAt: new Date(Date.now() - 30_000).toISOString() };
+    const reviewer = { ...coder, id: 'r2', kind: 'review', profileName: 'reviewer', taskExternalId: 'T-002' };
+    let runs = [reviewer, coder];
+    const { client } = roomClient({
+      connectEvents: (listener: typeof emit) => {
+        emit = listener;
+        return () => {};
+      },
+      getExecutionState: async (projectId: string, sessionId?: string) => ({ projectId, sessionId, activeRuns: runs, runs }),
+    });
+    const ui = mountRoom(client);
+    await ui.waitFor('Lead Claude');
+    await ui.press('/resume 1', '\r');
+    await ui.waitFor('@coder-small (Codex) +1 · Working on T-001');
+
+    const beforeFinish = ui.mark();
+    emit({ type: 'run.log', projectId: 'p1', runId: 'r1', line: '[dalang] Running verify command: pnpm test' });
+    await ui.waitFor('@coder-small (Codex) +1 · Running verification', beforeFinish);
+    runs = [reviewer];
+    const afterFinish = ui.mark();
+    emit({ type: 'run.finished', projectId: 'p1', sessionId: 's1', runId: 'r1' });
+    await ui.waitFor('@reviewer (Codex) · Working on T-002', afterFinish);
+  });
+
   it('opens the setup wizard on its own when no project exists yet', async () => {
     const { client } = roomClient({
       listProjects: async () => [],

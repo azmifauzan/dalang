@@ -1,6 +1,67 @@
 # Use Dalang
 
-Start in Ask to explore a repository, use Quick for a one-task fix, or follow the Full walkthrough for work that needs a brief and a plan. Screenshots use demo repositories and replayed agent responses. [Install and start Dalang](INSTALL.md)
+Use `dalang` for the terminal team room or `dalang web` for the browser workspace. Both use the same projects and conversations. [Install and start Dalang](INSTALL.md)
+
+## Terminal team room
+
+Run `dalang` in an interactive terminal to open the team room. If a Dalang server is already running on `DALANG_PORT` (default `4173`), `dalang` attaches to it; otherwise it starts the server in the same process and stops it when you exit. Use `dalang room --port <number>` for a server on another port. Run `dalang web` for the browser workspace. When stdin or stdout is not a terminal, `dalang` runs `dalang web` instead.
+
+### Open a project and start a chat
+
+1. On a fresh install, complete the four-step wizard to check your agent CLIs, configure the team, and open a project. Run `/wizard` to reopen it later.
+2. Use `/project open .` to register the Git repository where you launched Dalang, or `/project create ./my-project` to create a project and initialize Git. Use `/project list` and `/project <n>` or `/project <name>` to switch.
+3. Type a question and press Enter. The room starts with a new chat for the project containing your current directory, or the first registered project when none matches. Use `/resume` to continue an earlier chat.
+
+### Run and review work in the terminal
+
+- **Ask:** Type a question for the Lead. Use `/model` to choose the provider, model, and reasoning effort for Lead messages.
+- **Quick:** Run `/mode quick`, then describe the change. Read the draft task, allowed files, and verification command. Press `y` and Enter at the run gate, or use `/run`. Inspect the review and `/diff`, then press `y` at the merge gate or use `/merge`.
+- **Full:** Run `/mode full`, discuss the scope, and use `/finish` to draft the brief. Approve the brief to generate a plan. Approve the plan to start work. Use `/diff T-001` and `/merge T-001` for an individual task, or `/web` to inspect the same session in the browser.
+
+### Read the timeline and live status
+
+- **Header:** the Dalang mark (the Gunungan) on the left, then four rows:
+  - the project, session title, composer mode, and whether the room runs its own server (`embedded`) or attached to one;
+  - quick stats: the 5 hour (`5h`) and weekly (`wk`) limit left for each installed provider, the same numbers as the web usage bar, red at 20% or less, refreshed on the interval set in `/config`;
+  - the model the Lead will answer with next, and where it comes from: chosen with `/model`, the open session, or the Lead profile;
+  - the agents running now with their models (`@coder-small Antigravity · gemini-4-hydrogen`), or the project folder when none runs.
+- **Team timeline:** the Lead, coders, and reviewer post plans, task status, diff stats, verification, and review verdicts under their own profile names. Agent replies render headings, emphasis, lists, code, and link labels. The browser chat shows the same feed.
+- **Working status:** the line above the composer shows an animated spinner, elapsed time, the agent and provider, and a short activity such as reading files, running a command, or writing a response. `+N` counts other active agents. When a provider has no recognized activity event, the line shows a general working status.
+- **Mention routing (`@<profile>`):**
+  - An untagged message, or `@lead`, goes to the Lead in the composer mode (`ask`, `quick`, or `full`).
+  - `@<profile>` for an idle profile (such as `@reviewer` or `@coder-small`) asks that profile in read-only Ask mode without changing the session mode.
+  - `@<profile>`, or `@coder`, while that coder is running sends your message as a steering note. A run on a CLI that cannot take steering refuses the message.
+- **Gates:** when a Quick plan, brief, plan, or finished task waits for you, type `y` or `n` and press Enter. `n` leaves the item waiting; a task waiting for merge is only discarded with `/reject`.
+### Commands and keyboard shortcuts
+
+| Command | What it does |
+| --- | --- |
+| `/mode [ask\|quick\|full]` | Show the composer mode, or switch it |
+| `/project [list\|<n\|name>\|open [path]\|create [path]]` | List, switch, open, or create a project |
+| `/model` | Choose the Lead's model from every connected provider, then its reasoning effort. The active model is marked. Applies to your next messages until you pick another or go back to the Lead's own setting |
+| `/config` | Language, provider limits refresh, update checks, agent CLIs (status, re-check, Antigravity keyring), and the agent team (provider, model, and effort per role) |
+| `/wizard` | Open the setup wizard again |
+| `/new` | Start a new session |
+| `/resume [n\|id]` | Pick an earlier session of this project from a list, newest first, and continue it |
+| `/diff [taskId]` | Open the task diff in `$PAGER` (`less -R`, or `more` on Windows) |
+| `/merge [taskId]` | Merge a task that is waiting for merge |
+| `/reject [taskId] [note] [--requeue]` | Discard a task's work, or send it back to the queue |
+| `/stop [taskId]` | Stop running work |
+| `/run` | Approve the draft plan and start it |
+| `/finish` | End Discuss in Full mode and draft the brief |
+| `/web` | Open the browser on the same project and session |
+| `/help` | Show commands and shortcuts |
+| `/exit` | Leave the room (Ctrl+C works too) |
+
+Use `↑` and `↓` in the composer to recall prompts. Moving past the newest prompt with `↓` restores the current draft. `/resume` also makes the selected chat's saved prompts available. Press Enter to submit only after you have reviewed or edited the recalled text.
+
+Typing `/` or `@` opens a list. Move with `Up` and `Down`; `Enter` runs the highlighted command or fills in the highlighted `@<profile>`, and `Tab` fills either one in without running it. In `/config`, `/model`, and the wizard, `Up` and `Down` move, `Enter` chooses, and `Esc` goes back.
+
+Scroll older messages with the mouse wheel (3 rows a notch), `PageUp` / `PageDown`, or `Ctrl+U` / `Ctrl+D`. The footer shows how many rows are above and below. Because the room asks the terminal to report the wheel, plain click-and-drag text selection stops working: hold `Shift` while you drag to select and copy. Set `DALANG_NO_MOUSE=1` to leave the mouse to the terminal; the keyboard scrolling still works. Theme, the app password, and factory reset stay in the web **Config**.
+
+## Browser workspace
+
+Run `dalang web` to open the local workspace, usually at `http://127.0.0.1:4173`. From the terminal room, use `/web` to open the active project and chat. In the walkthrough below, screenshots show demo repositories and replayed responses.
 
 ## Set up your team and project
 
@@ -53,7 +114,7 @@ If the Lead finds the request needs a broader plan, use **Switch to Full (keeps 
 
 - Use **New chat** in the project sidebar or reopen a saved session to restore its conversation and work. Click the session title to rename it. The header also offers archive and delete actions, with a confirmation before deletion.
 - Sending a higher-mode message can move a session from Ask to Quick or Full, or from Quick to Full. The conversation carries over. Ask stays available in both work modes and keeps the session's current mode. Quick becomes available again after Full work is complete.
-- Only one session per project can hold unfinished work. Other sessions can still Ask. Finish merging the first session's work or use **Discard work** to free the project. Discarding stops its runs and removes unmerged task branches and worktrees. Merged code stays on the target branch.
+- Only one session per project can hold unfinished work. In the terminal, use `/resume` to find that session or `/web` to manage it in the browser. Other sessions can still Ask. Finish merging the first session's work or use **Discard work** to free the project. Discarding stops its runs and removes unmerged task branches and worktrees. Merged code stays on the target branch.
 - The desktop sidebar can collapse to an icon rail. Dalang remembers your choice. On small screens, use **Menu** to open the sidebar.
 
 ## Full walkthrough
@@ -138,48 +199,6 @@ In **Remote push and pull request**, select the Git remote (usually `origin`). A
 The provider limits bar shows the tightest five-hour and weekly windows each installed CLI reports. **Details** lists the available windows, reset times when reported, and a refresh button. Dalang refreshes when a run finishes and every five minutes while the page is visible. Choose three, five, or ten minutes in **Config → General**. [Providers and accounts](PROVIDERS.md)
 
 When DALANG login is enabled, use the **Sign out** icon on the far right of the sidebar footer. [Set or disable the app password](INSTALL.md#require-a-dalang-password)
-
-## Terminal team room
-
-Run `dalang` in an interactive terminal to open the team room. If a Dalang server is already running on `DALANG_PORT` (default `4173`), `dalang` attaches to it; otherwise it starts the server in the same process and stops it when you exit. Use `dalang room --port <number>` for a server on another port. Run `dalang web` for the browser workspace. When stdin or stdout is not a terminal, `dalang` runs `dalang web` instead.
-
-The room opens the project that contains the current folder, or your first project when none does; switch with `/project`. It always starts on a new session. Use `/resume` to pick an earlier one. On a fresh install, with no project yet, the room opens the same four-step setup wizard as the web (how Dalang works, agent CLI check, team, first project). `/wizard` opens it again.
-
-- **Header:** the Dalang mark (the Gunungan) on the left, then four rows:
-  - the project, session title, composer mode, and whether the room runs its own server (`embedded`) or attached to one;
-  - quick stats: the 5 hour (`5h`) and weekly (`wk`) limit left for each installed provider, the same numbers as the web usage bar, red at 20% or less, refreshed on the interval set in `/config`;
-  - the model the Lead will answer with next, and where it comes from: chosen with `/model`, the open session, or the Lead profile;
-  - the agents running now with their models (`@coder-small Antigravity · gemini-4-hydrogen`), or the project folder when none runs.
-- **Team timeline:** the Lead, coders, and reviewer each post under their own profile name: briefs, plans, task start, task finish with diff stats, verify results, and review verdicts. The browser chat shows the same feed.
-- **Mention routing (`@<profile>`):**
-  - An untagged message, or `@lead`, goes to the Lead in the composer mode (`ask`, `quick`, or `full`).
-  - `@<profile>` for an idle profile (such as `@reviewer` or `@coder-small`) asks that profile in read-only Ask mode without changing the session mode.
-  - `@<profile>`, or `@coder`, while that coder is running sends your message as a steering note. A run on a CLI that cannot take steering refuses the message.
-- **Gates:** when a Quick plan, brief, plan, or finished task waits for you, type `y` or `n` and press Enter. `n` leaves the item waiting; a task waiting for merge is only discarded with `/reject`.
-- **Slash commands:**
-
-| Command | What it does |
-| --- | --- |
-| `/mode [ask\|quick\|full]` | Show the composer mode, or switch it |
-| `/project [list\|<n\|name>\|open [path]\|create [path]]` | List, switch, open, or create a project |
-| `/model` | Choose the Lead's model from every connected provider, then its reasoning effort. The active model is marked. Applies to your next messages until you pick another or go back to the Lead's own setting |
-| `/config` | Language, provider limits refresh, update checks, agent CLIs (status, re-check, Antigravity keyring), and the agent team (provider, model, and effort per role) |
-| `/wizard` | Open the setup wizard again |
-| `/new` | Start a new session |
-| `/resume [n\|id]` | Pick an earlier session of this project from a list, newest first, and continue it |
-| `/diff [taskId]` | Open the task diff in `$PAGER` (`less -R`, or `more` on Windows) |
-| `/merge [taskId]` | Merge a task that is waiting for merge |
-| `/reject [taskId] [note] [--requeue]` | Discard a task's work, or send it back to the queue |
-| `/stop [taskId]` | Stop running work |
-| `/run` | Approve the draft plan and start it |
-| `/finish` | End Discuss in Full mode and draft the brief |
-| `/web` | Open the browser on the same project and session |
-| `/help` | Show commands and shortcuts |
-| `/exit` | Leave the room (Ctrl+C works too) |
-
-Typing `/` or `@` opens a list. Move with `Up` and `Down`; `Enter` runs the highlighted command or fills in the highlighted `@<profile>`, and `Tab` fills either one in without running it. In `/config`, `/model`, and the wizard, `Up` and `Down` move, `Enter` chooses, and `Esc` goes back.
-
-Scroll older messages with the mouse wheel (3 rows a notch), `PageUp` / `PageDown`, or `Ctrl+U` / `Ctrl+D`. The footer shows how many rows are above and below. Because the room asks the terminal to report the wheel, plain click-and-drag text selection stops working: hold `Shift` while you drag to select and copy. Set `DALANG_NO_MOUSE=1` to leave the mouse to the terminal; the keyboard scrolling still works. Theme, the app password, and factory reset stay in the web **Config**.
 
 ## Automation and outside agents over MCP
 

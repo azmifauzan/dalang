@@ -180,6 +180,7 @@ export interface FormattedRoomMessage {
   time: string;
   lines: string[];
   isError: boolean;
+  markdown?: boolean;
 }
 
 function formatClock(iso: string): string {
@@ -317,10 +318,11 @@ export function formatRoomMessage(msg: DiscussMessageDTO): FormattedRoomMessage 
     time,
     lines: lines.length > 0 ? lines.map(stripControl) : [''],
     isError: msg.type === 'error',
+    markdown: msg.role !== 'user' && msg.role !== 'system' &&
+      (msg.type === 'ask' || (msg.type !== 'error' && typeof msg.content === 'string')),
   };
 }
 
-/** Extracts a concise human-readable line from raw CLI stream-json or dalang log lines. */
 /**
  * Wraps one timeline line to `width` columns at spaces, breaking words longer than a row.
  * The timeline scrolls by row, so long replies must become several rows instead of being cut off.
@@ -348,38 +350,50 @@ export function wrapTimelineLine(line: string, width: number): string[] {
   return rows;
 }
 
-export function extractActivityPreview(rawLine: string): string | null {
-  const preview = extractActivityPreviewRaw(rawLine);
-  return preview === null ? null : stripControl(preview) || null;
+function toolActivity(name: unknown): string {
+  if (typeof name !== 'string') return 'Using a tool';
+  if (/grep|glob|find|search|list/i.test(name)) return 'Searching files';
+  if (/read|view|open/i.test(name)) return 'Reading files';
+  if (/edit|write|patch|replace/i.test(name)) return 'Editing files';
+  if (/bash|run|exec|command|shell/i.test(name)) return 'Running a command';
+  return 'Using a tool';
 }
 
-function extractActivityPreviewRaw(rawLine: string): string | null {
+export function extractActivityPreview(rawLine: string): string | null {
   const trimmed = rawLine.trim();
-  if (!trimmed) return null;
-  if (trimmed.startsWith('[dalang')) {
-    return trimmed.replace(/^\[dalang(?::\w+)?\]\s*/, '').slice(0, 120);
-  }
-  if (!trimmed.startsWith('{')) {
-    return trimmed.slice(0, 120);
-  }
+  if (trimmed.startsWith('[dalang] Running verify command:')) return 'Running verification';
+  if (trimmed.startsWith('[dalang] Waiting for parallel slot')) return 'Waiting for an agent slot';
+  if (trimmed.startsWith('[dalang] Waiting for in-flight delegated subtasks')) return 'Waiting for delegated tasks';
+  if (!trimmed.startsWith('{')) return null;
   try {
     const obj = JSON.parse(trimmed) as Record<string, unknown>;
-    if (obj.type === 'assistant' && obj.message && typeof obj.message === 'object') {
-      const content = (obj.message as { content?: Array<{ type?: string; text?: string; name?: string }> }).content;
+    if (obj.type === 'assistant') {
+      const content = (obj.message as { content?: unknown } | null)?.content;
       if (Array.isArray(content)) {
-        const tool = content.find((c) => c.type === 'tool_use' && c.name);
-        if (tool?.name) return `Using tool: ${tool.name}`;
-        const txt = content.find((c) => c.type === 'text' && c.text);
-        if (txt?.text) return txt.text.replace(/\s+/g, ' ').slice(0, 120);
+        const tool = content.findLast((block) => block?.type === 'tool_use');
+        if (tool) return toolActivity(tool.name);
+        if (content.some((block) => block?.type === 'text')) return 'Writing a response';
+        if (content.some((block) => block?.type === 'thinking' || block?.type === 'redacted_thinking')) return 'Thinking';
       }
     }
-    if (obj.type === 'item.completed' && obj.item && typeof obj.item === 'object') {
-      const item = obj.item as { type?: string; text?: string; command?: string };
-      if (item.command) return `Ran: ${item.command.slice(0, 100)}`;
-      if (item.text) return item.text.replace(/\s+/g, ' ').slice(0, 120);
+    if (obj.type === 'item.started' || obj.type === 'item.updated' || obj.type === 'item.completed') {
+      const item = obj.item as { type?: string; tool?: unknown } | null;
+      switch (item?.type) {
+        case 'reasoning': return 'Thinking';
+        case 'command_execution': return obj.type === 'item.completed' ? 'Processing command results' : 'Running a command';
+        case 'file_change': return 'Editing files';
+        case 'web_search': return 'Searching the web';
+        case 'mcp_tool_call': return toolActivity(item.tool);
+        case 'agent_message': return 'Writing a response';
+      }
     }
-    if (typeof obj.text === 'string' && obj.text.trim()) {
-      return obj.text.replace(/\s+/g, ' ').slice(0, 120);
+    if (obj.event === 'step_update') {
+      const step = obj.step_update as { step_type?: string; state?: string; tool_name?: unknown } | null;
+      switch (step?.step_type) {
+        case 'tool': return step.state === 'ACTIVE' ? toolActivity(step.tool_name) : null;
+        case 'thinking': return 'Thinking';
+        case 'agent_response': return 'Writing a response';
+      }
     }
   } catch {
     return null;

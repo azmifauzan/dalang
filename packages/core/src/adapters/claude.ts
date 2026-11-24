@@ -512,13 +512,16 @@ export class ClaudeCodeAdapter implements CliAdapter {
                 : ev) as Record<string, unknown>;
               const status = typeof info.status === 'string' ? info.status.toLowerCase() : '';
               const util = typeof info.utilization === 'number' ? info.utilization : null;
-              if (status === 'rejected' || (util !== null && util >= 1)) {
+              if (status === 'rejected' || (!status && util !== null && util >= 1)) {
                 const win = typeof info.rateLimitType === 'string' ? info.rateLimitType : 'quota';
                 rateLimitReason = `Claude rate_limit_event (${win}: ${status || `${Math.round((util ?? 1) * 100)}%`})`;
               }
             }
             if (ev.type === 'result') {
               if (typeof ev.result === 'string') resultText = ev.result;
+              if (ev.is_error === true && /^you(?:['’]ve| have) hit your (?:[\d.]+[- ](?:hour|day) |weekly |usage )?limit\b/i.test(resultText.trim())) {
+                rateLimitReason = resultText.trim();
+              }
               if (ev.structured_output !== undefined) structuredOutput = ev.structured_output;
               const extracted = extractClaudeUsage(ev, resolvedModel);
               if (extracted) usage = extracted;

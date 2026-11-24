@@ -11,6 +11,7 @@ import {
   PlanContractSchema,
   QuickPlanContractSchema,
   TaskSplitOutputSchema,
+  buildAccountKey,
   type AgentProfileDTO,
   type AskMessageContent,
   type BriefContent,
@@ -1123,29 +1124,41 @@ export class LeadService {
         .join('\n');
     };
 
-    const adapter = this.registry.getAdapter(sessionRow.provider as ProviderId);
-    const startedAt = new Date().toISOString();
-    const relLogPath = path.relative(project.path, logFilePath);
-    let totalUsage: TurnTokenUsage | undefined;
-    this.events?.emitEvent({
-      type: 'lead.turn_started',
-      projectId: project.id,
-      sessionId: sessionRow.id,
-      phase: 'ask',
-      provider: sessionRow.provider,
+    const primaryProvider = sessionRow.provider as ProviderId;
+    let provider = primaryProvider;
+    let model = sessionRow.model;
+    let configDir: string | null = null;
+    let attemptLog = logFilePath;
+    let attemptStartedAt = new Date().toISOString();
+    let attemptUsage: TurnTokenUsage | undefined;
+    const announceAttempt = () => this.events?.emitEvent({
+      type: 'lead.turn_started', projectId: project.id, sessionId: sessionRow.id, phase: 'ask', provider,
     });
-
-    try {
-      const shouldInlineHistory = !sessionRow.cliSessionId;
-      let turn = await adapter.runTurn({
+    const recordAttempt = (status: 'completed' | 'failed', cliSessionId: string | null, failureReason?: string) =>
+      this.recordLeadTurn({
+        projectId: project.id,
+        sessionId: sessionRow.id,
+        phase: 'ask',
+        provider,
+        model,
+        status,
+        cliSessionId,
+        startedAt: attemptStartedAt,
+        failureReason,
+        logPath: path.relative(project.path, attemptLog),
+        usage: attemptUsage,
+      });
+    const run = async (cliSessionId: string | null, runEffort: EffortLevel) => {
+      const turn = await this.registry.getAdapter(provider).runTurn({
         projectPath: project.path,
-        prompt: buildPrompt(shouldInlineHistory),
+        prompt: buildPrompt(!cliSessionId),
         images,
-        sessionId: sessionRow.cliSessionId,
-        model: sessionRow.model,
-        effort,
+        sessionId: cliSessionId,
+        model,
+        effort: runEffort,
+        configDir,
         permissionMode: 'read-only',
-        logFilePath,
+        logFilePath: attemptLog,
         onLogLine: (line) =>
           this.events?.emitEvent({
             type: 'lead.log',
@@ -1155,31 +1168,45 @@ export class LeadService {
             line,
           }),
       });
-      totalUsage = mergeTokenUsage(totalUsage, turn.usage);
+      attemptUsage = mergeTokenUsage(attemptUsage, turn.usage);
+      return turn;
+    };
+    announceAttempt();
 
+    let usedFallback = false;
+    try {
+      let turn = await run(sessionRow.cliSessionId, effort);
       // If resuming a saved CLI session failed, transparently retry once with saved message context.
-      if (sessionRow.cliSessionId && (turn.exitCode !== 0 || !turn.text.trim())) {
-        turn = await adapter.runTurn({
-          projectPath: project.path,
-          prompt: buildPrompt(true),
-          images,
-          sessionId: null,
-          model: sessionRow.model,
-          effort,
-          permissionMode: 'read-only',
-          logFilePath,
-          onLogLine: (line) =>
-            this.events?.emitEvent({
-              type: 'lead.log',
-              projectId: project.id,
-              sessionId: sessionRow.id,
-              phase: 'ask',
-              line,
-            }),
-        });
-        totalUsage = mergeTokenUsage(totalUsage, turn.usage);
+      if (!turn.rateLimitReason && sessionRow.cliSessionId && (turn.exitCode !== 0 || !turn.text.trim())) {
+        turn = await run(null, effort);
       }
 
+      if (turn.rateLimitReason) {
+        const leadId = this.getLeadProfileId();
+        const fallback = leadId ? this.profiles.getProfile(leadId).fallback : null;
+        if (!fallback) throw new Error(turn.rateLimitReason);
+        if (buildAccountKey(fallback.provider, fallback.configDir) === buildAccountKey(primaryProvider)) {
+          throw new Error(`${turn.rateLimitReason}. The Lead fallback uses the same CLI account. Choose another provider or account.`);
+        }
+        if (images.length && fallback.provider === 'antigravity') {
+          throw new Error(`${turn.rateLimitReason}. The Lead fallback cannot accept image attachments.`);
+        }
+        const blocked = this.registry.providerBlockedReason(fallback.provider, await this.registry.isSandboxReady());
+        if (blocked) throw new Error(`${turn.rateLimitReason}. Lead fallback unavailable: ${blocked}`);
+
+        recordAttempt('failed', turn.sessionId ?? sessionRow.cliSessionId, turn.rateLimitReason);
+        usedFallback = true;
+        provider = fallback.provider;
+        model = fallback.model || null;
+        configDir = fallback.configDir ?? null;
+        attemptLog = logFilePath.replace(/\.log$/, '-fallback.log');
+        attemptStartedAt = new Date().toISOString();
+        attemptUsage = undefined;
+        announceAttempt();
+        turn = await run(null, fallback.effort);
+      }
+
+      if (turn.rateLimitReason) throw new Error(turn.rateLimitReason);
       if (turn.exitCode !== 0 && !turn.text.trim()) {
         throw new Error(
           `Ask turn failed (exit ${turn.exitCode ?? 'unknown'}): ${(turn.stderr || 'No response').slice(0, 240)}`,
@@ -1187,7 +1214,8 @@ export class LeadService {
       }
 
       const parsedReply = this.parseAskReply(turn);
-      const nextCliSessionId = turn.sessionId ?? sessionRow.cliSessionId;
+      // A fallback has its own CLI session. Rebuild the preferred provider's context on the next turn.
+      const nextCliSessionId = usedFallback ? null : turn.sessionId ?? sessionRow.cliSessionId;
 
       this.db
         .update(sessions)
@@ -1198,18 +1226,7 @@ export class LeadService {
         .where(eq(sessions.id, sessionRow.id))
         .run();
 
-      this.recordLeadTurn({
-        projectId: project.id,
-        sessionId: sessionRow.id,
-        phase: 'ask',
-        provider: sessionRow.provider as ProviderId,
-        model: sessionRow.model,
-        status: 'completed',
-        cliSessionId: nextCliSessionId,
-        startedAt,
-        logPath: relLogPath,
-        usage: totalUsage,
-      });
+      recordAttempt('completed', turn.sessionId ?? nextCliSessionId);
 
       this.appendMessage(sessionRow.id, 'lead', 'ask', parsedReply);
       this.events?.emitEvent({
@@ -1225,19 +1242,7 @@ export class LeadService {
       return parsedReply;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      this.recordLeadTurn({
-        projectId: project.id,
-        sessionId: sessionRow.id,
-        phase: 'ask',
-        provider: sessionRow.provider as ProviderId,
-        model: sessionRow.model,
-        status: 'failed',
-        cliSessionId: sessionRow.cliSessionId,
-        startedAt,
-        failureReason: msg,
-        logPath: relLogPath,
-        usage: totalUsage,
-      });
+      recordAttempt('failed', usedFallback ? null : sessionRow.cliSessionId, msg);
       this.appendMessage(sessionRow.id, 'system', 'error', msg);
       this.events?.emitEvent({
         type: 'lead.turn_finished',

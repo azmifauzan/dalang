@@ -10,7 +10,7 @@ Dalang runs the official coding-agent CLIs with the accounts you sign into on yo
 | Codex CLI | [Codex CLI setup](https://developers.openai.com/codex/cli) | `codex login` |
 | Antigravity CLI | [Antigravity CLI setup](https://antigravity.google/docs/cli/overview) | Run `agy` and follow the interactive sign-in. |
 
-Use the same terminal environment where you will start Dalang. Run `dalang doctor` after signing in, or open **Config → Agents → Refresh CLI status** if Dalang is already running. If using WSL 2, install and sign in inside WSL.
+Use the same terminal environment where you will start Dalang. Run `dalang doctor` after signing in. From the team room, use `/config` to recheck CLI status. In the browser, use **Config → Agents → Refresh CLI status**. If using WSL 2, install and sign in inside WSL.
 
 Docker ships the three CLIs and keeps their sign-ins inside the container. [Docker sign-in commands](INSTALL.md#run-with-docker)
 
@@ -24,7 +24,7 @@ Use `Get-Command claude,codex,agy -All` to inspect installed launchers, then `da
 
 Use **Config → Agents → Update CLI** on an installed provider. Dalang runs `claude update`, `codex update`, or `agy update` and refreshes the displayed version. Let that provider's active turns finish before updating. If your CLI installation is managed by a package manager that requires separate updates or elevated permissions, update it through that package manager and refresh its status in Dalang.
 
-For chat images, select Claude Code or Codex in the composer. [Attach images](USAGE.md#attach-images)
+For browser chat images, select Claude Code or Codex in the composer. [Attach images](USAGE.md#attach-images)
 
 ### Antigravity CLI on Linux
 
@@ -37,7 +37,11 @@ The Linux sandbox needs `xdg-dbus-proxy` and an active desktop session to connec
 3. In **Config → Task routing**, match a task role and complexity to a primary profile. Put specific rules above broader rules because Dalang uses the first match. A task can also name a profile override in **Plan**.
 4. Set a fallback provider, model, and effort on the profile or the routing rule. For example, match low-complexity engineering tasks to a Codex profile, high-complexity engineering tasks to a Claude Code profile, and set a backup for either rule if you have another signed-in account.
 
-Model and effort options come from the CLI. If a saved model is marked **(unavailable)**, refresh status and choose a model the CLI still reports. Some models offer a context variant, such as **Use 1M context**, on the same profile. Use the model chip in the chat composer to choose a CLI, model, and reasoning effort for a Lead turn. Task execution uses the configured routing and profile overrides.
+Model and effort options come from the CLI. If a saved model is marked **(unavailable)**, refresh status and choose a model the CLI still reports. Some models offer a context variant, such as **Use 1M context**, on the same profile. Use `/model` in the terminal or the model chip in the browser to choose a CLI, model, and reasoning effort for the Lead. Use `/config` in the terminal for team models and effort. The browser has controls for account directories, fallback targets, and task routing.
+
+### Fallback for the Lead in Ask
+
+Edit the Lead profile in the browser under **Config → Agents → Team**. Set a backup provider, model, and effort. When Claude reports a quota limit, Ask can retry the question in read-only mode with the saved conversation and this backup. Choose a different provider or a separately signed-in account directory. Sonnet and Opus on the same Claude account share the account quota. The session keeps its preferred provider for the next question.
 
 ## Use separate accounts
 
@@ -69,7 +73,7 @@ Dalang keeps quota readings, cooldowns, and parallel slots separate for each pro
 
 ## Read quota and cost figures
 
-Open **Details** on the project limits bar to see quota windows and any reset times reported by the CLIs. Open **Config → Agents** to refresh a CLI's login and model status or clear a cooldown. [Settings and statistics](USAGE.md#settings-and-statistics)
+The terminal header shows the 5-hour and weekly quota left for each available CLI. Use `/config` to change the refresh interval. In the browser, open **Details** on the limits bar to see any reported reset times and **Config → Agents** to refresh status or clear a cooldown. [Settings and statistics](USAGE.md#settings-and-statistics)
 
 Open **Statistics** to compare providers and projects by runtime, failures, fallbacks, and captured tokens. **Runs (L / E / F / R)** breaks the total down into Lead, execution, fix, and review runs. Lead turns include Ask, Quick planning, and Full discussion and planning. Dalang can recover historical Lead usage from saved technical logs when those logs are available and readable. The CLI may omit some usage fields.
 

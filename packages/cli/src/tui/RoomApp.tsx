@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import type {
   AgentProfileDTO,
+  ChatImageMessage,
   ExecutionStateDTO,
   GuardStateDTO,
   ProjectSummary,
@@ -25,8 +26,10 @@ import {
   type ModelChoice,
 } from './models.js';
 import { stripMouse, useMouseWheel, WHEEL_ROWS } from './mouse.js';
-import { usableProviderIds } from './team.js';
+import { providerLabel, usableProviderIds } from './team.js';
 import { Wizard } from './Wizard.js';
+import { WorkingStatus } from './WorkingStatus.js';
+import { markdownRows } from './markdown.js';
 import {
   applyComposerCompletion,
   getComposerCompletions,
@@ -162,7 +165,7 @@ export function RoomApp({
 
   // Local UI state
   const [notices, setNotices] = useState<LocalNotice[]>([]);
-  const [liveActivity, setLiveActivity] = useState<string | null>(null);
+  const [activityPreviews, setActivityPreviews] = useState(() => new Map<string, string>());
   const [sending, setSending] = useState(false);
   const [pagerOpen, setPagerOpen] = useState(false);
   const [scrollOffset, setScrollOffset] = useState(0);
@@ -180,6 +183,7 @@ export function RoomApp({
   const [cursor, setCursor] = useState(0);
   const [history, setHistory] = useState<string[]>([]);
   const [historyIdx, setHistoryIdx] = useState(-1);
+  const historyDraft = useRef({ input: '', cursor: 0 });
   const [completionIdx, setCompletionIdx] = useState(0);
   const [pendingUnconfinedAction, setPendingUnconfinedAction] = useState<
     null | { label: string; run: () => Promise<void> }
@@ -190,6 +194,7 @@ export function RoomApp({
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
   const syncedModeKeyRef = useRef<string | null>(null);
+  const refreshSequenceRef = useRef(0);
   const sendingRef = useRef(false);
   sendingRef.current = sending;
   const knownSessionIdsRef = useRef<Set<string>>(new Set());
@@ -229,6 +234,21 @@ export function RoomApp({
     [sessions, activeSessionId, detail],
   );
 
+  const promptHistory = useMemo(() => {
+    const saved = detail?.session.id === activeSessionId && detail.session.projectId === activeProjectId
+      ? detail.messages : [];
+    const prompts = saved.toReversed().flatMap((message) => {
+      if (message.role !== 'user') return [];
+      const text = typeof message.content === 'string' ? message.content
+        : message.type === 'images' ? (message.content as ChatImageMessage | null)?.text : '';
+      const prompt = typeof text === 'string' ? stripControl(text).replace(/[\t\n]/g, ' ').trim() : '';
+      return prompt ? [prompt] : [];
+    });
+    return [...new Set([...history, ...prompts])].slice(0, 50);
+  }, [activeProjectId, activeSessionId, detail, history]);
+
+  useEffect(() => setHistoryIdx(-1), [activeProjectId, activeSessionId]);
+
   const leadProfile = useMemo(
     () => profiles.find((p) => p.id === 'profile-lead') ?? profiles.find((p) => p.name === 'lead') ?? null,
     [profiles],
@@ -267,17 +287,20 @@ export function RoomApp({
 
   const refreshSessionState = useCallback(
     async (projectId: string, sessionId: string | null) => {
+      const refresh = ++refreshSequenceRef.current;
       try {
         const [{ sessions: sessList }, execState, guardState] = await Promise.all([
           client.listSessions(projectId),
           client.getExecutionState(projectId, sessionId ?? undefined).catch(() => null),
           client.getGuardState(projectId, sessionId ?? undefined).catch(() => null),
         ]);
+        if (refresh !== refreshSequenceRef.current) return;
         setSessions(sessList);
         setExecution(execState);
         setGuard(guardState);
         if (sessionId) {
           const d = await client.getSessionDetail(projectId, sessionId);
+          if (refresh !== refreshSequenceRef.current) return;
           setDetail(d);
           // Follow the session's mode only when it changes (switch or escalation), so a refresh
           // triggered by a live event does not undo a `/mode` choice the user has not sent yet.
@@ -290,6 +313,7 @@ export function RoomApp({
           setDetail(null);
         }
       } catch (err) {
+        if (refresh !== refreshSequenceRef.current) return;
         pushNotice(`Refresh error: ${err instanceof Error ? err.message : String(err)}`, {
           isError: true,
         });
@@ -391,40 +415,49 @@ export function RoomApp({
           return null;
         };
 
-        if (event.type === 'lead.turn_started' && event.projectId === pid) {
-          setLiveActivity(`${event.phase ?? 'lead'} (${event.provider ?? ''}) working...`);
-        } else if (event.type === 'lead.log' && event.projectId === pid && typeof event.line === 'string') {
-          const preview = extractActivityPreview(event.line);
-          if (preview) setLiveActivity(`${event.phase ?? 'lead'}: ${preview}`);
-        } else if (event.type === 'lead.turn_finished' && event.projectId === pid) {
-          setLiveActivity(null);
-          if (pid) void refreshSessionState(pid, sessionFor());
-        } else if (event.type === 'run.started' && event.projectId === pid) {
-          setLiveActivity(`@${event.profileName ?? 'agent'} (${event.provider ?? ''}) running...`);
-          if (pid) void refreshSessionState(pid, sessionFor());
-        } else if (event.type === 'run.log' && event.projectId === pid && typeof event.line === 'string') {
-          const preview = extractActivityPreview(event.line);
-          if (preview) setLiveActivity(preview);
-        } else if (
-          (event.type === 'run.finished' ||
-            event.type === 'review.finished' ||
-            event.type === 'integration.finished') &&
-          event.projectId === pid
-        ) {
-          setLiveActivity(null);
-          if (pid) void refreshSessionState(pid, sessionFor());
-        } else if (
-          (event.type === 'discuss.updated' ||
-            event.type === 'room.message' ||
-            event.type === 'plan.updated' ||
-            event.type === 'brief.updated' ||
-            event.type === 'sessions.updated') &&
-          event.projectId === pid
-        ) {
-          if (pid) void refreshSessionState(pid, sessionFor());
+        if (!pid || event.projectId !== pid) return;
+        switch (event.type) {
+          case 'lead.log':
+          case 'run.log': {
+            const key = event.type === 'lead.log' ? event.sessionId : event.runId;
+            const preview = typeof event.line === 'string' && extractActivityPreview(event.line);
+            if (key && preview) {
+              setActivityPreviews((prev) => prev.get(key) === preview ? prev : new Map(prev).set(key, preview));
+            }
+            break;
+          }
+          case 'lead.turn_finished':
+          case 'run.finished': {
+            const key = event.type === 'lead.turn_finished' ? event.sessionId : event.runId;
+            if (key) {
+              setActivityPreviews((prev) => {
+                if (!prev.has(key)) return prev;
+                const next = new Map(prev);
+                next.delete(key);
+                return next;
+              });
+            }
+            void refreshSessionState(pid, sessionFor());
+            break;
+          }
+          case 'lead.turn_started':
+          case 'run.started':
+          case 'review.finished':
+          case 'integration.finished':
+          case 'discuss.updated':
+          case 'room.message':
+          case 'plan.updated':
+          case 'brief.updated':
+          case 'sessions.updated':
+            void refreshSessionState(pid, sessionFor());
         }
       },
-      (connected) => setWsConnected(connected),
+      (connected) => {
+        setWsConnected(connected);
+        const pid = activeProjectIdRef.current;
+        if (connected && pid) void refreshSessionState(pid, activeSessionIdRef.current);
+        if (!connected) setActivityPreviews(new Map());
+      },
     );
     return unsubscribe;
   }, [ready, authNeeded, client, refreshSessionState]);
@@ -999,7 +1032,6 @@ export function RoomApp({
 
       setInput('');
       setCursor(0);
-      setHistory((prev) => [trimmed, ...prev.filter((h) => h !== trimmed)].slice(0, 50));
       setHistoryIdx(-1);
       setScrollOffset(0);
 
@@ -1029,6 +1061,7 @@ export function RoomApp({
         return;
       }
 
+      setHistory((prev) => [trimmed, ...prev.filter((entry) => entry !== trimmed)].slice(0, 50));
       setSending(true);
       try {
         const res = await client.sendChatMessage(activeProjectId, {
@@ -1167,23 +1200,24 @@ export function RoomApp({
       }
 
       // History navigation when popup not visible
-      if (key.upArrow && history.length > 0) {
-        const nextIdx = Math.min(historyIdx + 1, history.length - 1);
+      if (key.upArrow && promptHistory.length > 0) {
+        if (historyIdx === -1) historyDraft.current = { input, cursor };
+        const nextIdx = Math.min(historyIdx + 1, promptHistory.length - 1);
         setHistoryIdx(nextIdx);
-        const entry = history[nextIdx] ?? '';
+        const entry = promptHistory[nextIdx];
         setInput(entry);
         setCursor(entry.length);
         return;
       }
-      if (key.downArrow) {
-        if (historyIdx <= 0) {
+      if (key.downArrow && historyIdx >= 0) {
+        if (historyIdx === 0) {
           setHistoryIdx(-1);
-          setInput('');
-          setCursor(0);
+          setInput(historyDraft.current.input);
+          setCursor(historyDraft.current.cursor);
         } else {
           const nextIdx = historyIdx - 1;
           setHistoryIdx(nextIdx);
-          const entry = history[nextIdx] ?? '';
+          const entry = promptHistory[nextIdx] ?? '';
           setInput(entry);
           setCursor(entry.length);
         }
@@ -1222,6 +1256,7 @@ export function RoomApp({
         return;
       }
       if (key.escape) {
+        setHistoryIdx(-1);
         setInput('');
         setCursor(0);
         return;
@@ -1279,17 +1314,18 @@ export function RoomApp({
       });
       // Two columns of timeline padding plus the two-space indent.
       const lineWidth = termSize.cols - 4;
-      msg.lines.forEach((line, idx) => {
-        wrapTimelineLine(line, lineWidth).forEach((row, rowIdx) => {
-          rows.push({
-            key: `${msg.id}-l-${idx}-${rowIdx}`,
-            node: (
-              <Text color={msg.isError ? 'red' : undefined} wrap="truncate-end">
-                {'  '}
-                {row}
-              </Text>
-            ),
-          });
+      const body = msg.markdown
+        ? markdownRows(msg.lines.join('\n'), lineWidth)
+        : msg.lines.flatMap((line) => wrapTimelineLine(line, lineWidth));
+      body.forEach((row, idx) => {
+        rows.push({
+          key: `${msg.id}-l-${idx}`,
+          node: (
+            <Text color={msg.isError ? 'red' : undefined} wrap="truncate-end">
+              {'  '}
+              {row}
+            </Text>
+          ),
         });
       });
     }
@@ -1324,7 +1360,14 @@ export function RoomApp({
       ? Math.min(completions.length, POPUP_SIZE) + 2 + (completions.length > POPUP_SIZE ? 1 : 0)
       : 0;
   const gateRows = pendingGate || pendingUnconfinedAction ? 3 : 0;
-  const liveRows = liveActivity || sending ? 1 : 0;
+  const turn = activeSession?.id === activeSessionId && activeSession.projectId === activeProjectId
+    ? activeSession.turn
+    : null;
+  const activeRuns = execution?.projectId === activeProjectId && execution?.sessionId === activeSessionId
+    ? execution.activeRuns.filter((run) => run.status === 'running')
+    : [];
+  const activeRun = activeRuns.at(-1);
+  const liveRows = turn || activeRun || sending ? 1 : 0;
   // Header 6 rows, composer 3, footer 1.
   const chromeRows = 10 + popupRows + gateRows + liveRows;
   // The root box is one row shorter than the terminal (so the last line never scrolls the screen);
@@ -1523,13 +1566,23 @@ export function RoomApp({
       </Box>
 
       {/* Live activity strip */}
-      {liveActivity || sending ? (
-        <Box paddingX={1}>
-          <Text color="yellow" wrap="truncate-end">
-            ● {liveActivity || 'Waiting for agent response...'}
-          </Text>
-        </Box>
-      ) : null}
+      {turn && activeSessionId ? (
+        <WorkingStatus
+          key={turn.startedAt}
+          actor={stripControl(`@${turn.phase.startsWith('ask:') ? turn.phase.slice(4) : 'lead'} (${providerLabel(turn.provider)})`)}
+          activity={activityPreviews.get(activeSessionId) ?? 'Working'}
+          startedAt={turn.startedAt}
+          others={activeRuns.length}
+        />
+      ) : activeRun ? (
+        <WorkingStatus
+          key={activeRun.id}
+          actor={stripControl(`@${activeRun.profileName} (${providerLabel(activeRun.provider)})`)}
+          activity={activityPreviews.get(activeRun.id) ?? `Working on ${stripControl(activeRun.taskExternalId)}`}
+          startedAt={activeRun.startedAt}
+          others={activeRuns.length - 1}
+        />
+      ) : sending ? <WorkingStatus actor="Dalang" activity="Waiting for a response" others={0} /> : null}
 
       {/* Active gate prompt */}
       {pendingUnconfinedAction ? (
@@ -1585,8 +1638,8 @@ export function RoomApp({
         {/* With a scroll marker on the right, the command list shrinks so neither side is cut. */}
         <Text dimColor wrap="truncate-end">
           {startIdx > 0 || clampedOffset > 0
-            ? '@profile tag/steer · /help /exit'
-            : '@profile tag/steer · /model /resume /new /config /wizard /web /help /exit'}
+            ? '↑/↓ prompt history · /help /exit'
+            : '↑/↓ prompt history · @profile tag/steer · /model /resume /new /config /wizard /web /help /exit'}
         </Text>
         {clampedOffset > 0 ? (
           <Text color="yellow" wrap="truncate-end">

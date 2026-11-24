@@ -14,7 +14,7 @@ Dalang uses OS-level confinement where available, Git configuration checks, and 
 
 ## Optional app login
 
-DALANG is a local single-user workbench. App login is off by default. Enable it in **Config → Security** to require one password for the workspace APIs, stored images, and live WebSocket updates. DALANG stores a salted `scrypt` hash in SQLite. The browser receives an `HttpOnly`, `SameSite=Strict` session cookie. Logout revokes the session, and sessions expire after 24 hours or when the server restarts. Provider sign-ins continue to use their respective CLIs.
+DALANG is a local single-user workbench. App login is off by default. Enable it in the browser under **Config → Security** to require one password for both the browser and terminal room. The same login protects the workspace APIs, stored images, and live WebSocket updates. DALANG stores a salted `scrypt` hash in SQLite. The browser receives an `HttpOnly`, `SameSite=Strict` session cookie. The terminal room keeps its connection credentials in memory. Sessions expire after 24 hours or when the server restarts. Provider sign-ins use their respective CLIs.
 
 When login is enabled, authenticated requests with an `Origin` header must match the DALANG page's origin. The app login and CLI update endpoints apply the same origin check even with login off. [Set or disable the app password](INSTALL.md#require-a-dalang-password)
 

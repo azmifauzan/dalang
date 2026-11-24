@@ -56,6 +56,45 @@ function createRoomRunner(
 }
 
 describe('team room mention routing and feed (v0.12)', () => {
+  it('tries a configured alternate account after a Claude quota error and keeps the Ask transcript', async () => {
+    const conn = openDatabase(path.join(mkTmp('dalang-ask-quota-'), 'dalang.db'));
+    conns.push(conn);
+    const calls: string[] = [];
+    const limit = "You've hit your 5-hour limit · resets 6:10pm (Asia/Jakarta)";
+    const runner = createRoomRunner((bin, _args, _opts, prompt) => {
+      calls.push(bin);
+      const codex = bin.endsWith('/codex');
+      const first = calls.length === 1;
+      if (codex) expect(prompt).toContain('First question');
+      const output = codex
+        ? { type: 'item.completed', item: { type: 'agent_message', text: 'Answered by the fallback' } }
+        : { type: 'result', subtype: 'success', is_error: !first, session_id: 'claude-session', result: first ? 'First answer' : limit };
+      return { exitCode: 0, stdout: JSON.stringify(output), stderr: '', timedOut: false, idleTimedOut: false };
+    });
+    const project = await new ProjectService(conn.db).createOrOpen({
+      mode: 'create', path: mkTmp('dalang-ask-quota-repo-'), initGitIfMissing: true, leadProvider: 'claude-code',
+    });
+    const profiles = new ProfileService(conn.db);
+    const lead = new LeadService(conn.db, new ProviderRegistry(runner));
+    profiles.updateProfile('profile-lead', { fallback: { provider: 'codex', model: '', effort: 'medium', configDir: null } });
+    const first = await lead.sendChatMessage(project.id, { mode: 'ask', message: 'First question' });
+    const sessionId = first.session.id;
+    expect(first.session.cliSessionId).toBe('claude-session');
+
+    const answer = await lead.sendChatMessage(project.id, { sessionId, mode: 'ask', message: 'Second question' });
+    expect(answer.askReply?.text).toBe('Answered by the fallback');
+    expect(answer.session.provider).toBe('claude-code');
+    expect(answer.session.cliSessionId).toBeNull();
+    expect(calls.map((bin) => path.basename(bin))).toEqual(['claude', 'claude', 'codex']);
+    expect(answer.messages.filter((message) => message.content === 'Second question')).toHaveLength(1);
+
+    profiles.updateProfile('profile-lead', { fallback: { provider: 'claude-code', model: 'opus', effort: 'medium', configDir: null } });
+    await expect(lead.sendChatMessage(project.id, { sessionId, mode: 'ask', message: 'Third question' }))
+      .rejects.toThrow('The Lead fallback uses the same CLI account');
+    expect(calls).toHaveLength(4);
+    expect(lead.getSessionDetail(project.id, sessionId).messages.at(-1)?.role).toBe('system');
+  });
+
   it('parses leading mentions and ignores non-mention tokens', () => {
     expect(parseLeadingMention('@reviewer check edge cases')).toEqual({
       mention: 'reviewer',

@@ -20,7 +20,7 @@ node -e "require('node:fs').mkdirSync('.dalang-local/releases', { recursive: tru
 npm pack ./packages/cli --pack-destination .dalang-local/releases
 ```
 
-Build all packages before packing: the CLI build bundles the private workspace packages and copies the web distribution. Inspect the tarball contents and install it with npm into a separate test directory. Check `dalang --version`, `doctor`, the UI, and `/api/health` using that installed package. Browser tests need the built UI and an installed browser. Windows tests run serially; platform-only tests may skip when their OS facilities or privileges are unavailable. Report those skips rather than counting them as coverage on another platform.
+Build all packages before packing. The CLI build bundles the terminal room and private workspace packages, then copies the web distribution. Inspect the tarball contents and install it with npm into a separate test directory. Check `dalang --version` and `dalang doctor`. Run `dalang` in a PTY to check the terminal room and `dalang web --no-open` to check the browser UI and `/api/health`. Use an isolated `DALANG_HOME` for these checks. Browser tests need the built UI and an installed browser. Windows tests run serially. Report platform-only skips with the platform verification results.
 
 Run Linux regression checks for shared changes. macOS sandbox profile tests check generated policy and detection; native macOS execution must be reported separately when Apple hardware is available. Live provider tests consume model quota and should use isolated repositories.
 
@@ -45,21 +45,13 @@ git push origin main
 git push origin v<version>
 ```
 
-Create a GitHub release for the existing tag through the authenticated GitHub CLI or API. Upload `dalang-cli-<version>.tgz` and `SHA256SUMS`, then publish it as the latest stable release. The release notes should cover the concrete changes, install command, test results, platform limits, and distribution channel.
-
-Verify the published tag resolves to the committed SHA, both assets can be downloaded, and the downloaded tarball matches `SHA256SUMS`. Use this installation command in the release notes:
-
-```bash
-npm install -g dalang-cli@latest
-dalang doctor
-dalang
-```
-
-Publish the same tarball to the npm registry with an account that owns `dalang-cli`:
+Publish the tested tarball to the npm registry with an account that owns `dalang-cli`:
 
 ```bash
 npm publish .dalang-local/releases/dalang-cli-<version>.tgz
 npm view dalang-cli dist-tags
 ```
 
-Creating a GitHub release does not publish to npm, so run both steps. After publishing, `npm view dalang-cli dist-tags` must show `latest` at the new version before the release notes recommend `npm install -g dalang-cli@latest`.
+Once npm shows `latest` at the new version, create the GitHub release for the existing tag. Upload the same `dalang-cli-<version>.tgz` and `SHA256SUMS` and mark it as the latest stable release. The notes cover the changes, tests, platform limits, and how to install. Use `npm install -g dalang-cli@latest`, followed by `dalang doctor`. Start the terminal team room with `dalang` or the browser workspace with `dalang web`.
+
+Verify that the published tag resolves to the committed SHA. Download both assets and verify the tarball against `SHA256SUMS`. Check the npm version and tarball integrity against the artifact you published.

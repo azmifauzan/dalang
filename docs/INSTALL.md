@@ -1,6 +1,6 @@
 # Install Dalang
 
-Dalang runs a local web app on your machine. For npm or source installs, set up Node.js, Git, and one coding-agent CLI. The Docker image includes all three CLIs. [Docker setup](#run-with-docker)
+Dalang runs a terminal team room and a local browser workspace. For npm or source installs, set up Node.js, Git, and one coding-agent CLI. The Docker image includes all three CLIs and starts the browser workspace. [Docker setup](#run-with-docker)
 
 ## Requirements
 
@@ -34,7 +34,7 @@ Run `xcode-select --install` if Git is missing, then install a supported Node.js
 
 1. In PowerShell, run `wsl --install -d Ubuntu` and finish Ubuntu’s setup.
 2. In the Ubuntu shell, install Node.js 24+, Git, and `bubblewrap` as described above. Install and sign in to your agent CLI in that shell too.
-3. Run Dalang in Ubuntu. If a tab does not open, visit `http://127.0.0.1:4173` in your Windows browser.
+3. Run `dalang` in Ubuntu for the terminal team room. For the browser workspace, run `dalang web --no-open` and visit `http://127.0.0.1:4173` in Windows.
 
 ### Native Windows
 
@@ -43,10 +43,10 @@ Install Node.js 24+, Git, and at least one signed-in provider CLI in Windows. Us
 ```powershell
 npm install -g dalang-cli@latest
 dalang doctor
-dalang --no-open
+dalang
 ```
 
-Open `http://127.0.0.1:4173`. SQLite uses the binary shipped in the package; C++ Build Tools are not needed for this configuration. For a source checkout, follow [Build from source](#build-from-source); the pinned pnpm version also works in PowerShell.
+Run `dalang web --no-open` to serve the browser workspace at `http://127.0.0.1:4173`. SQLite uses the native binary for the supported installation. The pinned pnpm version also works in PowerShell. [Build from source](#build-from-source)
 
 For native confinement, install Codex with its Windows MXC backend and check for **Sandbox (Windows MXC)** in `dalang doctor`. If MXC is unavailable, Dalang asks for explicit unconfined consent before starting a task. Verification commands use `cmd.exe`, so configure commands with Windows-compatible syntax. When symlink privileges are unavailable, new `CLAUDE.md` and `AGENTS.md` files refer agents to `PROJECT.md`. Existing user instruction files are preserved. Claude's npm installation is detected through its native executable.
 
@@ -69,21 +69,13 @@ dalang
 Alternatively, run Dalang without a global installation:
 
 ```bash
-npx dalang-cli doctor
-npx dalang-cli
-```
-
-For a global installation, install the package first.
-
-```bash
-npm install -g dalang-cli
-dalang doctor
-dalang
+npx dalang-cli@latest doctor
+npx dalang-cli@latest
 ```
 
 `doctor` checks Node.js, Git, the sandbox, the data directory, GitHub CLI, and provider login status. Fix any issues affecting the features you plan to use. [Troubleshooting](TROUBLESHOOTING.md)
 
-In a terminal, `dalang` opens the [terminal team room](USAGE.md#terminal-team-room); on a fresh install it starts with the setup wizard. For the browser workspace, run `dalang web` and open the URL it prints, normally `http://127.0.0.1:4173`. Keep the terminal running while you use the app. Then follow [the first-project guide](USAGE.md).
+In an interactive terminal, `dalang` opens the team room and starts with the setup wizard on a fresh install. For the browser workspace, run `dalang web` and open the URL it prints, normally `http://127.0.0.1:4173`. Keep the terminal running while you use the app. [Terminal walkthrough](USAGE.md#terminal-team-room) · [Browser walkthrough](USAGE.md#browser-workspace)
 
 | Command | When to use it |
 | --- | --- |
@@ -122,7 +114,7 @@ Add projects under `/workspace`. To mount existing checkouts, set `DALANG_PROJEC
 
 ## Require a DALANG password
 
-Login starts off. In **Config → Security → DALANG login**, set a password of at least 12 characters and select **Enable login**. With login enabled, the **Sign out** icon appears at the far right of the sidebar footer, after the theme switch. Sign in again after signing out, after the 24-hour session expires, or after restarting DALANG. **Disable login** in Config returns the app to password-free access. Provider accounts still use their own sign-in commands. [How the login protects local access](SANDBOX.md#optional-app-login)
+Login starts off. In the browser, open **Config → Security → DALANG login**, set a password of at least 12 characters, and select **Enable login**. The terminal room prompts for the same password when it connects. In the browser, use **Sign out** in the sidebar footer. Sessions expire after 24 hours or when the server restarts. **Disable login** in web Config restores password-free access. Provider accounts use their own sign-in commands. [How the login protects local access](SANDBOX.md#optional-app-login)
 
 ## Update Dalang
 
@@ -136,7 +128,7 @@ dalang
 
 Check that the installed version supports your schema in the [upgrade table](#database-upgrades). If it is still older, check which executable your shell runs (`command -v dalang` on Linux/macOS or `where.exe dalang` in PowerShell).
 
-Let active tasks finish or stop them, then stop the server with Ctrl+C or `docker compose stop`. Back up the Dalang data directory and any project checkout you may need to restore. Then update with the command that matches your installation:
+Let active tasks finish or stop them. Close the terminal room with `/exit` and stop a separately running server with Ctrl+C or `docker compose stop`. Back up the Dalang data directory and any project checkout you may need to restore. Use the command that matches your installation:
 
 ```bash
 npx dalang-cli@latest
@@ -160,7 +152,7 @@ Dalang upgrades its database the first time a newer version starts, from any ear
 | v0.8.0 | v12 | Adds the delegation fields on tasks |
 | v0.9.0 | v13 | Adds per-repo task and checkpoint records for workspace projects |
 | v0.11.0 | v14 | Adds schedules, webhooks, their run history, and outside-agent MCP tokens |
-| v0.12 (unreleased) | v15 | Adds `author_profile_id` and `kind` to messages for role reports and team-room feeds |
+| v0.11.2 | v15 | Adds `author_profile_id` and `kind` to messages for role reports and team-room feeds |
 
 An upgrade is one way. An older build refuses a newer database with `Database schema vN is newer than this DALANG build`, so restore your pre-upgrade backup to go back. A server that is still running keeps the old code and schema in memory, so restart it after updating.
 

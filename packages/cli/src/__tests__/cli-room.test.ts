@@ -188,7 +188,7 @@ describe('TUI commands, completions, and formatting', () => {
     expect(formatted.lines.join('\n')).toContain('+3 -0');
 
     expect(extractActivityPreview('[dalang] Running verify command: pnpm test')).toBe(
-      'Running verify command: pnpm test',
+      'Running verification',
     );
     expect(
       extractActivityPreview(
@@ -197,7 +197,13 @@ describe('TUI commands, completions, and formatting', () => {
           message: { content: [{ type: 'tool_use', name: 'Read' }] },
         }),
       ),
-    ).toBe('Using tool: Read');
+    ).toBe('Reading files');
+    expect(extractActivityPreview('{"type":"item.started","item":{"type":"command_execution","command":"private"}}'))
+      .toBe('Running a command');
+    expect(extractActivityPreview('{"event":"step_update","step_update":{"step_type":"tool","state":"ACTIVE","tool_name":"grep_search"}}'))
+      .toBe('Searching files');
+    expect(extractActivityPreview('{"type":"item.completed","item":{"type":"reasoning","text":"private"}}'))
+      .toBe('Thinking');
     expect(detectPendingGate(null, null)).toBeNull();
   });
 
@@ -296,7 +302,7 @@ describe('TUI commands, completions, and formatting', () => {
     const evil = 'ok\x1b[2J\x1b[31mred\x1b]0;title\x07 end\x00\x1b[?1049h';
     expect(stripControl(evil)).toBe('okred end');
     expect(stripControl('a\tb\nc')).toBe('a\tb\nc');
-    expect(extractActivityPreview('[dalang] run \x1b[2Jdone')).toBe('run done');
+    expect(extractActivityPreview('[dalang] run \x1b[2Jdone')).toBeNull();
     const msg = formatRoomMessage({
       id: 'm',
       sessionId: 's',
