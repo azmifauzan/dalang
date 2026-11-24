@@ -203,6 +203,19 @@ export function authorColorFor(
   return 'blue';
 }
 
+/**
+ * Text from the server and the agents (a log line, a diff, a message) can carry terminal control
+ * codes. Remove escape sequences and control characters before drawing or paging it; tab and
+ * newline stay.
+ */
+export function stripControl(text: string): string {
+  return text
+    .replace(/\x1b\[[0-9;?<>=!]*[ -/]*[@-~]/g, '')
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?/g, '')
+    .replace(/\x1b[@-Z\\-_]/g, '')
+    .replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '');
+}
+
 export function formatRoomMessage(msg: DiscussMessageDTO): FormattedRoomMessage {
   const author =
     msg.role === 'user'
@@ -298,11 +311,11 @@ export function formatRoomMessage(msg: DiscussMessageDTO): FormattedRoomMessage 
 
   return {
     id: msg.id,
-    author,
+    author: stripControl(author),
     authorColor,
-    badge,
+    badge: badge === null ? null : stripControl(badge),
     time,
-    lines: lines.length > 0 ? lines : [''],
+    lines: lines.length > 0 ? lines.map(stripControl) : [''],
     isError: msg.type === 'error',
   };
 }
@@ -336,6 +349,11 @@ export function wrapTimelineLine(line: string, width: number): string[] {
 }
 
 export function extractActivityPreview(rawLine: string): string | null {
+  const preview = extractActivityPreviewRaw(rawLine);
+  return preview === null ? null : stripControl(preview) || null;
+}
+
+function extractActivityPreviewRaw(rawLine: string): string | null {
   const trimmed = rawLine.trim();
   if (!trimmed) return null;
   if (trimmed.startsWith('[dalang')) {
@@ -377,7 +395,7 @@ export function openTextInPager(content: string, label = 'dalang-diff'): { ok: b
   const safeLabel = label.replace(/[^A-Za-z0-9._-]/g, '_');
   const tmpFile = path.join(os.tmpdir(), `${safeLabel}-${process.pid}-${Date.now()}.diff`);
   try {
-    fs.writeFileSync(tmpFile, content, 'utf8');
+    fs.writeFileSync(tmpFile, stripControl(content), 'utf8');
     const envPager = process.env.PAGER?.trim();
     const isWin = process.platform === 'win32';
     const pagerCmd = envPager || (isWin ? 'more' : 'less -R');

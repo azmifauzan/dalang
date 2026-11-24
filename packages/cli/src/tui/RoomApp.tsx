@@ -45,6 +45,7 @@ import {
   type PendingGate,
   providerStatChips,
   LOW_LIMIT_PERCENT,
+  stripControl,
   wrapTimelineLine,
 } from './format.js';
 
@@ -199,7 +200,7 @@ export function RoomApp({
       text: string | string[],
       opts: { isError?: boolean; badge?: string | null; author?: string } = {},
     ) => {
-      const lines = Array.isArray(text) ? text : text.split('\n');
+      const lines = (Array.isArray(text) ? text : text.split('\n')).map(stripControl);
       setNotices((prev) => [
         ...prev.slice(-40),
         {

@@ -26,6 +26,7 @@ import {
   formatProviderStats,
   formatRoomMessage,
   providerStatChips,
+  stripControl,
   wrapTimelineLine,
 } from '../tui/format.js';
 import { RoomApp } from '../tui/RoomApp.js';
@@ -289,6 +290,24 @@ describe('TUI commands, completions, and formatting', () => {
       ['agy', 'unavailable', null, null],
     ]);
     expect(formatProviderStats(chips)).toBe('claude 5h 62% wk 45%  ·  codex login needed  ·  agy limits n/a');
+  });
+
+  it('removes terminal control codes from server and agent text', () => {
+    const evil = 'ok\x1b[2J\x1b[31mred\x1b]0;title\x07 end\x00\x1b[?1049h';
+    expect(stripControl(evil)).toBe('okred end');
+    expect(stripControl('a\tb\nc')).toBe('a\tb\nc');
+    expect(extractActivityPreview('[dalang] run \x1b[2Jdone')).toBe('run done');
+    const msg = formatRoomMessage({
+      id: 'm',
+      sessionId: 's',
+      role: 'agent',
+      type: 'report',
+      authorProfileName: 'bad\x1b[1mname',
+      content: { event: 'task_finished', summary: 'x\x1b[2Jy' },
+      createdAt: '2026-11-24T07:00:00.000Z',
+    } as never);
+    expect(msg.author).toBe('@badname');
+    expect(msg.lines.join('')).not.toContain('\x1b');
   });
 
   it('has /exit and no /quit', () => {
