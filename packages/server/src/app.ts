@@ -285,7 +285,9 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
   });
 
   // WebSocket live event stream
+  const openSockets = new Set<{ close: (code?: number) => void }>();
   app.get('/ws', { websocket: true }, (socket, req) => {
+    openSockets.add(socket);
     const untrack = auth.trackSocket(req, () => socket.close(4401));
     const unsubscribe = events.onEvent((event) => {
       if (!auth.canAccess(req)) {
@@ -297,6 +299,7 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
       }
     });
     socket.on('close', () => {
+      openSockets.delete(socket);
       unsubscribe();
       untrack();
     });
@@ -906,6 +909,15 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     close: async () => {
       await automationService.stop();
       await executionService.stopAll();
+      for (const s of openSockets) {
+        try {
+          s.close(1001);
+        } catch {
+          // ignore
+        }
+      }
+      openSockets.clear();
+      app.server.closeAllConnections?.();
       await app.close();
       conn.close();
     },

@@ -29,7 +29,7 @@ export function getDbDataDir(db: DalangDb): string | null {
   return dbDataDirs.get(db) ?? null;
 }
 
-const SCHEMA_VERSION = 14;
+const SCHEMA_VERSION = 15;
 
 const BOOTSTRAP_SQL = `
 PRAGMA journal_mode = WAL;
@@ -70,6 +70,8 @@ CREATE TABLE IF NOT EXISTS messages (
   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   role TEXT NOT NULL,
   type TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'chat',
+  author_profile_id TEXT,
   content TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
@@ -1330,6 +1332,7 @@ export function openDatabase(dbFilePath: string = getDbPath()): DbConnection {
   if (upgrading && storedVersion < 12) migrateToV12(sqlite);
   if (upgrading && storedVersion < 13) migrateToV13(sqlite);
   if (upgrading && storedVersion < 14) migrateToV14(sqlite);
+  if (upgrading && storedVersion < 15) migrateToV15(sqlite);
   sqlite.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_task_repos_task_repo ON task_repos(task_id, repo_path);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_run_repo_checkpoints_run_repo ON run_repo_checkpoints(run_id, repo_path);
@@ -1373,6 +1376,27 @@ export function openDatabase(dbFilePath: string = getDbPath()): DbConnection {
     dataDir,
     close: () => sqlite.close(),
   };
+}
+
+/**
+ * v15: room feed metadata on `messages` (`author_profile_id` and `kind`).
+ */
+function migrateToV15(sqlite: Database.Database): void {
+  addColumnIfMissing(sqlite, 'messages', 'kind', "TEXT NOT NULL DEFAULT 'chat'");
+  addColumnIfMissing(sqlite, 'messages', 'author_profile_id', 'TEXT');
+  sqlite.exec(`
+    UPDATE messages SET kind = CASE
+      WHEN type = 'questions' THEN 'question'
+      WHEN type IN ('brief', 'plan', 'quick_plan') THEN 'gate'
+      WHEN type = 'error' THEN 'status'
+      WHEN type = 'report' THEN 'report'
+      ELSE 'chat'
+    END
+    WHERE kind IS NULL OR kind = 'chat';
+
+    UPDATE messages SET author_profile_id = 'profile-lead'
+    WHERE role = 'lead' AND author_profile_id IS NULL;
+  `);
 }
 
 /**

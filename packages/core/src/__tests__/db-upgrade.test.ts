@@ -42,7 +42,7 @@ describe('database upgrade', () => {
     fresh.close();
 
     const upgraded = openDatabase(file);
-    expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(14);
+    expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(15);
     const runCols = (upgraded.sqlite.pragma('table_info(runs)') as Array<{ name: string }>).map((c) => c.name);
     expect(runCols).toContain('worktree_path');
     expect(runCols).toContain('input_tokens');
@@ -247,7 +247,7 @@ describe('database upgrade', () => {
     // Open and trigger v8 -> v9 upgrade
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(14);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(15);
 
       // Project A: 1 Full working session preserving brief, plan, tasks, messages, and moved artifacts
       const sessionsA = upgraded.sqlite
@@ -351,7 +351,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(14);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(15);
       const names = (
         upgraded.sqlite.prepare('SELECT name FROM agent_profiles ORDER BY name').all() as Array<{ name: string }>
       ).map((r) => r.name);
@@ -386,7 +386,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(14);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(15);
       const taskCols = (upgraded.sqlite.pragma('table_info(tasks)') as Array<{ name: string }>).map((c) => c.name);
       expect(taskCols).toContain('delegated_by_run_id');
       expect(taskCols).toContain('delegation_depth');
@@ -410,7 +410,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(14);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(15);
       const taskRepoCols = (
         upgraded.sqlite.pragma('table_info(task_repos)') as Array<{ name: string }>
       ).map((c) => c.name);
@@ -462,7 +462,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(14);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(15);
       const autoCols = (
         upgraded.sqlite.pragma('table_info(automations)') as Array<{ name: string }>
       ).map((c) => c.name);
@@ -490,6 +490,50 @@ describe('database upgrade', () => {
       expect(tokenCols).toEqual(
         expect.arrayContaining(['id', 'name', 'access_level', 'token_prefix', 'token_hash', 'project_id', 'revoked_at']),
       );
+    } finally {
+      upgraded.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('upgrades a v14 database to v15 by adding author_profile_id and kind to messages and backfilling kinds', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dalang-up15-'));
+    const file = path.join(dir, 'dalang.db');
+    const fresh = openDatabase(file);
+    const now = '2026-11-24T00:00:00.000Z';
+    fresh.sqlite.exec(`
+      INSERT INTO projects (id, name, path, main_branch, lead_provider, created_at, updated_at)
+      VALUES ('p1', 'demo', '${path.join(dir, 'repo').replace(/'/g, "''")}', 'main', 'claude-code', '${now}', '${now}');
+      INSERT INTO sessions (id, project_id, title, mode, work_state, phase, provider, created_at, updated_at)
+      VALUES ('s1', 'p1', 'chat', 'full', 'idle', 'discuss', 'claude-code', '${now}', '${now}');
+      INSERT INTO messages (id, session_id, role, type, content, created_at) VALUES
+        ('m-user', 's1', 'user', 'text', 'hello', '${now}'),
+        ('m-q', 's1', 'lead', 'questions', '{"round":1}', '${now}'),
+        ('m-brief', 's1', 'lead', 'brief', '{"version":1}', '${now}'),
+        ('m-err', 's1', 'system', 'error', 'boom', '${now}');
+      ALTER TABLE messages DROP COLUMN kind;
+      ALTER TABLE messages DROP COLUMN author_profile_id;
+    `);
+    fresh.sqlite.pragma('user_version = 14');
+    fresh.close();
+
+    const upgraded = openDatabase(file);
+    try {
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(15);
+      const msgCols = (
+        upgraded.sqlite.pragma('table_info(messages)') as Array<{ name: string }>
+      ).map((c) => c.name);
+      expect(msgCols).toEqual(expect.arrayContaining(['author_profile_id', 'kind']));
+
+      const rows = upgraded.sqlite
+        .prepare('SELECT id, kind, author_profile_id FROM messages ORDER BY id')
+        .all() as Array<{ id: string; kind: string; author_profile_id: string | null }>;
+      expect(rows).toEqual([
+        { id: 'm-brief', kind: 'gate', author_profile_id: 'profile-lead' },
+        { id: 'm-err', kind: 'status', author_profile_id: null },
+        { id: 'm-q', kind: 'question', author_profile_id: 'profile-lead' },
+        { id: 'm-user', kind: 'chat', author_profile_id: null },
+      ]);
     } finally {
       upgraded.close();
       fs.rmSync(dir, { recursive: true, force: true });

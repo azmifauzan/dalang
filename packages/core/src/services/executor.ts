@@ -17,6 +17,7 @@ import {
   type GuardStateDTO,
   type GuardTaskEntryDTO,
   type IntegrationRunDTO,
+  type MessageKind,
   type PlanDTO,
   type ProviderId,
   type ProviderRuntimeStateDTO,
@@ -25,6 +26,7 @@ import {
   type PushPrResultDTO,
   type RejectTaskInput,
   type ReviewContract,
+  type RoomReportContent,
   type RunKind,
   type RunStatus,
   type SessionSummaryDTO,
@@ -104,6 +106,7 @@ import {
   rollbackGitToCheckpoint,
 } from './git.js';
 import type { LeadService } from './lead.js';
+import type { ActiveCoderRunInfo } from './room-routing.js';
 import {
   DelegationSessionStore,
   handleMcpHttpRequest,
@@ -142,7 +145,11 @@ interface ActiveTaskExecution {
   projectId: string;
   sessionId: string;
   taskId: string;
+  externalId?: string;
   runId: string;
+  profileId?: string;
+  profileName?: string;
+  kind?: RunKind;
   controller: AbortController;
   turnControls?: ActiveTurnControls;
   promise: Promise<RunStatus>;
@@ -308,6 +315,7 @@ export class ExecutionService {
     options: ExecutionServiceOptions = {},
   ) {
     this.profiles = new ProfileService(db);
+    this.leadService.setExecutionRouter(this);
     this.worktreesRoot = options.worktreesRoot ?? getWorktreesRoot(getDbDataDir(db));
     this.quotaCooldownMs = options.quotaCooldownMs ?? DEFAULT_QUOTA_COOLDOWN_MS;
     this.getLanguage = options.getLanguage ?? (() => 'en');
@@ -1876,6 +1884,46 @@ export class ExecutionService {
     }
   }
 
+  listActiveRunsForSession(projectId: string, sessionId: string): ActiveCoderRunInfo[] {
+    const active: ActiveCoderRunInfo[] = [];
+    for (const handle of this.activeTasks.values()) {
+      if (handle.projectId !== projectId || handle.sessionId !== sessionId) continue;
+      if (!handle.runId || !handle.profileId || !handle.profileName) continue;
+      if (handle.controller.signal.aborted) continue;
+      active.push({
+        taskId: handle.taskId,
+        externalId: handle.externalId ?? handle.taskId,
+        runId: handle.runId,
+        profileId: handle.profileId,
+        profileName: handle.profileName,
+        kind: handle.kind ?? 'execute',
+        canSteer: Boolean(handle.turnControls?.steer && !handle.controller.signal.aborted),
+      });
+    }
+    return active;
+  }
+
+  private postRoomReport(
+    projectId: string,
+    sessionId: string | null | undefined,
+    authorProfileId: string | null,
+    kind: MessageKind,
+    report: RoomReportContent,
+  ): void {
+    if (!sessionId) return;
+    try {
+      this.leadService.postRoomMessage(projectId, sessionId, {
+        role: authorProfileId ? 'agent' : 'system',
+        type: 'report',
+        kind,
+        authorProfileId,
+        content: report,
+      });
+    } catch {
+      // Room feed reporting must never interrupt execution or merge flows.
+    }
+  }
+
   async steerTask(projectId: string, taskId: string, runId: string, message: string): Promise<void> {
     const active = this.activeTasks.get(taskId);
     if (active?.projectId !== projectId || active.runId !== runId || !active.turnControls?.steer ||
@@ -2176,7 +2224,11 @@ export class ExecutionService {
     this.recordInitialRunCheckpoints(runId, taskRepoList, undefined, baselineRefsByRepo);
     execHandle.runId = runId;
     execHandle.taskId = task.id;
+    execHandle.externalId = task.externalId;
     execHandle.sessionId = sessionId;
+    execHandle.profileId = routing.primary.id;
+    execHandle.profileName = routing.primary.name;
+    execHandle.kind = 'execute';
 
     const now = new Date().toISOString();
     this.db
@@ -2201,6 +2253,18 @@ export class ExecutionService {
       provider: routing.primary.provider,
     });
     this.events?.emitEvent({ type: 'plan.updated', projectId, sessionId });
+    if (task.delegationDepth === 0) {
+      this.postRoomReport(projectId, sessionId, routing.primary.id, 'status', {
+        event: 'task_started',
+        taskId: task.id,
+        externalId: task.externalId,
+        taskTitle: task.title,
+        profileName: routing.primary.name,
+        provider: routing.primary.provider,
+        model: routing.primary.model || null,
+        summary: `Started [${task.externalId}] ${task.title} (${routeLabel(routing.primary)})`,
+      });
+    }
 
     const initialRun = await this.toRunDTO(project.path, row, task, routing.primary);
 
@@ -2891,18 +2955,32 @@ export class ExecutionService {
           .run();
       }
 
+      if (!succeeded && opts.task.delegationDepth === 0) {
+        this.postRoomReport(opts.projectId, opts.sessionId, profile.id, 'status', {
+          event: 'task_failed',
+          taskId: opts.task.id,
+          externalId: opts.task.externalId,
+          taskTitle: opts.task.title,
+          profileName: profile.name,
+          provider: profile.provider,
+          model: profile.model || null,
+          summary: `[${opts.task.externalId}] ${finalRunStatus}: ${failureReason ?? 'Run did not complete'}`,
+        });
+      }
+
       emitDalangLine(
         `[dalang] Finished ${opts.kind} for ${opts.task.externalId} -> ${finalRunStatus} (checkpoint ${checkpointAfterSha.slice(0, 7)})`,
       );
       this.events?.emitEvent({
         type: 'run.finished',
         projectId: opts.projectId,
+        sessionId: opts.sessionId,
         taskId: opts.task.id,
         runId,
         status: finalRunStatus,
         ...(failureReason ? { error: failureReason } : {}),
       });
-      this.events?.emitEvent({ type: 'plan.updated', projectId: opts.projectId });
+      this.events?.emitEvent({ type: 'plan.updated', projectId: opts.projectId, sessionId: opts.sessionId });
 
       return {
         status: finalRunStatus,
@@ -2976,9 +3054,13 @@ export class ExecutionService {
         .run();
 
       opts.execHandle.runId = fbRunId;
+      opts.execHandle.profileId = opts.fallbackProfile.id;
+      opts.execHandle.profileName = opts.fallbackProfile.name;
+      opts.execHandle.kind = opts.kind;
       this.events?.emitEvent({
         type: 'run.started',
         projectId: opts.projectId,
+        sessionId: opts.sessionId,
         taskId: opts.task.id,
         runId: fbRunId,
         profileName: opts.fallbackProfile.name,
@@ -3235,6 +3317,29 @@ export class ExecutionService {
       const diffData = await this.buildWorkspaceTaskDiff(ctx.task, taskRepoList, {
         liveWorktree: true,
       }).catch(() => null);
+
+      if (ctx.task.delegationDepth === 0) {
+        const diffStats = diffData
+          ? {
+              filesChanged: diffData.files.length,
+              insertions: diffData.totalAdditions,
+              deletions: diffData.totalDeletions,
+            }
+          : { filesChanged: changedFiles.length, insertions: 0, deletions: 0 };
+        const diffSummary = `${diffStats.filesChanged} file(s), +${diffStats.insertions} -${diffStats.deletions}`;
+        const coderSummary = activeCoderResult?.summary?.trim() || `Completed [${ctx.task.externalId}]`;
+        this.postRoomReport(ctx.projectId, ctx.sessionId, activeCoderProfile.id, 'report', {
+          event: 'task_finished',
+          taskId: ctx.task.id,
+          externalId: ctx.task.externalId,
+          taskTitle: ctx.task.title,
+          profileName: activeCoderProfile.name,
+          provider: activeCoderProfile.provider,
+          model: activeCoderProfile.model || null,
+          diffStats,
+          summary: `Finished [${ctx.task.externalId}] (${diffSummary}): ${coderSummary}`,
+        });
+      }
 
       const reviewOutcome = await this.executeSingleReviewRound({
         projectId: ctx.projectId,
@@ -3535,6 +3640,9 @@ export class ExecutionService {
         .run();
 
       ctx.execHandle.runId = fixRunId;
+      ctx.execHandle.profileId = activeCoderProfile.id;
+      ctx.execHandle.profileName = activeCoderProfile.name;
+      ctx.execHandle.kind = 'fix';
       this.events?.emitEvent({
         type: 'run.started',
         projectId: ctx.projectId,
@@ -3545,6 +3653,18 @@ export class ExecutionService {
         provider: activeCoderProfile.provider,
       });
       this.events?.emitEvent({ type: 'plan.updated', projectId: ctx.projectId, sessionId: ctx.sessionId });
+      if (ctx.task.delegationDepth === 0) {
+        this.postRoomReport(ctx.projectId, ctx.sessionId, activeCoderProfile.id, 'status', {
+          event: 'task_started',
+          taskId: ctx.task.id,
+          externalId: ctx.task.externalId,
+          taskTitle: ctx.task.title,
+          profileName: activeCoderProfile.name,
+          provider: activeCoderProfile.provider,
+          model: activeCoderProfile.model || null,
+          summary: `Fix round ${round} for [${ctx.task.externalId}] (${routeLabel(activeCoderProfile)})`,
+        });
+      }
 
       const fixOutcome = await this.runCoderPhaseWithFallback({
         projectId: ctx.projectId,
@@ -3674,9 +3794,13 @@ export class ExecutionService {
       });
 
       opts.execHandle.runId = reviewRunId;
+      opts.execHandle.profileId = reviewerProfile.id;
+      opts.execHandle.profileName = reviewerProfile.name;
+      opts.execHandle.kind = 'review';
       this.events?.emitEvent({
         type: 'run.started',
         projectId: opts.projectId,
+        sessionId: opts.sessionId,
         taskId: opts.task.id,
         runId: reviewRunId,
         profileName: reviewerProfile.name,
@@ -3760,6 +3884,18 @@ export class ExecutionService {
               : combinedVerify,
           );
           emitDalangLine(`[dalang] Verify command exited with code ${verifyExitCode}`);
+          if (opts.task.delegationDepth === 0) {
+            this.postRoomReport(opts.projectId, opts.sessionId, reviewerProfile.id, 'report', {
+              event: 'verify_result',
+              taskId: opts.task.id,
+              externalId: opts.task.externalId,
+              taskTitle: opts.task.title,
+              profileName: reviewerProfile.name,
+              verifyCommand: opts.task.verify,
+              verifyExitCode,
+              summary: `Verify ${verifyExitCode === 0 ? 'passed' : 'failed'} (exit ${verifyExitCode}) for [${opts.task.externalId}]: ${opts.task.verify}`,
+            });
+          }
         } catch (err) {
           if (opts.execHandle.controller.signal.aborted) {
             const finishedAt = new Date().toISOString();
@@ -4091,6 +4227,7 @@ export class ExecutionService {
       this.events?.emitEvent({
         type: 'run.finished',
         projectId: opts.projectId,
+        sessionId: opts.sessionId,
         taskId: opts.task.id,
         runId: reviewRunId,
         status: 'completed',
@@ -4098,10 +4235,42 @@ export class ExecutionService {
       this.events?.emitEvent({
         type: 'review.finished',
         projectId: opts.projectId,
+        sessionId: opts.sessionId,
         taskId: opts.task.id,
         round: opts.round,
         status: finalContract.status,
       });
+      if (opts.task.delegationDepth === 0) {
+        const verdictLabel = finalContract.status === 'pass' ? 'PASS' : 'FAIL';
+        const verdictNote =
+          finalContract.summary?.trim() ||
+          (finalContract.findings.length > 0
+            ? finalContract.findings[0].note
+            : finalContract.status === 'pass'
+              ? 'Ready to merge.'
+              : 'Changes requested.');
+        this.postRoomReport(
+          opts.projectId,
+          opts.sessionId,
+          reviewerProfile.id,
+          finalContract.status === 'pass' ? 'gate' : 'report',
+          {
+            event: 'review_verdict',
+            taskId: opts.task.id,
+            externalId: opts.task.externalId,
+            taskTitle: opts.task.title,
+            profileName: reviewerProfile.name,
+            provider: reviewerProfile.provider,
+            model: reviewerProfile.model || null,
+            reviewStatus: finalContract.status,
+            reviewRound: opts.round,
+            findingsCount: finalContract.findings.length,
+            findings: finalContract.findings.slice(0, 5),
+            verifyExitCode,
+            summary: `Review round ${opts.round} [${opts.task.externalId}]: ${verdictLabel} (${finalContract.findings.length} finding(s)). ${verdictNote}`,
+          },
+        );
+      }
 
       return {
         status: 'completed',
@@ -5471,6 +5640,14 @@ export class ExecutionService {
     const stillActive = [...this.activeTasks.values()].some((a) => a.sessionId === sid);
     this.leadService.reconcileSessionWorkState(sid, stillActive);
     this.events?.emitEvent({ type: 'plan.updated', projectId, sessionId: sid });
+    this.postRoomReport(projectId, sid, null, 'status', {
+      event: 'task_merged',
+      taskId: task.id,
+      externalId: task.externalId,
+      taskTitle: task.title,
+      mergeCommitSha,
+      summary: `Merged [${task.externalId}] ${task.title} into ${project.mainBranch} (${mergeCommitSha.slice(0, 7)})`,
+    });
 
     let integrationRun: IntegrationRunDTO | null = null;
     if (input.runIntegration !== false) {
@@ -5821,6 +5998,13 @@ export class ExecutionService {
     const stillActive = [...this.activeTasks.values()].some((a) => a.sessionId === sid);
     this.leadService.reconcileSessionWorkState(sid, stillActive);
     this.events?.emitEvent({ type: 'plan.updated', projectId, sessionId: sid });
+    this.postRoomReport(projectId, sid, null, 'status', {
+      event: 'task_rejected',
+      taskId: task.id,
+      externalId: task.externalId,
+      taskTitle: task.title,
+      summary: `Rejected [${task.externalId}]${input.requeue ? ' (requeued)' : ''}: ${note}`,
+    });
     return this.leadService.getPlan(projectId, sid)!.tasks.find((t) => t.id === task.id)!;
   }
 

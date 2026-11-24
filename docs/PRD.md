@@ -206,7 +206,7 @@ All orchestrator decisions come from JSON files the agent writes to `.dalang/`, 
 | Responsiveness | Logs appear in the UI less than 1 second after the CLI writes them. |
 | Platform | Linux and macOS (P0), Windows via ConPTY (P1). |
 | Compliance | Only runs official CLI binaries. Does not extract OAuth tokens and does not call provider backends directly. |
-| Installation | `npx dalang-cli` starts the server and opens the browser. `docker compose up --build -d` starts a local container from the source checkout. |
+| Installation | `npx dalang-cli` opens the terminal team room (since v0.12); `npx dalang-cli web` starts the server and opens the browser. `docker compose up --build -d` starts a local container from the source checkout. |
 
 ## Architecture and technology stack
 
@@ -231,7 +231,7 @@ The browser talks only to the local server. The server runs the official CLIs, a
 | Validation | Zod 4.6 | Agent output is validated before it is used for decisions |
 | Queue | p-queue 10 (in-process) | Per-provider parallel limits without needing Redis |
 | Git | simple-git 4.1 + `git worktree` | Checkpoint commits and per-task isolation |
-| Distribution | pnpm 12 monorepo, released to npm | `npx dalang-cli` starts the server and opens the browser |
+| Distribution | pnpm 12 monorepo, released to npm | `npx dalang-cli` opens the terminal team room; `npx dalang-cli web` starts the server and opens the browser |
 
 Versions are the latest stable releases found on the npm registry and nodejs.org on 18 Nov 2026. The lockfile pins them at implementation time.
 
@@ -306,6 +306,7 @@ Each phase must be useful on its own before the next one starts.
 | v0.9 | Workspace projects: one project for a root folder whose top-level folders are their own git repositories, with worktrees, review, merge, and rollback per repo | A Quick task in a workspace edits a nested repo, passes review, and merges into that repo's branch | Implemented. Verified on 23 Nov 2026 with a schema v12 to v13 upgrade test, core nested-repo lifecycle, merge, push, rollback, and delegation tests, and a Chromium replay E2E Quick task touching a nested repo; a live Quick task on the `sei-office` workspace (copy of app data, Claude coder, Antigravity review) changed `frontend/` and `scheduling-service/`, merged one commit into each repo's checked-out branch, left `backend/` untouched, and was then reverted. that run also found Antigravity coder runs failing on `agy` 1.5.15, fixed in 0.9.1 |
 | v0.10 | Session protocols (Claude Code stream-json sessions, `codex app-server`, ACP), steering a running task, context handoff on fallback, native Windows confinement | A fallback mid-task continues from the handoff instead of starting over, on all three providers | Released in 0.10.0. Linux regression and live provider checks passed. Native Windows verification pending. |
 | v0.11 | Scheduled and webhook-triggered runs, outside agents over MCP | A scheduled run and a run started from a terminal agent both finish without opening the UI | Released in 0.11.0. Schema v14 adds `automations`, `automation_runs`, and `mcp_tokens`. Verified on 24 Nov 2026 with core cron, webhook, and MCP tests, a real-HTTP server test, a v13 to v14 upgrade test, and the Chromium Config check. A live check on a copy of the app data ran a real Claude Code client against `/mcp`: the read-only token saw 7 tools and only its project, and the full-access token's `start_task` finished, passed review, and auto-merged. A live every-minute schedule and a signed webhook each completed and merged; an unsigned webhook got 401. Codex accepted the generated config but was not run against `/mcp`. 0.11.1 adds signed timestamps and replay refusal for webhooks, and passes the webhook body to the coder only through `{{payload}}`, fenced as data. |
+| v0.12 | Terminal team room (`dalang`), `dalang web` rename, role reports & schema v15, `@<profile>` mention routing | In a TTY, `dalang` runs a Quick task from plan to merge with no browser; `dalang web` behaves like v0.11; routing tests cover Lead, idle Ask, and running coder steering | Implemented, not yet released. Schema v15 adds `author_profile_id` and `kind` on `messages`. Verified on Linux (Node 26, Ink 8, React 19.3) with v14 to v15 upgrade tests, core mention-routing and report tests, CLI routing and compatibility tests, and an Ink E2E Quick task from plan to merge with `/diff`, `/web`, and y/n gates. On 24 Nov 2026 a live run in a real pseudo-terminal, on a copy of the app data upgraded from v13 to v15, ran a Quick task from the Lead's plan (Claude) through the coder and review (Antigravity) to merge with no browser, and `@reviewer` answered in Ask mode. A second live run with empty app data and the real provider CLIs went through the first-run wizard to a first project, `/model` listed the Claude and Codex models, `/config` opened, the mouse wheel scrolled a long session, and the layout held at 80 by 24 and 110 by 38. macOS Terminal, WSL 2, and Windows Terminal rendering checks remain open. |
 
 See [Roadmap after v0.4](#roadmap-after-v04) for the detail and the research behind it.
 
@@ -760,9 +761,9 @@ Scripted runs cover handoff from each of the three providers, including recent c
 - Outside agents over MCP: Claude Code or Codex in a terminal can read projects, sessions, tasks, logs, and automations (`read-only`) or start/stop tasks, merge, reject, and trigger automations (`full-access`) through persistent hashed bearer tokens on the loopback-only `/mcp` endpoint, optionally scoped to one project.
 - Managed in **Config → Automation** and over REST (`/api/automations`, `/api/mcp-tokens`), on schema v14. Automated and MCP-started runs each create a Quick session, so they go through the worktree, verify, review, and Gate 2 steps and stay visible in the UI. A trigger that arrives while another session has unfinished work is recorded as skipped.
 
-### v0.12 to v0.14: team room in the terminal and chat apps (draft plan, 24 Nov 2026)
+### v0.12 to v0.14: team room in the terminal and chat apps
 
-Status: plan only. Nothing is implemented. Builder defaults below are proposals the user can still change; implementation starts when the user says go.
+Status: v0.12 (phases 0 to 4) is implemented, not yet released. v0.13 (Telegram) and v0.14 (Slack) remain draft plans.
 
 #### Intent
 
@@ -783,7 +784,7 @@ Builder defaults (proposed):
 - The terminal client is a thin client of the server API, as the terminal research above recommends, so session and gate logic stays in core and the two UIs cannot drift. `dalang` checks `/api/health` on its port: it attaches when a server is running and otherwise starts the server in the same process. One server writes the database.
 - Ink (React for the terminal) renders the room, reusing the TypeScript stack and the `shared` types.
 - Routing: a message without a tag goes to the Lead. `@<profile>` sends it to that profile: an idle profile answers in Ask mode (read-only), and a running coder receives it as a steering message (v0.10).
-- Slash commands: `/mode`, `/project`, `/sessions`, `/diff` (opens `$PAGER`), `/merge`, `/reject`, `/stop`, `/web` (opens the browser on the same session). Gates are answered with a y/n prompt in the room.
+- Slash commands: `/mode`, `/model`, `/project`, `/resume`, `/new`, `/config`, `/wizard`, `/diff` (opens `$PAGER`), `/merge`, `/reject`, `/stop`, `/run`, `/finish`, `/web` (opens the browser on the same session), `/help`, and `/exit`. Gates are answered with a y/n prompt in the room.
 - Compatibility for one release: `dalang --port N` or `dalang --no-open` without a subcommand still starts the web server and prints a deprecation line. When stdin is not a TTY, `dalang` runs `dalang web`. The Docker `CMD` changes to `dalang web --no-open`.
 - Schema v15: `messages` gains `author_profile_id` and `kind` (`chat`, `report`, `question`, `gate`, `status`). The web chat shows the same feed.
 
@@ -793,6 +794,16 @@ Done when:
 - `dalang web` behaves like `dalang` in v0.11.
 - Tests cover routing: untagged to the Lead, `@reviewer` while idle to Ask mode, `@coder` while running to steering.
 - The room renders on Linux, WSL 2, macOS Terminal, and Windows Terminal.
+
+Review against this plan (24 Nov 2026):
+
+- Met: the first three criteria, on Linux. Rendering on WSL 2, macOS Terminal, and Windows Terminal is not yet verified.
+- Added beyond the defaults: `dalang room --port <number>` opens the room against a server on another port, since `dalang --port` keeps starting the web server for one release. `/run`, `/finish`, `/help`, and `/exit` join the slash commands. Requested after the first build (24 Nov 2026) and added: the header shows the Dalang mark, the 5 hour and weekly limits per provider, the active Lead model, and the agents running now; the room opens on a new session, and `/resume` and `/new` replace `/sessions`; the first-run wizard, `/wizard`, `/config`, and `/model` work in the terminal; the mouse wheel scrolls the timeline.
+- Gate answers: `n` leaves the item waiting. For a task waiting for merge, `n` does not reject it; discarding the work takes `/reject`.
+- Steering a coder whose CLI session cannot take messages is refused with 409 before anything is written to the room.
+- Not yet verified: turning on the Antigravity keyring consent from the wizard, and the braille mark on terminals other than the one used. Editing a role's backup CLI is not in the terminal wizard: it keeps the saved backup, or suggests another ready CLI, and the web Config changes it.
+- `/model` applies to the Lead's messages only, not to `@profile` questions or to running coders.
+- Seen in the live run, not part of this phase: the Antigravity reviewer could not run `git status` in the task worktree because the worktree's `.git` link pointed to a gitdir it could not see; the review still passed by comparing files. Whether earlier releases show the same is not yet verified.
 
 #### v0.13: Telegram bridge
 

@@ -38,4 +38,4 @@ RUN curl -fsSL https://claude.ai/install.sh -o /tmp/claude-install.sh \
 COPY --from=build /app /app
 EXPOSE 4173
 ENTRYPOINT ["dalang-entrypoint"]
-CMD ["node", "/app/bin/dalang.js", "--no-open"]
+CMD ["node", "/app/bin/dalang.js", "web", "--no-open"]

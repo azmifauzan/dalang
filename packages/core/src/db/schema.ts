@@ -39,6 +39,8 @@ export const messages = sqliteTable('messages', {
     .references(() => sessions.id, { onDelete: 'cascade' }),
   role: text('role').notNull(),
   type: text('type').notNull(),
+  kind: text('kind').notNull().default('chat'),
+  authorProfileId: text('author_profile_id'),
   content: text('content').notNull(),
   createdAt: text('created_at').notNull(),
 });

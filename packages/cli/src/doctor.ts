@@ -186,7 +186,20 @@ export async function runDoctorChecks(
     });
   }
 
-  // 5. GitHub CLI (optional, for push + PR)
+  // 5. Terminal room (TTY)
+  const isInteractiveTty = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+  const cols = process.stdout.columns;
+  const rows = process.stdout.rows;
+  checks.push({
+    id: 'terminal',
+    label: 'Terminal room (TTY)',
+    status: isInteractiveTty ? 'pass' : 'warn',
+    detail: isInteractiveTty
+      ? `Interactive TTY ready (${cols ?? '?'}x${rows ?? '?'}, TERM=${process.env.TERM || 'unknown'})`
+      : 'Non-interactive stdin/stdout: `dalang` will start `dalang web` instead of the terminal room.',
+  });
+
+  // 6. GitHub CLI (optional, for push + PR)
   const ghPath = await runner.which('gh');
   checks.push({
     id: 'gh',
@@ -300,7 +313,7 @@ export function formatDoctorReport(report: DoctorReport): string {
   lines.push('');
   lines.push(
     report.ok
-      ? 'Ready to run DALANG. Start with `npx dalang-cli`.\nTo use `dalang` directly, install globally with `npm install -g dalang-cli`.'
+      ? 'Ready to run DALANG. Start with `npx dalang-cli`.\nUse `npx dalang-cli web` (or `dalang web`) for the browser UI.\nTo use `dalang` directly, install globally with `npm install -g dalang-cli`.'
       : 'One or more required checks failed. Apply the fixes above and rerun `npx dalang-cli doctor` (or `dalang doctor` after a global install).',
   );
   return lines.join('\n');

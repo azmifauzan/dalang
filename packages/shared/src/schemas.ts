@@ -547,6 +547,9 @@ export interface ProjectSummary {
   workingSessionTitle: string | null;
 }
 
+export const MessageKindSchema = z.enum(['chat', 'report', 'question', 'gate', 'status']);
+export type MessageKind = z.infer<typeof MessageKindSchema>;
+
 export type SessionMessageType =
   | 'text'
   | 'images'
@@ -555,7 +558,49 @@ export type SessionMessageType =
   | 'quick_plan'
   | 'brief'
   | 'plan'
+  | 'report'
   | 'error';
+
+export type RoomReportEvent =
+  | 'task_started'
+  | 'task_finished'
+  | 'task_failed'
+  | 'verify_result'
+  | 'review_verdict'
+  | 'task_merged'
+  | 'task_rejected'
+  | 'task_steered';
+
+export interface RoomReportContent {
+  event: RoomReportEvent;
+  taskId?: string;
+  externalId?: string;
+  taskTitle?: string;
+  summary: string;
+  profileName?: string;
+  provider?: ProviderId;
+  model?: string | null;
+  diffStats?: {
+    filesChanged: number;
+    insertions: number;
+    deletions: number;
+  };
+  verifyCommand?: string;
+  verifyExitCode?: number;
+  reviewStatus?: 'pass' | 'fail';
+  reviewRound?: number;
+  findingsCount?: number;
+  findings?: Array<{ severity: ReviewFindingSeverity; file: string; note: string }>;
+  mergeCommitSha?: string;
+}
+
+export interface RoomRouteInfo {
+  kind: 'lead' | 'ask' | 'steer';
+  profileId: string | null;
+  profileName: string;
+  taskId?: string;
+  runId?: string;
+}
 
 export interface AskMessageContent {
   text: string;
@@ -576,8 +621,11 @@ export interface QuickPlanMessageContent {
 export interface DiscussMessageDTO {
   id: string;
   sessionId: string;
-  role: 'user' | 'lead' | 'system';
+  role: 'user' | 'lead' | 'agent' | 'system';
   type: SessionMessageType;
+  kind?: MessageKind;
+  authorProfileId?: string | null;
+  authorProfileName?: string | null;
   content: unknown;
   createdAt: string;
 }

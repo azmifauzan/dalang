@@ -11,6 +11,7 @@ import {
   PlanContractSchema,
   QuickPlanContractSchema,
   TaskSplitOutputSchema,
+  type AgentProfileDTO,
   type AskMessageContent,
   type BriefContent,
   type BriefDTO,
@@ -18,6 +19,9 @@ import {
   type ChatImage,
   type ChatImageMessage,
   type EffortLevel,
+  type MessageKind,
+  type RoomReportContent,
+  type RoomRouteInfo,
   type SessionTurnDTO,
   type CreateSessionInput,
   type CreateTaskInput,
@@ -52,6 +56,7 @@ import type { ProviderRegistry } from '../adapters/registry.js';
 import type { TurnImage, TurnTokenUsage } from '../adapters/types.js';
 import type { DalangDb } from '../db/client.js';
 import {
+  agentProfiles,
   briefs,
   leadTurns,
   messageImages,
@@ -74,7 +79,13 @@ import { ensureProjectDir, readArtifactFile, writeArtifactFile } from '../safe-f
 import { runContractTurn } from './contract.js';
 import type { DalangEvent, DalangEventBus } from './events.js';
 import { mergeTokenUsage, usageDbFields } from './pricing.js';
+import { ProfileService } from './profiles.js';
 import { extractJsonCandidate } from './review.js';
+import {
+  resolveMentionTarget,
+  type ActiveCoderRunInfo,
+  type RoomExecutionRouter,
+} from './room-routing.js';
 
 export const MAX_SPLIT_DEPTH = 2;
 
@@ -161,10 +172,13 @@ export interface ChatTurnResult {
   plan?: PlanDTO | null;
   round?: DiscussRound;
   messages: DiscussMessageDTO[];
+  routedTo?: RoomRouteInfo;
 }
 
 export class LeadService {
   private readonly activeTurns = new Set<string>();
+  private readonly profiles: ProfileService;
+  private executionRouter: RoomExecutionRouter | null = null;
 
   constructor(
     private readonly db: DalangDb,
@@ -172,7 +186,27 @@ export class LeadService {
     private readonly events?: DalangEventBus,
     private readonly getLanguage: () => UiLanguage = () => 'en',
   ) {
+    this.profiles = new ProfileService(db);
     this.events?.onEvent((event) => this.trackTurn(event));
+  }
+
+  setExecutionRouter(router: RoomExecutionRouter): void {
+    this.executionRouter = router;
+  }
+
+  private getLeadProfileId(): string | null {
+    const byId = this.db
+      .select({ id: agentProfiles.id })
+      .from(agentProfiles)
+      .where(eq(agentProfiles.id, 'profile-lead'))
+      .get();
+    if (byId) return byId.id;
+    const byName = this.db
+      .select({ id: agentProfiles.id })
+      .from(agentProfiles)
+      .where(eq(agentProfiles.name, 'lead'))
+      .get();
+    return byName?.id ?? null;
   }
 
   /** Lead turns running now, by session. Lives in memory: a restart ends the CLI process too. */
@@ -611,8 +645,299 @@ export class LeadService {
   // Unified chat entry point (Ask / Quick / Full)
   // ---------------------------------------------------------------------------
 
-  sendChatMessage(projectId: string, input: ChatMessageInput): Promise<ChatTurnResult> {
-    return this.exclusiveTurn(projectId, () => this.sendChatMessageInner(projectId, input));
+  async sendChatMessage(projectId: string, input: ChatMessageInput): Promise<ChatTurnResult> {
+    const profiles = this.profiles.listProfiles();
+    const activeRuns =
+      input.sessionId && this.executionRouter
+        ? this.executionRouter.listActiveRunsForSession(projectId, input.sessionId)
+        : [];
+    const target = resolveMentionTarget(input.message, profiles, activeRuns);
+
+    if (target?.route === 'steer') {
+      if (!target.body) {
+        throw Object.assign(
+          new Error(`Add a message after @${target.run.profileName} to steer the running task.`),
+          { statusCode: 400 },
+        );
+      }
+      return this.steerActiveRunInRoom(
+        projectId,
+        input.sessionId!,
+        target.run,
+        input.message.trim(),
+        target.body,
+      );
+    }
+
+    if (target?.route === 'ask') {
+      if (!target.body && !(input.images?.length)) {
+        throw Object.assign(
+          new Error(`Add a question after @${target.profile.name}.`),
+          { statusCode: 400 },
+        );
+      }
+      return this.askMentionedProfile(projectId, input, target.profile, target.body);
+    }
+
+    const effectiveInput: ChatMessageInput =
+      target?.route === 'lead' && target.body
+        ? { ...input, message: target.body }
+        : input;
+
+    const result = await this.exclusiveTurn(projectId, () =>
+      this.sendChatMessageInner(projectId, effectiveInput),
+    );
+    return {
+      ...result,
+      routedTo: {
+        kind: 'lead',
+        profileId: this.getLeadProfileId(),
+        profileName: 'lead',
+      },
+    };
+  }
+
+  private async steerActiveRunInRoom(
+    projectId: string,
+    sessionId: string,
+    activeRun: ActiveCoderRunInfo,
+    rawUserMessage: string,
+    steerBody: string,
+  ): Promise<ChatTurnResult> {
+    this.getProjectRow(projectId);
+    const sessionRow = this.getSessionRow(projectId, sessionId);
+    if (!this.executionRouter) {
+      throw Object.assign(new Error('Task steering is not available right now.'), { statusCode: 409 });
+    }
+    if (!activeRun.canSteer) {
+      throw Object.assign(
+        new Error(
+          `@${activeRun.profileName} is running on a CLI session that cannot take steering messages. Wait for it to finish or stop the task.`,
+        ),
+        { statusCode: 409 },
+      );
+    }
+
+    // Deliver first, so a refused steer leaves no orphan message in the room.
+    await this.executionRouter.steerTask(projectId, activeRun.taskId, activeRun.runId, steerBody);
+
+    this.appendMessage(sessionRow.id, 'user', 'text', rawUserMessage, { kind: 'chat' });
+    this.touchSession(sessionRow.id);
+    this.events?.emitEvent({ type: 'discuss.updated', projectId, sessionId: sessionRow.id });
+
+    const report: RoomReportContent = {
+      event: 'task_steered',
+      taskId: activeRun.taskId,
+      externalId: activeRun.externalId,
+      profileName: activeRun.profileName,
+      summary: `Steering note delivered to [${activeRun.externalId}] (${activeRun.profileName}): ${steerBody}`,
+    };
+    this.postRoomMessage(projectId, sessionRow.id, {
+      role: 'agent',
+      type: 'report',
+      kind: 'status',
+      authorProfileId: activeRun.profileId,
+      content: report,
+    });
+
+    return {
+      session: this.getSession(projectId, sessionRow.id),
+      mode: (sessionRow.mode as SessionMode) || 'ask',
+      messages: this.getDiscussState(projectId, sessionRow.id).messages,
+      routedTo: {
+        kind: 'steer',
+        profileId: activeRun.profileId,
+        profileName: activeRun.profileName,
+        taskId: activeRun.taskId,
+        runId: activeRun.runId,
+      },
+    };
+  }
+
+  private async askMentionedProfile(
+    projectId: string,
+    input: ChatMessageInput,
+    profile: AgentProfileDTO,
+    questionBody: string,
+  ): Promise<ChatTurnResult> {
+    const project = this.getProjectRow(projectId);
+    const images = decodeChatImages(input.images ?? []);
+    if (images.length && profile.provider === 'antigravity') {
+      throw new Error('Choose Claude Code or Codex to send images.');
+    }
+
+    let sessionRow: typeof sessions.$inferSelect;
+    if (!input.sessionId) {
+      const created = this.createSession(projectId, {
+        mode: 'ask',
+        title: deriveSessionTitle(input.message, images[0]?.name),
+      });
+      sessionRow = this.getSessionRow(projectId, created.id);
+    } else {
+      sessionRow = this.getSessionRow(projectId, input.sessionId);
+      if (!sessionRow.title?.trim()) {
+        this.db
+          .update(sessions)
+          .set({
+            title: deriveSessionTitle(input.message, images[0]?.name),
+            updatedAt: new Date().toISOString(),
+          })
+          .where(eq(sessions.id, sessionRow.id))
+          .run();
+        sessionRow = this.getSessionRow(projectId, sessionRow.id);
+      }
+    }
+
+    const priorMessages = this.getDiscussState(project.id, sessionRow.id).messages;
+    this.appendUserMessage(sessionRow.id, input.message.trim(), images);
+    this.touchSession(sessionRow.id);
+    this.events?.emitEvent({ type: 'discuss.updated', projectId: project.id, sessionId: sessionRow.id });
+    this.events?.emitEvent({ type: 'sessions.updated', projectId: project.id, sessionId: sessionRow.id });
+
+    const tmpDir = getProjectTmpDir(project.path);
+    ensureProjectDir(project.path, tmpDir);
+    const logFilePath = path.join(tmpDir, `ask-${profile.name}-${sessionRow.id}-${Date.now()}.log`);
+
+    const projectMdPath = path.join(project.path, 'PROJECT.md');
+    const projectContext = fs.existsSync(projectMdPath)
+      ? readArtifactFile(project.path, projectMdPath)
+      : '';
+    const completedWorkSummary = this.buildCompletedWorkContext(sessionRow.id);
+    const historyBlock =
+      priorMessages.length > 0
+        ? `\nRecent team room transcript:\n${this.formatTranscript(priorMessages)}\n`
+        : '';
+
+    const prompt = [
+      `You are "${profile.name}" in DALANG's team room, answering a direct @${profile.name} question in read-only Ask mode.`,
+      profile.rolePrompt ? `\nYour role instructions:\n${profile.rolePrompt}\n` : '',
+      buildLanguageInstruction(this.getLanguage()),
+      `STRICT RULE: You are in READ-ONLY mode. Do NOT create, modify, or delete any files and do NOT run mutating commands.`,
+      `Project: ${project.name} (${project.path})`,
+      projectContext ? `\nCurrent PROJECT.md:\n${projectContext}\n` : '',
+      completedWorkSummary ? `\n${completedWorkSummary}\n` : '',
+      historyBlock,
+      `Question addressed to @${profile.name}:\n${questionBody || 'See the attached images.'}`,
+      ``,
+      `Answer clearly and directly from your role's perspective based on the repository and room transcript.`,
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    const adapter = this.registry.getAdapter(profile.provider);
+    const startedAt = new Date().toISOString();
+    const relLogPath = path.relative(project.path, logFilePath);
+    const turnPhase = `ask:${profile.name}`;
+    this.events?.emitEvent({
+      type: 'lead.turn_started',
+      projectId: project.id,
+      sessionId: sessionRow.id,
+      phase: turnPhase,
+      provider: profile.provider,
+    });
+
+    try {
+      const turn = await adapter.runTurn({
+        projectPath: project.path,
+        prompt,
+        images,
+        sessionId: null,
+        model: profile.model || null,
+        effort: input.effort ?? profile.effort,
+        configDir: profile.configDir,
+        permissionMode: 'read-only',
+        timeoutMs: profile.timeoutMs,
+        idleTimeoutMs: profile.idleTimeoutMs,
+        logFilePath,
+        onLogLine: (line) =>
+          this.events?.emitEvent({
+            type: 'lead.log',
+            projectId: project.id,
+            sessionId: sessionRow.id,
+            phase: turnPhase,
+            line,
+          }),
+      });
+
+      if (turn.exitCode !== 0 && !turn.text.trim()) {
+        throw new Error(
+          `@${profile.name} ask turn failed (exit ${turn.exitCode ?? 'unknown'}): ${(turn.stderr || 'No response').slice(0, 240)}`,
+        );
+      }
+
+      const parsedReply = this.parseAskReply(turn);
+      this.recordLeadTurn({
+        projectId: project.id,
+        sessionId: sessionRow.id,
+        phase: turnPhase,
+        provider: profile.provider,
+        model: profile.model || null,
+        status: 'completed',
+        cliSessionId: turn.sessionId,
+        startedAt,
+        logPath: relLogPath,
+        usage: turn.usage,
+      });
+
+      this.postRoomMessage(project.id, sessionRow.id, {
+        role: 'agent',
+        type: 'ask',
+        kind: 'chat',
+        authorProfileId: profile.id,
+        content: parsedReply,
+      });
+
+      this.events?.emitEvent({
+        type: 'lead.turn_finished',
+        projectId: project.id,
+        sessionId: sessionRow.id,
+        phase: turnPhase,
+        ok: true,
+      });
+      this.events?.emitEvent({ type: 'sessions.updated', projectId: project.id, sessionId: sessionRow.id });
+
+      return {
+        session: this.getSession(project.id, sessionRow.id),
+        mode: 'ask',
+        askReply: parsedReply,
+        messages: this.getDiscussState(project.id, sessionRow.id).messages,
+        routedTo: {
+          kind: 'ask',
+          profileId: profile.id,
+          profileName: profile.name,
+        },
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.recordLeadTurn({
+        projectId: project.id,
+        sessionId: sessionRow.id,
+        phase: turnPhase,
+        provider: profile.provider,
+        model: profile.model || null,
+        status: 'failed',
+        cliSessionId: null,
+        startedAt,
+        failureReason: msg,
+        logPath: relLogPath,
+      });
+      this.postRoomMessage(project.id, sessionRow.id, {
+        role: 'system',
+        type: 'error',
+        kind: 'status',
+        authorProfileId: profile.id,
+        content: msg,
+      });
+      this.events?.emitEvent({
+        type: 'lead.turn_finished',
+        projectId: project.id,
+        sessionId: sessionRow.id,
+        phase: turnPhase,
+        ok: false,
+        error: msg,
+      });
+      throw err;
+    }
   }
 
   private async sendChatMessageInner(
@@ -1467,15 +1792,50 @@ export class LeadService {
       .run();
   }
 
+  private defaultKindForMessage(type: SessionMessageType): MessageKind {
+    switch (type) {
+      case 'questions':
+        return 'question';
+      case 'brief':
+      case 'plan':
+      case 'quick_plan':
+        return 'gate';
+      case 'report':
+        return 'report';
+      case 'error':
+        return 'status';
+      default:
+        return 'chat';
+    }
+  }
+
+  private resolveAuthorProfileName(profileId: string | null | undefined): string | null {
+    if (!profileId) return null;
+    const row = this.db
+      .select({ name: agentProfiles.name })
+      .from(agentProfiles)
+      .where(eq(agentProfiles.id, profileId))
+      .get();
+    return row?.name ?? null;
+  }
+
   private appendMessage(
     sessionId: string,
-    role: 'user' | 'lead' | 'system',
+    role: 'user' | 'lead' | 'agent' | 'system',
     type: SessionMessageType,
     content: unknown,
+    opts?: { kind?: MessageKind; authorProfileId?: string | null },
   ): DiscussMessageDTO {
     const id = crypto.randomUUID();
     const createdAt = new Date().toISOString();
     const serialized = typeof content === 'string' ? content : JSON.stringify(content);
+    const kind = opts?.kind ?? this.defaultKindForMessage(type);
+    const authorProfileId =
+      opts?.authorProfileId !== undefined
+        ? opts.authorProfileId
+        : role === 'lead'
+          ? this.getLeadProfileId()
+          : null;
     this.db
       .insert(messages)
       .values({
@@ -1483,6 +1843,8 @@ export class LeadService {
         sessionId,
         role,
         type,
+        kind,
+        authorProfileId,
         content: serialized,
         createdAt,
       })
@@ -1493,9 +1855,40 @@ export class LeadService {
       sessionId,
       role,
       type,
+      kind,
+      authorProfileId,
+      authorProfileName: this.resolveAuthorProfileName(authorProfileId),
       content,
       createdAt,
     };
+  }
+
+  postRoomMessage(
+    projectId: string,
+    sessionId: string,
+    opts: {
+      role: 'user' | 'lead' | 'agent' | 'system';
+      type: SessionMessageType;
+      kind?: MessageKind;
+      authorProfileId?: string | null;
+      content: unknown;
+    },
+  ): DiscussMessageDTO {
+    const msg = this.appendMessage(sessionId, opts.role, opts.type, opts.content, {
+      kind: opts.kind,
+      authorProfileId: opts.authorProfileId,
+    });
+    this.touchSession(sessionId);
+    this.events?.emitEvent({
+      type: 'room.message',
+      projectId,
+      sessionId,
+      messageId: msg.id,
+      kind: msg.kind ?? 'chat',
+      authorProfileId: msg.authorProfileId ?? null,
+    });
+    this.events?.emitEvent({ type: 'discuss.updated', projectId, sessionId });
+    return msg;
   }
 
   private appendUserMessage(sessionId: string, text: string, images: ChatTurnImage[]): void {
@@ -1554,6 +1947,12 @@ export class LeadService {
       .orderBy(asc(messages.createdAt))
       .all();
 
+    const profileRows = this.db
+      .select({ id: agentProfiles.id, name: agentProfiles.name })
+      .from(agentProfiles)
+      .all();
+    const profileNameById = new Map(profileRows.map((p) => [p.id, p.name]));
+
     let maxRound = 0;
     const formatted: DiscussMessageDTO[] = msgRows.map((row) => {
       let parsedContent: unknown = row.content;
@@ -1568,11 +1967,15 @@ export class LeadService {
           parsedContent = row.content;
         }
       }
+      const authorProfileId = row.authorProfileId ?? null;
       return {
         id: row.id,
         sessionId: row.sessionId,
-        role: row.role as 'user' | 'lead' | 'system',
+        role: row.role as 'user' | 'lead' | 'agent' | 'system',
         type: row.type as SessionMessageType,
+        kind: (row.kind as MessageKind) || this.defaultKindForMessage(row.type as SessionMessageType),
+        authorProfileId,
+        authorProfileName: authorProfileId ? (profileNameById.get(authorProfileId) ?? null) : null,
         content: parsedContent,
         createdAt: row.createdAt,
       };
@@ -2359,6 +2762,24 @@ export class LeadService {
       );
       this.syncPlanJsonFile(projectId, planId, session.id);
 
+      this.postRoomMessage(projectId, session.id, {
+        role: 'lead',
+        type: 'plan',
+        kind: 'gate',
+        authorProfileId: this.getLeadProfileId(),
+        content: {
+          version: nextPlanVersion,
+          milestoneCount: finalContract.milestones.length,
+          taskCount: finalContract.tasks.length,
+          tasks: finalContract.tasks.map((t) => ({
+            id: t.id,
+            title: t.title,
+            role: t.role,
+            complexity: t.complexity,
+          })),
+        },
+      });
+
       this.events?.emitEvent({
         type: 'lead.turn_finished',
         projectId,
@@ -3026,15 +3447,20 @@ export class LeadService {
     return history
       .filter((m) => m.type !== 'error')
       .map((m) => {
+        const speaker = m.authorProfileName ? `${m.authorProfileName}` : m.role;
         if (m.type === 'ask' && m.content && typeof m.content === 'object') {
           const ask = m.content as AskMessageContent;
-          return `[${m.role}/ask] ${ask.text}`;
+          return `[${speaker}/ask] ${ask.text}`;
+        }
+        if (m.type === 'report' && m.content && typeof m.content === 'object') {
+          const rep = m.content as RoomReportContent;
+          return `[${speaker}/report] ${rep.summary}`;
         }
         if (m.type === 'images' && m.content && typeof m.content === 'object') {
           const entry = m.content as ChatImageMessage;
           return `[user/images] ${entry.text}\nAttached images: ${entry.images.map((image) => image.name).join(', ')}`;
         }
-        return `[${m.role}/${m.type}] ${typeof m.content === 'string' ? m.content : JSON.stringify(m.content)}`;
+        return `[${speaker}/${m.type}] ${typeof m.content === 'string' ? m.content : JSON.stringify(m.content)}`;
       })
       .join('\n');
   }

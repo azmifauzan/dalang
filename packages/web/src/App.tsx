@@ -102,12 +102,14 @@ function AppShell({ authEnabled }: { authEnabled: boolean }) {
   const [configTab, setConfigTab] = useState<ConfigTabId>('general');
   const previousSectionRef = useRef<'project' | 'new-project' | 'statistics'>('project');
 
-  const [activeProjectId, setActiveProjectId] = useState<string | null>(() =>
-    readStored('dalang.activeProjectId'),
-  );
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(() =>
-    readStored('dalang.activeSessionId'),
-  );
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(() => {
+    const param = new URLSearchParams(window.location.search).get('project');
+    return param || readStored('dalang.activeProjectId');
+  });
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(() => {
+    const param = new URLSearchParams(window.location.search).get('session');
+    return param || readStored('dalang.activeSessionId');
+  });
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
     () => readStored('dalang.sidebarCollapsed') === '1',
   );
@@ -485,7 +487,7 @@ function AppShell({ authEnabled }: { authEnabled: boolean }) {
             qc.invalidateQueries({ queryKey: ['sessions', msg.projectId] });
             qc.invalidateQueries({ queryKey: ['session-detail', msg.projectId] });
             qc.invalidateQueries({ queryKey: ['projects'] });
-          } else if (msg.type === 'discuss.updated' && msg.projectId) {
+          } else if ((msg.type === 'discuss.updated' || msg.type === 'room.message') && msg.projectId) {
             qc.invalidateQueries({ queryKey: ['discuss', msg.projectId] });
             qc.invalidateQueries({ queryKey: ['session-detail', msg.projectId] });
           } else if (msg.type === 'brief.updated' && msg.projectId) {

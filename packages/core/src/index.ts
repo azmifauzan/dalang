@@ -15,6 +15,7 @@ export * from './services/settings.js';
 export * from './services/update-check.js';
 export * from './services/contract.js';
 export * from './services/lead.js';
+export * from './services/room-routing.js';
 export * from './services/git.js';
 export * from './services/review.js';
 export * from './services/scheduler.js';

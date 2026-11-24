@@ -14,6 +14,8 @@ Find the message or symptom you see:
 
 - [Database schema is newer than this Dalang build](#database-schema-is-newer-than-this-dalang-build)
 - [Browser did not open or the port is busy](#browser-did-not-open-or-the-port-is-busy)
+- [dalang starts the web server instead of the terminal room](#dalang-starts-the-web-server-instead-of-the-terminal-room)
+- [Text in the terminal room cannot be selected](#text-in-the-terminal-room-cannot-be-selected)
 - [A Windows provider is installed but Dalang cannot find it](#a-windows-provider-is-installed-but-dalang-cannot-find-it)
 - [Docker fails to start](#docker-fails-to-start)
 - [Provider shows LOGIN NEEDED or runs fail with login_expired](#provider-shows-login-needed-or-runs-fail-with-login_expired)
@@ -23,7 +25,7 @@ Find the message or symptom you see:
 
 ### Database schema is newer than this Dalang build
 
-If `dalang` prints an error such as `Database schema v14 is newer than this DALANG build (v13)`, the installed CLI is older than the database. Older builds can show the same error for `dalang update`. Install the latest version directly:
+If `dalang` prints an error such as `Database schema v15 is newer than this DALANG build (v14)`, the installed CLI is older than the database. Older builds can show the same error for `dalang update`. Install the latest version directly:
 
 ```bash
 npm install -g dalang-cli@latest
@@ -40,10 +42,18 @@ Do not delete the database to fix this error. To return to an older build, resto
 Open the URL printed in the terminal, normally `http://127.0.0.1:4173`. If startup reports `EADDRINUSE`, use another loopback port:
 
 ```bash
-dalang --port 4180 --no-open
+dalang web --port 4180 --no-open
 ```
 
-Then open `http://127.0.0.1:4180`.
+Then open `http://127.0.0.1:4180`. To use the terminal room against that server, run `dalang room --port 4180` in another terminal.
+
+### dalang starts the web server instead of the terminal room
+
+`dalang` opens the terminal room only when both stdin and stdout are a terminal. Piped output, a service manager, or `docker compose` start `dalang web` instead. `dalang --port` and `dalang --no-open` without a subcommand also start the web server, with a deprecation notice. Run `dalang doctor`: the **Terminal room (TTY)** check reports what Dalang detected.
+
+### Text in the terminal room cannot be selected
+
+The room asks the terminal to report the mouse wheel so it can scroll older messages, and that stops plain click-and-drag selection. Hold `Shift` while you drag (most terminals), or start Dalang with `DALANG_NO_MOUSE=1 dalang` to leave the mouse to the terminal. `PageUp` and `PageDown` scroll either way. If a crash leaves the terminal printing odd characters when you move the mouse, run `reset`.
 
 ### Windows source install asks for C++ Build Tools
 

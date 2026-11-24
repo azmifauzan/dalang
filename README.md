@@ -29,7 +29,7 @@
 
 ![Dalang in Ask mode with an attached screenshot, saved chats, and a paperclip button in the composer](docs/images/ask.webp)
 
-Dalang runs **Claude Code, Codex CLI, and Antigravity CLI** from a browser workspace on your machine. Open a Git repository and start a chat with the Lead. Ask a question, plan a small fix, or work through a larger feature. When agents change code, Dalang runs each task in a separate Git worktree and brings the verification output, review, and diff back for your merge decision. A workspace folder whose top-level folders are their own Git repositories opens as one project, with a worktree, diff, and merge per repository ([how it works](docs/USAGE.md#workspace-projects-with-nested-repositories)).
+Dalang runs **Claude Code, Codex CLI, and Antigravity CLI** from a team room in your terminal or a browser workspace on your machine. Open a Git repository and start a chat with the Lead. Ask a question, plan a small fix, or work through a larger feature. When agents change code, Dalang runs each task in a separate Git worktree and brings the verification output, review, and diff back for your merge decision. A workspace folder whose top-level folders are their own Git repositories opens as one project, with a worktree, diff, and merge per repository ([how it works](docs/USAGE.md#workspace-projects-with-nested-repositories)).
 
 Start with one signed-in CLI or give planning, coding, and review to different providers. Dalang uses the logins you already have. You can work in English or Indonesian.
 
@@ -52,10 +52,10 @@ Install the latest release from npm:
 ```bash
 npm install -g dalang-cli@latest
 dalang doctor
-dalang
+dalang        # open the terminal team room (use `dalang web` for the browser UI)
 ```
 
-Dalang starts at `http://127.0.0.1:4173` and opens your browser. Leave the terminal running while you work.
+In a terminal, `dalang` opens a team room where the Lead, coders, and reviewer post in one timeline. `@<profile>` asks an idle agent in Ask mode or steers a running coder, and `/web` opens the same session in your browser. Run `dalang web` to start the browser workspace at `http://127.0.0.1:4173`. Leave the terminal running while you work. [Terminal team room](docs/USAGE.md#terminal-team-room)
 
 On Windows, task verification uses `cmd.exe`; use Windows-compatible commands. Existing repository instructions are preserved, and installations without symlink privileges use files that point agents to `PROJECT.md`. [Windows setup](docs/INSTALL.md#native-windows)
 
@@ -67,7 +67,7 @@ Dalang opens without an app password by default. Enable one in **Config → Secu
 
 ## Your first project
 
-1. Follow the setup wizard to check your CLIs and choose your Lead, coders, and reviewer.
+1. Follow the setup wizard to check your CLIs and choose your Lead, coders, and reviewer. A fresh `dalang` opens it in the terminal, and `dalang web` opens it in the browser.
 2. Open an existing Git repository or create a project. Ask the Lead about the code, or choose **Quick** or **Full** before sending a change request.
 3. For Quick and Full work, inspect the review and Git diff before merging. The Full flow also lets you run integration tests, push, or open a GitHub pull request from **Review & merge**.
 

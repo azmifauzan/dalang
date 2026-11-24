@@ -9,6 +9,7 @@
 ## Find a topic
 
 - [Choose Ask, Quick, or Full](USAGE.md#choose-ask-quick-or-full)
+- [Work from the terminal team room](USAGE.md#terminal-team-room)
 - [Attach images to a chat](USAGE.md#attach-images)
 - [Set a DALANG password](INSTALL.md#require-a-dalang-password)
 - [Reopen, archive, or discard work in a chat](USAGE.md#continue-or-manage-a-chat)

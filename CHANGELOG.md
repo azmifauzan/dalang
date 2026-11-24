@@ -2,6 +2,17 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
+## Unreleased (0.12, Terminal team room)
+
+- **`dalang` opens a team room in the terminal.** The Lead, coders, and reviewer post under their own profile names in one timeline: plans, task start, task finish with diff stats, verify results, review verdicts, merges, and rejections. Gates are answered with `y` or `n`; `n` leaves the item waiting, and only `/reject` discards a task. The header shows the Dalang mark, the 5 hour and weekly limit left for each installed provider as in the web usage bar, the model the Lead will answer with (and whether it was chosen with `/model`, comes from the session, or from the Lead profile), and the agents running now with their models. The room opens on a new session; `/resume` picks an earlier one and `/new` starts another. Slash commands also cover modes, projects, `/diff` in `$PAGER`, merge, reject, stop, `/web` to open the same session in the browser, and `/exit`. The room attaches to a server already running on the port, or starts one and stops it on exit.
+- **Setup wizard in the terminal.** A fresh install (no project yet) opens the same four steps as the web: how Dalang works, the agent CLI check (with the Antigravity keyring consent), the team (provider, model, and effort per role, with a backup CLI kept or suggested), and the first project. `/wizard` opens it again.
+- **`/model` and `/config`.** `/model` lists every model of every connected provider, marks the active one, and asks for a reasoning effort; the choice is sent with your next messages. `/config` covers language, provider limits refresh, update checks, the agent CLIs, and the agent team. Theme, the app password, and factory reset stay in the web Config.
+- **Mouse wheel and scrolling.** The wheel scrolls older messages 3 rows a notch, and the footer shows the rows above and below. Scrolling past an end no longer leaves offset to undo. Hold `Shift` to select text, or set `DALANG_NO_MOUSE=1`.
+- **`dalang web` starts the browser workspace.** Without a terminal (Docker, a service, piped output) `dalang` runs `dalang web`. `dalang --port` and `dalang --no-open` without a subcommand still start the web server for this release and print a deprecation notice. `dalang room --port <number>` opens the room against a server on another port. The Docker image runs `dalang web --no-open`.
+- **`@<profile>` routing.** An untagged message or `@lead` goes to the Lead. `@<profile>` asks an idle profile in read-only Ask mode without changing the session mode; for a coder that is running, it becomes a steering message. A run that cannot take steering refuses the message and leaves the room unchanged.
+- **Role reports in the browser too.** The web chat shows the same reports with a badge per event.
+- **Schema v15** adds `kind` and `author_profile_id` to `messages` and fills them for existing chats. The upgrade runs automatically. Back up `~/.dalang` first; older builds cannot open a v15 database.
+
 ## 0.11.1 (Webhook hardening), 24 Nov
 
 - **Webhook replay protection.** `X-Dalang-Signature-256` now signs `<timestamp>.<raw body>` and needs `X-Dalang-Timestamp` (Unix seconds); a timestamp more than 5 minutes off is refused. Scripts written for 0.11.0 must add the timestamp. A request that already started a run is refused with `409`. `X-Hub-Signature-256` still signs the body alone, and a repeat of it is refused for 24 hours while DALANG keeps running.

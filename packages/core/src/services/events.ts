@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import type { RunStatus } from '@dalang/shared';
+import type { MessageKind, RunStatus } from '@dalang/shared';
 
 export type DalangEvent =
   | { type: 'lead.turn_started'; projectId: string; sessionId?: string; phase: string; provider: string }
@@ -69,6 +69,14 @@ export type DalangEvent =
       externalId: string;
       targetBranch: string;
       mergeCommitSha: string;
+    }
+  | {
+      type: 'room.message';
+      projectId: string;
+      sessionId: string;
+      messageId: string;
+      kind: MessageKind;
+      authorProfileId: string | null;
     }
   | {
       type: 'automation.updated';

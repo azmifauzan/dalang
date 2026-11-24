@@ -39,13 +39,17 @@
     "better-sqlite3": "13.2.0",
     "drizzle-orm": "0.45.4",
     "fastify": "5.12.8",
+    "ink": "8.0.0",
+    "react": "19.3.1",
     "simple-git": "4.1.0",
     "zod": "4.6.7"
   },
   "devDependencies": {
-    "@types/node": "^24.0.0",
     "@dalang/core": "workspace:*",
     "@dalang/server": "workspace:*",
+    "@dalang/shared": "workspace:*",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.3.0",
     "rolldown": "1.2.19"
   },
   "repository": {

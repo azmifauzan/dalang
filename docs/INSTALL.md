@@ -83,18 +83,20 @@ dalang
 
 `doctor` checks Node.js, Git, the sandbox, the data directory, GitHub CLI, and provider login status. Fix any issues affecting the features you plan to use. [Troubleshooting](TROUBLESHOOTING.md)
 
-Open the URL printed in the terminal, normally `http://127.0.0.1:4173`. Keep the terminal running while you use the app. Once open, follow [the first-project guide](USAGE.md).
+In a terminal, `dalang` opens the [terminal team room](USAGE.md#terminal-team-room); on a fresh install it starts with the setup wizard. For the browser workspace, run `dalang web` and open the URL it prints, normally `http://127.0.0.1:4173`. Keep the terminal running while you use the app. Then follow [the first-project guide](USAGE.md).
 
 | Command | When to use it |
 | --- | --- |
-| `npx dalang-cli --version` | Check the installed version |
-| `npx dalang-cli --no-open` | Start without opening a browser tab |
-| `npx dalang-cli --port 4180` | Use another loopback port if 4173 is busy |
-| `npx dalang-cli doctor --json` | Get machine-readable diagnostics |
-| `dalang update --check` | Check whether a newer version is available |
-| `dalang update` | Check and install the latest global release via npm |
+| `dalang` | Open the interactive terminal team room (falls back to `dalang web` when stdin/stdout is not a TTY) |
+| `dalang room --port 4180` | Open the terminal team room against a server on another port |
+| `dalang web` | Start the local web server and open the browser UI |
+| `dalang web --no-open` | Start the web server without opening a browser tab |
+| `dalang web --port 4180` | Use another loopback port if 4173 is busy |
+| `dalang doctor [--json]` | Check Node, Git, sandbox, data directory, TTY, and provider logins |
+| `dalang update [--check]` | Check for a newer version and install the latest global release via npm |
+| `dalang --version` | Check the installed version |
 
-Use `dalang` in place of `npx dalang-cli` after a global install. You can also set `DALANG_PORT` to choose a default port.
+Use `npx dalang-cli` in place of `dalang` without a global install. Passing `--port` or `--no-open` directly to `dalang` without `web` remains supported with a deprecation notice for one release. You can also set `DALANG_PORT` to choose a default port.
 
 ## Run with Docker
 
@@ -148,7 +150,7 @@ If the npm registry does not have the newest release yet, install the tarball at
 
 ### Database upgrades
 
-Dalang upgrades its database the first time a newer version starts, from any earlier release, and keeps your projects, sessions, briefs, plans, tasks, settings, and profiles. The current schema is v14:
+Dalang upgrades its database the first time a newer version starts, from any earlier release, and keeps your projects, sessions, briefs, plans, tasks, settings, and profiles. The current schema is v15:
 
 | Release | Schema | What the upgrade does |
 | --- | --- | --- |
@@ -158,6 +160,7 @@ Dalang upgrades its database the first time a newer version starts, from any ear
 | v0.8.0 | v12 | Adds the delegation fields on tasks |
 | v0.9.0 | v13 | Adds per-repo task and checkpoint records for workspace projects |
 | v0.11.0 | v14 | Adds schedules, webhooks, their run history, and outside-agent MCP tokens |
+| v0.12 (unreleased) | v15 | Adds `author_profile_id` and `kind` to messages for role reports and team-room feeds |
 
 An upgrade is one way. An older build refuses a newer database with `Database schema vN is newer than this DALANG build`, so restore your pre-upgrade backup to go back. A server that is still running keeps the old code and schema in memory, so restart it after updating.
 
