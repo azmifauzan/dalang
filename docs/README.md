@@ -17,6 +17,7 @@
 - [Monitor runs, recover a task, and roll back](USAGE.md#4-run-the-work)
 - [Review changes, merge, and open a pull request](USAGE.md#5-review-and-merge)
 - [Read usage statistics and change settings](USAGE.md#settings-and-statistics)
+- [Run tasks on a schedule or webhook, and connect outside agents over MCP](USAGE.md#automation-and-outside-agents-over-mcp)
 - [Update, back up, or uninstall Dalang](INSTALL.md#update-dalang)
 - [Understand sandbox permissions and Git safety](SANDBOX.md)
 - [Fix installation, provider, or Git problems](TROUBLESHOOTING.md)

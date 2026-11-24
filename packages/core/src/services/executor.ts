@@ -38,6 +38,7 @@ import {
   type TaskResultContract,
   type TaskReviewDTO,
   type TaskRunDTO,
+  type TaskStatus,
   type TaskStatusInput,
   type UiLanguage,
 } from '@dalang/shared';
@@ -1835,6 +1836,16 @@ export class ExecutionService {
         ...tasksNow.map((t) => t.promise.catch(() => undefined)),
       ]);
     }
+  }
+
+  async waitForTaskExecution(taskId: string): Promise<TaskStatus | null> {
+    while (true) {
+      const handle = this.activeTasks.get(taskId);
+      if (!handle) break;
+      await handle.promise.catch(() => undefined);
+    }
+    const row = this.db.select({ status: tasks.status }).from(tasks).where(eq(tasks.id, taskId)).get();
+    return (row?.status as TaskStatus | undefined) ?? null;
   }
 
   private abortSubtasksForParent(parentTaskId: string): ActiveTaskExecution[] {

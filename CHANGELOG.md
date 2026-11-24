@@ -2,6 +2,14 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
+## 0.11.0 (Automation and outside agents over MCP), 24 Nov
+
+- **Scheduled runs.** A project can run a task on a 5-field cron schedule in local time (`0 2 * * *`, `*/15 * * * *`, `@daily`, `@hourly`, `@weekly`, `@monthly`). Each run is a Quick session that goes through the worktree, verify, and review steps, so it shows up in the sidebar like any other session. Auto-merge after a passing review is optional per automation.
+- **Signed webhooks.** A webhook automation gets its own `/api/webhooks/<token>` URL and a signing secret that is shown once. DALANG checks an HMAC-SHA256 signature of the raw body in `X-Dalang-Signature-256` or `X-Hub-Signature-256`. The task instructions can use `{{event}}` and `{{payload}}`. A trigger that arrives while another session still has unfinished work is recorded as skipped.
+- **Outside agents over MCP.** Claude Code or Codex in a terminal can connect to the loopback `/mcp` endpoint with a token from **Config → Automation**. A `read-only` token can list and read projects, sessions, tasks, run logs, and automations. A `full-access` token can also start, stop, merge, and reject tasks, and trigger automations. Tokens can be limited to one project. DALANG stores only a hash of each token.
+- **Config → Automation.** New tab for schedules, webhooks, run history, and MCP tokens, with setup snippets for Claude Code and Codex.
+- **Schema v14** adds `automations`, `automation_runs`, and `mcp_tokens`. The upgrade from v13 runs automatically. Back up `~/.dalang` first; older builds cannot open a v14 database.
+
 ## 0.10.0 (Session protocols and handoff), 24 Nov
 
 - **Session protocols.** Claude runs keep one `claude` process open over stream-json input, Codex runs use `codex app-server`, and Antigravity runs use ACP (`agy acp`). Each adapter falls back to the one-shot CLI when the protocol is unavailable.

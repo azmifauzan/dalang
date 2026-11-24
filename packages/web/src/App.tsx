@@ -470,6 +470,17 @@ function AppShell({ authEnabled }: { authEnabled: boolean }) {
                 };
               });
             }
+          } else if (
+            msg.type === 'automation.updated' ||
+            msg.type === 'automation.triggered' ||
+            msg.type === 'automation.finished'
+          ) {
+            qc.invalidateQueries({ queryKey: ['automations'] });
+            qc.invalidateQueries({ queryKey: ['automation-runs'] });
+            if (msg.projectId) {
+              qc.invalidateQueries({ queryKey: ['sessions', msg.projectId] });
+              qc.invalidateQueries({ queryKey: ['projects'] });
+            }
           } else if (msg.type === 'sessions.updated' && msg.projectId) {
             qc.invalidateQueries({ queryKey: ['sessions', msg.projectId] });
             qc.invalidateQueries({ queryKey: ['session-detail', msg.projectId] });

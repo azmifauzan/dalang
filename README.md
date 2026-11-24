@@ -41,7 +41,7 @@ Start with one signed-in CLI or give planning, coding, and review to different p
 | **Quick** | Review a one-task plan, run it, and decide whether to merge in the same chat. |
 | **Full** | Discuss a larger change, approve a brief and plan, run independent tasks in parallel, and review each diff before merging. A running coder can also hand independent parts of its task to another profile or CLI through a local MCP server. Each part is reviewed and merged into the task branch before you review the whole. |
 
-The composer lets you choose a mode, CLI, model, and reasoning effort. Attach or paste screenshots when using Claude Code or Codex. Reopen saved chats and their images from the project sidebar. In **Config**, manage provider updates, team roles, account directories, and fallback targets. The project header shows reported quota windows, and **Statistics** summarizes runs, tokens, and API-equivalent cost estimates.
+The composer lets you choose a mode, CLI, model, and reasoning effort. Attach or paste screenshots when using Claude Code or Codex. Reopen saved chats and their images from the project sidebar. In **Config**, manage provider updates, team roles, account directories, and fallback targets. **Config → Automation** runs tasks on a schedule or from a signed webhook, and gives Claude Code or Codex in a terminal a token to read projects and start tasks over local MCP. [Automation and outside agents](docs/USAGE.md#automation-and-outside-agents-over-mcp) The project header shows reported quota windows, and **Statistics** summarizes runs, tokens, and API-equivalent cost estimates.
 
 ## Install
 

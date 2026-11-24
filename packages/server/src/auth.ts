@@ -64,12 +64,21 @@ export function registerAuth(app: FastifyInstance, settings: SettingsService) {
     const restrictedOrigin =
       enabled ||
       route.startsWith('/api/auth/') ||
+      route.startsWith('/api/mcp-tokens') ||
+      route.startsWith('/api/automations') ||
       route === '/api/providers/:provider/update' ||
       route === '/api/factory-reset';
     if (restrictedOrigin && req.headers.origin && req.headers.origin !== `${req.protocol}://${req.headers.host}`) {
       return reply.code(403).send({ error: 'Forbidden: use the DALANG page to make this request.' });
     }
-    if (route === '/api/health' || route === '/api/auth/status' || route === '/api/auth/login') return;
+    if (
+      route === '/api/health' ||
+      route === '/api/auth/status' ||
+      route === '/api/auth/login' ||
+      route === '/api/webhooks/:token'
+    ) {
+      return;
+    }
     if (!canAccess(readToken(req))) {
       return reply.code(401).send({ error: 'Sign in to DALANG to continue.' });
     }

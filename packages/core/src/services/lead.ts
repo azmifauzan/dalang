@@ -1212,6 +1212,147 @@ export class LeadService {
     return approved;
   }
 
+  /**
+   * Creates a new Quick-mode session with a single already-approved task (no Lead planning turn).
+   * Used by scheduled/webhook automations and external MCP `start_task` calls so automated runs
+   * go through the full DALANG worktree, verify, review, and merge-gate pipeline and remain
+   * inspectable in the session sidebar.
+   */
+  createDirectApprovedTask(
+    projectId: string,
+    input: {
+      sessionTitle: string;
+      userMessage: string;
+      title: string;
+      goal: string;
+      role?: PlanTaskRole;
+      complexity?: TaskComplexity;
+      filesAllowed?: string[];
+      filesReference?: string[];
+      acceptanceCriteria: string[];
+      verify: string;
+      profileOverride?: string | null;
+      milestone?: string;
+    },
+  ): { session: SessionSummaryDTO; plan: PlanDTO; task: TaskDTO } {
+    const project = this.getProjectRow(projectId);
+    const working = this.getWorkingSession(projectId);
+    if (working) {
+      const name = working.title?.trim() || 'Untitled session';
+      throw conflictError(
+        `Cannot start work while session "${name}" has unfinished work. Merge or discard its work first.`,
+      );
+    }
+
+    const session = this.createSession(projectId, {
+      mode: 'quick',
+      title: input.sessionTitle,
+    });
+    const sessionDir = getSessionDir(project.path, session.id);
+    ensureProjectDir(project.path, sessionDir);
+
+    const milestoneName = input.milestone?.trim() || 'Automation';
+    const normalizedTask: PlanTaskContract = {
+      id: 'T-001',
+      title: input.title,
+      milestone: milestoneName,
+      role: input.role ?? 'engineer',
+      complexity: input.complexity ?? 'low',
+      depends_on: [],
+      goal: input.goal,
+      files_allowed: input.filesAllowed ?? [],
+      files_reference: input.filesReference ?? [],
+      acceptance_criteria: input.acceptanceCriteria,
+      verify: input.verify,
+      needs_split: false,
+    };
+
+    const planContract: PlanContract = PlanContractSchema.parse({
+      version: 1,
+      brief_version: 1,
+      milestones: [{ id: milestoneName, title: milestoneName, description: input.title }],
+      tasks: [normalizedTask],
+    });
+
+    const planFilePath = path.join(sessionDir, 'plan.json');
+    const relPlanPath = path.relative(project.path, planFilePath).split(path.sep).join('/');
+    writeArtifactFile(project.path, planFilePath, JSON.stringify(planContract, null, 2));
+
+    const planId = crypto.randomUUID();
+    const taskId = crypto.randomUUID();
+    const now = new Date().toISOString();
+
+    this.db
+      .insert(plans)
+      .values({
+        id: planId,
+        projectId: project.id,
+        sessionId: session.id,
+        briefId: null,
+        version: 1,
+        status: 'approved',
+        filePath: relPlanPath,
+        createdAt: now,
+        approvedAt: now,
+      })
+      .run();
+
+    this.db
+      .insert(tasks)
+      .values({
+        id: taskId,
+        planId,
+        externalId: normalizedTask.id,
+        title: normalizedTask.title,
+        milestone: normalizedTask.milestone,
+        role: normalizedTask.role,
+        complexity: normalizedTask.complexity,
+        status: 'approved',
+        position: 0,
+        goal: normalizedTask.goal,
+        filesAllowedJson: JSON.stringify(normalizedTask.files_allowed),
+        filesReferenceJson: JSON.stringify(normalizedTask.files_reference),
+        acceptanceCriteriaJson: JSON.stringify(normalizedTask.acceptance_criteria),
+        verify: normalizedTask.verify,
+        needsSplit: false,
+        splitDepth: 0,
+        parentTaskId: null,
+        profileOverride: input.profileOverride ?? null,
+        reviewRounds: 0,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .run();
+
+    this.db
+      .update(sessions)
+      .set({ phase: 'run', updatedAt: now })
+      .where(eq(sessions.id, session.id))
+      .run();
+
+    this.appendMessage(session.id, 'user', 'text', input.userMessage);
+    const msgPayload: QuickPlanMessageContent = {
+      verdict: 'ready',
+      summary: input.title,
+      planId,
+      planVersion: 1,
+      task: normalizedTask,
+      taskId,
+    };
+    this.appendMessage(session.id, 'lead', 'quick_plan', msgPayload);
+
+    this.events?.emitEvent({ type: 'sessions.updated', projectId, sessionId: session.id });
+    this.events?.emitEvent({ type: 'plan.updated', projectId, sessionId: session.id });
+
+    const plan = this.getPlan(projectId, session.id)!;
+    const task = plan.tasks.find((t) => t.id === taskId)!;
+    return {
+      session: this.getSession(projectId, session.id),
+      plan,
+      task,
+    };
+  }
+
   // ---------------------------------------------------------------------------
   // Full mode (Discuss -> Brief -> Plan) — session-scoped with backward compat
   // ---------------------------------------------------------------------------

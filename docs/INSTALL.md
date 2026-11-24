@@ -148,7 +148,7 @@ If the npm registry does not have the newest release yet, install the tarball at
 
 ### Database upgrades
 
-Dalang upgrades its database the first time a newer version starts, from any earlier release, and keeps your projects, sessions, briefs, plans, tasks, settings, and profiles. The current schema is v13:
+Dalang upgrades its database the first time a newer version starts, from any earlier release, and keeps your projects, sessions, briefs, plans, tasks, settings, and profiles. The current schema is v14:
 
 | Release | Schema | What the upgrade does |
 | --- | --- | --- |
@@ -157,6 +157,7 @@ Dalang upgrades its database the first time a newer version starts, from any ear
 | v0.7.4 | v11 | Adds the `coder-medium` and `qa` profiles and points the medium and QA routing rules at them |
 | v0.8.0 | v12 | Adds the delegation fields on tasks |
 | v0.9.0 | v13 | Adds per-repo task and checkpoint records for workspace projects |
+| v0.11.0 | v14 | Adds schedules, webhooks, their run history, and outside-agent MCP tokens |
 
 An upgrade is one way. An older build refuses a newer database with `Database schema vN is newer than this DALANG build`, so restore your pre-upgrade backup to go back. A server that is still running keeps the old code and schema in memory, so restart it after updating.
 
@@ -166,7 +167,7 @@ Use **Config → About → Check now** to check for a release. Dalang can also n
 
 | Location | Contents |
 | --- | --- |
-| `~/.dalang/dalang.db` | Projects, chat transcripts and images, settings, and run history. Set `DALANG_HOME` to relocate the data directory. |
+| `~/.dalang/dalang.db` | Projects, chat transcripts and images, settings, run history, automations with their webhook signing secrets, and hashes of outside-agent MCP tokens. Set `DALANG_HOME` to relocate the data directory. |
 | `~/.dalang/worktrees/` | Isolated task checkouts managed by Dalang. |
 | `<repo>/.dalang/sessions/<session-id>/` | Session briefs, plans, task results, reviews, and logs. |
 | `<repo>/.dalang/tmp/` | Temporary files including Ask technical logs. |

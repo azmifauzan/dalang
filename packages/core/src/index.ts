@@ -21,5 +21,8 @@ export * from './services/scheduler.js';
 export * from './services/pricing.js';
 export * from './services/stats.js';
 export * from './services/mcp.js';
+export * from './services/cron.js';
+export * from './services/automation.js';
+export * from './services/external-mcp.js';
 export * from './services/executor.js';
 export * from './testing/replay-runner.js';

@@ -11,6 +11,8 @@ import {
   BriefReviseInputSchema,
   CHAT_BODY_LIMIT,
   ChatMessageInputSchema,
+  CreateAutomationInputSchema,
+  CreateMcpTokenInputSchema,
   CreateOrOpenProjectInputSchema,
   CreateProfileInputSchema,
   CreateRoutingRuleInputSchema,
@@ -28,6 +30,8 @@ import {
   StartExecutionInputSchema,
   StopExecutionInputSchema,
   SwitchSessionModeInputSchema,
+  TriggerAutomationInputSchema,
+  UpdateAutomationInputSchema,
   UpdateProfileInputSchema,
   UpdateRoutingRuleInputSchema,
   UpdateSessionInputSchema,
@@ -36,8 +40,11 @@ import {
   type ProviderStatus,
 } from '@dalang/shared';
 import {
+  AutomationService,
   DalangEventBus,
   ExecutionService,
+  ExternalMcpService,
+  ExternalMcpTokenService,
   LeadService,
   NodeCliRunner,
   ProfileService,
@@ -54,6 +61,12 @@ import {
 import { registerAuth } from './auth.js';
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
+const LOOPBACK_IPS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+
+function isLoopbackIp(ip: string | undefined): boolean {
+  if (!ip) return false;
+  return LOOPBACK_IPS.has(ip.trim());
+}
 
 export interface CreateServerOptions {
   dbPath?: string;
@@ -61,11 +74,14 @@ export interface CreateServerOptions {
   runner?: CliRunner;
   updateFetcher?: UpdateRegistryFetcher;
   currentVersion?: string;
+  enableScheduler?: boolean;
+  schedulerTickIntervalMs?: number;
 }
 
 export async function createDalangServer(options: CreateServerOptions = {}): Promise<{
   app: FastifyInstance;
   events: DalangEventBus;
+  automationService: AutomationService;
   close: () => Promise<void>;
 }> {
   const conn = openDatabase(options.dbPath);
@@ -85,11 +101,27 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
   const leadService = new LeadService(conn.db, registry, events, () =>
     settingsService.resolvedLanguage(),
   );
+  let serverBaseUrl: string | null = null;
   let mcpEndpointUrl: string | null = null;
   const executionService = new ExecutionService(conn.db, registry, leadService, events, {
     getLanguage: () => settingsService.resolvedLanguage(),
     mcpEndpointUrl: () => mcpEndpointUrl,
   });
+  const automationService = new AutomationService(conn.db, leadService, executionService, events, {
+    baseUrl: () => serverBaseUrl,
+    tickIntervalMs: options.schedulerTickIntervalMs,
+  });
+  const mcpTokenService = new ExternalMcpTokenService(conn.db, {
+    endpointUrl: () => mcpEndpointUrl,
+  });
+  const externalMcpService = new ExternalMcpService(
+    conn.db,
+    mcpTokenService,
+    projectService,
+    leadService,
+    executionService,
+    automationService,
+  );
   const statsService = new StatisticsService(conn.db, () =>
     executionService.getProviderRuntimeStates(),
   );
@@ -118,7 +150,11 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
   app.addHook('onListen', async () => {
     const addr = app.server.address();
     if (typeof addr === 'object' && addr && addr.port) {
-      mcpEndpointUrl = `http://127.0.0.1:${addr.port}/mcp`;
+      serverBaseUrl = `http://127.0.0.1:${addr.port}`;
+      mcpEndpointUrl = `${serverBaseUrl}/mcp`;
+    }
+    if (options.enableScheduler !== false) {
+      automationService.start();
     }
   });
 
@@ -159,23 +195,87 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     version: options.currentVersion ?? DALANG_VERSION,
   }));
 
-  // Loopback MCP endpoint for run-scoped agent delegation (v0.8).
-  // Protected by global loopback Host/Origin hook + per-run bearer token authentication.
+  // Loopback MCP endpoint:
+  // - v0.8 run-scoped delegation bearer tokens -> delegate_task / task_status / task_cancel
+  // - v0.11 persistent outside-agent bearer tokens -> read-only or full-access project/task tools
   app.all('/mcp', async (req, reply) => {
-    const res = await executionService.handleMcpHttpRequest({
+    if (!isLoopbackIp(req.ip)) {
+      return reply
+        .status(403)
+        .send({ jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Forbidden: /mcp is loopback-only.' } });
+    }
+    const authHeader = req.headers.authorization;
+    const mcpReq = {
       method: req.method,
-      authorizationHeader: req.headers.authorization,
+      authorizationHeader: authHeader,
       body: req.body,
-    });
-    if (res.headers) {
-      for (const [k, v] of Object.entries(res.headers)) {
+    };
+
+    const res = executionService.getDelegationStore().authenticate(authHeader)
+      ? await executionService.handleMcpHttpRequest(mcpReq)
+      : (() => {
+          const externalScope = externalMcpService.authenticate(authHeader);
+          if (externalScope) {
+            return externalMcpService.handleHttpRequest(externalScope, mcpReq);
+          }
+          return Promise.resolve({
+            statusCode: 401,
+            headers: { 'Cache-Control': 'no-store' },
+            body: {
+              jsonrpc: '2.0',
+              id: null,
+              error: {
+                code: -32001,
+                message: 'Unauthorized: missing, invalid, revoked, or expired MCP bearer token.',
+              },
+            },
+          });
+        })();
+
+    const resolved = await res;
+    if (resolved.headers) {
+      for (const [k, v] of Object.entries(resolved.headers)) {
         reply.header(k, v);
       }
     }
-    if (res.body === undefined) {
-      return reply.status(res.statusCode).send();
+    if (resolved.body === undefined) {
+      return reply.status(resolved.statusCode).send();
     }
-    return reply.status(res.statusCode).send(res.body);
+    return reply.status(resolved.statusCode).send(resolved.body);
+  });
+
+  // Signed webhook trigger endpoint (v0.11): captures exact raw bytes for HMAC-SHA256 verification.
+  await app.register(async (webhookApp) => {
+    webhookApp.removeAllContentTypeParsers();
+    webhookApp.addContentTypeParser('*', { parseAs: 'buffer' }, (_req, body, done) => {
+      done(null, body);
+    });
+    webhookApp.post<{ Params: { token: string } }>('/api/webhooks/:token', async (req, reply) => {
+      const rawBody = Buffer.isBuffer(req.body)
+        ? req.body
+        : typeof req.body === 'string'
+          ? Buffer.from(req.body, 'utf8')
+          : Buffer.alloc(0);
+      const sigHeader =
+        (typeof req.headers['x-dalang-signature-256'] === 'string'
+          ? req.headers['x-dalang-signature-256']
+          : undefined) ??
+        (typeof req.headers['x-hub-signature-256'] === 'string'
+          ? req.headers['x-hub-signature-256']
+          : undefined);
+      const eventHeader =
+        (typeof req.headers['x-dalang-event'] === 'string' ? req.headers['x-dalang-event'] : undefined) ??
+        (typeof req.headers['x-github-event'] === 'string' ? req.headers['x-github-event'] : undefined);
+      const deliveryHeader =
+        (typeof req.headers['x-dalang-delivery'] === 'string' ? req.headers['x-dalang-delivery'] : undefined) ??
+        (typeof req.headers['x-github-delivery'] === 'string' ? req.headers['x-github-delivery'] : undefined);
+
+      const result = await automationService.handleWebhook(req.params.token, rawBody, sigHeader, {
+        event: eventHeader,
+        deliveryId: deliveryHeader,
+      });
+      return reply.status(202).send(result);
+    });
   });
 
   app.get('/api/update-status', async (req) => {
@@ -596,6 +696,7 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
   });
 
   app.post('/api/factory-reset', async (_req, reply) => {
+    await automationService.stop();
     await executionService.stopAll();
     for (const project of projectService.listProjects()) {
       projectService.deleteProject(project.id);
@@ -603,6 +704,80 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     resetDatabaseToDefaults(conn.db, conn.sqlite);
     cachedProviderStatuses = null;
     auth.reset(reply);
+    if (options.enableScheduler !== false && serverBaseUrl) {
+      automationService.start();
+    }
+    return { ok: true };
+  });
+
+  // Automations (v0.11: scheduled & webhook-triggered runs)
+  app.get('/api/automations', async (req) => {
+    const query = z
+      .object({
+        projectId: z.string().min(1).optional(),
+      })
+      .parse(req.query ?? {});
+    return { automations: automationService.listAutomations(query.projectId) };
+  });
+
+  app.post('/api/automations', async (req, reply) => {
+    const body = CreateAutomationInputSchema.parse(req.body ?? {});
+    const automation = automationService.createAutomation(body);
+    return reply.status(201).send({ automation });
+  });
+
+  app.patch<{ Params: { id: string } }>('/api/automations/:id', async (req) => {
+    const body = UpdateAutomationInputSchema.parse(req.body ?? {});
+    return { automation: automationService.updateAutomation(req.params.id, body) };
+  });
+
+  app.delete<{ Params: { id: string } }>('/api/automations/:id', async (req) => {
+    automationService.deleteAutomation(req.params.id);
+    return { ok: true };
+  });
+
+  app.post<{ Params: { id: string } }>('/api/automations/:id/trigger', async (req, reply) => {
+    const body = TriggerAutomationInputSchema.parse(req.body ?? {});
+    const run = await automationService.triggerAutomation(req.params.id, 'manual', {
+      event: body.event,
+      payload: body.payload,
+    });
+    return reply.status(202).send({ run });
+  });
+
+  app.post<{ Params: { id: string } }>('/api/automations/:id/rotate-secret', async (req) => {
+    return { automation: automationService.rotateWebhookSecret(req.params.id) };
+  });
+
+  app.get<{ Params: { id: string } }>('/api/automations/:id/runs', async (req) => {
+    const query = z
+      .object({
+        limit: z.coerce.number().int().positive().max(100).optional(),
+      })
+      .parse(req.query ?? {});
+    return { runs: automationService.listRuns(req.params.id, query.limit) };
+  });
+
+  // External MCP Tokens (v0.11: outside agents over loopback /mcp)
+  app.get('/api/mcp-tokens', async () => {
+    return {
+      tokens: mcpTokenService.listTokens(),
+      endpointUrl: mcpEndpointUrl,
+    };
+  });
+
+  app.post('/api/mcp-tokens', async (req, reply) => {
+    const body = CreateMcpTokenInputSchema.parse(req.body ?? {});
+    const created = mcpTokenService.createToken(body);
+    return reply.status(201).send(created);
+  });
+
+  app.post<{ Params: { id: string } }>('/api/mcp-tokens/:id/revoke', async (req) => {
+    return { tokenInfo: mcpTokenService.revokeToken(req.params.id) };
+  });
+
+  app.delete<{ Params: { id: string } }>('/api/mcp-tokens/:id', async (req) => {
+    mcpTokenService.deleteToken(req.params.id);
     return { ok: true };
   });
 
@@ -731,7 +906,9 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
   return {
     app,
     events,
+    automationService,
     close: async () => {
+      await automationService.stop();
       await executionService.stopAll();
       await app.close();
       conn.close();
@@ -746,14 +923,18 @@ export async function startDalangServer(opts: {
   runner?: CliRunner;
   updateFetcher?: UpdateRegistryFetcher;
   currentVersion?: string;
-} = {}): Promise<{ url: string; close: () => Promise<void> }> {
+  enableScheduler?: boolean;
+  schedulerTickIntervalMs?: number;
+} = {}): Promise<{ url: string; automationService: AutomationService; close: () => Promise<void> }> {
   const port = opts.port ?? Number(process.env.DALANG_PORT || 4173);
-  const { app, close } = await createDalangServer({
+  const { app, automationService, close } = await createDalangServer({
     dbPath: opts.dbPath,
     staticDir: opts.staticDir,
     runner: opts.runner,
     updateFetcher: opts.updateFetcher,
     currentVersion: opts.currentVersion,
+    enableScheduler: opts.enableScheduler,
+    schedulerTickIntervalMs: opts.schedulerTickIntervalMs,
   });
 
   // Docker forwards a host loopback port to the container interface. The Host/Origin guard still applies.
@@ -766,6 +947,7 @@ export async function startDalangServer(opts: {
     .catch(() => undefined);
   return {
     url: `http://127.0.0.1:${actualPort}`,
+    automationService,
     close,
   };
 }

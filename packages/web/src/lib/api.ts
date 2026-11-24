@@ -3,9 +3,15 @@ import type {
   ApproveMergeInput,
   AskMessageContent,
   AuthStatusDTO,
+  AutomationDTO,
+  AutomationRunDTO,
   BriefContent,
   BriefDTO,
   ChatMessageInput,
+  CreateAutomationInput,
+  CreatedAutomationDTO,
+  CreatedMcpTokenDTO,
+  CreateMcpTokenInput,
   CreateOrOpenProjectInput,
   CreateProfileInput,
   CreateRoutingRuleInput,
@@ -17,6 +23,7 @@ import type {
   ExecutionStateDTO,
   GuardStateDTO,
   IntegrationRunDTO,
+  McpTokenDTO,
   PlanDTO,
   ProjectSummary,
   ProviderId,
@@ -41,6 +48,8 @@ import type {
   TaskDiffDTO,
   TaskDTO,
   TaskRunDTO,
+  TriggerAutomationInput,
+  UpdateAutomationInput,
   UpdateProfileInput,
   UpdateRoutingRuleInput,
   UpdateSessionInput,
@@ -427,4 +436,45 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ ruleIds }),
     }),
+
+  // v0.11 Automation & Outside-Agent MCP Tokens
+  listAutomations: (projectId?: string) =>
+    request<{ automations: AutomationDTO[] }>(
+      `/api/automations${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''}`,
+    ),
+  createAutomation: (body: CreateAutomationInput) =>
+    request<{ automation: CreatedAutomationDTO }>('/api/automations', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updateAutomation: (id: string, body: UpdateAutomationInput) =>
+    request<{ automation: AutomationDTO }>(`/api/automations/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  deleteAutomation: (id: string) =>
+    request<{ ok: boolean }>(`/api/automations/${id}`, { method: 'DELETE' }),
+  triggerAutomation: (id: string, body: TriggerAutomationInput = {}) =>
+    request<{ run: AutomationRunDTO }>(`/api/automations/${id}/trigger`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  rotateWebhookSecret: (id: string) =>
+    request<{ automation: CreatedAutomationDTO }>(`/api/automations/${id}/rotate-secret`, {
+      method: 'POST',
+    }),
+  listAutomationRuns: (id: string, limit = 20) =>
+    request<{ runs: AutomationRunDTO[] }>(`/api/automations/${id}/runs?limit=${limit}`),
+
+  listMcpTokens: () =>
+    request<{ tokens: McpTokenDTO[]; endpointUrl: string | null }>('/api/mcp-tokens'),
+  createMcpToken: (body: CreateMcpTokenInput) =>
+    request<CreatedMcpTokenDTO>('/api/mcp-tokens', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  revokeMcpToken: (id: string) =>
+    request<{ tokenInfo: McpTokenDTO }>(`/api/mcp-tokens/${id}/revoke`, { method: 'POST' }),
+  deleteMcpToken: (id: string) =>
+    request<{ ok: boolean }>(`/api/mcp-tokens/${id}`, { method: 'DELETE' }),
 };

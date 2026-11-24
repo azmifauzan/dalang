@@ -42,7 +42,7 @@ describe('database upgrade', () => {
     fresh.close();
 
     const upgraded = openDatabase(file);
-    expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(13);
+    expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(14);
     const runCols = (upgraded.sqlite.pragma('table_info(runs)') as Array<{ name: string }>).map((c) => c.name);
     expect(runCols).toContain('worktree_path');
     expect(runCols).toContain('input_tokens');
@@ -247,7 +247,7 @@ describe('database upgrade', () => {
     // Open and trigger v8 -> v9 upgrade
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(13);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(14);
 
       // Project A: 1 Full working session preserving brief, plan, tasks, messages, and moved artifacts
       const sessionsA = upgraded.sqlite
@@ -351,7 +351,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(13);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(14);
       const names = (
         upgraded.sqlite.prepare('SELECT name FROM agent_profiles ORDER BY name').all() as Array<{ name: string }>
       ).map((r) => r.name);
@@ -386,7 +386,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(13);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(14);
       const taskCols = (upgraded.sqlite.pragma('table_info(tasks)') as Array<{ name: string }>).map((c) => c.name);
       expect(taskCols).toContain('delegated_by_run_id');
       expect(taskCols).toContain('delegation_depth');
@@ -410,7 +410,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(13);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(14);
       const taskRepoCols = (
         upgraded.sqlite.pragma('table_info(task_repos)') as Array<{ name: string }>
       ).map((c) => c.name);
@@ -441,6 +441,54 @@ describe('database upgrade', () => {
           'checkpoint_before_ref',
           'checkpoint_after_ref',
         ]),
+      );
+    } finally {
+      upgraded.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('upgrades a v13 database to v14 by creating automations, automation_runs, and mcp_tokens', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dalang-up14-'));
+    const file = path.join(dir, 'dalang.db');
+    const fresh = openDatabase(file);
+    fresh.sqlite.exec(`
+      DROP TABLE IF EXISTS automation_runs;
+      DROP TABLE IF EXISTS automations;
+      DROP TABLE IF EXISTS mcp_tokens;
+    `);
+    fresh.sqlite.pragma('user_version = 13');
+    fresh.close();
+
+    const upgraded = openDatabase(file);
+    try {
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(14);
+      const autoCols = (
+        upgraded.sqlite.pragma('table_info(automations)') as Array<{ name: string }>
+      ).map((c) => c.name);
+      expect(autoCols).toEqual(
+        expect.arrayContaining([
+          'id',
+          'project_id',
+          'kind',
+          'cron_expr',
+          'webhook_token',
+          'webhook_secret',
+          'auto_merge',
+          'next_run_at',
+        ]),
+      );
+      const runCols = (
+        upgraded.sqlite.pragma('table_info(automation_runs)') as Array<{ name: string }>
+      ).map((c) => c.name);
+      expect(runCols).toEqual(
+        expect.arrayContaining(['id', 'automation_id', 'trigger_source', 'session_id', 'task_id', 'status']),
+      );
+      const tokenCols = (
+        upgraded.sqlite.pragma('table_info(mcp_tokens)') as Array<{ name: string }>
+      ).map((c) => c.name);
+      expect(tokenCols).toEqual(
+        expect.arrayContaining(['id', 'name', 'access_level', 'token_prefix', 'token_hash', 'project_id', 'revoked_at']),
       );
     } finally {
       upgraded.close();

@@ -11,7 +11,7 @@ import { useTheme } from '../lib/theme.js';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 
-export type ConfigTabId = 'general' | 'agents' | 'security' | 'about';
+export type ConfigTabId = 'general' | 'agents' | 'automation' | 'security' | 'about';
 
 export interface SidebarProps {
   mode: 'workspace' | 'config';
@@ -49,6 +49,7 @@ const CONFIG_TABS: Array<{
 }> = [
   { id: 'general', key: 'config.tab.general', hintKey: 'config.tab.generalHint' },
   { id: 'agents', key: 'config.tab.agents', hintKey: 'config.tab.agentsHint' },
+  { id: 'automation', key: 'config.tab.automation', hintKey: 'config.tab.automationHint' },
   { id: 'security', key: 'config.tab.security', hintKey: 'config.tab.securityHint' },
   { id: 'about', key: 'config.tab.about', hintKey: 'config.tab.aboutHint' },
 ];

@@ -18,10 +18,12 @@ Find the message or symptom you see:
 - [Docker fails to start](#docker-fails-to-start)
 - [Provider shows LOGIN NEEDED or runs fail with login_expired](#provider-shows-login-needed-or-runs-fail-with-login_expired)
 - [Update CLI fails](#update-cli-fails)
+- [A schedule or webhook run was skipped](#a-schedule-or-webhook-run-was-skipped)
+- [An outside agent cannot reach /mcp](#an-outside-agent-cannot-reach-mcp)
 
 ### Database schema is newer than this Dalang build
 
-If `dalang` prints an error such as `Database schema v13 is newer than this DALANG build (v12)`, the installed CLI is older than the database. Older builds can show the same error for `dalang update`. Install the latest version directly:
+If `dalang` prints an error such as `Database schema v14 is newer than this DALANG build (v13)`, the installed CLI is older than the database. Older builds can show the same error for `dalang update`. Install the latest version directly:
 
 ```bash
 npm install -g dalang-cli@latest
@@ -147,3 +149,16 @@ Open the project's saved **Full** session in the sidebar to find the conversatio
 ### Another session has unfinished work
 
 Open the session named in the message and finish reviewing its remaining tasks, or use **Discard work** in that session's header. Archiving is available after you finish or discard the work. You can keep using Ask in other sessions while you decide. [Work with saved chats](USAGE.md#continue-or-manage-a-chat)
+
+### A schedule or webhook run was skipped
+
+An automated run starts a new Quick session, and only one session can have unfinished work at a time. When another session still has a task waiting in **Review & merge**, or a task is running, the trigger is recorded as **Skipped** in the automation's **Runs** list. Merge or discard that work, then use **Run now** or wait for the next trigger. Turn on auto-merge for an automation if its passing tasks should not wait for you. [Automation](USAGE.md#automation-and-outside-agents-over-mcp)
+
+A webhook call that returns `401` has a missing or wrong signature: sign the exact raw body with the current secret, and send `sha256=<hex>`. A `409` means the automation is paused.
+
+### An outside agent cannot reach /mcp
+
+- `401 Unauthorized`: the token is wrong, revoked, or was deleted. Create a new one in **Config → Automation** and update the agent's MCP settings.
+- `403 Forbidden: /mcp is loopback-only`: the request did not come from the same machine. In Docker, run the agent inside the container with `docker compose exec`.
+- The agent lists only read tools: the token is `read-only`. Create a `full-access` token to start or merge tasks.
+- Codex reports a timeout while `start_task` runs: set `tool_timeout_sec` in its `[mcp_servers.dalang]` block (the generated snippet uses 3600), or call `start_task` with `mode: "async"` and check progress with `get_task`.

@@ -69,6 +69,27 @@ export type DalangEvent =
       externalId: string;
       targetBranch: string;
       mergeCommitSha: string;
+    }
+  | {
+      type: 'automation.updated';
+      projectId: string;
+      automationId: string;
+    }
+  | {
+      type: 'automation.triggered';
+      projectId: string;
+      automationId: string;
+      automationRunId: string;
+      triggerSource: 'schedule' | 'webhook' | 'manual';
+      taskId?: string;
+    }
+  | {
+      type: 'automation.finished';
+      projectId: string;
+      automationId: string;
+      automationRunId: string;
+      status: string;
+      error?: string;
     };
 
 export class DalangEventBus extends EventEmitter {

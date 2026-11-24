@@ -307,3 +307,63 @@ export const settings = sqliteTable('settings', {
   key: text('key').primaryKey(),
   value: text('value').notNull(),
 });
+
+export const automations = sqliteTable('automations', {
+  id: text('id').primaryKey(),
+  projectId: text('project_id')
+    .notNull()
+    .references(() => projects.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  kind: text('kind').notNull(),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+  cronExpr: text('cron_expr'),
+  webhookToken: text('webhook_token').unique(),
+  webhookSecret: text('webhook_secret'),
+  title: text('title').notNull(),
+  prompt: text('prompt').notNull(),
+  role: text('role').notNull().default('engineer'),
+  complexity: text('complexity').notNull().default('low'),
+  filesAllowedJson: text('files_allowed_json').notNull().default('[]'),
+  filesReferenceJson: text('files_reference_json').notNull().default('[]'),
+  acceptanceCriteriaJson: text('acceptance_criteria_json').notNull().default('[]'),
+  verify: text('verify').notNull(),
+  profileOverride: text('profile_override'),
+  allowUnconfined: integer('allow_unconfined', { mode: 'boolean' }).notNull().default(false),
+  autoMerge: integer('auto_merge', { mode: 'boolean' }).notNull().default(false),
+  lastTriggeredAt: text('last_triggered_at'),
+  nextRunAt: text('next_run_at'),
+  lastStatus: text('last_status'),
+  lastError: text('last_error'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+export const automationRuns = sqliteTable('automation_runs', {
+  id: text('id').primaryKey(),
+  automationId: text('automation_id')
+    .notNull()
+    .references(() => automations.id, { onDelete: 'cascade' }),
+  projectId: text('project_id')
+    .notNull()
+    .references(() => projects.id, { onDelete: 'cascade' }),
+  triggerSource: text('trigger_source').notNull(),
+  sessionId: text('session_id').references(() => sessions.id, { onDelete: 'set null' }),
+  taskId: text('task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  status: text('status').notNull(),
+  detail: text('detail'),
+  payloadExcerpt: text('payload_excerpt'),
+  triggeredAt: text('triggered_at').notNull(),
+  finishedAt: text('finished_at'),
+});
+
+export const mcpTokens = sqliteTable('mcp_tokens', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  accessLevel: text('access_level').notNull().default('read-only'),
+  tokenPrefix: text('token_prefix').notNull(),
+  tokenHash: text('token_hash').notNull().unique(),
+  projectId: text('project_id').references(() => projects.id, { onDelete: 'cascade' }),
+  lastUsedAt: text('last_used_at'),
+  revokedAt: text('revoked_at'),
+  createdAt: text('created_at').notNull(),
+});

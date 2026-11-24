@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const DALANG_VERSION = '0.10.0';
+export const DALANG_VERSION = '0.11.0';
 
 export const MAX_DELEGATION_DEPTH = 1;
 export const DEFAULT_MAX_SUBTASKS_PER_TASK = 6;
@@ -1225,3 +1225,240 @@ export interface DelegatedSubtaskStatusDTO {
   created_at: string;
   updated_at: string;
 }
+
+/**
+ * v0.11 Automation (scheduled & webhook-triggered runs) and Outside Agents over MCP
+ */
+export const AutomationKindSchema = z.enum(['schedule', 'webhook']);
+export type AutomationKind = z.infer<typeof AutomationKindSchema>;
+
+export const AutomationTriggerSourceSchema = z.enum(['schedule', 'webhook', 'manual']);
+export type AutomationTriggerSource = z.infer<typeof AutomationTriggerSourceSchema>;
+
+export const AutomationRunStatusSchema = z.enum([
+  'running',
+  'awaiting_merge',
+  'completed',
+  'failed',
+  'review_failed',
+  'skipped',
+]);
+export type AutomationRunStatus = z.infer<typeof AutomationRunStatusSchema>;
+
+export const CreateAutomationInputSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    name: z.string().trim().min(1).max(120),
+    kind: AutomationKindSchema,
+    enabled: z.boolean().default(true),
+    cronExpr: z.string().trim().max(120).nullable().optional(),
+    webhookSecret: z.string().trim().min(16).max(256).optional(),
+    title: z.string().trim().min(1).max(160),
+    prompt: z.string().trim().min(1).max(20_000),
+    role: PlanTaskRoleSchema.default('engineer'),
+    complexity: TaskComplexitySchema.default('low'),
+    filesAllowed: z.array(z.string().trim().min(1)).default([]),
+    filesReference: z.array(z.string().trim().min(1)).default([]),
+    acceptanceCriteria: z.array(z.string().trim().min(1)).min(1).max(20),
+    verify: z.string().trim().min(1).max(500),
+    profileOverride: z.string().trim().min(1).nullable().optional(),
+    allowUnconfined: z.boolean().default(false),
+    autoMerge: z.boolean().default(false),
+  })
+  .superRefine((val, ctx) => {
+    if (val.kind === 'schedule' && !val.cronExpr?.trim()) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['cronExpr'],
+        message: 'A cron expression is required for scheduled automations.',
+      });
+    }
+  });
+export type CreateAutomationInput = z.infer<typeof CreateAutomationInputSchema>;
+
+export const UpdateAutomationInputSchema = z.object({
+  name: z.string().trim().min(1).max(120).optional(),
+  enabled: z.boolean().optional(),
+  cronExpr: z.string().trim().min(1).max(120).nullable().optional(),
+  title: z.string().trim().min(1).max(160).optional(),
+  prompt: z.string().trim().min(1).max(20_000).optional(),
+  role: PlanTaskRoleSchema.optional(),
+  complexity: TaskComplexitySchema.optional(),
+  filesAllowed: z.array(z.string().trim().min(1)).optional(),
+  filesReference: z.array(z.string().trim().min(1)).optional(),
+  acceptanceCriteria: z.array(z.string().trim().min(1)).min(1).max(20).optional(),
+  verify: z.string().trim().min(1).max(500).optional(),
+  profileOverride: z.string().trim().min(1).nullable().optional(),
+  allowUnconfined: z.boolean().optional(),
+  autoMerge: z.boolean().optional(),
+});
+export type UpdateAutomationInput = z.infer<typeof UpdateAutomationInputSchema>;
+
+export const TriggerAutomationInputSchema = z.object({
+  event: z.string().trim().max(120).optional(),
+  payload: z.string().max(16_000).optional(),
+});
+export type TriggerAutomationInput = z.infer<typeof TriggerAutomationInputSchema>;
+
+export interface AutomationDTO {
+  id: string;
+  projectId: string;
+  projectName: string;
+  name: string;
+  kind: AutomationKind;
+  enabled: boolean;
+  cronExpr: string | null;
+  webhookToken: string | null;
+  webhookUrl: string | null;
+  hasWebhookSecret: boolean;
+  title: string;
+  prompt: string;
+  role: PlanTaskRole;
+  complexity: TaskComplexity;
+  filesAllowed: string[];
+  filesReference: string[];
+  acceptanceCriteria: string[];
+  verify: string;
+  profileOverride: string | null;
+  allowUnconfined: boolean;
+  autoMerge: boolean;
+  lastTriggeredAt: string | null;
+  nextRunAt: string | null;
+  lastStatus: AutomationRunStatus | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreatedAutomationDTO extends AutomationDTO {
+  /** Returned only once when a webhook automation is created or its secret is rotated. */
+  webhookSecret?: string;
+}
+
+export interface AutomationRunDTO {
+  id: string;
+  automationId: string;
+  projectId: string;
+  triggerSource: AutomationTriggerSource;
+  sessionId: string | null;
+  taskId: string | null;
+  status: AutomationRunStatus;
+  detail: string | null;
+  payloadExcerpt: string | null;
+  triggeredAt: string;
+  finishedAt: string | null;
+}
+
+export const McpAccessLevelSchema = z.enum(['read-only', 'full-access']);
+export type McpAccessLevel = z.infer<typeof McpAccessLevelSchema>;
+
+export const CreateMcpTokenInputSchema = z.object({
+  name: z.string().trim().min(1).max(100),
+  accessLevel: McpAccessLevelSchema.default('read-only'),
+  projectId: z.string().trim().min(1).nullable().optional(),
+});
+export type CreateMcpTokenInput = z.infer<typeof CreateMcpTokenInputSchema>;
+
+export interface McpTokenDTO {
+  id: string;
+  name: string;
+  accessLevel: McpAccessLevel;
+  tokenPrefix: string;
+  projectId: string | null;
+  projectName: string | null;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+  createdAt: string;
+}
+
+export interface CreatedMcpTokenDTO {
+  tokenInfo: McpTokenDTO;
+  /** Raw bearer token returned only once at creation time. */
+  token: string;
+  endpointUrl: string | null;
+}
+
+/**
+ * External MCP tool argument schemas (outside agents on loopback /mcp).
+ */
+export const ExternalMcpGetProjectInputSchema = z.object({
+  project_id: z.string().trim().min(1),
+});
+export type ExternalMcpGetProjectInput = z.infer<typeof ExternalMcpGetProjectInputSchema>;
+
+export const ExternalMcpListSessionsInputSchema = z.object({
+  project_id: z.string().trim().min(1),
+  include_archived: z.boolean().default(false),
+});
+export type ExternalMcpListSessionsInput = z.infer<typeof ExternalMcpListSessionsInputSchema>;
+
+export const ExternalMcpListTasksInputSchema = z.object({
+  project_id: z.string().trim().min(1),
+  session_id: z.string().trim().min(1).optional(),
+});
+export type ExternalMcpListTasksInput = z.infer<typeof ExternalMcpListTasksInputSchema>;
+
+export const ExternalMcpGetTaskInputSchema = z.object({
+  project_id: z.string().trim().min(1),
+  task_id: z.string().trim().min(1),
+});
+export type ExternalMcpGetTaskInput = z.infer<typeof ExternalMcpGetTaskInputSchema>;
+
+export const ExternalMcpGetRunLogInputSchema = z.object({
+  project_id: z.string().trim().min(1),
+  run_id: z.string().trim().min(1),
+  tail_lines: z.number().int().min(1).max(500).default(200),
+});
+export type ExternalMcpGetRunLogInput = z.infer<typeof ExternalMcpGetRunLogInputSchema>;
+
+export const ExternalMcpListAutomationsInputSchema = z.object({
+  project_id: z.string().trim().min(1).optional(),
+});
+export type ExternalMcpListAutomationsInput = z.infer<typeof ExternalMcpListAutomationsInputSchema>;
+
+export const ExternalMcpStartTaskInputSchema = z.object({
+  project_id: z.string().trim().min(1),
+  title: z.string().trim().min(1).max(160),
+  prompt: z.string().trim().min(1).max(20_000),
+  role: PlanTaskRoleSchema.default('engineer'),
+  complexity: TaskComplexitySchema.default('low'),
+  files_allowed: z.array(z.string().trim().min(1)).default([]),
+  files_reference: z.array(z.string().trim().min(1)).default([]),
+  acceptance_criteria: z.array(z.string().trim().min(1)).min(1).max(20).optional(),
+  verify: z.string().trim().min(1).max(500).optional(),
+  profile: z.string().trim().min(1).max(100).optional(),
+  allow_unconfined: z.boolean().default(false),
+  auto_merge: z.boolean().default(false),
+  mode: z.enum(['wait', 'async']).default('wait'),
+});
+export type ExternalMcpStartTaskInput = z.infer<typeof ExternalMcpStartTaskInputSchema>;
+
+export const ExternalMcpStopTaskInputSchema = z.object({
+  project_id: z.string().trim().min(1),
+  task_id: z.string().trim().min(1),
+});
+export type ExternalMcpStopTaskInput = z.infer<typeof ExternalMcpStopTaskInputSchema>;
+
+export const ExternalMcpApproveMergeInputSchema = z.object({
+  project_id: z.string().trim().min(1),
+  task_id: z.string().trim().min(1),
+  run_integration: z.boolean().default(true),
+  allow_unconfined: z.boolean().default(false),
+  allow_failed_review: z.boolean().default(false),
+});
+export type ExternalMcpApproveMergeInput = z.infer<typeof ExternalMcpApproveMergeInputSchema>;
+
+export const ExternalMcpRejectTaskInputSchema = z.object({
+  project_id: z.string().trim().min(1),
+  task_id: z.string().trim().min(1),
+  note: z.string().trim().max(2000).default(''),
+  requeue: z.boolean().default(false),
+});
+export type ExternalMcpRejectTaskInput = z.infer<typeof ExternalMcpRejectTaskInputSchema>;
+
+export const ExternalMcpTriggerAutomationInputSchema = z.object({
+  automation_id: z.string().trim().min(1),
+  event: z.string().trim().max(120).optional(),
+  payload: z.string().max(16_000).optional(),
+});
+export type ExternalMcpTriggerAutomationInput = z.infer<typeof ExternalMcpTriggerAutomationInputSchema>;

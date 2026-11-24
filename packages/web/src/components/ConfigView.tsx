@@ -4,6 +4,7 @@ import { api } from '../lib/api.js';
 import type { ConfigTabId } from './Sidebar.js';
 import { AboutTab } from './config/AboutTab.js';
 import { AgentsTab } from './config/AgentsTab.js';
+import { AutomationTab } from './config/AutomationTab.js';
 import { GeneralTab } from './config/GeneralTab.js';
 import { SecurityTab } from './config/SecurityTab.js';
 
@@ -45,6 +46,10 @@ export function ConfigView({
   const settingsQuery = useQuery({
     queryKey: ['settings'],
     queryFn: () => api.getSettings(),
+  });
+  const projectsQuery = useQuery({
+    queryKey: ['projects'],
+    queryFn: () => api.listProjects(),
   });
 
   const updateSettingsMutation = useMutation({
@@ -106,6 +111,13 @@ export function ConfigView({
           routingError={routingQuery.isError ? (routingQuery.error as Error) : null}
           onRetryRouting={() => routingQuery.refetch()}
           onOpenSecurity={() => onSelectTab('security')}
+        />
+      )}
+
+      {tab === 'automation' && (
+        <AutomationTab
+          projects={projectsQuery.data?.projects ?? []}
+          profiles={profiles}
         />
       )}
 

@@ -522,6 +522,11 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
           expect(routingText).toContain('New routing rule');
           expect(routingText).toContain('->');
 
+          // Config -> Automation: schedules, webhooks, and outside-agent MCP tokens.
+          await clickButton('Automation');
+          await waitForText('Schedules & webhooks');
+          await waitForText('Outside agents over MCP');
+
           // Config -> Security: sandbox + keyring toggle.
           await clickButton('Security');
           await waitForText('Allow Antigravity to read the desktop keyring');
@@ -641,7 +646,7 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
           await new Promise((r) => setTimeout(r, 300));
           await collect('Statistik');
           await clickButton('Pengaturan', true);
-          for (const tab of ['Umum', 'Agen', 'Keamanan', 'Tentang']) {
+          for (const tab of ['Umum', 'Agen', 'Otomasi', 'Keamanan', 'Tentang']) {
             await clickButton(tab);
             await new Promise((r) => setTimeout(r, 300));
             await collect(tab);

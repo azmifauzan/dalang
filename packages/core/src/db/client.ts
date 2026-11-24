@@ -29,7 +29,7 @@ export function getDbDataDir(db: DalangDb): string | null {
   return dbDataDirs.get(db) ?? null;
 }
 
-const SCHEMA_VERSION = 13;
+const SCHEMA_VERSION = 14;
 
 const BOOTSTRAP_SQL = `
 PRAGMA journal_mode = WAL;
@@ -297,6 +297,60 @@ CREATE TABLE IF NOT EXISTS run_repo_checkpoints (
   commit_after TEXT,
   checkpoint_before_ref TEXT,
   checkpoint_after_ref TEXT
+);
+
+CREATE TABLE IF NOT EXISTS automations (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  cron_expr TEXT,
+  webhook_token TEXT UNIQUE,
+  webhook_secret TEXT,
+  title TEXT NOT NULL,
+  prompt TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'engineer',
+  complexity TEXT NOT NULL DEFAULT 'low',
+  files_allowed_json TEXT NOT NULL DEFAULT '[]',
+  files_reference_json TEXT NOT NULL DEFAULT '[]',
+  acceptance_criteria_json TEXT NOT NULL DEFAULT '[]',
+  verify TEXT NOT NULL,
+  profile_override TEXT,
+  allow_unconfined INTEGER NOT NULL DEFAULT 0,
+  auto_merge INTEGER NOT NULL DEFAULT 0,
+  last_triggered_at TEXT,
+  next_run_at TEXT,
+  last_status TEXT,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS automation_runs (
+  id TEXT PRIMARY KEY,
+  automation_id TEXT NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  trigger_source TEXT NOT NULL,
+  session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+  task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+  status TEXT NOT NULL,
+  detail TEXT,
+  payload_excerpt TEXT,
+  triggered_at TEXT NOT NULL,
+  finished_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS mcp_tokens (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  access_level TEXT NOT NULL DEFAULT 'read-only',
+  token_prefix TEXT NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE,
+  project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+  last_used_at TEXT,
+  revoked_at TEXT,
+  created_at TEXT NOT NULL
 );
 `;
 
@@ -1275,9 +1329,13 @@ export function openDatabase(dbFilePath: string = getDbPath()): DbConnection {
   if (upgrading && storedVersion < 9) migrateToV9(sqlite);
   if (upgrading && storedVersion < 12) migrateToV12(sqlite);
   if (upgrading && storedVersion < 13) migrateToV13(sqlite);
+  if (upgrading && storedVersion < 14) migrateToV14(sqlite);
   sqlite.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_task_repos_task_repo ON task_repos(task_id, repo_path);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_run_repo_checkpoints_run_repo ON run_repo_checkpoints(run_id, repo_path);
+    CREATE INDEX IF NOT EXISTS idx_automations_project_id ON automations(project_id);
+    CREATE INDEX IF NOT EXISTS idx_automation_runs_automation_id ON automation_runs(automation_id, triggered_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_mcp_tokens_project_id ON mcp_tokens(project_id);
   `);
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS message_images (
@@ -1315,6 +1373,70 @@ export function openDatabase(dbFilePath: string = getDbPath()): DbConnection {
     dataDir,
     close: () => sqlite.close(),
   };
+}
+
+/**
+ * v14: scheduled/webhook automations (`automations`, `automation_runs`) and persistent outside-agent MCP tokens (`mcp_tokens`).
+ */
+function migrateToV14(sqlite: Database.Database): void {
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS automations (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      cron_expr TEXT,
+      webhook_token TEXT UNIQUE,
+      webhook_secret TEXT,
+      title TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'engineer',
+      complexity TEXT NOT NULL DEFAULT 'low',
+      files_allowed_json TEXT NOT NULL DEFAULT '[]',
+      files_reference_json TEXT NOT NULL DEFAULT '[]',
+      acceptance_criteria_json TEXT NOT NULL DEFAULT '[]',
+      verify TEXT NOT NULL,
+      profile_override TEXT,
+      allow_unconfined INTEGER NOT NULL DEFAULT 0,
+      auto_merge INTEGER NOT NULL DEFAULT 0,
+      last_triggered_at TEXT,
+      next_run_at TEXT,
+      last_status TEXT,
+      last_error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_automations_project_id ON automations(project_id);
+
+    CREATE TABLE IF NOT EXISTS automation_runs (
+      id TEXT PRIMARY KEY,
+      automation_id TEXT NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      trigger_source TEXT NOT NULL,
+      session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+      task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+      status TEXT NOT NULL,
+      detail TEXT,
+      payload_excerpt TEXT,
+      triggered_at TEXT NOT NULL,
+      finished_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_automation_runs_automation_id ON automation_runs(automation_id, triggered_at DESC);
+
+    CREATE TABLE IF NOT EXISTS mcp_tokens (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      access_level TEXT NOT NULL DEFAULT 'read-only',
+      token_prefix TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+      last_used_at TEXT,
+      revoked_at TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_mcp_tokens_project_id ON mcp_tokens(project_id);
+  `);
 }
 
 /**
@@ -1451,6 +1573,9 @@ function migrateToV11(db: DalangDb): void {
  */
 export function resetDatabaseToDefaults(db: DalangDb, sqlite: Database.Database): void {
   sqlite.transaction(() => {
+    db.delete(schema.automationRuns).run();
+    db.delete(schema.automations).run();
+    db.delete(schema.mcpTokens).run();
     db.delete(schema.integrationRuns).run();
     db.delete(schema.reviews).run();
     db.delete(schema.runRepoCheckpoints).run();

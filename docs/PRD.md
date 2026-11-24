@@ -305,7 +305,7 @@ Each phase must be useful on its own before the next one starts.
 | v0.8 | Agent delegation: a running agent splits its own task into subtasks on other profiles through a DALANG MCP server | One task is split by its agent into at least two subtasks on two providers, and all of them pass review and merge | Implemented. Verified on 23 Nov 2026 with replay providers in the core delegation tests and over real HTTP in the loopback `/mcp` server test; a run on live provider CLIs is not yet done |
 | v0.9 | Workspace projects: one project for a root folder whose top-level folders are their own git repositories, with worktrees, review, merge, and rollback per repo | A Quick task in a workspace edits a nested repo, passes review, and merges into that repo's branch | Implemented. Verified on 23 Nov 2026 with a schema v12 to v13 upgrade test, core nested-repo lifecycle, merge, push, rollback, and delegation tests, and a Chromium replay E2E Quick task touching a nested repo; a live Quick task on the `sei-office` workspace (copy of app data, Claude coder, Antigravity review) changed `frontend/` and `scheduling-service/`, merged one commit into each repo's checked-out branch, left `backend/` untouched, and was then reverted. that run also found Antigravity coder runs failing on `agy` 1.5.15, fixed in 0.9.1 |
 | v0.10 | Session protocols (Claude Code stream-json sessions, `codex app-server`, ACP), steering a running task, context handoff on fallback, native Windows confinement | A fallback mid-task continues from the handoff instead of starting over, on all three providers | Released in 0.10.0. Linux regression and live provider checks passed. Native Windows verification pending. |
-| v0.11 | Scheduled and webhook-triggered runs, outside agents over MCP | A scheduled run and a run started from a terminal agent both finish without opening the UI | Planned |
+| v0.11 | Scheduled and webhook-triggered runs, outside agents over MCP | A scheduled run and a run started from a terminal agent both finish without opening the UI | Released in 0.11.0. Schema v14 adds `automations`, `automation_runs`, and `mcp_tokens`. Verified on 24 Nov 2026 with core cron, webhook, and MCP tests, a real-HTTP server test, a v13 to v14 upgrade test, and the Chromium Config check. A live check on a copy of the app data ran a real Claude Code client against `/mcp`: the read-only token saw 7 tools and only its project, and the full-access token's `start_task` finished, passed review, and auto-merged. A live every-minute schedule and a signed webhook each completed and merged; an unsigned webhook got 401. Codex accepted the generated config but was not run against `/mcp`. |
 
 See [Roadmap after v0.4](#roadmap-after-v04) for the detail and the research behind it.
 
@@ -756,8 +756,9 @@ Scripted runs cover handoff from each of the three providers, including recent c
 
 ### v0.11: automation
 
-- Scheduled and webhook-triggered runs (for example a nightly dependency update task), with signature checks on webhooks.
-- Outside agents over MCP: Claude Code or Codex in a terminal can read projects and start tasks, at read-only or full-access level, loopback only.
+- Scheduled and webhook-triggered runs (for example a nightly dependency update task), with HMAC-SHA256 signature verification (`X-Dalang-Signature-256` or `X-Hub-Signature-256`) on `/api/webhooks/:token` and optional per-automation auto-merge.
+- Outside agents over MCP: Claude Code or Codex in a terminal can read projects, sessions, tasks, logs, and automations (`read-only`) or start/stop tasks, merge, reject, and trigger automations (`full-access`) through persistent hashed bearer tokens on the loopback-only `/mcp` endpoint, optionally scoped to one project.
+- Managed in **Config → Automation** and over REST (`/api/automations`, `/api/mcp-tokens`), on schema v14. Automated and MCP-started runs each create a Quick session, so they go through the worktree, verify, review, and Gate 2 steps and stay visible in the UI. A trigger that arrives while another session has unfinished work is recorded as skipped.
 
 ### Not planned
 
