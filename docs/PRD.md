@@ -760,9 +760,83 @@ Scripted runs cover handoff from each of the three providers, including recent c
 - Outside agents over MCP: Claude Code or Codex in a terminal can read projects, sessions, tasks, logs, and automations (`read-only`) or start/stop tasks, merge, reject, and trigger automations (`full-access`) through persistent hashed bearer tokens on the loopback-only `/mcp` endpoint, optionally scoped to one project.
 - Managed in **Config → Automation** and over REST (`/api/automations`, `/api/mcp-tokens`), on schema v14. Automated and MCP-started runs each create a Quick session, so they go through the worktree, verify, review, and Gate 2 steps and stay visible in the UI. A trigger that arrives while another session has unfinished work is recorded as skipped.
 
+### v0.12 to v0.14: team room in the terminal and chat apps (draft plan, 24 Nov 2026)
+
+Status: plan only. Nothing is implemented. Builder defaults below are proposals the user can still change; implementation starts when the user says go.
+
+#### Intent
+
+`dalang` opens a chat room in the terminal where the user and every agent profile talk in one timeline, like a team thread. Each profile reports in its own role. The web UI moves to `dalang web`. The same room can then be joined from Telegram and later Slack, with one bot per role.
+
+#### Decisions (made with the user, 24 Nov 2026)
+
+- `dalang` with no subcommand starts the terminal room. The current web server becomes `dalang web`.
+- The room is a team discussion: the Lead, coders, and reviewer post their own messages (brief and plan, task start, task finish with diff stats, verify result, review verdict).
+- Chat apps: Telegram first (v0.13), Slack after it (v0.14), on one shared bridge core.
+- One bot per role on each chat app. Group chats are supported.
+- Starting coders and merging are allowed from Telegram and Slack. The user accepted that an allowlisted chat account can run and merge code on the machine.
+
+#### v0.12: terminal team room
+
+Builder defaults (proposed):
+
+- The terminal client is a thin client of the server API, as the terminal research above recommends, so session and gate logic stays in core and the two UIs cannot drift. `dalang` checks `/api/health` on its port: it attaches when a server is running and otherwise starts the server in the same process. One server writes the database.
+- Ink (React for the terminal) renders the room, reusing the TypeScript stack and the `shared` types.
+- Routing: a message without a tag goes to the Lead. `@<profile>` sends it to that profile: an idle profile answers in Ask mode (read-only), and a running coder receives it as a steering message (v0.10).
+- Slash commands: `/mode`, `/project`, `/sessions`, `/diff` (opens `$PAGER`), `/merge`, `/reject`, `/stop`, `/web` (opens the browser on the same session). Gates are answered with a y/n prompt in the room.
+- Compatibility for one release: `dalang --port N` or `dalang --no-open` without a subcommand still starts the web server and prints a deprecation line. When stdin is not a TTY, `dalang` runs `dalang web`. The Docker `CMD` changes to `dalang web --no-open`.
+- Schema v15: `messages` gains `author_profile_id` and `kind` (`chat`, `report`, `question`, `gate`, `status`). The web chat shows the same feed.
+
+Done when:
+
+- In a TTY, `dalang` runs a Quick task from plan to merge with no browser.
+- `dalang web` behaves like `dalang` in v0.11.
+- Tests cover routing: untagged to the Lead, `@reviewer` while idle to Ask mode, `@coder` while running to steering.
+- The room renders on Linux, WSL 2, macOS Terminal, and Windows Terminal.
+
+#### v0.13: Telegram bridge
+
+Checked against the Telegram Bot FAQ and Bot API pages on 24 Nov 2026 (Bot API changelog dated 22 Nov 2026). Items marked "not yet verified" need the probe phase.
+
+- Delivery: long polling with `getUpdates`, so the server stays loopback-only and needs no public URL. `getUpdates` does not work while a webhook is set, so the bridge calls `deleteWebhook` on start. Updates wait at most 24 hours. Two processes polling one token confirm each other's updates; Dalang warns when a second poller is seen (detection method not yet verified).
+- One bot per role, each with its own BotFather token, stored in the database like automation secrets (SANDBOX documents this).
+- Receiving in groups: a bot in privacy mode receives only commands addressed to it, replies to its messages, and messages sent through it, and bots never see other bots' messages (Bot FAQ). A plain `@lead_bot ...` message may therefore not reach a privacy-mode bot. Default: each role bot is a group admin or has privacy mode turned off (BotFather, or `setMySettings` with `can_read_all_group_messages` since Bot API 10.5; the bot is re-added to the group). Every poller then receives the same message; the server keeps one copy per chat id and message id and routes it by the mention entities and `reply_to_message`. The opt-in bot-to-bot mode is not needed, since the server sends every bot's messages itself.
+- Group rules: a message without a tag gets no reply. A tag or a reply to a role bot's message goes to that role. A direct message to a role bot goes to that role.
+- Sessions: in a forum supergroup each session gets its own topic (`createForumTopic` needs the bot to be an admin with `can_manage_topics`). In other chats one session is active per chat, switched with `/session`.
+- Gates: inline keyboard buttons. `callback_data` holds 1 to 64 bytes, so buttons carry short ids. Merge and coder start are allowed.
+- Access: pairing with a one-time code shown in the terminal room or the web UI, then an allowlist of Telegram user ids per chat. Messages and button presses from other users are ignored.
+- Limits (Bot FAQ): about one message per second per chat and 20 messages per minute per bot in a group. Each bot gets a send queue, and coder progress edits one status message instead of posting new ones. Long diffs go as a document (uploads up to 50 MB).
+- Not yet verified: whether typing `@` in a group suggests bot usernames.
+
+#### v0.14: Slack bridge
+
+Checked against Slack developer docs and Slack help articles on 24 Nov 2026.
+
+- Socket Mode: the app connects out over a WebSocket and needs no public request URL. Each app needs an app-level `xapp-` token and a bot `xoxb-` token. Socket Mode apps cannot be listed in the Slack Marketplace, so each user creates the role apps in their own workspace.
+- One Slack app per role, so each role is a real bot user that can be mentioned. Rejected: one app posting under custom names with `chat:write.customize`, because those names cannot be mentioned and Slack limits that scope to user-approved use.
+- Sessions map to threads (`thread_ts`). Mentions arrive as `app_mention` events; whether a mention inside a thread fires that event is not stated in the docs (not yet verified).
+- Gates: Block Kit buttons. Merge and coder start are allowed, with the same user allowlist as Telegram.
+- Limits: about one message per second per channel for `chat.postMessage`. Free workspaces allow up to 10 apps (the role apps use three or four) and show 90 days of history; Dalang keeps its own history.
+- Install: by default members can install apps. Workspaces with app approval turned on need an owner to approve each role app.
+
+#### Phases
+
+| Phase | Name                                                                                                             | Depends On | Size |
+| ----- | ---------------------------------------------------------------------------------------------------------------- | ---------- | ---- |
+| 0     | Probe: Ink rendering per platform; Telegram group delivery to admin bots; `@` suggestions; Slack thread mentions | none       | S    |
+| 1     | Room feed in core: author and kind on messages, role reports, schema v15                                         | none       | M    |
+| 2     | Mention routing: untagged to Lead, idle profile to Ask, running coder to steering                                | 1          | M    |
+| 3     | Terminal client: timeline, composer with `@` completion, slash commands, y/n gates, `$PAGER` diff                | 0, 2       | L    |
+| 4     | Command rename: `dalang web`, compatibility alias, Docker `CMD`, `doctor`                                        | 3          | S    |
+| 5     | Bridge core and Telegram adapter: pairing, allowlist, dedupe, topics, buttons, send queue                        | 0, 2       | L    |
+| 6     | Slack adapter on the bridge core                                                                                 | 5          | M    |
+| 7     | Docs and release for each milestone                                                                              | 4, 5, 6    | S    |
+
+Milestones: v0.12 is phases 0 to 4 (the terminal room), v0.13 is phase 5 (Telegram), v0.14 is phase 6 (Slack). Phases 3 and 5 can run in parallel after phase 2.
+
 ### Not planned
 
-Remote access, relays, and companion phone apps require a separate deployment and authentication design. The optional DALANG password covers the local instance.
+Remote access, relays, and companion phone apps require a separate deployment and authentication design. The optional DALANG password covers the local instance. The Telegram and Slack bridges (v0.13, v0.14) are outbound connections from the local server, not inbound access.
 
 ## Risks, mitigations, and decisions
 
