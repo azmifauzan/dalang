@@ -256,24 +256,20 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
         : typeof req.body === 'string'
           ? Buffer.from(req.body, 'utf8')
           : Buffer.alloc(0);
-      const sigHeader =
-        (typeof req.headers['x-dalang-signature-256'] === 'string'
-          ? req.headers['x-dalang-signature-256']
-          : undefined) ??
-        (typeof req.headers['x-hub-signature-256'] === 'string'
-          ? req.headers['x-hub-signature-256']
-          : undefined);
-      const eventHeader =
-        (typeof req.headers['x-dalang-event'] === 'string' ? req.headers['x-dalang-event'] : undefined) ??
-        (typeof req.headers['x-github-event'] === 'string' ? req.headers['x-github-event'] : undefined);
-      const deliveryHeader =
-        (typeof req.headers['x-dalang-delivery'] === 'string' ? req.headers['x-dalang-delivery'] : undefined) ??
-        (typeof req.headers['x-github-delivery'] === 'string' ? req.headers['x-github-delivery'] : undefined);
-
-      const result = await automationService.handleWebhook(req.params.token, rawBody, sigHeader, {
-        event: eventHeader,
-        deliveryId: deliveryHeader,
-      });
+      const header = (name: string) => (typeof req.headers[name] === 'string' ? (req.headers[name] as string) : undefined);
+      const result = await automationService.handleWebhook(
+        req.params.token,
+        rawBody,
+        {
+          dalang: header('x-dalang-signature-256'),
+          hub: header('x-hub-signature-256'),
+          timestamp: header('x-dalang-timestamp'),
+        },
+        {
+          event: header('x-dalang-event') ?? header('x-github-event'),
+          deliveryId: header('x-dalang-delivery') ?? header('x-github-delivery'),
+        },
+      );
       return reply.status(202).send(result);
     });
   });

@@ -144,7 +144,18 @@ When DALANG login is enabled, use the **Sign out** icon on the far right of the 
 Open **Config → Automation** to run tasks without opening the browser.
 
 - **Schedules:** enter a 5-field cron expression in local time (for example `0 2 * * *` or `@daily`), a task title, instructions, allowed files, acceptance criteria, and a verify command. When the schedule is due, DALANG starts a Quick session and runs the task through the worktree, verify, and review steps. With auto-merge on, a passing task merges by itself; otherwise it waits in **Review & merge**. A schedule that comes due while another session has unfinished work is skipped and recorded in the run history.
-- **Webhooks:** a webhook automation gets a `/api/webhooks/<token>` URL and a signing secret that is shown once. Sign the raw POST body with HMAC-SHA256 and send `sha256=<hex>` in `X-Dalang-Signature-256` or `X-Hub-Signature-256`. `{{event}}` and `{{payload}}` in the instructions are replaced with the event header and the body.
+- **Webhooks:** a webhook automation gets a `/api/webhooks/<token>` URL and a signing secret that is shown once. Send the current Unix time in `X-Dalang-Timestamp`, and in `X-Dalang-Signature-256` send `sha256=` followed by the HMAC-SHA256 of `<timestamp>.<raw body>`. A timestamp more than 5 minutes from the DALANG machine's clock is refused, and so is a request that already started a run. `X-Hub-Signature-256` (HMAC of the body alone, as GitHub sends it) is also accepted; it has no timestamp, so DALANG refuses a repeat of the same signed body for 24 hours, until it restarts. A delivery that was skipped can be sent again. `{{event}}` in the instructions becomes the `X-Dalang-Event` or `X-GitHub-Event` header. The body reaches the coder only where the instructions contain `{{payload}}`, inside a block marked as data; without `{{payload}}`, the body is kept in the run history but not sent to the coder.
+
+  ```bash
+  BODY='{"tag":"v1.2.0"}'
+  TS=$(date +%s)
+  SIG=$(printf '%s.%s' "$TS" "$BODY" | openssl dgst -sha256 -hmac "$SECRET" -r | cut -d' ' -f1)
+  curl -X POST "$WEBHOOK_URL" -H 'Content-Type: application/json' \
+    -H "X-Dalang-Timestamp: $TS" -H "X-Dalang-Signature-256: sha256=$SIG" \
+    -H 'X-Dalang-Event: release' --data "$BODY"
+  ```
+
+  Treat the body as untrusted input: anyone who can write into it can try to steer the coder. Leave auto-merge off for a webhook whose body carries text you do not control, so you review each change before it merges.
 - **Outside agents over MCP:** create a `read-only` or `full-access` token, optionally limited to one project, and copy the Claude Code (`claude mcp add --transport http dalang ...`) or Codex (`~/.codex/config.toml`) snippet. Read-only tokens can call `list_projects`, `get_project`, `list_sessions`, `list_tasks`, `get_task`, `get_run_log`, and `list_automations`. Full-access tokens can also call `start_task`, `stop_task`, `approve_merge`, `reject_task`, and `trigger_automation`. By default `start_task` waits until coding and review finish; pass `mode: "async"` to get the task id back at once. The Codex snippet raises `tool_timeout_sec`, because Codex stops a tool call after 60 seconds by default.
 
 `/mcp` only answers connections from the same machine. In Docker, run the outside agent inside the container (`docker compose exec dalang claude ...`), because connections through the published port arrive from the Docker bridge address.

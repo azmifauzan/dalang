@@ -223,22 +223,35 @@ describe('v0.11 Automation & Outside Agents over loopback MCP (real HTTP)', () =
       });
       expect(badSigRes.status).toBe(401);
 
-      // Valid HMAC-SHA256 signature triggers the webhook automation
-      const validSig = computeWebhookSignature(hookAuto.webhookSecret, payloadStr);
-      const goodHookRes = await fetch(hookAuto.webhookUrl, {
+      // The X-Dalang scheme signs `<timestamp>.<body>` and needs the timestamp header
+      const ts = String(Math.floor(Date.now() / 1000));
+      const dalangSig = computeWebhookSignature(hookAuto.webhookSecret, payloadStr, ts);
+      const noTsRes = await fetch(hookAuto.webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Dalang-Signature-256': dalangSig },
+        body: payloadStr,
+      });
+      expect(noTsRes.status).toBe(401);
+
+      const signedRequest = {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Hub-Signature-256': validSig,
-          'X-GitHub-Event': 'push',
+          'X-Dalang-Signature-256': dalangSig,
+          'X-Dalang-Timestamp': ts,
+          'X-Dalang-Event': 'push',
         },
         body: payloadStr,
-      });
+      };
+      const goodHookRes = await fetch(hookAuto.webhookUrl, signedRequest);
       expect(goodHookRes.status).toBe(202);
       const { run: hookRun } = (await goodHookRes.json()) as { run: { id: string } };
       const finishedHook = await server.automationService.waitForRun(hookRun.id);
       expect(finishedHook?.status).toBe('completed');
       expect(fs.existsSync(path.join(projDir, 'webhook.txt'))).toBe(true);
+
+      // Sending the captured request again is refused
+      expect((await fetch(hookAuto.webhookUrl, signedRequest)).status).toBe(409);
 
       // 3. Outside terminal agent over real HTTP /mcp
       // Read-only token can list projects, cannot start tasks

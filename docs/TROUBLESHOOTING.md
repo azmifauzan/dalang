@@ -154,7 +154,7 @@ Open the session named in the message and finish reviewing its remaining tasks, 
 
 An automated run starts a new Quick session, and only one session can have unfinished work at a time. When another session still has a task waiting in **Review & merge**, or a task is running, the trigger is recorded as **Skipped** in the automation's **Runs** list. Merge or discard that work, then use **Run now** or wait for the next trigger. Turn on auto-merge for an automation if its passing tasks should not wait for you. [Automation](USAGE.md#automation-and-outside-agents-over-mcp)
 
-A webhook call that returns `401` has a missing or wrong signature: sign the exact raw body with the current secret, and send `sha256=<hex>`. A `409` means the automation is paused.
+A webhook call that returns `401` has a missing or wrong signature or timestamp. With `X-Dalang-Signature-256`, sign `<timestamp>.<raw body>` with the current secret, send the same Unix time in `X-Dalang-Timestamp`, and check that both clocks agree within 5 minutes. A `409` means the automation is paused or the same signed request already started a run; sign it again with a new timestamp.
 
 ### An outside agent cannot reach /mcp
 

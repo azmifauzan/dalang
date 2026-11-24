@@ -2,6 +2,11 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
+## 0.11.1 (Webhook hardening), 24 Nov
+
+- **Webhook replay protection.** `X-Dalang-Signature-256` now signs `<timestamp>.<raw body>` and needs `X-Dalang-Timestamp` (Unix seconds); a timestamp more than 5 minutes off is refused. Scripts written for 0.11.0 must add the timestamp. A request that already started a run is refused with `409`. `X-Hub-Signature-256` still signs the body alone, and a repeat of it is refused for 24 hours while DALANG keeps running.
+- **Webhook body kept out of the prompt by default.** The body reaches the coder only where the instructions contain `{{payload}}`, inside a block marked as data that the body cannot close. 0.11.0 appended the body to every webhook task. The `{{event}}` value is reduced to letters, digits, and `_.:/-`.
+
 ## 0.11.0 (Automation and outside agents over MCP), 24 Nov
 
 - **Scheduled runs.** A project can run a task on a 5-field cron schedule in local time (`0 2 * * *`, `*/15 * * * *`, `@daily`, `@hourly`, `@weekly`, `@monthly`). Each run is a Quick session that goes through the worktree, verify, and review steps, so it shows up in the sidebar like any other session. Auto-merge after a passing review is optional per automation.
