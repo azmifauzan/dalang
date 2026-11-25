@@ -23,9 +23,10 @@ Run `dalang` in an interactive terminal to open the team room. If a Dalang serve
 - **Header:** the Dalang mark (the Gunungan) on the left, then four rows:
   - the project, session title, composer mode, and whether the room runs its own server (`embedded`) or attached to one;
   - quick stats: the 5 hour (`5h`) and weekly (`wk`) limit left for each installed provider, the same numbers as the web usage bar, red at 20% or less, refreshed on the interval set in `/config`;
-  - the model the Lead will answer with next, and where it comes from: chosen with `/model`, the open session, or the Lead profile;
+  - the model the Lead will answer with next, and where it comes from: chosen with `/model`, the open session, or the Lead profile. A new chat uses the Lead from Config (`/config` or the browser's **Config → Agents → Team**); a session already started keeps its own CLI and model, so use `/model` or `/new` after changing the Lead;
   - the agents running now with their models (`@coder-small Antigravity · gemini-4-hydrogen`), or the project folder when none runs.
 - **Team timeline:** the Lead, coders, and reviewer post plans, task status, diff stats, verification, and review verdicts under their own profile names. Agent replies render headings, emphasis, lists, code, and link labels. The browser chat shows the same feed.
+- **Reply as it is written:** while the Lead, or a profile you asked with `@<profile>`, answers in Ask mode, the latest lines of the reply appear under the timeline with `writing...`, and the finished message replaces them. Claude Code, Codex, and Antigravity stream their text as they write it. A provider run without live output shows each finished message instead.
 - **Working status:** the line above the composer shows an animated spinner, elapsed time, the agent and provider, and a short activity such as reading files, running a command, or writing a response. `+N` counts other active agents. When a provider has no recognized activity event, the line shows a general working status.
 - **Mention routing (`@<profile>`):**
   - An untagged message, or `@lead`, goes to the Lead in the composer mode (`ask`, `quick`, or `full`).
@@ -92,7 +93,7 @@ A project opens into a chat with the Lead. Pick a mode beside the send button. D
 
 ### Ask about the code
 
-The model chip beside the send button opens a picker for the provider, model, and reasoning effort. It starts with the project's Lead settings. While the Lead works, the chat shows the CLI name, elapsed time, progress, and any streamed reply. Expand **Show technical log** to inspect raw output.
+The model chip beside the send button opens a picker for the provider, model, and reasoning effort. A new chat starts with the Lead in **Config → Agents → Team**; a chat you already started keeps the CLI and model it uses. While the Lead works, the chat shows the CLI name, elapsed time, progress, and any streamed reply. Expand **Show technical log** to inspect raw output.
 
 ### Attach images
 

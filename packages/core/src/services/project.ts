@@ -17,6 +17,7 @@ import {
 } from '../paths.js';
 import { ensureDalangIgnore, readArtifactFile, writeArtifactFile } from '../safe-fs.js';
 import { findNestedRepos, removeTaskWorktree } from './git.js';
+import { ProfileService } from './profiles.js';
 
 const PROJECT_INSTRUCTION_POINTER = 'Read and follow the project instructions in PROJECT.md.\n';
 
@@ -380,6 +381,7 @@ export class ProjectService {
   }
 
   private toSummary(row: typeof projects.$inferSelect): ProjectSummary {
+    const lead = new ProfileService(this.db).leadProfile();
     const projectMdPath = path.join(row.path, 'PROJECT.md');
     const hasProjectMd = fs.existsSync(projectMdPath);
     const symlinksValid = {
@@ -421,8 +423,9 @@ export class ProjectService {
       name: row.name,
       path: row.path,
       mainBranch: row.mainBranch,
-      leadProvider: row.leadProvider as ProviderId,
-      leadModel: row.leadModel,
+      // What a new chat in this project answers with: the Lead profile from Config, as LeadService uses it.
+      leadProvider: lead?.provider ?? (row.leadProvider as ProviderId),
+      leadModel: lead ? lead.model.trim() || null : row.leadModel,
       integrationCommand: row.integrationCommand ?? null,
       pushAfterMerge: Boolean(row.pushAfterMerge),
       createPrAfterMerge: Boolean(row.createPrAfterMerge),

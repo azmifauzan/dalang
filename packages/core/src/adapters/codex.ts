@@ -409,6 +409,8 @@ export class CodexAdapter implements CliAdapter {
             if (ev.type === 'item.completed' && ev.item && typeof ev.item === 'object') {
               const item = ev.item as { type?: string; text?: string };
               if (item.type === 'agent_message' && typeof item.text === 'string') {
+                // `codex exec` has no token deltas, so each finished message is shown whole.
+                options.onTextDelta?.(messages.length ? `\n\n${item.text}` : item.text);
                 messages.push(item.text);
               }
             }
@@ -497,6 +499,7 @@ export class CodexAdapter implements CliAdapter {
     let complete!: (turn: Record<string, unknown>) => void;
     const completion = new Promise<Record<string, unknown>>((resolve) => { complete = resolve; });
     const messages: string[] = [];
+    let streamItemId: string | null = null;
     let usage: TurnTokenUsage | undefined;
     let stderr = '';
     try {
@@ -515,6 +518,15 @@ export class CodexAdapter implements CliAdapter {
         },
       }, (method, params) => {
         if (params.threadId !== sessionId) return;
+        if (method === 'item/agentMessage/delta' && typeof params.delta === 'string') {
+          // A new message item after earlier text starts a new paragraph.
+          if (params.itemId !== streamItemId) {
+            if (streamItemId !== null) options.onTextDelta?.('\n\n');
+            streamItemId = typeof params.itemId === 'string' ? params.itemId : null;
+          }
+          options.onTextDelta?.(params.delta);
+          return;
+        }
         if (method === 'turn/completed') {
           const finished = object(params.turn);
           if (!turnId || finished.id === turnId) complete(finished);

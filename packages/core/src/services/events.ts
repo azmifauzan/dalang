@@ -4,6 +4,8 @@ import type { MessageKind, RunStatus } from '@dalang/shared';
 export type DalangEvent =
   | { type: 'lead.turn_started'; projectId: string; sessionId?: string; phase: string; provider: string }
   | { type: 'lead.log'; projectId: string; sessionId?: string; phase: string; line: string }
+  /** Reply text written so far in an Ask turn, sent in batches. `reset` starts a new attempt's text. */
+  | { type: 'lead.text'; projectId: string; sessionId: string; phase: string; text: string; reset?: boolean }
   | { type: 'lead.turn_finished'; projectId: string; sessionId?: string; phase: string; ok: boolean; error?: string }
   | { type: 'sessions.updated'; projectId: string; sessionId?: string }
   | { type: 'discuss.updated'; projectId: string; sessionId?: string }

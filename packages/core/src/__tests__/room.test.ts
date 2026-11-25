@@ -55,6 +55,48 @@ function createRoomRunner(
   };
 }
 
+describe('Lead settings from Config', () => {
+  it('starts a new chat with the Lead profile saved after the project was created', async () => {
+    const conn = openDatabase(path.join(mkTmp('dalang-lead-cfg-'), 'dalang.db'));
+    conns.push(conn);
+    const calls: Array<{ bin: string; args: string[] }> = [];
+    const runner = createRoomRunner((bin, args) => {
+      calls.push({ bin, args });
+      const text = JSON.stringify({ answer: 'ok' });
+      return {
+        exitCode: 0,
+        stdout: [
+          JSON.stringify({ type: 'thread.started', thread_id: 't1' }),
+          JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text } }),
+        ].join('\n'),
+        stderr: '',
+        timedOut: false,
+        idleTimedOut: false,
+      };
+    });
+    const lead = new LeadService(conn.db, new ProviderRegistry(runner));
+    const projectService = new ProjectService(conn.db);
+    const project = await projectService.createOrOpen({
+      mode: 'create',
+      name: 'lead-cfg',
+      path: mkTmp('dalang-lead-cfg-repo-'),
+      initGitIfMissing: true,
+      leadProvider: 'claude-code',
+    });
+
+    // Changed in Config → Agents → Team after the project exists.
+    new ProfileService(conn.db).updateProfile('profile-lead', { provider: 'codex', model: 'gpt-5-codex', effort: 'low' });
+    expect(projectService.getProject(project.id)).toMatchObject({ leadProvider: 'codex', leadModel: 'gpt-5-codex' });
+
+    const res = await lead.sendChatMessage(project.id, { mode: 'ask', message: 'hello' });
+    expect(res.session).toMatchObject({ provider: 'codex', model: 'gpt-5-codex' });
+    const argv = calls[0].args.join(' ');
+    expect(calls[0].bin).toContain('codex');
+    expect(argv).toContain('gpt-5-codex');
+    expect(argv).toContain('model_reasoning_effort="low"');
+  });
+});
+
 describe('team room mention routing and feed (v0.12)', () => {
   it('tries a configured alternate account after a Claude quota error and keeps the Ask transcript', async () => {
     const conn = openDatabase(path.join(mkTmp('dalang-ask-quota-'), 'dalang.db'));
@@ -155,6 +197,10 @@ describe('team room mention routing and feed (v0.12)', () => {
     const projectService = new ProjectService(conn.db);
     const profileService = new ProfileService(conn.db);
     const leadService = new LeadService(conn.db, registry, events);
+    const textEvents: Array<{ phase: string; text: string; reset?: boolean }> = [];
+    events.onEvent((event) => {
+      if (event.type === 'lead.text') textEvents.push({ phase: event.phase, text: event.text, reset: event.reset });
+    });
 
     // Point reviewer profile to codex so we can verify provider selection cleanly.
     profileService.updateProfile('profile-reviewer', { provider: 'codex', model: 'gpt-5-codex' });
@@ -195,6 +241,10 @@ describe('team room mention routing and feed (v0.12)', () => {
     expect(revRes.session.mode).toBe('ask'); // session mode NOT promoted
     expect(revRes.session.cliSessionId).toBe('lead-sess-1'); // Lead CLI session untouched
     expect(revRes.askReply?.text).toContain('Reviewer reply');
+    // The reply text reached the room live, flushed before the turn returned.
+    expect(textEvents).toEqual([
+      { phase: 'ask:reviewer', text: 'Reviewer reply: looks clean, check null guard.', reset: true },
+    ]);
     expect(calls[1]?.bin).toContain('codex');
     expect(calls[1]?.readOnly).toBe(true);
 

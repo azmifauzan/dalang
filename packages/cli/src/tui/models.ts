@@ -77,14 +77,17 @@ export interface ActiveLeadModel {
 export function activeLeadModel(input: {
   choice: ModelChoice | null;
   session: { provider: ProviderId; model: string | null } | null;
-  leadProfile: Pick<AgentProfileDTO, 'provider' | 'model' | 'effort'> | null;
+  leadProfile: { provider: ProviderId; model: string; effort: EffortLevel | null } | null;
 }): ActiveLeadModel | null {
   const { choice, session, leadProfile } = input;
   if (choice) {
-    return { provider: choice.provider, model: choice.model, effort: choice.effort ?? leadProfile?.effort ?? null, source: 'chosen' };
+    const effort = choice.effort ?? (leadProfile?.provider === choice.provider ? leadProfile.effort : null);
+    return { provider: choice.provider, model: choice.model, effort, source: 'chosen' };
   }
   if (session) {
-    return { provider: session.provider, model: session.model ?? '', effort: leadProfile?.effort ?? null, source: 'session' };
+    // The server sends the Lead's effort only when the session runs on the Lead's CLI.
+    const effort = leadProfile?.provider === session.provider ? leadProfile.effort : null;
+    return { provider: session.provider, model: session.model ?? '', effort, source: 'session' };
   }
   if (leadProfile) {
     return { provider: leadProfile.provider, model: leadProfile.model, effort: leadProfile.effort, source: 'profile' };

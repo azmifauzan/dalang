@@ -196,18 +196,21 @@ export class LeadService {
   }
 
   private getLeadProfileId(): string | null {
-    const byId = this.db
-      .select({ id: agentProfiles.id })
-      .from(agentProfiles)
-      .where(eq(agentProfiles.id, 'profile-lead'))
-      .get();
-    if (byId) return byId.id;
-    const byName = this.db
-      .select({ id: agentProfiles.id })
-      .from(agentProfiles)
-      .where(eq(agentProfiles.name, 'lead'))
-      .get();
-    return byName?.id ?? null;
+    return this.profiles.leadProfile()?.id ?? null;
+  }
+
+  /** The CLI and model a new chat starts with: the Lead profile, else the project's saved lead settings. */
+  private leadDefaults(project: typeof projects.$inferSelect): { provider: ProviderId; model: string | null } {
+    const lead = this.profiles.leadProfile();
+    return lead
+      ? { provider: lead.provider, model: lead.model.trim() || null }
+      : { provider: project.leadProvider as ProviderId, model: project.leadModel };
+  }
+
+  /** The Lead profile's effort, when the turn runs on that profile's CLI (another CLI may not accept it). */
+  private leadEffortFor(provider: string): EffortLevel | undefined {
+    const lead = this.profiles.leadProfile();
+    return lead && lead.provider === provider ? lead.effort : undefined;
   }
 
   /** Lead turns running now, by session. Lives in memory: a restart ends the CLI process too. */
@@ -301,8 +304,9 @@ export class LeadService {
     const now = new Date().toISOString();
     const id = crypto.randomUUID();
     const mode: SessionMode = input.mode ?? 'ask';
-    const provider: ProviderId = input.provider ?? (project.leadProvider as ProviderId);
-    const model = input.model !== undefined ? (input.model?.trim() || null) : project.leadModel;
+    const lead = this.leadDefaults(project);
+    const provider: ProviderId = input.provider ?? lead.provider;
+    const model = input.model !== undefined ? (input.model?.trim() || null) : lead.model;
     const title = input.title?.trim() ? deriveSessionTitle(input.title) : '';
 
     this.db
@@ -837,6 +841,7 @@ export class LeadService {
       provider: profile.provider,
     });
 
+    const textStream = this.askTextStream(project.id, sessionRow.id, turnPhase);
     try {
       const turn = await adapter.runTurn({
         projectPath: project.path,
@@ -858,7 +863,8 @@ export class LeadService {
             phase: turnPhase,
             line,
           }),
-      });
+        onTextDelta: textStream.push,
+      }).finally(textStream.flush);
 
       if (turn.exitCode !== 0 && !turn.text.trim()) {
         throw new Error(
@@ -949,7 +955,7 @@ export class LeadService {
     const requestedMode: SessionMode = input.mode ?? 'ask';
     const images = decodeChatImages(input.images ?? []);
     const existingSession = input.sessionId ? this.getSessionRow(projectId, input.sessionId) : null;
-    if (images.length && (input.provider ?? existingSession?.provider ?? project.leadProvider) === 'antigravity') {
+    if (images.length && (input.provider ?? existingSession?.provider ?? this.leadDefaults(project).provider) === 'antigravity') {
       throw new Error('Choose Claude Code or Codex to send images.');
     }
     const title = deriveSessionTitle(input.message, images[0]?.name);
@@ -1031,8 +1037,9 @@ export class LeadService {
       }
     }
 
+    const effort = input.effort ?? this.leadEffortFor(sessionRow.provider);
     if (requestedMode === 'ask') {
-      const askReply = await this.runAskTurnInner(project, sessionRow, input.message, input.effort, images);
+      const askReply = await this.runAskTurnInner(project, sessionRow, input.message, effort, images);
       return {
         session: this.getSession(projectId, sessionRow.id),
         mode: 'ask',
@@ -1046,7 +1053,7 @@ export class LeadService {
         project,
         sessionRow,
         input.message,
-        input.effort,
+        effort,
         images,
       );
       return {
@@ -1065,7 +1072,7 @@ export class LeadService {
       answers: input.answers,
       provider: input.provider,
       model: input.model ?? undefined,
-      effort: input.effort,
+      effort,
     }, images);
     return {
       session: this.getSession(projectId, sessionRow.id),
@@ -1149,6 +1156,8 @@ export class LeadService {
         usage: attemptUsage,
       });
     const run = async (cliSessionId: string | null, runEffort: EffortLevel) => {
+      // Each attempt (resume retry, fallback) streams its own reply, so it starts with `reset`.
+      const textStream = this.askTextStream(project.id, sessionRow.id, 'ask');
       const turn = await this.registry.getAdapter(provider).runTurn({
         projectPath: project.path,
         prompt: buildPrompt(!cliSessionId),
@@ -1167,7 +1176,8 @@ export class LeadService {
             phase: 'ask',
             line,
           }),
-      });
+        onTextDelta: textStream.push,
+      }).finally(textStream.flush);
       attemptUsage = mergeTokenUsage(attemptUsage, turn.usage);
       return turn;
     };
@@ -1255,6 +1265,31 @@ export class LeadService {
       this.events?.emitEvent({ type: 'discuss.updated', projectId: project.id, sessionId: sessionRow.id });
       throw err;
     }
+  }
+
+  /**
+   * Batches an Ask turn's reply deltas into `lead.text` events, at most one per 50 ms, so a fast
+   * token stream does not flood the WebSocket or make each client redraw per token.
+   */
+  private askTextStream(projectId: string, sessionId: string, phase: string) {
+    let pending = '';
+    let reset = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const flush = () => {
+      if (timer) clearTimeout(timer);
+      timer = null;
+      if (!pending) return;
+      this.events?.emitEvent({ type: 'lead.text', projectId, sessionId, phase, text: pending, ...(reset ? { reset } : {}) });
+      pending = '';
+      reset = false;
+    };
+    return {
+      push: (delta: string) => {
+        pending += delta;
+        timer ??= setTimeout(flush, 50);
+      },
+      flush,
+    };
   }
 
   private parseAskReply(turn: { text: string; structuredOutput?: unknown; stdout: string; stderr: string; exitCode: number | null; sessionId: string | null }): AskMessageContent {
@@ -1728,8 +1763,9 @@ export class LeadService {
     overrideModel?: string,
   ) {
     const project = this.getProjectRow(projectId);
-    const provider = overrideProvider ?? (project.leadProvider as ProviderId);
-    const model = overrideModel !== undefined ? overrideModel : project.leadModel;
+    const lead = this.leadDefaults(project);
+    const provider = overrideProvider ?? lead.provider;
+    const model = overrideModel !== undefined ? overrideModel : lead.model;
 
     const existing = explicitSessionId
       ? this.getSessionRow(projectId, explicitSessionId)

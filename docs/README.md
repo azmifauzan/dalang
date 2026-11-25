@@ -30,6 +30,7 @@
 - [Publish to npm and GitHub Releases](RELEASING.md)
 - [Product requirements and roadmap](PRD.md)
 - [UI design direction](DESIGN.md)
+- [Terminal room performance: stack decision, rules, and budgets](TUI_PERFORMANCE.md)
 - [Wayang artwork credits](../packages/web/src/assets/wayang/CREDITS.md)
 - [Provider mark credits](../packages/web/src/assets/providers/CREDITS.md)
 - [Changelog](../CHANGELOG.md)

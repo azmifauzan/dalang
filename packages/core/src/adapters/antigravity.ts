@@ -416,6 +416,7 @@ export class AntigravityAdapter implements CliAdapter {
             if (parsedUsage) usage = parsedUsage;
             if (typeof ev.text === 'string' && ev.type !== 'thinking') {
               textChunks.push(ev.text);
+              if (ev.role !== 'user') options.onTextDelta?.(ev.text);
             }
           } catch {
             // ignore non-JSON
@@ -491,6 +492,7 @@ export class AntigravityAdapter implements CliAdapter {
         const content = object(update.content);
         if (update.sessionUpdate === 'agent_message_chunk' && typeof content.text === 'string') {
           text += content.text;
+          options.onTextDelta?.(content.text);
           log({ type: 'message', role: 'assistant', text: content.text });
         } else if (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') {
           log(update);

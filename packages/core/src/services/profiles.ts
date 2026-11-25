@@ -102,6 +102,26 @@ export class ProfileService {
       .map(toDTO);
   }
 
+  /**
+   * The Lead profile from Config → Agents → Team. A new chat answers with its CLI, model, and effort
+   * unless the composer picks another; the project's own lead columns are only the fallback without it.
+   */
+  leadProfile(): AgentProfileDTO | null {
+    // The Lead routing rule names the Lead (Team keeps it on the `lead` profile; Routing may point it elsewhere).
+    const rule = this.db
+      .select({ profileId: routingRules.profileId })
+      .from(routingRules)
+      .where(eq(routingRules.role, 'lead'))
+      .orderBy(asc(routingRules.sortOrder))
+      .limit(1)
+      .get();
+    const row =
+      (rule ? this.db.select().from(agentProfiles).where(eq(agentProfiles.id, rule.profileId)).get() : undefined) ??
+      this.db.select().from(agentProfiles).where(eq(agentProfiles.id, 'profile-lead')).get() ??
+      this.db.select().from(agentProfiles).where(eq(agentProfiles.name, 'lead')).get();
+    return row ? toDTO(row) : null;
+  }
+
   getProfile(id: string): AgentProfileDTO {
     const row = this.db.select().from(agentProfiles).where(eq(agentProfiles.id, id)).get();
     if (!row) throw new Error(`Agent profile not found: ${id}`);

@@ -185,6 +185,62 @@ describe('Provider adapters & bwrap wrapper', () => {
     }
     expect(calls[5].args).not.toContain('-o');
   });
+
+  it('streams reply text from Claude partial messages without logging them, and Codex messages as they finish', async () => {
+    const projectDir = makeTempDir('dalang-adp-stream-');
+    const calls: string[][] = [];
+    const ev = (event: Record<string, unknown>) => JSON.stringify({ type: 'stream_event', event, session_id: 's' });
+    const fakeRunner: CliRunner = {
+      async which(bin) {
+        return bin === 'bwrap' ? null : `/usr/bin/${bin}`;
+      },
+      async run(command, args, opts): Promise<RunCommandResult> {
+        calls.push([command, ...args]);
+        const lines = command.endsWith('claude')
+          ? [
+              ev({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
+              ev({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Hel' } }),
+              ev({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'lo' } }),
+              JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Hello' }] } }),
+              ev({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
+              ev({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Bye' } }),
+              JSON.stringify({ type: 'result', session_id: 's', result: 'Hello\n\nBye' }),
+            ]
+          : [
+              JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'one' } }),
+              JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'two' } }),
+            ];
+        for (const line of lines) opts.onStdoutLine?.(line);
+        return { exitCode: 0, stdout: lines.join('\n'), stderr: '', timedOut: false, idleTimedOut: false };
+      },
+    };
+
+    const logged: string[] = [];
+    let claudeText = '';
+    const r = await new ClaudeCodeAdapter(fakeRunner).runTurn({
+      projectPath: projectDir,
+      prompt: 'hi',
+      onLogLine: (line) => logged.push(line),
+      onTextDelta: (text) => { claudeText += text; },
+    });
+    expect(calls[0]).toContain('--include-partial-messages');
+    expect(claudeText).toBe('Hello\n\nBye');
+    expect(r.text).toBe('Hello\n\nBye');
+    expect(logged.some((line) => line.includes('stream_event'))).toBe(false);
+    expect(logged.some((line) => line.includes('"assistant"'))).toBe(true);
+
+    // Without a listener, the CLI is not asked for partial messages.
+    await new ClaudeCodeAdapter(fakeRunner).runTurn({ projectPath: projectDir, prompt: 'hi' });
+    expect(calls[1]).not.toContain('--include-partial-messages');
+
+    let codexText = '';
+    await new CodexAdapter(fakeRunner).runTurn({
+      projectPath: projectDir,
+      prompt: 'hi',
+      onTextDelta: (text) => { codexText += text; },
+    });
+    expect(codexText).toBe('one\n\ntwo');
+  });
 });
 
 describe('bwrap session bus', () => {

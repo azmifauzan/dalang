@@ -29,6 +29,7 @@ import { stripMouse, useMouseWheel, WHEEL_ROWS } from './mouse.js';
 import { providerLabel, usableProviderIds } from './team.js';
 import { Wizard } from './Wizard.js';
 import { WorkingStatus } from './WorkingStatus.js';
+import { createLiveReplyStore, LiveReply, useHasLiveReply } from './LiveReply.js';
 import { markdownRows } from './markdown.js';
 import {
   applyComposerCompletion,
@@ -166,6 +167,7 @@ export function RoomApp({
   // Local UI state
   const [notices, setNotices] = useState<LocalNotice[]>([]);
   const [activityPreviews, setActivityPreviews] = useState(() => new Map<string, string>());
+  const [liveReplies] = useState(createLiveReplyStore);
   const [sending, setSending] = useState(false);
   const [pagerOpen, setPagerOpen] = useState(false);
   const [scrollOffset, setScrollOffset] = useState(0);
@@ -253,14 +255,26 @@ export function RoomApp({
     () => profiles.find((p) => p.id === 'profile-lead') ?? profiles.find((p) => p.name === 'lead') ?? null,
     [profiles],
   );
+  // A new chat answers with the project's effective Lead, which the server takes from Config.
+  const newChatLead = useMemo(
+    () =>
+      activeProject
+        ? {
+            provider: activeProject.leadProvider,
+            model: activeProject.leadModel ?? '',
+            effort: leadProfile?.provider === activeProject.leadProvider ? leadProfile.effort : null,
+          }
+        : leadProfile,
+    [activeProject, leadProfile],
+  );
   const activeModel = useMemo(
     () =>
       activeLeadModel({
         choice: modelChoice,
         session: activeSession ? { provider: activeSession.provider, model: activeSession.model } : null,
-        leadProfile,
+        leadProfile: newChatLead,
       }),
-    [modelChoice, activeSession, leadProfile],
+    [modelChoice, activeSession, newChatLead],
   );
 
   const runningProfileNames = useMemo(() => {
@@ -426,6 +440,11 @@ export function RoomApp({
             }
             break;
           }
+          case 'lead.text':
+            if (event.sessionId && typeof event.text === 'string') {
+              liveReplies.append(event.sessionId, event.phase ?? 'ask', event.text, event.reset === true);
+            }
+            break;
           case 'lead.turn_finished':
           case 'run.finished': {
             const key = event.type === 'lead.turn_finished' ? event.sessionId : event.runId;
@@ -437,10 +456,17 @@ export function RoomApp({
                 return next;
               });
             }
-            void refreshSessionState(pid, sessionFor());
+            // The live reply stays until the saved message has been fetched, so the text never blinks out.
+            const finishedSession = event.type === 'lead.turn_finished' ? event.sessionId : undefined;
+            void refreshSessionState(pid, sessionFor()).finally(() => {
+              if (finishedSession) liveReplies.clear(finishedSession);
+            });
             break;
           }
           case 'lead.turn_started':
+            if (event.sessionId) liveReplies.clear(event.sessionId);
+            void refreshSessionState(pid, sessionFor());
+            break;
           case 'run.started':
           case 'review.finished':
           case 'integration.finished':
@@ -456,11 +482,14 @@ export function RoomApp({
         setWsConnected(connected);
         const pid = activeProjectIdRef.current;
         if (connected && pid) void refreshSessionState(pid, activeSessionIdRef.current);
-        if (!connected) setActivityPreviews(new Map());
+        if (!connected) {
+          setActivityPreviews(new Map());
+          liveReplies.clear();
+        }
       },
     );
     return unsubscribe;
-  }, [ready, authNeeded, client, refreshSessionState]);
+  }, [ready, authNeeded, client, refreshSessionState, liveReplies]);
 
   const pendingGate: PendingGate | null = useMemo(
     () => detectPendingGate(detail, guard),
@@ -1279,6 +1308,8 @@ export function RoomApp({
     { isActive: !pagerOpen && screen === 'room' },
   );
 
+  const hasLiveReply = useHasLiveReply(liveReplies, activeSessionId);
+
   // Build visible timeline items in chronological order
   const formattedMessages = useMemo<FormattedRoomMessage[]>(() => {
     const serverEntries = (detail?.messages ?? []).map((m) => ({
@@ -1428,7 +1459,11 @@ export function RoomApp({
       />
     );
   }
-  const viewportHeight = Math.max(6, rootHeight - chromeRows);
+  // A reply being written takes up to half of the timeline's height: its author row plus the latest lines.
+  const liveReplyLines = hasLiveReply && activeSessionId
+    ? Math.max(3, Math.min(12, Math.floor((rootHeight - chromeRows) / 2) - 1))
+    : 0;
+  const viewportHeight = Math.max(6, rootHeight - chromeRows - (liveReplyLines ? liveReplyLines + 1 : 0));
 
   const maxOffset = Math.max(0, flattened.length - viewportHeight);
   maxScrollRef.current = maxOffset;
@@ -1565,12 +1600,17 @@ export function RoomApp({
         )}
       </Box>
 
+      {/* Reply being written, under the timeline it will join */}
+      {liveReplyLines && activeSessionId ? (
+        <LiveReply store={liveReplies} sessionId={activeSessionId} rows={liveReplyLines} width={termSize.cols - 4} />
+      ) : null}
+
       {/* Live activity strip */}
       {turn && activeSessionId ? (
         <WorkingStatus
           key={turn.startedAt}
           actor={stripControl(`@${turn.phase.startsWith('ask:') ? turn.phase.slice(4) : 'lead'} (${providerLabel(turn.provider)})`)}
-          activity={activityPreviews.get(activeSessionId) ?? 'Working'}
+          activity={hasLiveReply ? 'Writing a response' : activityPreviews.get(activeSessionId) ?? 'Working'}
           startedAt={turn.startedAt}
           others={activeRuns.length}
         />

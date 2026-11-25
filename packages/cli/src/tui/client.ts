@@ -33,6 +33,9 @@ export interface ServerEvent {
   provider?: string;
   profileName?: string;
   line?: string;
+  /** `lead.text`: reply text written since the previous event; `reset` starts a new attempt. */
+  text?: string;
+  reset?: boolean;
   status?: string;
   round?: number;
   ok?: boolean;

@@ -51,6 +51,11 @@ export interface AdapterTurnOptions {
   signal?: AbortSignal;
   logFilePath?: string;
   onLogLine?: (line: string) => void;
+  /**
+   * Answer text as the CLI produces it, for showing a reply while it is written. Setting it asks
+   * the CLI for token-level output where it has one; the deltas are not written to the turn log.
+   */
+  onTextDelta?: (text: string) => void;
   mcp?: TurnMcpConfig;
   onKeepAlive?: (resetIdle: () => void) => void;
   onControls?: (controls: ActiveTurnControls | null) => void;

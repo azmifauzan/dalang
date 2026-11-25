@@ -214,9 +214,10 @@ describe('model choice logic', () => {
     expect(activeLeadModel({ choice, session: { provider: 'claude-code', model: 'haiku' }, leadProfile })).toEqual({
       provider: 'codex',
       model: 'gpt-5',
-      effort: 'high',
+      effort: null, // the Lead's effort is sent only on the Lead's own CLI
       source: 'chosen',
     });
+    expect(activeLeadModel({ choice: null, session: { provider: 'codex', model: null }, leadProfile })?.effort).toBeNull();
     expect(activeLeadModel({ choice: null, session: { provider: 'claude-code', model: null }, leadProfile })).toEqual({
       provider: 'claude-code',
       model: '',

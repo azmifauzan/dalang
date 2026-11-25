@@ -71,7 +71,9 @@ export async function startTerminalRoom(options: StartTerminalRoomOptions): Prom
       onOpenPager: runPagerWithCleanTty,
       enableMouse: Boolean(process.stdout.isTTY) && mouseEnabled(),
     }),
-    { exitOnCtrlC: false },
+    // Redraw only changed lines, and allow 60 frames a second so a keystroke is not held behind a
+    // streaming redraw. Measured with scripts/tui-bench.mjs; see docs/TUI_PERFORMANCE.md.
+    { exitOnCtrlC: false, incrementalRendering: true, maxFps: 60 },
   );
 
   const onSignal = () => {

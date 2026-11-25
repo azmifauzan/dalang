@@ -64,7 +64,7 @@ const leadProfile = {
   effort: 'medium',
 } as unknown as AgentProfileDTO;
 
-const project = { id: 'p1', name: 'demo', path: '/work/demo', workingSessionId: null };
+const project = { id: 'p1', name: 'demo', path: '/work/demo', workingSessionId: null, leadProvider: 'claude-code', leadModel: null };
 const session = {
   id: 's1',
   projectId: 'p1',
@@ -219,6 +219,56 @@ describe('room screens (Ink, stub server)', () => {
     await ui.waitFor('• README', finished);
     await ui.waitFor('│   echo done', finished);
     expect(ui.since(finished)).not.toMatch(/### Result|\*\*Ready\*\*|file:\/\/\/|Running a command/);
+  });
+
+  it('streams the reply while it is written, then hands over to the saved message', async () => {
+    let emit!: (event: ServerEvent) => void;
+    let turn: { phase: string; provider: string; startedAt: string } | null = null;
+    const { client } = roomClient({
+      connectEvents: (listener: typeof emit) => {
+        emit = listener;
+        return () => {};
+      },
+      listSessions: async () => ({ sessions: [{ ...session, turn }] }),
+      getSessionDetail: async () => ({
+        session: { ...session, turn },
+        messages: turn ? [] : [{
+          id: 'reply', sessionId: 's1', role: 'lead', type: 'ask', createdAt: session.updatedAt,
+          content: { text: 'Saved final answer' },
+        }],
+        briefs: [],
+        plan: null,
+      }),
+    });
+    const ui = mountRoom(client);
+    await ui.waitFor('Lead Claude');
+    turn = { phase: 'ask', provider: 'claude-code', startedAt: new Date().toISOString() };
+    await ui.press('/resume 1', '\r');
+    await ui.waitFor('@lead (Claude) · Working');
+
+    // A JSON reply shows only its answer, decoded as it arrives; a terminal escape never gets through.
+    const streaming = ui.mark();
+    emit({ type: 'lead.text', projectId: 'p1', sessionId: 's1', phase: 'ask', text: '{"answer": "First **par', reset: true });
+    await ui.waitFor('writing...', streaming);
+    emit({ type: 'lead.text', projectId: 'p1', sessionId: 's1', phase: 'ask', text: 't**\\n\\nSecond \\u001b[2Jline' });
+    await ui.waitFor('Second line', streaming);
+    await ui.waitFor('@lead (Claude) · Writing a response', streaming);
+    expect(ui.since(streaming)).toContain('First part');
+    expect(ui.since(streaming)).not.toMatch(/"answer"|Second \x1b/);
+
+    // A new attempt starts its text over.
+    const retried = ui.mark();
+    emit({ type: 'lead.text', projectId: 'p1', sessionId: 's1', phase: 'ask', text: 'Plain retry text', reset: true });
+    await ui.waitFor('Plain retry text', retried);
+    expect(ui.since(retried).split('Plain retry text').at(-1)).not.toContain('First part');
+
+    const finished = ui.mark();
+    turn = null;
+    emit({ type: 'lead.turn_finished', projectId: 'p1', sessionId: 's1' });
+    await ui.waitFor('Saved final answer', finished);
+    await sleep(150);
+    const lastFrame = ui.screen().slice(ui.screen().lastIndexOf('Saved final answer') - 200);
+    expect(lastFrame.split('Saved final answer').at(-1)).not.toContain('writing...');
   });
 
   it('keeps showing work when one of two parallel runs finishes', async () => {

@@ -446,6 +446,9 @@ export class ClaudeCodeAdapter implements CliAdapter {
     if (options.effort) {
       args.push('--effort', options.effort);
     }
+    if (options.onTextDelta) {
+      args.push('--include-partial-messages');
+    }
 
     const secrets = options.mcp?.bearerToken ? [options.mcp.bearerToken] : undefined;
     let mcpDir: string | undefined;
@@ -481,6 +484,26 @@ export class ClaudeCodeAdapter implements CliAdapter {
     let rateLimitReason: string | undefined;
     let usage: TurnTokenUsage | undefined;
     const assistantChunks: string[] = [];
+    let streamedText = false;
+    // Partial-message events stream the answer token by token. They repeat what the full
+    // `assistant` event carries, so they go to the live view only, never to the turn log.
+    const handleStreamEvent = (line: string): boolean => {
+      if (!line.startsWith('{"type":"stream_event"')) return false;
+      try {
+        const event = (JSON.parse(line) as { event?: Record<string, unknown> }).event ?? {};
+        const block = event.content_block as { type?: string } | undefined;
+        const delta = event.delta as { type?: string; text?: unknown } | undefined;
+        if (event.type === 'content_block_start' && block?.type === 'text' && streamedText) {
+          options.onTextDelta?.('\n\n');
+        } else if (event.type === 'content_block_delta' && delta?.type === 'text_delta' && typeof delta.text === 'string') {
+          streamedText = true;
+          options.onTextDelta?.(delta.text);
+        }
+      } catch {
+        // a malformed partial event only loses live text
+      }
+      return true;
+    };
 
     try {
       const runOptions: RunCommandOptions = {
@@ -494,6 +517,7 @@ export class ClaudeCodeAdapter implements CliAdapter {
         onStdoutLine: (line) => {
           const safeLine = redactSecrets(line, secrets);
           if (images.length && /"type"\s*:\s*"user"/.test(line.slice(0, 256)) && /"type"\s*:\s*"image"/.test(line)) return;
+          if (handleStreamEvent(safeLine.trimStart())) return;
           logger.write(safeLine);
           options.onLogLine?.(safeLine);
           const trimmed = safeLine.trim();

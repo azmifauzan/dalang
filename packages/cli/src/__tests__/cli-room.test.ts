@@ -6,6 +6,7 @@ import React from 'react';
 import { render } from 'ink';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { CliRunner, RunCommandOptions, RunCommandResult } from '@dalang/core';
+import { liveReplyText } from '@dalang/shared';
 import { startDalangServer } from '@dalang/server';
 import { resolveCliCommand } from '../cli.js';
 import { RoomApiClient, probeServerHealth } from '../tui/client.js';
@@ -86,6 +87,16 @@ describe('CLI command routing (v0.12)', () => {
 });
 
 describe('TUI commands, completions, and formatting', () => {
+  it('reads the answer out of a JSON reply that is still being written', () => {
+    expect(liveReplyText('Plain **text**')).toBe('Plain **text**');
+    expect(liveReplyText('{"suggested_mode": null, "ans')).toBe('');
+    expect(liveReplyText('{"answer": "Line one\\nLine \\"two\\" \\u00e9')).toBe('Line one\nLine "two" é');
+    // An escape cut off at the end of a batch waits for the next one.
+    expect(liveReplyText('{"answer": "a\\')).toBe('a');
+    expect(liveReplyText('{"answer": "a\\u00')).toBe('a');
+    expect(liveReplyText('{"answer": "done", "suggested_mode": "quick"}')).toBe('done');
+  });
+
   it('parses slash commands and provides @profile and /command completions', () => {
     expect(parseSlashCommand('/mode quick')).toEqual({
       name: 'mode',
