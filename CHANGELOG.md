@@ -2,6 +2,11 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
+## 0.14.1 (Sandbox git mount fix), 25 Nov
+
+- **Security fix for the `/tmp` git mount added in 0.14.0.** A task run could write a `.git` link file pointing anywhere under `/tmp`, and a later run in the same worktree mounted that path read-only, which let it read files in the host `/tmp`. DALANG now mounts a git directory back only when git's own worktree back-link points at that exact `.git` file and the directory holds `HEAD` and `objects`. A run cannot forge the back-link, because its `/tmp` is a throwaway tmpfs. Projects outside `/tmp` were never affected. Use 0.14.1 instead of 0.14.0. No database migration is required.
+- **Verified:** typecheck, tests, and build. A test runs `git status` through real bwrap in a `/tmp` worktree. A second test, with a forged link, fails on 0.14.0 and passes on 0.14.1. The packed tarball was installed in an empty folder. Not run: live providers, macOS, and Windows.
+
 ## 0.14.0 (General tasks), 25 Nov
 
 - **Display-only neutral role names.** Replaced "Coder" and "QA" display labels with **Executor** (light, medium, heavy tasks) and **Checker** across the web UI (English and Indonesian), terminal room, setup wizard, `/config`, `/help`, room reports, and documentation. Stored IDs (`engineer`, `coder-small`, `coder-medium`, `coder-heavy`, `qa`, `lead`, `reviewer`), API contracts, and wayang names stay unchanged. Added `@executor` and `@checker` mention aliases in room routing alongside existing profile mentions.

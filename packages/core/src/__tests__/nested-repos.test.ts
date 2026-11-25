@@ -755,3 +755,33 @@ describe('bwrap sandbox for a project kept under /tmp', () => {
     }
   });
 });
+
+describe('bwrap sandbox ignores forged worktree links', () => {
+  it('does not mount a /tmp path named by a .git file without git back-link', async () => {
+    const root = fs.mkdtempSync('/tmp/dalang-forge-');
+    try {
+      const wt = path.join(root, 'wt');
+      const target = path.join(root, 'secret');
+      fs.mkdirSync(path.join(wt, 'nested'), { recursive: true });
+      fs.mkdirSync(path.join(target, 'objects'), { recursive: true });
+      fs.writeFileSync(path.join(target, 'HEAD'), 'ref: refs/heads/main\n');
+      fs.writeFileSync(path.join(target, 'commondir'), '.\n');
+      // A run wrote these links; the target has no back-link to them.
+      fs.writeFileSync(path.join(wt, '.git'), `gitdir: ${target}\n`);
+      fs.writeFileSync(path.join(wt, 'nested', '.git'), 'gitdir: /tmp\n');
+      const runner: CliRunner = {
+        async which(bin) {
+          return bin === 'bwrap' ? '/usr/bin/bwrap' : null;
+        },
+        async run() {
+          throw new Error('not run');
+        },
+      };
+      const inv = await wrapWithBwrap(runner, null, wt, 'git', ['status'], { platform: 'linux', readOnly: true });
+      expect(inv.args).not.toContain(target);
+      expect(inv.args.filter((a) => a === '/tmp')).toHaveLength(1); // only the tmpfs mount itself
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

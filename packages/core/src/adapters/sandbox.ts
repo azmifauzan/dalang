@@ -431,12 +431,18 @@ function hiddenWorktreeGitDirs(workspacePath: string): string[] {
       if (!fs.lstatSync(dotGit).isFile()) continue;
       const match = /^gitdir:\s*(.+)$/m.exec(fs.readFileSync(dotGit, 'utf8'));
       if (!match) continue;
-      const gitDir = path.resolve(path.dirname(dotGit), match[1].trim());
+      const gitDir = fs.realpathSync(path.resolve(path.dirname(dotGit), match[1].trim()));
+      // An agent can write a `.git` link file, so trust it only when git's own back-link in the
+      // worktree admin dir points at this exact file. A sandboxed run cannot forge that: its /tmp is a tmpfs.
+      const backLink = path.join(gitDir, 'gitdir');
+      if (!fs.existsSync(backLink)) continue;
+      const linked = path.resolve(gitDir, fs.readFileSync(backLink, 'utf8').trim());
+      if (!fs.existsSync(linked) || fs.realpathSync(linked) !== fs.realpathSync(dotGit)) continue;
       const commonFile = path.join(gitDir, 'commondir');
-      const commonDir = fs.existsSync(commonFile)
-        ? path.resolve(gitDir, fs.readFileSync(commonFile, 'utf8').trim())
-        : gitDir;
-      if ((commonDir === '/tmp' || commonDir.startsWith('/tmp/')) && fs.existsSync(commonDir)) dirs.add(commonDir);
+      if (!fs.existsSync(commonFile)) continue;
+      const commonDir = fs.realpathSync(path.resolve(gitDir, fs.readFileSync(commonFile, 'utf8').trim()));
+      const isGitDir = fs.existsSync(path.join(commonDir, 'HEAD')) && fs.existsSync(path.join(commonDir, 'objects'));
+      if (isGitDir && commonDir.startsWith('/tmp/')) dirs.add(commonDir);
     } catch {
       // A link file that cannot be read leaves git as it was.
     }
