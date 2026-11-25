@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const DALANG_VERSION = '0.13.6';
+export const DALANG_VERSION = '0.14.0';
 
 export const MAX_DELEGATION_DEPTH = 1;
 export const DEFAULT_MAX_SUBTASKS_PER_TASK = 6;
@@ -58,6 +58,10 @@ export type EditableTaskStatus = z.infer<typeof EditableTaskStatusSchema>;
 /** Roles a plan task can carry; routing rules match on these (PRD routing example). */
 export const PlanTaskRoleSchema = z.enum(['engineer', 'qa']);
 export type PlanTaskRole = z.infer<typeof PlanTaskRoleSchema>;
+
+/** Whether a task modifies project files (`files`) or returns a standalone markdown answer (`answer`). */
+export const TaskOutputKindSchema = z.enum(['files', 'answer']);
+export type TaskOutputKind = z.infer<typeof TaskOutputKindSchema>;
 
 export const SessionPhaseSchema = z.enum(['discuss', 'agree', 'list', 'run']);
 export type SessionPhase = z.infer<typeof SessionPhaseSchema>;
@@ -137,12 +141,13 @@ export const PlanTaskContractSchema = z.object({
   milestone: z.string().min(1),
   role: PlanTaskRoleSchema.default('engineer'),
   complexity: TaskComplexitySchema.default('low'),
+  output: TaskOutputKindSchema.default('files'),
   depends_on: z.array(z.string()).default([]),
   goal: z.string().min(1),
   files_allowed: z.array(z.string()).default([]),
   files_reference: z.array(z.string()).default([]),
   acceptance_criteria: z.array(z.string()).min(1),
-  verify: z.string().min(1),
+  verify: z.string().nullable().optional(),
   needs_split: z.boolean().default(false),
 });
 export type PlanTaskContract = z.infer<typeof PlanTaskContractSchema>;
@@ -196,16 +201,17 @@ export const PlanContractSchema = z
 export type PlanContract = z.infer<typeof PlanContractSchema>;
 
 /**
- * Task execution result written by Coder to `.dalang/tasks/{id}/result.json`.
+ * Task execution result written by Executor to `.dalang/tasks/{id}/result.json`.
  */
 export const TaskResultContractSchema = z.object({
   task_id: z.string().min(1),
   status: z.enum(['completed', 'blocked', 'failed']),
   changed_files: z.array(z.string()).default([]),
   summary: z.string().min(1),
+  answer: z.string().optional(),
   notes: z.array(z.string()).default([]),
   blockers: z.array(z.string()).default([]),
-  verify_command: z.string().optional(),
+  verify_command: z.string().nullable().optional(),
   verify_exit_code: z.number().int().nullable().optional(),
 });
 export type TaskResultContract = z.infer<typeof TaskResultContractSchema>;
@@ -226,7 +232,7 @@ export type ReviewFinding = z.infer<typeof ReviewFindingSchema>;
 export const ReviewContractSchema = z.object({
   task_id: z.string().min(1),
   status: z.enum(['pass', 'fail']),
-  verify_exit_code: z.number().int(),
+  verify_exit_code: z.number().int().nullable().optional(),
   summary: z.string().optional(),
   findings: z.array(ReviewFindingSchema).default([]),
 });
@@ -447,12 +453,13 @@ const TaskBaseFieldsSchema = z.object({
   milestone: z.string().min(1),
   role: PlanTaskRoleSchema,
   complexity: TaskComplexitySchema,
+  output: TaskOutputKindSchema,
   dependsOn: z.array(z.string()),
   goal: z.string().min(1),
   filesAllowed: z.array(z.string()),
   filesReference: z.array(z.string()),
   acceptanceCriteria: z.array(z.string()).min(1),
-  verify: z.string().min(1),
+  verify: z.string().nullable(),
   needsSplit: z.boolean(),
   status: EditableTaskStatusSchema,
   profileOverride: z.string().nullable(),
@@ -463,12 +470,13 @@ export const CreateTaskInputSchema = z.object({
   milestone: z.string().min(1),
   role: PlanTaskRoleSchema.default('engineer'),
   complexity: TaskComplexitySchema.default('low'),
+  output: TaskOutputKindSchema.optional(),
   dependsOn: z.array(z.string()).default([]),
   goal: z.string().min(1),
   filesAllowed: z.array(z.string()).default([]),
   filesReference: z.array(z.string()).default([]),
   acceptanceCriteria: z.array(z.string()).min(1),
-  verify: z.string().min(1),
+  verify: z.string().nullable().optional().default(null),
   needsSplit: z.boolean().default(false),
   status: EditableTaskStatusSchema.default('ready'),
   profileOverride: z.string().nullable().optional(),
@@ -569,6 +577,7 @@ export type RoomReportEvent =
   | 'verify_result'
   | 'review_verdict'
   | 'task_merged'
+  | 'task_accepted'
   | 'task_rejected'
   | 'task_steered';
 
@@ -577,7 +586,10 @@ export interface RoomReportContent {
   taskId?: string;
   externalId?: string;
   taskTitle?: string;
+  output?: TaskOutputKind;
   summary: string;
+  answer?: string;
+  answerPath?: string;
   profileName?: string;
   provider?: ProviderId;
   model?: string | null;
@@ -586,8 +598,9 @@ export interface RoomReportContent {
     insertions: number;
     deletions: number;
   };
-  verifyCommand?: string;
-  verifyExitCode?: number;
+  verifyCommand?: string | null;
+  verifyExitCode?: number | null;
+  verifySkipped?: boolean;
   reviewStatus?: 'pass' | 'fail';
   reviewRound?: number;
   findingsCount?: number;
@@ -651,13 +664,14 @@ export interface TaskDTO {
   milestone: string;
   role: PlanTaskRole;
   complexity: TaskComplexity;
+  output: TaskOutputKind;
   status: TaskStatus;
   position: number;
   goal: string;
   filesAllowed: string[];
   filesReference: string[];
   acceptanceCriteria: string[];
-  verify: string;
+  verify: string | null;
   needsSplit: boolean;
   splitDepth: number;
   parentTaskId: string | null;
@@ -1020,8 +1034,8 @@ export interface TaskReviewDTO {
   reviewerProfileName: string;
   reviewerProvider: ProviderId;
   reviewerModel: string | null;
-  verifyCommand: string;
-  verifyExitCode: number;
+  verifyCommand: string | null;
+  verifyExitCode: number | null;
   verifyOutput: string;
   filePath: string;
   commitSha: string | null;
@@ -1054,6 +1068,9 @@ export interface TaskRepoDiffSummaryDTO {
 export interface TaskDiffDTO {
   taskId: string;
   externalId: string;
+  output?: TaskOutputKind;
+  answer?: string | null;
+  answerPath?: string | null;
   branchName: string | null;
   baseCommitSha: string | null;
   headCommitSha: string | null;
@@ -1085,6 +1102,8 @@ export interface GuardTaskEntryDTO {
   reviews: TaskReviewDTO[];
   latestReview: TaskReviewDTO | null;
   diffAvailable: boolean;
+  answer?: string | null;
+  answerPath?: string | null;
   canApproveMerge: boolean;
   canReject: boolean;
 }
@@ -1247,7 +1266,7 @@ export const DelegateTaskInputSchema = z.object({
   effort: EffortLevelSchema.optional(),
   files_allowed: z.array(z.string().trim().min(1)).optional(),
   acceptance_criteria: z.array(z.string().trim().min(1)).min(1).max(20).optional(),
-  verify: z.string().trim().min(1).max(500).optional(),
+  verify: z.string().trim().min(1).max(500).nullable().optional(),
   mode: z.enum(['wait', 'async']).default('wait'),
 });
 export type DelegateTaskInput = z.infer<typeof DelegateTaskInputSchema>;
@@ -1276,7 +1295,7 @@ export interface DelegatedSubtaskStatusDTO {
   merged_into_parent: boolean;
   merge_commit_sha: string | null;
   files_allowed: string[];
-  verify: string;
+  verify: string | null;
   review_status: 'pass' | 'fail' | null;
   review_rounds: number;
   review_findings: ReviewFinding[];
@@ -1318,10 +1337,11 @@ export const CreateAutomationInputSchema = z
     prompt: z.string().trim().min(1).max(20_000),
     role: PlanTaskRoleSchema.default('engineer'),
     complexity: TaskComplexitySchema.default('low'),
+    output: TaskOutputKindSchema.optional(),
     filesAllowed: z.array(z.string().trim().min(1)).default([]),
     filesReference: z.array(z.string().trim().min(1)).default([]),
     acceptanceCriteria: z.array(z.string().trim().min(1)).min(1).max(20),
-    verify: z.string().trim().min(1).max(500),
+    verify: z.string().trim().max(500).nullable().optional(),
     profileOverride: z.string().trim().min(1).nullable().optional(),
     allowUnconfined: z.boolean().default(false),
     autoMerge: z.boolean().default(false),
@@ -1345,10 +1365,11 @@ export const UpdateAutomationInputSchema = z.object({
   prompt: z.string().trim().min(1).max(20_000).optional(),
   role: PlanTaskRoleSchema.optional(),
   complexity: TaskComplexitySchema.optional(),
+  output: TaskOutputKindSchema.optional(),
   filesAllowed: z.array(z.string().trim().min(1)).optional(),
   filesReference: z.array(z.string().trim().min(1)).optional(),
   acceptanceCriteria: z.array(z.string().trim().min(1)).min(1).max(20).optional(),
-  verify: z.string().trim().min(1).max(500).optional(),
+  verify: z.string().trim().max(500).nullable().optional(),
   profileOverride: z.string().trim().min(1).nullable().optional(),
   allowUnconfined: z.boolean().optional(),
   autoMerge: z.boolean().optional(),
@@ -1376,10 +1397,11 @@ export interface AutomationDTO {
   prompt: string;
   role: PlanTaskRole;
   complexity: TaskComplexity;
+  output: TaskOutputKind;
   filesAllowed: string[];
   filesReference: string[];
   acceptanceCriteria: string[];
-  verify: string;
+  verify: string | null;
   profileOverride: string | null;
   allowUnconfined: boolean;
   autoMerge: boolean;
@@ -1483,10 +1505,11 @@ export const ExternalMcpStartTaskInputSchema = z.object({
   prompt: z.string().trim().min(1).max(20_000),
   role: PlanTaskRoleSchema.default('engineer'),
   complexity: TaskComplexitySchema.default('low'),
+  output: TaskOutputKindSchema.default('files'),
   files_allowed: z.array(z.string().trim().min(1)).default([]),
   files_reference: z.array(z.string().trim().min(1)).default([]),
   acceptance_criteria: z.array(z.string().trim().min(1)).min(1).max(20).optional(),
-  verify: z.string().trim().min(1).max(500).optional(),
+  verify: z.string().trim().max(500).nullable().optional(),
   profile: z.string().trim().min(1).max(100).optional(),
   allow_unconfined: z.boolean().default(false),
   auto_merge: z.boolean().default(false),

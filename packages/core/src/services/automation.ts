@@ -10,6 +10,7 @@ import type {
   CreateAutomationInput,
   PlanTaskRole,
   TaskComplexity,
+  TaskOutputKind,
   UpdateAutomationInput,
 } from '@dalang/shared';
 import type { DalangDb } from '../db/client.js';
@@ -192,10 +193,11 @@ export class AutomationService {
       prompt: row.prompt,
       role: row.role as PlanTaskRole,
       complexity: row.complexity as TaskComplexity,
+      output: ((row.outputKind as TaskOutputKind) || 'files'),
       filesAllowed: parseJsonStringArray(row.filesAllowedJson),
       filesReference: parseJsonStringArray(row.filesReferenceJson),
       acceptanceCriteria: parseJsonStringArray(row.acceptanceCriteriaJson),
-      verify: row.verify,
+      verify: row.verify ?? null,
       profileOverride: row.profileOverride ?? null,
       allowUnconfined: row.allowUnconfined,
       autoMerge: row.autoMerge,
@@ -299,10 +301,11 @@ export class AutomationService {
         prompt: input.prompt,
         role: input.role,
         complexity: input.complexity,
+        outputKind: input.output ?? 'files',
         filesAllowedJson: JSON.stringify(input.filesAllowed),
         filesReferenceJson: JSON.stringify(input.filesReference),
         acceptanceCriteriaJson: JSON.stringify(input.acceptanceCriteria),
-        verify: input.verify,
+        verify: input.verify?.trim() || null,
         profileOverride,
         allowUnconfined: input.allowUnconfined,
         autoMerge: input.autoMerge,
@@ -365,12 +368,13 @@ export class AutomationService {
         ...(input.prompt !== undefined ? { prompt: input.prompt } : {}),
         ...(input.role !== undefined ? { role: input.role } : {}),
         ...(input.complexity !== undefined ? { complexity: input.complexity } : {}),
+        ...(input.output !== undefined ? { outputKind: input.output } : {}),
         ...(input.filesAllowed !== undefined ? { filesAllowedJson: JSON.stringify(input.filesAllowed) } : {}),
         ...(input.filesReference !== undefined ? { filesReferenceJson: JSON.stringify(input.filesReference) } : {}),
         ...(input.acceptanceCriteria !== undefined
           ? { acceptanceCriteriaJson: JSON.stringify(input.acceptanceCriteria) }
           : {}),
-        ...(input.verify !== undefined ? { verify: input.verify } : {}),
+        ...(input.verify !== undefined ? { verify: input.verify?.trim() || null } : {}),
         profileOverride: nextProfileOverride,
         ...(input.allowUnconfined !== undefined ? { allowUnconfined: input.allowUnconfined } : {}),
         ...(input.autoMerge !== undefined ? { autoMerge: input.autoMerge } : {}),
@@ -546,6 +550,8 @@ export class AutomationService {
     let createdTaskId: string | null = null;
 
     try {
+      const verifyCmd = row.verify?.trim() || null;
+      const outputKind = ((row.outputKind as TaskOutputKind) || 'files');
       const created = this.leadService.createDirectApprovedTask(row.projectId, {
         sessionTitle,
         userMessage: `Triggered by ${sourceLabel.toLowerCase()} automation "${row.name}": ${row.title}`,
@@ -553,10 +559,14 @@ export class AutomationService {
         goal,
         role: row.role as PlanTaskRole,
         complexity: row.complexity as TaskComplexity,
+        output: outputKind,
         filesAllowed,
         filesReference,
-        acceptanceCriteria: acceptanceCriteria.length > 0 ? acceptanceCriteria : ['Verify command passes'],
-        verify: row.verify,
+        acceptanceCriteria:
+          acceptanceCriteria.length > 0
+            ? acceptanceCriteria
+            : [verifyCmd ? 'Verify command passes' : 'Task goal is satisfied'],
+        verify: verifyCmd,
         profileOverride: row.profileOverride,
         milestone: sourceLabel,
       });

@@ -12,7 +12,14 @@ import type {
   QuickPlanMessageContent,
   RoomReportContent,
   SessionDetailDTO,
+  TaskOutputKind,
 } from '@dalang/shared';
+
+function displayTaskRole(role: string): string {
+  if (role === 'engineer') return 'executor';
+  if (role === 'qa') return 'checker';
+  return role;
+}
 
 export type PendingGate =
   | {
@@ -40,6 +47,7 @@ export type PendingGate =
       taskId: string;
       externalId: string;
       title: string;
+      output: TaskOutputKind;
       branch: string;
       reviewFailed: boolean;
       prompt: string;
@@ -51,19 +59,24 @@ export function detectPendingGate(
 ): PendingGate | null {
   if (!detail) return null;
 
-  // 1. Merge gate takes top priority when a task is waiting for human merge approval
+  // 1. Merge / accept gate takes top priority when a task is waiting for human approval
   const mergeCandidate = guard?.tasks.find(
     (entry) => entry.task.status === 'awaiting_merge' && entry.canApproveMerge,
   );
   if (mergeCandidate) {
+    const output = mergeCandidate.task.output ?? 'files';
     return {
       kind: 'approve_merge',
       taskId: mergeCandidate.task.id,
       externalId: mergeCandidate.task.externalId,
       title: mergeCandidate.task.title,
+      output,
       branch: guard?.mainBranch ?? 'main',
       reviewFailed: false,
-      prompt: `Merge [${mergeCandidate.task.externalId}] "${mergeCandidate.task.title}" into ${guard?.mainBranch ?? 'main'}? (y/n · /diff to inspect)`,
+      prompt:
+        output === 'answer'
+          ? `Accept answer [${mergeCandidate.task.externalId}] "${mergeCandidate.task.title}"? (y/n · /diff to inspect)`
+          : `Merge [${mergeCandidate.task.externalId}] "${mergeCandidate.task.title}" into ${guard?.mainBranch ?? 'main'}? (y/n · /diff to inspect)`,
     };
   }
 
@@ -259,11 +272,14 @@ export function formatRoomMessage(msg: DiscussMessageDTO): FormattedRoomMessage 
     badge = qp.verdict === 'ready' ? 'QUICK PLAN' : 'TOO LARGE';
     lines.push(qp.summary);
     if (qp.verdict === 'ready' && qp.task) {
-      lines.push(`  Task [${qp.task.id}] ${qp.task.title} (${qp.task.role} · ${qp.task.complexity})`);
+      const outputTag = qp.task.output === 'answer' ? ' · answer' : '';
+      lines.push(
+        `  Task [${qp.task.id}] ${qp.task.title} (${displayTaskRole(qp.task.role)} · ${qp.task.complexity}${outputTag})`,
+      );
       if (qp.task.files_allowed.length > 0) {
         lines.push(`  Files: ${qp.task.files_allowed.join(', ')}`);
       }
-      lines.push(`  Verify: ${qp.task.verify}`);
+      lines.push(`  Verify: ${qp.task.verify?.trim() || '(skipped — criteria review)'}`);
     } else if (qp.reason) {
       lines.push(`  Reason: ${qp.reason}`);
       lines.push('  -> Switch with /mode full to plan this in milestones.');
@@ -277,14 +293,15 @@ export function formatRoomMessage(msg: DiscussMessageDTO): FormattedRoomMessage 
       version?: number;
       milestoneCount?: number;
       taskCount?: number;
-      tasks?: Array<{ id: string; title: string; role: string; complexity: string }>;
+      tasks?: Array<{ id: string; title: string; role: string; complexity: string; output?: TaskOutputKind }>;
     };
     badge = `PLAN v${p.version ?? 1}`;
     lines.push(
       `Plan ready: ${p.taskCount ?? p.tasks?.length ?? 0} task(s) across ${p.milestoneCount ?? 1} milestone(s).`,
     );
     for (const t of (p.tasks ?? []).slice(0, 8)) {
-      lines.push(`  [${t.id}] ${t.title} (${t.role} · ${t.complexity})`);
+      const outputTag = t.output === 'answer' ? ' · answer' : '';
+      lines.push(`  [${t.id}] ${t.title} (${displayTaskRole(t.role)} · ${t.complexity}${outputTag})`);
     }
   } else if (msg.type === 'report' && msg.content && typeof msg.content === 'object') {
     const rep = msg.content as RoomReportContent;
@@ -294,6 +311,17 @@ export function formatRoomMessage(msg: DiscussMessageDTO): FormattedRoomMessage 
       lines.push(
         `  Diff: ${rep.diffStats.filesChanged} file(s), +${rep.diffStats.insertions} -${rep.diffStats.deletions}`,
       );
+    }
+    if (rep.answer?.trim()) {
+      const answerLines = rep.answer.trim().split('\n');
+      const maxLines = 24;
+      lines.push('');
+      for (const l of answerLines.slice(0, maxLines)) {
+        lines.push(`  ${l}`);
+      }
+      if (answerLines.length > maxLines) {
+        lines.push(`  ... (${answerLines.length - maxLines} more line(s); run /diff ${rep.externalId ?? ''} to read full answer)`);
+      }
     }
     if (rep.findings && rep.findings.length > 0) {
       for (const f of rep.findings.slice(0, 4)) {

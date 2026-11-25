@@ -40,10 +40,10 @@ export const ROLE_PROFILE_NAME: Record<RoleKey, string> = {
 
 export const ROLE_LABEL: Record<RoleKey, string> = {
   lead: 'Lead (Semar)',
-  coderLight: 'Coder, simple tasks (Bima)',
-  coderMedium: 'Coder, medium tasks (Gatotkaca)',
-  coderHeavy: 'Coder, complex tasks (Kresna)',
-  qa: 'QA (Srikandi)',
+  coderLight: 'Executor, light tasks (Bima)',
+  coderMedium: 'Executor, medium tasks (Gatotkaca)',
+  coderHeavy: 'Executor, heavy tasks (Kresna)',
+  qa: 'Checker (Srikandi)',
   reviewer: 'Reviewer (Arjuna)',
 };
 

@@ -144,17 +144,18 @@ If the npm registry does not have the newest release yet, install the tarball at
 
 ### Database upgrades
 
-Dalang upgrades its database the first time a newer version starts, from any earlier release, and keeps your projects, sessions, briefs, plans, tasks, settings, and profiles. The current schema is v15. Version 0.13.0 adds no database migration:
+Dalang upgrades its database the first time a newer version starts, from any earlier release, and keeps your projects, sessions, briefs, plans, tasks, settings, and profiles. The current schema is v16:
 
 | Release | Schema | What the upgrade does |
 | --- | --- | --- |
 | v0.7.0 | v9 | Moves each project's history into a **Full** session and its saved artifacts into `.dalang/sessions/<session-id>/` |
 | v0.7.2 | v10 | Adds stored chat images |
-| v0.7.4 | v11 | Adds the `coder-medium` and `qa` profiles and points the medium and QA routing rules at them |
+| v0.7.4 | v11 | Adds the `coder-medium` and `qa` profiles and points the medium and checker routing rules at them |
 | v0.8.0 | v12 | Adds the delegation fields on tasks |
 | v0.9.0 | v13 | Adds per-repo task and checkpoint records for workspace projects |
 | v0.11.0 | v14 | Adds schedules, webhooks, their run history, and outside-agent MCP tokens |
 | v0.12.0 | v15 | Adds `author_profile_id` and `kind` to messages for role reports and team-room feeds |
+| v0.14.0 | v16 | Adds `output_kind` (`files` or `answer`) to tasks and automations, makes `verify` nullable across tasks, reviews, and automations, and refreshes untouched default role prompts |
 
 An upgrade is one way. An older build refuses a newer database with `Database schema vN is newer than this DALANG build`, so restore your pre-upgrade backup to go back. A server that is still running keeps the old code and schema in memory, so restart it after updating.
 

@@ -8,6 +8,7 @@ import type {
   ProjectSummary,
   TaskComplexity,
   TaskDTO,
+  TaskOutputKind,
   TaskStatus,
 } from '@dalang/shared';
 import { useI18n } from '../i18n/index.js';
@@ -46,6 +47,7 @@ interface TaskFormState {
   milestone: string;
   role: PlanTaskRole;
   complexity: TaskComplexity;
+  output: TaskOutputKind;
   status: EditableTaskStatus;
   goal: string;
   filesAllowed: string;
@@ -63,6 +65,7 @@ function emptyTaskForm(defaultMilestone = 'M1'): TaskFormState {
     milestone: defaultMilestone,
     role: 'engineer',
     complexity: 'low',
+    output: 'files',
     status: 'ready',
     goal: '',
     filesAllowed: '',
@@ -86,6 +89,7 @@ function taskToForm(task: TaskDTO, profiles: AgentProfileDTO[]): TaskFormState {
     milestone: task.milestone,
     role: task.role,
     complexity: task.complexity,
+    output: task.output ?? 'files',
     status:
       task.status === 'draft' || task.status === 'needs_split' || task.status === 'ready'
         ? task.status
@@ -94,7 +98,7 @@ function taskToForm(task: TaskDTO, profiles: AgentProfileDTO[]): TaskFormState {
     filesAllowed: task.filesAllowed.join('\n'),
     filesReference: task.filesReference.join('\n'),
     acceptanceCriteria: task.acceptanceCriteria.join('\n'),
-    verify: task.verify,
+    verify: task.verify ?? '',
     needsSplit: task.needsSplit,
     profileOverride: matchedProfile?.id ?? task.profileOverride ?? '',
     dependsOn: task.dependsOn,
@@ -222,7 +226,7 @@ export function ListView({
   const handleSaveTask = (e: FormEvent) => {
     e.preventDefault();
     const criteria = linesToArray(formState.acceptanceCriteria);
-    if (criteria.length === 0 || !formState.verify.trim()) {
+    if (criteria.length === 0) {
       setFormError(t('plan.incompleteError'));
       return;
     }
@@ -232,12 +236,13 @@ export function ListView({
       milestone: formState.milestone,
       role: formState.role,
       complexity: formState.complexity,
+      output: formState.output,
       status: formState.status,
       goal: formState.goal.trim(),
-      filesAllowed: linesToArray(formState.filesAllowed),
+      filesAllowed: formState.output === 'answer' ? [] : linesToArray(formState.filesAllowed),
       filesReference: linesToArray(formState.filesReference),
       acceptanceCriteria: criteria,
-      verify: formState.verify.trim(),
+      verify: formState.verify.trim() || null,
       needsSplit: formState.status === 'needs_split',
       profileOverride: formState.profileOverride || null,
       dependsOn: formState.dependsOn,
@@ -514,6 +519,7 @@ export function ListView({
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <Badge>{task.externalId}</Badge>
                           <div className="flex flex-wrap items-center gap-1 text-xs">
+                            {task.output === 'answer' && <Badge>{te('answer')}</Badge>}
                             {task.status !== col.id && <Badge>{te(task.status)}</Badge>}
                             <Badge>{task.milestone}</Badge>
                             <Badge>{te(task.complexity)}</Badge>
@@ -544,8 +550,11 @@ export function ListView({
                               {t('plan.dependsOn', { deps: task.dependsOn.join(', ') })}
                             </div>
                           )}
-                          <div className="truncate font-mono-token" title={task.verify}>
-                            {t('plan.verify', { cmd: task.verify })}
+                          <div
+                            className="truncate font-mono-token"
+                            title={task.verify ?? t('plan.verifySkipped')}
+                          >
+                            {task.verify ? t('plan.verify', { cmd: task.verify }) : t('plan.verifySkipped')}
                           </div>
                         </div>
 
@@ -675,7 +684,7 @@ export function ListView({
             </div>
           </div>
 
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div>
               <Label htmlFor="task-status" className="block text-sm font-medium">
                 {t('plan.fieldStatus')}
@@ -696,6 +705,24 @@ export function ListView({
                       {c.title}
                     </option>
                   ))}
+              </NativeSelect>
+            </div>
+
+            <div>
+              <Label htmlFor="task-output" className="block text-sm font-medium">
+                {t('plan.fieldOutput')}
+              </Label>
+              <NativeSelect
+                id="task-output"
+                disabled={isLocked}
+                value={formState.output}
+                onChange={(e) =>
+                  setFormState({ ...formState, output: e.target.value as TaskOutputKind })
+                }
+                className="mt-1"
+              >
+                <option value="files">{t('plan.output.files')}</option>
+                <option value="answer">{t('plan.output.answer')}</option>
               </NativeSelect>
             </div>
 
@@ -742,7 +769,6 @@ export function ListView({
             <Input
               id="task-verify"
               type="text"
-              required
               disabled={isLocked}
               value={formState.verify}
               onChange={(e) => setFormState({ ...formState, verify: e.target.value })}

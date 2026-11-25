@@ -11,6 +11,8 @@ export interface ActiveCoderRunInfo {
 }
 
 export interface RoomExecutionRouter {
+  recoverEmptyFailedWork?(projectId: string): Promise<void>;
+  discardSessionWork?(projectId: string, sessionId: string): Promise<unknown>;
   startExecution?(projectId: string, input: { sessionId: string }): Promise<unknown>;
   stopExecution?(projectId: string, taskId?: string, sessionId?: string): Promise<{ stopped: boolean }>;
   commitWorkspace?(projectId: string, input: { paths: string[]; message: string }): Promise<string>;
@@ -67,7 +69,7 @@ export function resolveMentionTarget(
 
   const coderRuns = activeRuns.filter((r) => r.kind === 'execute' || r.kind === 'fix');
 
-  // 1. Check active running coder tasks first: exact profile match or `@coder` / `@engineer` alias.
+  // 1. Check active running executor tasks first: exact profile match or `@executor` / `@coder` / `@engineer` alias.
   const exactActiveRun = coderRuns.find((r) => r.profileName.toLowerCase() === key);
   if (exactActiveRun) {
     return {
@@ -77,7 +79,7 @@ export function resolveMentionTarget(
       body,
     };
   }
-  if ((key === 'coder' || key === 'engineer') && coderRuns.length > 0) {
+  if ((key === 'executor' || key === 'coder' || key === 'engineer') && coderRuns.length > 0) {
     const run = coderRuns[0];
     return {
       route: 'steer',
@@ -101,8 +103,8 @@ export function resolveMentionTarget(
     return { route: 'ask', profile: exactProfile, body };
   }
 
-  // 4. Role aliases for idle Ask mode (`@coder`, `@engineer`, `@reviewer`, `@qa`).
-  if (key === 'coder' || key === 'engineer') {
+  // 4. Role aliases for idle Ask mode (`@executor`, `@coder`, `@engineer`, `@reviewer`, `@checker`, `@qa`).
+  if (key === 'executor' || key === 'coder' || key === 'engineer') {
     const coderProfile =
       profileByName.get('coder-small') ??
       profiles.find((p) => p.name.toLowerCase().startsWith('coder'));
@@ -116,7 +118,7 @@ export function resolveMentionTarget(
       profiles.find((p) => p.name.toLowerCase().includes('review'));
     if (rev) return { route: 'ask', profile: rev, body };
   }
-  if (key === 'qa') {
+  if (key === 'checker' || key === 'qa') {
     const qa = profileByName.get('qa');
     if (qa) return { route: 'ask', profile: qa, body };
   }

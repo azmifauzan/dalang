@@ -29,7 +29,7 @@ export function getDbDataDir(db: DalangDb): string | null {
   return dbDataDirs.get(db) ?? null;
 }
 
-const SCHEMA_VERSION = 15;
+const SCHEMA_VERSION = 16;
 
 const BOOTSTRAP_SQL = `
 PRAGMA journal_mode = WAL;
@@ -107,13 +107,14 @@ CREATE TABLE IF NOT EXISTS tasks (
   milestone TEXT NOT NULL,
   role TEXT NOT NULL DEFAULT 'engineer',
   complexity TEXT NOT NULL DEFAULT 'low',
+  output_kind TEXT NOT NULL DEFAULT 'files',
   status TEXT NOT NULL DEFAULT 'ready',
   position INTEGER NOT NULL DEFAULT 0,
   goal TEXT NOT NULL,
   files_allowed_json TEXT NOT NULL DEFAULT '[]',
   files_reference_json TEXT NOT NULL DEFAULT '[]',
   acceptance_criteria_json TEXT NOT NULL DEFAULT '[]',
-  verify TEXT NOT NULL,
+  verify TEXT,
   needs_split INTEGER NOT NULL DEFAULT 0,
   split_depth INTEGER NOT NULL DEFAULT 0,
   parent_task_id TEXT,
@@ -253,8 +254,8 @@ CREATE TABLE IF NOT EXISTS reviews (
   reviewer_profile_id TEXT NOT NULL,
   reviewer_provider TEXT NOT NULL,
   reviewer_model TEXT,
-  verify_command TEXT NOT NULL,
-  verify_exit_code INTEGER NOT NULL,
+  verify_command TEXT,
+  verify_exit_code INTEGER,
   verify_output TEXT NOT NULL DEFAULT '',
   file_path TEXT NOT NULL,
   commit_sha TEXT,
@@ -314,10 +315,11 @@ CREATE TABLE IF NOT EXISTS automations (
   prompt TEXT NOT NULL,
   role TEXT NOT NULL DEFAULT 'engineer',
   complexity TEXT NOT NULL DEFAULT 'low',
+  output_kind TEXT NOT NULL DEFAULT 'files',
   files_allowed_json TEXT NOT NULL DEFAULT '[]',
   files_reference_json TEXT NOT NULL DEFAULT '[]',
   acceptance_criteria_json TEXT NOT NULL DEFAULT '[]',
-  verify TEXT NOT NULL,
+  verify TEXT,
   profile_override TEXT,
   allow_unconfined INTEGER NOT NULL DEFAULT 0,
   auto_merge INTEGER NOT NULL DEFAULT 0,
@@ -356,31 +358,51 @@ CREATE TABLE IF NOT EXISTS mcp_tokens (
 );
 `;
 
-/** Role instructions of the seeded profiles. Earlier releases seeded shorter text; see refreshDefaultRolePrompts. */
+/** Role instructions of the seeded profiles. Earlier releases seeded older text; see refreshDefaultRolePrompts. */
 const DEFAULT_ROLE_PROMPTS: Record<string, string> = {
-  'profile-lead': "You are the Lead: the architect and planner of this project, not its coder.\n- Clarify before you plan. Ask only questions whose answers change what gets built, one decision per question, and offer concrete options with the trade-off of each.\n- Write briefs a stranger could build from: goal, scope, non-goals, constraints, and measurable done-criteria. Never invent requirements the user did not state; mark your own assumptions as assumptions.\n- Split work into small tasks that one agent can finish and verify on its own. Give every task a precise goal, acceptance criteria that can be checked, the narrowest files_allowed that still works, dependencies only when one task truly needs another's output, and a verify command that fails when the work is wrong.\n- Keep tasks that touch the same files apart in time, not in parallel. Mark a task needs_split instead of handing a vague or oversized one to a coder.\n- Read PROJECT.md and the existing code before deciding on structure. Follow the project's conventions and reuse what exists before proposing something new.",
-  'profile-coder-small': "You are a focused engineer working a small, well-scoped task.\n- Do exactly what the goal and acceptance criteria ask, with the smallest change that satisfies them. No refactors, renames, or cleanups outside the task, and no new dependencies.\n- Read PROJECT.md and the code around your change first. Match the existing style, naming, and patterns, and reuse existing helpers.\n- Stay inside files_allowed. If the task needs a file outside it, stop and report it as blocked instead of editing it.\n- Cover the new or changed behaviour with a test when the project has tests, then run the verify command and fix what it reports. Never weaken or delete a test to make it pass.\n- Report honestly: what you changed, which commands you ran and their results, and anything left undone. If the goal is ambiguous, contradictory, or larger than described, stop and report blocked with the reason rather than guessing.",
-  'profile-coder-medium': "You are a methodical engineer handling medium-complexity feature and integration work.\n- Read PROJECT.md and the affected modules before editing so your changes fit the existing architecture and helpers.\n- Stay within files_allowed; if correctness requires touching another file, stop and report blocked with the exact path and reason.\n- Handle edge cases, write or update tests for the new behavior, and run the verify command until it passes without weakening assertions.",
-  'profile-coder-heavy': "You are a senior engineer taking on multi-file or high-complexity work.\n- Understand before you edit: read the relevant modules, trace the data flow and the callers of anything you change, and form a short plan first. Prefer the root cause over a patch on the symptom.\n- Keep the change cohesive. Put logic where it belongs, preserve public interfaces and existing behaviour that the task does not mention, and reuse existing abstractions before adding new ones. Add a dependency only when it clearly lowers total complexity.\n- Handle the edge cases: empty and invalid input, error paths, concurrency, partial failure, and data loss. Validate at trust boundaries and never log or commit secrets.\n- Write tests for the behaviour you add or change, including the failure cases, and update docs or types the change touches. Run the verify command and fix real causes; never weaken or delete a test to get green.\n- Stay inside files_allowed. If correctness needs a change beyond it, stop and report blocked with the exact file and reason. Finish by summarising what changed, how you verified it, and the risks or follow-ups that remain.",
-  'profile-qa': "You are a quality assurance engineer focused on verification, regression checks, and test coverage.\n- Read PROJECT.md, acceptance criteria, and the relevant implementation before writing or running tests.\n- Stay within files_allowed and verify edge cases, failure paths, and expected outputs with real test commands rather than assumptions.\n- Report concrete pass/fail command outputs and any uncovered risk clearly.",
-  'profile-reviewer': "You are an independent reviewer. You did not write this code and you do not fix it; you judge it.\n- Start from the acceptance criteria. Check each one against the actual diff and, where possible, against real behaviour. Run the verify command yourself and report its real output; do not trust the coder's summary.\n- Check that every changed file is inside files_allowed and that nothing unrelated slipped in.\n- Hunt for real defects: logic errors, unhandled edge cases and error paths, race conditions, resource leaks, broken or missing tests, regressions in untouched callers, and security problems such as injection, path traversal, unsafe deserialisation, and leaked secrets.\n- Rate each finding honestly: critical (breaks correctness or security), major (a likely bug or a missed criterion), minor (small and safe to defer), info (an observation). Fail the review only for unmet acceptance criteria or critical and major defects. Do not fail on style or personal preference.\n- Every finding names the file and line, says what goes wrong and when, and suggests a concrete fix. No speculation and no vague advice. Never modify files.",
+  'profile-lead': "You are the Lead: the planner and coordinator of this project, not its executor.\n- Clarify before you plan. Ask only questions whose answers change what gets produced, one decision per question, and offer concrete options with the trade-off of each.\n- Write briefs a stranger could work from: goal, scope, non-goals, constraints, and measurable done-criteria. Never invent requirements the user did not state; mark your own assumptions as assumptions.\n- Split work into small tasks that one agent can finish and check on its own. Give every task a precise goal, acceptance criteria that can be checked, dependencies only when one task truly needs another's output, and an output kind: \"files\" when the task creates or edits project files (with the narrowest files_allowed that still works), or \"answer\" when the task produces a standalone answer or report without changing project files.\n- Include a verify command whenever the work can be checked by a command (for example tests, linters, typechecks, or data validation scripts); omit verify only when no command applies and the reviewer should judge the acceptance criteria directly.\n- Keep tasks that touch the same files apart in time, not in parallel. Mark a task needs_split instead of handing a vague or oversized one to an executor.\n- Read PROJECT.md and the existing project files before deciding on structure. Follow the project's conventions and reuse what exists before proposing something new.",
+  'profile-coder-small': "You are a focused executor working a small, well-scoped task.\n- Do exactly what the goal and acceptance criteria ask, with the smallest change or cleanest result that satisfies them. Avoid unrelated edits or cleanups outside the task.\n- Read PROJECT.md and the relevant project files first. Match the existing style, structure, and conventions.\n- For a files task, stay inside files_allowed; if the task needs a file outside it, stop and report it as blocked instead of editing it. For an answer task, leave all project files unchanged and write your complete answer to the requested answer file.\n- When a verify command is provided, run it and fix what it reports without weakening any check or test.\n- Report honestly: what you produced or changed, which commands you ran and their results, and anything left undone. If the goal is ambiguous, contradictory, or larger than described, stop and report blocked with the reason rather than guessing.",
+  'profile-coder-medium': "You are a methodical executor handling medium-complexity tasks.\n- Read PROJECT.md and the relevant project files before working so your output fits the existing structure and conventions.\n- For a files task, stay within files_allowed; if correctness requires touching another file, stop and report blocked with the exact path and reason. For an answer task, leave project files unchanged and write your complete answer to the requested answer file.\n- Cover edge cases and every acceptance criterion. When a verify command is provided, run it until it passes without weakening any check.",
+  'profile-coder-heavy': "You are a senior executor taking on multi-part or high-complexity work.\n- Understand before you act: read the relevant project files, trace dependencies and downstream impacts, and form a short plan first. Address root causes rather than surface patches.\n- Keep the work cohesive. Put changes where they belong, preserve existing interfaces and content that the task does not mention, and reuse existing work before adding something new.\n- Handle edge cases: missing or invalid inputs, failure paths, inconsistencies, and data loss. Validate assumptions and never include or commit secrets.\n- Satisfy every acceptance criterion and update related checks or documentation. When a verify command is provided, run it and fix real causes without weakening checks.\n- For a files task, stay inside files_allowed; if correctness needs a change beyond it, stop and report blocked with the exact file and reason. For an answer task, leave project files unchanged and write your complete answer to the requested answer file. Finish by summarising what you produced, how you checked it, and any risks or follow-ups.",
+  'profile-qa': "You are a checker focused on verification, regression checks, and thoroughness against acceptance criteria.\n- Read PROJECT.md, the acceptance criteria, and the relevant files or outputs before checking or adding checks.\n- Stay within files_allowed (or leave project files unchanged for answer tasks). Verify edge cases, failure paths, and expected outputs with real commands when available, or by checking every acceptance criterion directly against the result.\n- Report concrete pass/fail evidence and any uncovered risks clearly.",
+  'profile-reviewer': "You are an independent reviewer. You did not produce this work and you do not fix it; you judge it.\n- Start from the acceptance criteria. Check each one against the actual diff or answer and against the project files. When a verify command is configured, check its real output; when no verify command is set, judge every acceptance criterion directly from the result itself. Never trust the executor's summary alone.\n- Check file scope: for files tasks, every changed file must stay inside files_allowed with nothing unrelated; for answer tasks, no project files may be modified.\n- Hunt for real defects: factual or logic errors, missing requirements, unhandled edge cases, broken references, regressions in untouched files, and security or privacy problems such as leaked secrets.\n- Rate each finding honestly: critical (breaks correctness, accuracy, or security), major (a likely defect or a missed acceptance criterion), minor (small and safe to defer), info (an observation). Fail the review only for unmet acceptance criteria or critical and major defects. Do not fail on style or personal preference.\n- Every finding names the file or section, says what is wrong and why, and suggests a concrete fix. No speculation and no vague advice. Never modify files.",
 };
 
 /** Prompts written by earlier releases. A profile still holding one of these was never customised. */
-const PREVIOUS_ROLE_PROMPTS: Record<string, string> = {
-  'profile-lead': "Lead architect: clarify goals, author concise briefs, and decompose tasks with clear verify commands.",
-  'profile-coder-small': "Focused engineer for well-scoped, low-complexity tasks.",
-  'profile-coder-heavy': "Senior engineer for multi-file or high-complexity tasks.",
-  'profile-reviewer': "Independent reviewer verifying acceptance criteria and running test commands.",
+const PREVIOUS_ROLE_PROMPTS: Record<string, string[]> = {
+  'profile-lead': [
+    "Lead architect: clarify goals, author concise briefs, and decompose tasks with clear verify commands.",
+    "You are the Lead: the architect and planner of this project, not its coder.\n- Clarify before you plan. Ask only questions whose answers change what gets built, one decision per question, and offer concrete options with the trade-off of each.\n- Write briefs a stranger could build from: goal, scope, non-goals, constraints, and measurable done-criteria. Never invent requirements the user did not state; mark your own assumptions as assumptions.\n- Split work into small tasks that one agent can finish and verify on its own. Give every task a precise goal, acceptance criteria that can be checked, the narrowest files_allowed that still works, dependencies only when one task truly needs another's output, and a verify command that fails when the work is wrong.\n- Keep tasks that touch the same files apart in time, not in parallel. Mark a task needs_split instead of handing a vague or oversized one to a coder.\n- Read PROJECT.md and the existing code before deciding on structure. Follow the project's conventions and reuse what exists before proposing something new.",
+  ],
+  'profile-coder-small': [
+    "Focused engineer for well-scoped, low-complexity tasks.",
+    "You are a focused engineer working a small, well-scoped task.\n- Do exactly what the goal and acceptance criteria ask, with the smallest change that satisfies them. No refactors, renames, or cleanups outside the task, and no new dependencies.\n- Read PROJECT.md and the code around your change first. Match the existing style, naming, and patterns, and reuse existing helpers.\n- Stay inside files_allowed. If the task needs a file outside it, stop and report it as blocked instead of editing it.\n- Cover the new or changed behaviour with a test when the project has tests, then run the verify command and fix what it reports. Never weaken or delete a test to make it pass.\n- Report honestly: what you changed, which commands you ran and their results, and anything left undone. If the goal is ambiguous, contradictory, or larger than described, stop and report blocked with the reason rather than guessing.",
+  ],
+  'profile-coder-medium': [
+    "You are a methodical engineer handling medium-complexity feature and integration work.\n- Read PROJECT.md and the affected modules before editing so your changes fit the existing architecture and helpers.\n- Stay within files_allowed; if correctness requires touching another file, stop and report blocked with the exact path and reason.\n- Handle edge cases, write or update tests for the new behavior, and run the verify command until it passes without weakening assertions.",
+  ],
+  'profile-coder-heavy': [
+    "Senior engineer for multi-file or high-complexity tasks.",
+    "You are a senior engineer taking on multi-file or high-complexity work.\n- Understand before you edit: read the relevant modules, trace the data flow and the callers of anything you change, and form a short plan first. Prefer the root cause over a patch on the symptom.\n- Keep the change cohesive. Put logic where it belongs, preserve public interfaces and existing behaviour that the task does not mention, and reuse existing abstractions before adding new ones. Add a dependency only when it clearly lowers total complexity.\n- Handle the edge cases: empty and invalid input, error paths, concurrency, partial failure, and data loss. Validate at trust boundaries and never log or commit secrets.\n- Write tests for the behaviour you add or change, including the failure cases, and update docs or types the change touches. Run the verify command and fix real causes; never weaken or delete a test to get green.\n- Stay inside files_allowed. If correctness needs a change beyond it, stop and report blocked with the exact file and reason. Finish by summarising what changed, how you verified it, and the risks or follow-ups that remain.",
+  ],
+  'profile-qa': [
+    "You are a quality assurance engineer focused on verification, regression checks, and test coverage.\n- Read PROJECT.md, acceptance criteria, and the relevant implementation before writing or running tests.\n- Stay within files_allowed and verify edge cases, failure paths, and expected outputs with real test commands rather than assumptions.\n- Report concrete pass/fail command outputs and any uncovered risk clearly.",
+  ],
+  'profile-reviewer': [
+    "Independent reviewer verifying acceptance criteria and running test commands.",
+    "You are an independent reviewer. You did not write this code and you do not fix it; you judge it.\n- Start from the acceptance criteria. Check each one against the actual diff and, where possible, against real behaviour. Run the verify command yourself and report its real output; do not trust the coder's summary.\n- Check that every changed file is inside files_allowed and that nothing unrelated slipped in.\n- Hunt for real defects: logic errors, unhandled edge cases and error paths, race conditions, resource leaks, broken or missing tests, regressions in untouched callers, and security problems such as injection, path traversal, unsafe deserialisation, and leaked secrets.\n- Rate each finding honestly: critical (breaks correctness or security), major (a likely bug or a missed criterion), minor (small and safe to defer), info (an observation). Fail the review only for unmet acceptance criteria or critical and major defects. Do not fail on style or personal preference.\n- Every finding names the file and line, says what goes wrong and when, and suggests a concrete fix. No speculation and no vague advice. Never modify files.",
+  ],
 };
 
 /** Upgrades untouched seeded profiles to the current role instructions; edited ones are left alone. */
 function refreshDefaultRolePrompts(db: DalangDb): void {
-  for (const [id, previous] of Object.entries(PREVIOUS_ROLE_PROMPTS)) {
-    db.update(schema.agentProfiles)
-      .set({ rolePrompt: DEFAULT_ROLE_PROMPTS[id] })
-      .where(and(eq(schema.agentProfiles.id, id), eq(schema.agentProfiles.rolePrompt, previous)))
-      .run();
+  for (const [id, previousList] of Object.entries(PREVIOUS_ROLE_PROMPTS)) {
+    for (const previous of previousList) {
+      db.update(schema.agentProfiles)
+        .set({ rolePrompt: DEFAULT_ROLE_PROMPTS[id] })
+        .where(and(eq(schema.agentProfiles.id, id), eq(schema.agentProfiles.rolePrompt, previous)))
+        .run();
+    }
   }
 }
 
@@ -1333,6 +1355,7 @@ export function openDatabase(dbFilePath: string = getDbPath()): DbConnection {
   if (upgrading && storedVersion < 13) migrateToV13(sqlite);
   if (upgrading && storedVersion < 14) migrateToV14(sqlite);
   if (upgrading && storedVersion < 15) migrateToV15(sqlite);
+  if (upgrading && storedVersion < 16) migrateToV16(sqlite);
   sqlite.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_task_repos_task_repo ON task_repos(task_id, repo_path);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_run_repo_checkpoints_run_repo ON run_repo_checkpoints(run_id, repo_path);
@@ -1376,6 +1399,190 @@ export function openDatabase(dbFilePath: string = getDbPath()): DbConnection {
     dataDir,
     close: () => sqlite.close(),
   };
+}
+
+/**
+ * v16: general tasks — `tasks.output_kind` and `automations.output_kind` (`files` | `answer`),
+ * plus nullable `tasks.verify`, `reviews.verify_command`, `reviews.verify_exit_code`, and `automations.verify`.
+ */
+function migrateToV16(sqlite: Database.Database): void {
+  const taskCols = sqlite.pragma('table_info(tasks)') as Array<{ name: string; notnull: number }>;
+  const tasksNeedRebuild =
+    !taskCols.some((c) => c.name === 'output_kind') ||
+    taskCols.some((c) => c.name === 'verify' && c.notnull === 1);
+
+  const reviewCols = sqlite.pragma('table_info(reviews)') as Array<{ name: string; notnull: number }>;
+  const reviewsNeedRebuild =
+    reviewCols.some((c) => (c.name === 'verify_command' || c.name === 'verify_exit_code') && c.notnull === 1);
+
+  const autoCols = sqlite.pragma('table_info(automations)') as Array<{ name: string; notnull: number }>;
+  const autosNeedRebuild =
+    autoCols.length > 0 &&
+    (!autoCols.some((c) => c.name === 'output_kind') ||
+      autoCols.some((c) => c.name === 'verify' && c.notnull === 1));
+
+  if (!tasksNeedRebuild && !reviewsNeedRebuild && !autosNeedRebuild) return;
+
+  sqlite.pragma('foreign_keys = OFF');
+  try {
+    sqlite.exec('BEGIN;');
+    if (tasksNeedRebuild) {
+      const hasOutputKind = taskCols.some((c) => c.name === 'output_kind');
+      sqlite.exec(`
+        CREATE TABLE tasks_v16 (
+          id TEXT PRIMARY KEY,
+          plan_id TEXT NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
+          external_id TEXT NOT NULL,
+          title TEXT NOT NULL,
+          milestone TEXT NOT NULL,
+          role TEXT NOT NULL DEFAULT 'engineer',
+          complexity TEXT NOT NULL DEFAULT 'low',
+          output_kind TEXT NOT NULL DEFAULT 'files',
+          status TEXT NOT NULL DEFAULT 'ready',
+          position INTEGER NOT NULL DEFAULT 0,
+          goal TEXT NOT NULL,
+          files_allowed_json TEXT NOT NULL DEFAULT '[]',
+          files_reference_json TEXT NOT NULL DEFAULT '[]',
+          acceptance_criteria_json TEXT NOT NULL DEFAULT '[]',
+          verify TEXT,
+          needs_split INTEGER NOT NULL DEFAULT 0,
+          split_depth INTEGER NOT NULL DEFAULT 0,
+          parent_task_id TEXT,
+          delegated_by_run_id TEXT,
+          delegation_depth INTEGER NOT NULL DEFAULT 0,
+          merge_target_branch TEXT,
+          profile_override TEXT,
+          review_rounds INTEGER NOT NULL DEFAULT 0,
+          branch_name TEXT,
+          merge_commit_sha TEXT,
+          rejection_note TEXT,
+          pr_url TEXT,
+          pushed_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        INSERT INTO tasks_v16 (
+          id, plan_id, external_id, title, milestone, role, complexity, output_kind, status, position,
+          goal, files_allowed_json, files_reference_json, acceptance_criteria_json, verify,
+          needs_split, split_depth, parent_task_id, delegated_by_run_id, delegation_depth,
+          merge_target_branch, profile_override, review_rounds, branch_name, merge_commit_sha,
+          rejection_note, pr_url, pushed_at, created_at, updated_at
+        )
+        SELECT
+          id, plan_id, external_id, title, milestone, role, complexity,
+          ${hasOutputKind ? "COALESCE(output_kind, 'files')" : "'files'"},
+          status, position,
+          goal, files_allowed_json, files_reference_json, acceptance_criteria_json, verify,
+          needs_split, split_depth, parent_task_id, delegated_by_run_id, delegation_depth,
+          merge_target_branch, profile_override, review_rounds, branch_name, merge_commit_sha,
+          rejection_note, pr_url, pushed_at, created_at, updated_at
+        FROM tasks;
+        DROP TABLE tasks;
+        ALTER TABLE tasks_v16 RENAME TO tasks;
+      `);
+    }
+
+    if (reviewsNeedRebuild) {
+      sqlite.exec(`
+        CREATE TABLE reviews_v16 (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+          run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+          round INTEGER NOT NULL,
+          status TEXT NOT NULL,
+          human_decision TEXT NOT NULL DEFAULT 'pending',
+          human_note TEXT,
+          reviewer_profile_id TEXT NOT NULL,
+          reviewer_provider TEXT NOT NULL,
+          reviewer_model TEXT,
+          verify_command TEXT,
+          verify_exit_code INTEGER,
+          verify_output TEXT NOT NULL DEFAULT '',
+          file_path TEXT NOT NULL,
+          commit_sha TEXT,
+          scope_warnings_json TEXT NOT NULL DEFAULT '[]',
+          created_at TEXT NOT NULL,
+          decided_at TEXT
+        );
+        INSERT INTO reviews_v16 (
+          id, project_id, task_id, run_id, round, status, human_decision, human_note,
+          reviewer_profile_id, reviewer_provider, reviewer_model,
+          verify_command, verify_exit_code, verify_output,
+          file_path, commit_sha, scope_warnings_json, created_at, decided_at
+        )
+        SELECT
+          id, project_id, task_id, run_id, round, status, human_decision, human_note,
+          reviewer_profile_id, reviewer_provider, reviewer_model,
+          verify_command, verify_exit_code, verify_output,
+          file_path, commit_sha, scope_warnings_json, created_at, decided_at
+        FROM reviews;
+        DROP TABLE reviews;
+        ALTER TABLE reviews_v16 RENAME TO reviews;
+      `);
+    }
+
+    if (autosNeedRebuild) {
+      const hasOutputKind = autoCols.some((c) => c.name === 'output_kind');
+      sqlite.exec(`
+        CREATE TABLE automations_v16 (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          name TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          enabled INTEGER NOT NULL DEFAULT 1,
+          cron_expr TEXT,
+          webhook_token TEXT UNIQUE,
+          webhook_secret TEXT,
+          title TEXT NOT NULL,
+          prompt TEXT NOT NULL,
+          role TEXT NOT NULL DEFAULT 'engineer',
+          complexity TEXT NOT NULL DEFAULT 'low',
+          output_kind TEXT NOT NULL DEFAULT 'files',
+          files_allowed_json TEXT NOT NULL DEFAULT '[]',
+          files_reference_json TEXT NOT NULL DEFAULT '[]',
+          acceptance_criteria_json TEXT NOT NULL DEFAULT '[]',
+          verify TEXT,
+          profile_override TEXT,
+          allow_unconfined INTEGER NOT NULL DEFAULT 0,
+          auto_merge INTEGER NOT NULL DEFAULT 0,
+          last_triggered_at TEXT,
+          next_run_at TEXT,
+          last_status TEXT,
+          last_error TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        INSERT INTO automations_v16 (
+          id, project_id, name, kind, enabled, cron_expr, webhook_token, webhook_secret,
+          title, prompt, role, complexity, output_kind, files_allowed_json, files_reference_json,
+          acceptance_criteria_json, verify, profile_override, allow_unconfined, auto_merge,
+          last_triggered_at, next_run_at, last_status, last_error, created_at, updated_at
+        )
+        SELECT
+          id, project_id, name, kind, enabled, cron_expr, webhook_token, webhook_secret,
+          title, prompt, role, complexity,
+          ${hasOutputKind ? "COALESCE(output_kind, 'files')" : "'files'"},
+          files_allowed_json, files_reference_json,
+          acceptance_criteria_json, verify, profile_override, allow_unconfined, auto_merge,
+          last_triggered_at, next_run_at, last_status, last_error, created_at, updated_at
+        FROM automations;
+        DROP TABLE automations;
+        ALTER TABLE automations_v16 RENAME TO automations;
+      `);
+    }
+
+    sqlite.exec('COMMIT;');
+  } catch (err) {
+    try {
+      sqlite.exec('ROLLBACK;');
+    } catch {
+      // ignore rollback error
+    }
+    throw err;
+  } finally {
+    sqlite.pragma('foreign_keys = ON');
+  }
 }
 
 /**

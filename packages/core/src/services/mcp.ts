@@ -23,7 +23,7 @@ export interface DelegationTokenScope {
   baseMainSha: string;
   delegationDepth: number;
   filesAllowed: string[];
-  verify: string;
+  verify: string | null;
   parentAccountKey: string;
   sandboxReady: boolean;
   createdAt: number;

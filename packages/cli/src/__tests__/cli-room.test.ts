@@ -31,6 +31,7 @@ import {
   wrapTimelineLine,
 } from '../tui/format.js';
 import { RoomApp } from '../tui/RoomApp.js';
+import { ROLE_LABEL } from '../tui/team.js';
 import { waitingForReply } from '../tui/title.js';
 import type { DiscussMessageDTO } from '@dalang/shared';
 
@@ -665,5 +666,139 @@ describe('Ink terminal room E2E (Quick task from plan to merge with no browser)'
     stdin2.write('\r');
     await waitFor2('Resumed');
     await waitFor2('Add greet.txt');
+  });
+
+  it('uses Executor/Checker labels, supports /accept and @executor/@checker, and formats answer tasks & skipped verify', () => {
+    for (const label of Object.values(ROLE_LABEL)) {
+      expect(label).not.toMatch(/\b(Coder|QA)\b/);
+    }
+    expect(ROLE_LABEL.coderLight).toContain('Executor');
+    expect(ROLE_LABEL.qa).toBe('Checker (Srikandi)');
+    expect(SLASH_COMMANDS.some((c) => c.name === 'accept')).toBe(true);
+
+    const profiles = [
+      { id: 'profile-coder-small', name: 'coder-small', provider: 'codex' },
+      { id: 'profile-qa', name: 'qa', provider: 'claude-code' },
+    ] as never;
+    expect(getComposerCompletions('@ex', profiles, new Set(['coder-small'])).map((c) => c.value)).toContain('@executor');
+    expect(getComposerCompletions('@ch', profiles, new Set()).map((c) => c.value)).toContain('@checker');
+
+    const gate = detectPendingGate(
+      {
+        session: { id: 's1', mode: 'quick', workState: 'working', phase: 'run' },
+        messages: [],
+        currentRound: 0,
+        briefs: [],
+        plan: null,
+      } as never,
+      {
+        projectId: 'p1',
+        sessionId: 's1',
+        mainBranch: 'main',
+        integrationCommand: null,
+        detectedIntegrationCommand: null,
+        gitRemote: null,
+        pushAfterMerge: false,
+        createPrAfterMerge: false,
+        ghAvailable: false,
+        sandboxReady: true,
+        sandboxEngine: 'bwrap',
+        platform: 'linux',
+        tasks: [
+          {
+            task: {
+              id: 't1',
+              planId: 'p1',
+              externalId: 'T-001',
+              title: 'Summarize notes',
+              milestone: 'M1',
+              role: 'engineer',
+              complexity: 'low',
+              output: 'answer',
+              status: 'awaiting_merge',
+              position: 0,
+              goal: 'Summarize',
+              filesAllowed: [],
+              filesReference: [],
+              acceptanceCriteria: ['Clear'],
+              verify: null,
+              needsSplit: false,
+              splitDepth: 0,
+              parentTaskId: null,
+              delegatedByRunId: null,
+              delegationDepth: 0,
+              mergeTargetBranch: null,
+              profileOverride: null,
+              reviewRounds: 1,
+              branchName: null,
+              mergeCommitSha: null,
+              rejectionNote: null,
+              prUrl: null,
+              pushedAt: null,
+              dependsOn: [],
+              createdAt: '',
+              updatedAt: '',
+            },
+            reviews: [],
+            latestReview: null,
+            latestRun: null,
+            canApproveMerge: true,
+            canReject: true,
+            diffAvailable: true,
+            answer: '# Summary\nAll good.',
+            answerPath: '.dalang/tasks/T-001/answer.md',
+          },
+        ],
+        integrationRuns: [],
+      },
+    );
+    expect(gate?.kind).toBe('approve_merge');
+    if (gate?.kind === 'approve_merge') {
+      expect(gate.output).toBe('answer');
+    }
+    expect(gate?.prompt).toContain('Accept answer [T-001]');
+    expect(gate?.prompt).not.toContain('Merge [T-001]');
+
+    const skippedMsg = formatRoomMessage({
+      id: 'm-skip',
+      sessionId: 's1',
+      role: 'agent',
+      type: 'report',
+      kind: 'report',
+      authorProfileId: 'profile-reviewer',
+      authorProfileName: 'reviewer',
+      content: {
+        event: 'verify_result',
+        externalId: 'T-001',
+        verifyCommand: null,
+        verifyExitCode: null,
+        verifySkipped: true,
+        summary: 'Verify skipped (no command)',
+      },
+      createdAt: '2026-11-25T07:00:00.000Z',
+    });
+    expect(skippedMsg.lines.join('\n')).toContain('skipped');
+
+    const acceptedMsg = formatRoomMessage({
+      id: 'm-acc',
+      sessionId: 's1',
+      role: 'system',
+      type: 'report',
+      kind: 'report',
+      authorProfileId: null,
+      authorProfileName: null,
+      content: {
+        event: 'task_accepted',
+        externalId: 'T-001',
+        taskTitle: 'Summarize notes',
+        output: 'answer',
+        answerPath: '.dalang/answers/task-1.md',
+        answer: '# Summary\nAll good.',
+        summary: 'Accepted answer [T-001] Summarize notes -> .dalang/answers/task-1.md',
+      },
+      createdAt: '2026-11-25T07:00:00.000Z',
+    });
+    expect(acceptedMsg.badge).toBe('TASK ACCEPTED');
+    expect(acceptedMsg.lines.join('\n')).toContain('All good.');
   });
 });

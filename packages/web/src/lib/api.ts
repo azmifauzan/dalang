@@ -344,7 +344,9 @@ export const api = {
   approveMergeTask: (id: string, taskId: string, body: Partial<ApproveMergeInput> = {}) =>
     request<{
       task: TaskDTO;
-      mergeCommitSha: string;
+      mergeCommitSha: string | null;
+      answer?: string | null;
+      answerPath?: string | null;
       integrationRun: IntegrationRunDTO | null;
       pushPrResult?: PushPrResultDTO | null;
     }>(`/api/projects/${id}/tasks/${taskId}/approve-merge`, {

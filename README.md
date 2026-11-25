@@ -28,20 +28,20 @@
 >
 > The installed version must support your database schema; the [upgrade table](docs/INSTALL.md#database-upgrades) lists which release added each schema. Do not delete your database. [More help](docs/TROUBLESHOOTING.md#database-schema-is-newer-than-this-dalang-build)
 
-Dalang runs **Claude Code, Codex CLI, and Antigravity CLI** from a team room in your terminal or a browser workspace on your machine. Open a Git repository and start a chat with the Lead. Ask a question, plan a small fix, or work through a larger feature. When agents change code, Dalang runs each task in a separate Git worktree and brings the verification output, review, and diff back for your merge decision. A workspace folder whose top-level folders are their own Git repositories opens as one project, with a worktree, diff, and merge per repository ([how it works](docs/USAGE.md#workspace-projects-with-nested-repositories)).
+Dalang runs **Claude Code, Codex CLI, and Antigravity CLI** from a team room in your terminal or a browser workspace on your machine. Open a Git folder and start a chat with the Lead about software, documents, research reports, or other work. Ask a question, plan a single task, or work through a larger project. Dalang runs each task in a separate Git worktree and brings the verification output (when a command applies), independent review, and diff or answer back for your merge or accept decision. A workspace folder whose top-level folders are their own Git repositories opens as one project, with a worktree, diff, and merge per repository ([how it works](docs/USAGE.md#workspace-projects-with-nested-repositories)).
 
 Auto asks the Lead to seek approval for sensitive actions, including production and data changes. This decision relies on the model and is not a security boundary; review requests and keep production credentials and access constrained.
 
-Start with one signed-in CLI or give planning, coding, and review to different providers. Dalang uses the logins you already have. You can work in English or Indonesian.
+Start with one signed-in CLI or give planning, execution, checking, and review to different providers. Dalang uses the logins you already have. You can work in English or Indonesian.
 
 ## Choose a mode
 
 | Mode | What you can do |
 | --- | --- |
-| **Auto** (default) | Let the Lead answer, discuss, plan, or start coding tasks for an implementation request. |
-| **Ask** | Get a read-only answer about the repository. |
-| **Quick** | Review a one-task plan, run it, and decide whether to merge in the same chat. |
-| **Full** | Discuss a larger change, approve a brief and plan, run independent tasks in parallel, and review each diff before merging. A running coder can also hand independent parts of its task to another profile or CLI through a local MCP server. Each part is reviewed and merged into the task branch before you review the whole. |
+| **Auto** (default) | Let the Lead answer, discuss, plan, or start file or answer tasks for a request. |
+| **Ask** | Get a read-only answer about the project. |
+| **Quick** | Review a one-task plan, run it, and decide whether to merge (files) or accept (answer) in the same chat. |
+| **Full** | Discuss a larger piece of work, approve a brief and plan, run independent tasks in parallel, and review each diff or answer before merging or accepting. A running executor can also hand independent parts of its task to another profile or CLI through a local MCP server. Each part is reviewed and merged into the task branch before you review the whole. |
 
 ## Install
 
@@ -59,7 +59,7 @@ dalang
 
 1. Run `dalang` in an interactive terminal. The first-run wizard checks your CLIs, configures the team, and opens a project.
 2. Use `/project open .` to register the Git repository in your current folder, or `/project create ./my-project` to start a new one. Use `/project list` to find existing projects.
-3. Type a question or describe work in Auto. The Lead chooses whether to answer, plan, or start tasks. Use `/model` to choose its provider, model, and effort. Press `Shift+Tab` or use `/mode` to choose Auto, Ask, Quick, or Full. Review task changes with `/diff`, then use `/merge` when ready.
+3. Type a question or describe work in Auto. The Lead chooses whether to answer, plan, or start tasks. Use `/model` to choose its provider, model, and effort. Press `Shift+Tab` or use `/mode` to choose Auto, Ask, Quick, or Full. Review task changes or answers with `/diff`, then use `/merge` (for file tasks) or `/accept` (for answer tasks) when ready.
 
 ![Dalang terminal room showing an Auto conversation](docs/images/tui-room.png)
 

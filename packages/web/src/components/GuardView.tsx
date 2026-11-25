@@ -16,6 +16,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { EmptyPanel, ErrorPanel, LoadingPanel, ModalDialog } from '@/components/StateViews';
+import { Markdown } from './Markdown.js';
 
 interface GuardViewProps {
   project: ProjectSummary;
@@ -93,16 +94,17 @@ export function GuardView({ project, sessionId, onGoToWork }: GuardViewProps) {
   const [collapsedDiffPaths, setCollapsedDiffPaths] = useState<Record<string, boolean>>({});
   const [actionMessage, setActionMessage] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
 
-  const formatStatusLabel = (status: string): string => {
+  const formatStatusLabel = (status: string, output?: 'files' | 'answer'): string => {
+    const isAnswer = output === 'answer';
     switch (status) {
       case 'awaiting_merge':
-        return t('guard.status.awaiting_merge');
+        return isAnswer ? t('guard.status.awaiting_accept') : t('guard.status.awaiting_merge');
       case 'review_failed':
         return t('guard.status.review_failed');
       case 'reviewing':
         return t('guard.status.reviewing');
       case 'done':
-        return t('guard.status.done');
+        return isAnswer ? t('guard.status.accepted') : t('guard.status.done');
       default:
         return status.replace(/_/g, ' ');
     }
@@ -218,14 +220,26 @@ export function GuardView({ project, sessionId, onGoToWork }: GuardViewProps) {
       if (data.integrationRun) {
         setExpandedIntegrationId(data.integrationRun.id);
       }
-      const integrationSummary = data.integrationRun
-        ? t('guard.integrationStatus', { status: te(data.integrationRun.status) })
-        : '';
-      const pushSummary = data.pushPrResult ? ` ${data.pushPrResult.message}` : '';
-      setActionMessage({
-        kind: data.pushPrResult && !data.pushPrResult.pushed ? 'err' : 'ok',
-        text: `Merged ${data.task.externalId} -> ${guard?.mainBranch ?? 'main'} (${data.mergeCommitSha.slice(0, 8)}).${integrationSummary}${pushSummary}`,
-      });
+      if (data.task.output === 'answer' || !data.mergeCommitSha) {
+        const answerPath = data.answerPath ?? `.dalang/answers/${data.task.id}.md`;
+        setActionMessage({
+          kind: 'ok',
+          text: t('room.msg.task_accepted', {
+            task: data.task.externalId,
+            title: data.task.title,
+            path: answerPath,
+          }),
+        });
+      } else {
+        const integrationSummary = data.integrationRun
+          ? t('guard.integrationStatus', { status: te(data.integrationRun.status) })
+          : '';
+        const pushSummary = data.pushPrResult ? ` ${data.pushPrResult.message}` : '';
+        setActionMessage({
+          kind: data.pushPrResult && !data.pushPrResult.pushed ? 'err' : 'ok',
+          text: `Merged ${data.task.externalId} -> ${guard?.mainBranch ?? 'main'} (${data.mergeCommitSha.slice(0, 8)}).${integrationSummary}${pushSummary}`,
+        });
+      }
       invalidateAll();
     },
     onError: (err) => {
@@ -432,16 +446,24 @@ export function GuardView({ project, sessionId, onGoToWork }: GuardViewProps) {
                     >
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <span className="font-mono-token text-xs font-semibold">{entry.task.externalId}</span>
-                        <Badge style={guardStatusStyle(entry.task.status)}>
-                          {formatStatusLabel(entry.task.status)}
-                        </Badge>
+                        <div className="flex flex-wrap items-center gap-1">
+                          {entry.task.output === 'answer' && <Badge>{te('answer')}</Badge>}
+                          <Badge style={guardStatusStyle(entry.task.status)}>
+                            {formatStatusLabel(entry.task.status, entry.task.output)}
+                          </Badge>
+                        </div>
                       </div>
                       <p className="mt-1 truncate text-sm font-medium">{entry.task.title}</p>
                       <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                         <span>{t('guard.roundsCount', { count: entry.task.reviewRounds })}</span>
                         {entry.latestReview && (
                           <span className="font-mono-token">
-                            Verify: {entry.latestReview.verifyExitCode === 0 ? 'OK' : `exit ${entry.latestReview.verifyExitCode}`}
+                            Verify:{' '}
+                            {entry.latestReview.verifyExitCode === null
+                              ? t('enum.skipped')
+                              : entry.latestReview.verifyExitCode === 0
+                                ? 'OK'
+                                : `exit ${entry.latestReview.verifyExitCode}`}
                           </span>
                         )}
                         {entry.latestReview && entry.latestReview.contract.findings.length > 0 && (
@@ -467,8 +489,9 @@ export function GuardView({ project, sessionId, onGoToWork }: GuardViewProps) {
                   <div className="min-w-0 space-y-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <Badge>{selectedEntry.task.externalId}</Badge>
+                      {selectedEntry.task.output === 'answer' && <Badge>{te('answer')}</Badge>}
                       <Badge style={guardStatusStyle(selectedEntry.task.status)}>
-                        {formatStatusLabel(selectedEntry.task.status)}
+                        {formatStatusLabel(selectedEntry.task.status, selectedEntry.task.output)}
                       </Badge>
                       {selectedEntry.task.branchName && (
                         <Badge className="h-auto max-w-full py-1 whitespace-normal break-all">
@@ -493,7 +516,7 @@ export function GuardView({ project, sessionId, onGoToWork }: GuardViewProps) {
                     <p className="text-sm text-muted-foreground">{selectedEntry.task.goal}</p>
                   </div>
 
-                  {selectedEntry.task.status === 'done' && (
+                  {selectedEntry.task.status === 'done' && selectedEntry.task.output !== 'answer' && (
                     <div className="flex flex-wrap items-center gap-2">
                       <Button
                         type="button"
@@ -544,26 +567,32 @@ export function GuardView({ project, sessionId, onGoToWork }: GuardViewProps) {
                 {(selectedEntry.canApproveMerge || selectedEntry.canReject) && (
                   <div className="mt-5 border-t border-border pt-4">
                     <div className="flex flex-wrap items-center justify-between gap-4">
-                      <label className="flex min-h-11 cursor-pointer items-center gap-2 text-sm">
-                        <input
-                          type="checkbox"
-                          className="h-4 w-4 accent-[var(--primary)]"
-                          checked={runIntegrationOnMerge}
-                          onChange={(e) => setRunIntegrationOnMerge(e.target.checked)}
-                        />
-                        <span>
-                          {t('guard.runIntegrationAfterMerge', { branch: guard.mainBranch })}
-                          {effectiveCommandPreview ? (
-                            <span className="font-mono-token text-xs text-muted-foreground">
-                              {' '}({effectiveCommandPreview})
-                            </span>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">
-                              {' '}{t('guard.skipsIfNone')}
-                            </span>
-                          )}
+                      {selectedEntry.task.output !== 'answer' ? (
+                        <label className="flex min-h-11 cursor-pointer items-center gap-2 text-sm">
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 accent-[var(--primary)]"
+                            checked={runIntegrationOnMerge}
+                            onChange={(e) => setRunIntegrationOnMerge(e.target.checked)}
+                          />
+                          <span>
+                            {t('guard.runIntegrationAfterMerge', { branch: guard.mainBranch })}
+                            {effectiveCommandPreview ? (
+                              <span className="font-mono-token text-xs text-muted-foreground">
+                                {' '}({effectiveCommandPreview})
+                              </span>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">
+                                {' '}{t('guard.skipsIfNone')}
+                              </span>
+                            )}
+                          </span>
+                        </label>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">
+                          {t('guard.answerDesc', { id: selectedEntry.task.id })}
                         </span>
-                      </label>
+                      )}
 
                       <div className="flex flex-wrap items-center gap-2">
                         {selectedEntry.canReject && (
@@ -590,15 +619,22 @@ export function GuardView({ project, sessionId, onGoToWork }: GuardViewProps) {
                               } else {
                                 approveMergeMutation.mutate({
                                   taskId: selectedEntry.task.id,
-                                  runIntegration: runIntegrationOnMerge,
+                                  runIntegration:
+                                    selectedEntry.task.output === 'answer'
+                                      ? false
+                                      : runIntegrationOnMerge,
                                   allowFailedReview: false,
                                 });
                               }
                             }}
                           >
-                            {approveMergeMutation.isPending
-                              ? t('guard.merging')
-                              : t('guard.approveMerge')}
+                            {selectedEntry.task.output === 'answer'
+                              ? approveMergeMutation.isPending
+                                ? t('guard.accepting')
+                                : t('guard.approveAccept')
+                              : approveMergeMutation.isPending
+                                ? t('guard.merging')
+                                : t('guard.approveMerge')}
                           </Button>
                         )}
                       </div>
@@ -654,12 +690,18 @@ export function GuardView({ project, sessionId, onGoToWork }: GuardViewProps) {
                       {activeReview.reviewerModel && (
                         <Badge>Model: {activeReview.reviewerModel}</Badge>
                       )}
-                      <Badge
-                        className="h-auto max-w-full py-1 whitespace-normal break-all"
-                        style={guardStatusStyle(activeReview.verifyExitCode === 0 ? 'passed' : 'failed')}
-                      >
-                        {activeReview.verifyCommand}: exit {activeReview.verifyExitCode}
-                      </Badge>
+                      {activeReview.verifyCommand == null || activeReview.verifyExitCode == null ? (
+                        <Badge style={guardStatusStyle('skipped')}>
+                          {t('guard.verifySkipped')}
+                        </Badge>
+                      ) : (
+                        <Badge
+                          className="h-auto max-w-full py-1 whitespace-normal break-all"
+                          style={guardStatusStyle(activeReview.verifyExitCode === 0 ? 'passed' : 'failed')}
+                        >
+                          {activeReview.verifyCommand}: exit {activeReview.verifyExitCode}
+                        </Badge>
+                      )}
                       <Badge style={guardStatusStyle(activeReview.humanDecision)}>
                         Gate 2: {activeReview.humanDecision}
                       </Badge>
@@ -696,21 +738,23 @@ export function GuardView({ project, sessionId, onGoToWork }: GuardViewProps) {
                       </div>
                     )}
 
-                    <div>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        aria-expanded={showVerifyOutput}
-                        onClick={() => setShowVerifyOutput((v) => !v)}
-                      >
-                        {showVerifyOutput ? t('guard.hideVerifyOutput') : t('guard.showVerifyOutput')}
-                      </Button>
-                      {showVerifyOutput && (
-                        <pre className="mt-2 max-h-64 overflow-x-auto overflow-y-auto rounded-[6px] border border-border bg-background p-3 font-mono-token text-xs">
-                          {activeReview.verifyOutput || t('guard.noOutputCaptured')}
-                        </pre>
-                      )}
-                    </div>
+                    {(activeReview.verifyCommand != null || activeReview.verifyOutput) && (
+                      <div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          aria-expanded={showVerifyOutput}
+                          onClick={() => setShowVerifyOutput((v) => !v)}
+                        >
+                          {showVerifyOutput ? t('guard.hideVerifyOutput') : t('guard.showVerifyOutput')}
+                        </Button>
+                        {showVerifyOutput && (
+                          <pre className="mt-2 max-h-64 overflow-x-auto overflow-y-auto rounded-[6px] border border-border bg-background p-3 font-mono-token text-xs">
+                            {activeReview.verifyOutput || t('guard.noOutputCaptured')}
+                          </pre>
+                        )}
+                      </div>
+                    )}
 
                     <div className="space-y-2">
                       <h4 className="text-sm font-semibold">
@@ -751,8 +795,39 @@ export function GuardView({ project, sessionId, onGoToWork }: GuardViewProps) {
                 )}
               </section>
 
-              {/* Branch Diff */}
+              {/* Branch Diff or Answer */}
               <section className="rounded-[8px] border border-border bg-card p-5">
+                {selectedEntry.task.output === 'answer' ? (
+                  <>
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <h3 className="text-base font-semibold">{t('guard.answerTitle')}</h3>
+                        <p className="text-xs text-muted-foreground">
+                          {t('guard.answerDesc', { id: selectedEntry.task.id })}
+                        </p>
+                      </div>
+                      {(selectedEntry.answerPath ?? diffQuery.data?.diff.answerPath) && (
+                        <Badge className="font-mono-token">
+                          {selectedEntry.answerPath ?? diffQuery.data?.diff.answerPath}
+                        </Badge>
+                      )}
+                    </div>
+                    {diffQuery.isLoading && !selectedEntry.answer ? (
+                      <div className="mt-4">
+                        <LoadingPanel label={t('guard.loadingDiff')} />
+                      </div>
+                    ) : (selectedEntry.answer ?? diffQuery.data?.diff.answer) ? (
+                      <div className="mt-4 rounded-[6px] border border-border bg-background p-4">
+                        <Markdown>{(selectedEntry.answer ?? diffQuery.data?.diff.answer)!}</Markdown>
+                      </div>
+                    ) : (
+                      <p className="mt-4 text-sm text-muted-foreground">
+                        {t('guard.noAnswerAvailable')}
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <>
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <h3 className="text-base font-semibold">{t('guard.branchDiffTitle')}</h3>
@@ -861,6 +936,8 @@ export function GuardView({ project, sessionId, onGoToWork }: GuardViewProps) {
                         );
                       })}
                   </div>
+                )}
+                  </>
                 )}
               </section>
             </div>

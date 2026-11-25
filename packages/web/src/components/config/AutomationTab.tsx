@@ -7,6 +7,7 @@ import type {
   CreatedMcpTokenDTO,
   McpAccessLevel,
   ProjectSummary,
+  TaskOutputKind,
 } from '@dalang/shared';
 import { useI18n, type TranslationKey } from '../../i18n/index.js';
 import { api } from '../../lib/api.js';
@@ -97,7 +98,8 @@ export function AutomationTab({
   const [cronExpr, setCronExpr] = useState('0 2 * * *');
   const [title, setTitle] = useState('');
   const [prompt, setPrompt] = useState('');
-  const [verify, setVerify] = useState('pnpm test');
+  const [output, setOutput] = useState<TaskOutputKind>('files');
+  const [verify, setVerify] = useState('');
   const [criteriaText, setCriteriaText] = useState('');
   const [filesAllowedText, setFilesAllowedText] = useState('');
   const [profileOverride, setProfileOverride] = useState('');
@@ -222,6 +224,7 @@ export function AutomationTab({
       .split(',')
       .map((l) => l.trim())
       .filter(Boolean);
+    const trimmedVerify = verify.trim();
     createAutomationMutation.mutate({
       projectId: resolvedProjectId,
       name: name.trim(),
@@ -232,10 +235,14 @@ export function AutomationTab({
       prompt: prompt.trim(),
       role: 'engineer',
       complexity: 'low',
-      filesAllowed,
+      output,
+      filesAllowed: output === 'answer' ? [] : filesAllowed,
       filesReference: [],
-      acceptanceCriteria: criteria.length > 0 ? criteria : ['Verify command passes'],
-      verify: verify.trim(),
+      acceptanceCriteria:
+        criteria.length > 0
+          ? criteria
+          : [trimmedVerify ? 'Verify command passes' : 'Goal and acceptance criteria are met'],
+      verify: trimmedVerify || null,
       profileOverride: profileOverride || null,
       allowUnconfined,
       autoMerge,
@@ -389,7 +396,7 @@ export function AutomationTab({
               </div>
             )}
 
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               <div className="space-y-1.5">
                 <Label htmlFor="auto-title">{t('config.automation.fieldTitle')}</Label>
                 <Input
@@ -401,10 +408,20 @@ export function AutomationTab({
                 />
               </div>
               <div className="space-y-1.5">
+                <Label htmlFor="auto-output">{t('config.automation.fieldOutput')}</Label>
+                <NativeSelect
+                  id="auto-output"
+                  value={output}
+                  onChange={(e) => setOutput(e.target.value as TaskOutputKind)}
+                >
+                  <option value="files">{t('plan.output.files')}</option>
+                  <option value="answer">{t('plan.output.answer')}</option>
+                </NativeSelect>
+              </div>
+              <div className="space-y-1.5">
                 <Label htmlFor="auto-verify">{t('config.automation.fieldVerify')}</Label>
                 <Input
                   id="auto-verify"
-                  required
                   value={verify}
                   onChange={(e) => setVerify(e.target.value)}
                   placeholder={t('config.automation.fieldVerifyPlaceholder')}
@@ -532,6 +549,7 @@ export function AutomationTab({
                           ? t('config.automation.kindSchedule')
                           : t('config.automation.kindWebhook')}
                       </Badge>
+                      {item.output === 'answer' && <Badge>{t('enum.answer')}</Badge>}
                       <Badge
                         style={{
                           color: item.enabled ? 'var(--pass)' : 'var(--text-secondary)',
@@ -548,7 +566,12 @@ export function AutomationTab({
                       </span>
                     </div>
                     <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-                      {item.title} · <code className="font-mono-token">{item.verify}</code>
+                      {item.title} ·{' '}
+                      {item.verify ? (
+                        <code className="font-mono-token">{item.verify}</code>
+                      ) : (
+                        <span>{t('plan.verifySkipped')}</span>
+                      )}
                     </p>
                     {item.kind === 'schedule' && item.cronExpr && (
                       <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>

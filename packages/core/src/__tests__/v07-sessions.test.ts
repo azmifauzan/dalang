@@ -383,6 +383,43 @@ describe('Auto commit in the active checkout', () => {
 });
 
 describe('Auto session mode', () => {
+  it.each([false, true, 'answer'] as const)('recovers an orphaned failed task only when its checkpoint has no code changes (changed=%s)', async (mode) => {
+    const changed = mode === true;
+    const runner = new SessionModesFakeRunner();
+    const { conn, leadSvc, project, projDir } = await setupProjectWithSeededBug(runner);
+    try {
+      const work = leadSvc.createDirectApprovedTask(project.id, {
+        sessionTitle: 'Earlier work', userMessage: 'Fix code', title: 'Fix', goal: 'Fix code',
+        filesAllowed: ['src/math.mjs'], acceptanceCriteria: ['Tests pass'], verify: 'node --test',
+      });
+      const before = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: projDir, encoding: 'utf8' }).trim();
+      if (changed) {
+        fs.writeFileSync(path.join(projDir, 'src/math.mjs'), 'export const changed = true;\n');
+        execFileSync('git', ['add', 'src/math.mjs'], { cwd: projDir });
+      } else {
+        const result = `.dalang/sessions/${work.session.id}/tasks/T-001/result.json`;
+        fs.mkdirSync(path.dirname(path.join(projDir, result)), { recursive: true });
+        fs.writeFileSync(path.join(projDir, result), '{}');
+        execFileSync('git', ['add', '-f', result], { cwd: projDir });
+        if (mode === 'answer') {
+          const answer = `.dalang/sessions/${work.session.id}/tasks/T-001/answer.md`;
+          fs.writeFileSync(path.join(projDir, answer), '# Draft\n');
+          execFileSync('git', ['add', '-f', answer], { cwd: projDir });
+        }
+      }
+      execFileSync('git', ['commit', '-m', 'Checkpoint'], { cwd: projDir, stdio: 'pipe' });
+      const after = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: projDir, encoding: 'utf8' }).trim();
+      conn.sqlite.prepare("update tasks set status = 'failed', branch_name = 'dalang/T-001' where id = ?").run(work.task.id);
+      conn.sqlite.prepare("insert into runs (id, project_id, task_id, profile_id, provider, status, started_at, finished_at, commit_before, commit_after, log_path, worktree_path) values (?, ?, ?, 'profile-coder-small', 'claude-code', 'failed', ?, ?, ?, ?, 'run.log', ?)")
+        .run('run-1', project.id, work.task.id, new Date().toISOString(), new Date().toISOString(), before, after, path.join(projDir, 'missing-worktree'));
+      leadSvc.markSessionWorking(project.id, work.session.id);
+      await leadSvc.sendChatMessage(project.id, { mode: 'auto', message: 'What happened?' });
+      expect(leadSvc.getSession(project.id, work.session.id).workState).toBe(changed ? 'working' : 'idle');
+      expect(leadSvc.hasSessionUnfinishedWork(work.session.id)).toBe(changed);
+    } finally {
+      conn.close();
+    }
+  });
   it('answers and asks for sensitive approval without dispatching work', async () => {
     const runner = new SessionModesFakeRunner();
     runner.autoResponse = { answer: 'This changes production data. May I proceed?', auto_plan: null };
@@ -433,6 +470,61 @@ describe('Auto session mode', () => {
       expect(plan?.tasks).toHaveLength(2);
       expect(plan?.tasks[1].dependsOn).toEqual(['T-001']);
       expect(started).toEqual([result.session.id]);
+    } finally {
+      conn.close();
+    }
+  });
+
+  it('reports a blocking session instead of promising to start Auto work', async () => {
+    const runner = new SessionModesFakeRunner();
+    runner.autoResponse = {
+      answer: 'I will implement this.',
+      auto_plan: { milestones: [{ id: 'M1', title: 'Fix' }], tasks: [{
+        id: 'T-001', title: 'Fix', milestone: 'M1', role: 'engineer', complexity: 'low',
+        depends_on: [], goal: 'Fix code', files_allowed: ['src/math.mjs'], files_reference: [],
+        acceptance_criteria: ['Tests pass'], verify: 'node --test', needs_split: false,
+      }] },
+    };
+    const { conn, leadSvc, project } = await setupProjectWithSeededBug(runner);
+    const started: string[] = [];
+    const discarded: string[] = [];
+    leadSvc.setExecutionRouter({
+      listActiveRunsForSession: () => [],
+      steerTask: async () => {},
+      startExecution: async (_projectId, input) => { started.push(input.sessionId); },
+      discardSessionWork: async (_projectId, sessionId) => {
+        discarded.push(sessionId);
+        conn.sqlite.prepare("update sessions set work_state = 'idle' where id = ?").run(sessionId);
+      },
+    });
+    try {
+      const blockingWork = leadSvc.createDirectApprovedTask(project.id, {
+        sessionTitle: 'Earlier work', userMessage: 'Previous task', title: 'Previous task', goal: 'Fix code',
+        filesAllowed: ['src/math.mjs'], acceptanceCriteria: ['Tests pass'], verify: 'node --test',
+      });
+      const blocker = blockingWork.session;
+      leadSvc.markSessionWorking(project.id, blocker.id);
+      const result = await leadSvc.sendChatMessage(project.id, { mode: 'auto', message: 'Fix the code' });
+      expect(result.askReply?.text).toContain('Earlier work');
+      expect(result.askReply?.text).not.toContain('I will implement');
+      expect(leadSvc.getPlan(project.id, result.session.id)).toBeNull();
+      expect(started).toEqual([]);
+      expect(runner.calls.find((call) => call.prompt.includes('Lead in DALANG Auto mode'))?.prompt)
+        .toContain('Earlier work');
+      expect(result.askReply?.text).toContain('uncommitted files');
+      const declined = await leadSvc.sendChatMessage(project.id, { sessionId: result.session.id, mode: 'auto', message: 'no' });
+      expect(declined.askReply?.text).toContain('has not started');
+      expect(discarded).toEqual([]);
+      await leadSvc.sendChatMessage(project.id, { sessionId: result.session.id, mode: 'auto', message: 'Fix the code' });
+      conn.sqlite.prepare("update tasks set status = 'failed' where id = ?").run(blockingWork.task.id);
+      const changed = await leadSvc.sendChatMessage(project.id, { sessionId: result.session.id, mode: 'auto', message: 'yes' });
+      expect(changed.askReply?.text).toContain('changed since the previous request');
+      expect(discarded).toEqual([]);
+      const approved = await leadSvc.sendChatMessage(project.id, { sessionId: result.session.id, mode: 'auto', message: 'yes' });
+      expect(discarded).toEqual([blocker.id]);
+      expect(started).toEqual([result.session.id]);
+      expect(approved.askReply?.text).toContain('started the requested work');
+      expect(leadSvc.getPlan(project.id, result.session.id)?.status).toBe('approved');
     } finally {
       conn.close();
     }
@@ -768,7 +860,7 @@ describe('v0.7 Session Modes (Ask, Quick, Full)', () => {
       expect(followUp.session.mode).toBe('quick'); // stays Quick (not demoted)
       const fallbackCall = runner.calls[runner.calls.length - 1];
       expect(fallbackCall.prompt).toContain('Previous conversation in this session:');
-      expect(fallbackCall.prompt).toContain('Completed and merged work in this session:');
+      expect(fallbackCall.prompt).toContain('Completed work in this session:');
       expect(fallbackCall.prompt).toContain('Fix add() operator in src/math.mjs');
 
       // 7. Rename, archive, unarchive, and delete session (leaving merged code on main intact!)

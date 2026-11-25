@@ -19,10 +19,10 @@ export function resolveUserPath(input: string, cwd: string): string {
 
 const CAST: Array<[string, string]> = [
   ['Semar', 'Lead'],
-  ['Bima', 'Coder (simple tasks)'],
-  ['Gatotkaca', 'Coder (medium tasks)'],
-  ['Kresna', 'Coder (complex tasks)'],
-  ['Srikandi', 'QA'],
+  ['Bima', 'Executor (light tasks)'],
+  ['Gatotkaca', 'Executor (medium tasks)'],
+  ['Kresna', 'Executor (heavy tasks)'],
+  ['Srikandi', 'Checker'],
   ['Arjuna', 'Reviewer'],
 ];
 
@@ -30,9 +30,9 @@ const FLOWS: Array<[string, string]> = [
   ['1. Discuss & Agree (Gate 1)', 'Describe your goal. Semar (Lead) clarifies scope and drafts a brief you approve.'],
   [
     '2. Plan & Work',
-    "Semar splits work into small tasks. Bima, Gatotkaca, and Kresna build in isolated worktrees, switching automatically to each role's fallback provider on quota limits.",
+    "Semar splits work into small tasks. Bima, Gatotkaca, and Kresna work in isolated worktrees, switching automatically to each role's fallback provider on quota limits.",
   ],
-  ['3. Review & Merge (Gate 2)', 'Arjuna (Reviewer) runs verify commands and reviews diffs before you approve the merge.'],
+  ['3. Review & Accept (Gate 2)', 'Arjuna (Reviewer) checks the result against acceptance criteria and any verify command before you approve.'],
 ];
 
 type Field = 'path' | 'name' | 'stack' | 'goal';
@@ -197,7 +197,7 @@ export function Wizard({
     body = (
       <Box flexDirection="column">
         <Text dimColor>
-          Turn one goal into reviewed, merged code using the official coding CLIs already on your machine.
+          Turn one goal into reviewed, accepted work using the official agent CLIs already on your machine.
         </Text>
         {compact ? (
           <Box flexDirection="column" marginTop={1}>
@@ -209,15 +209,15 @@ export function Wizard({
               <Text bold color="yellow">
                 Bima/Gatotkaca/Kresna
               </Text>
-              <Text dimColor> Coders · </Text>
+              <Text dimColor> Executors · </Text>
               <Text bold color="yellow">
                 Srikandi
               </Text>
-              <Text dimColor> QA · </Text>
+              <Text dimColor> Checker · </Text>
               <Text bold color="yellow">
                 Arjuna
               </Text>
-              <Text dimColor> Review</Text>
+              <Text dimColor> Reviewer</Text>
             </Text>
             {FLOWS.map(([title]) => (
               <Text key={title} bold>

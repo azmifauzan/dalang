@@ -682,16 +682,17 @@ export function RoomApp({
             pushNotice(`Approved Plan v${pendingGate.version} and started work.`, { badge: 'PLAN' });
           });
         } else if (pendingGate.kind === 'approve_merge') {
+          const isAnswer = pendingGate.output === 'answer';
           if (!accept) {
-            // `n` only declines the merge for now; rejecting discards the work, so it stays an explicit `/reject`.
+            // `n` only declines for now; rejecting discards the work, so it stays an explicit `/reject`.
             pushNotice(
-              `[${pendingGate.externalId}] stays waiting for merge. Use /reject ${pendingGate.externalId} [note] to discard it.`,
+              `[${pendingGate.externalId}] stays waiting for ${isAnswer ? 'acceptance' : 'merge'}. Use /reject ${pendingGate.externalId} [note] to discard it.`,
               { badge: 'GUARD' },
             );
             return;
           }
-          // The server posts the "task merged" report with the commit, so no local notice here.
-          await runWithUnconfinedSupport(`merge [${pendingGate.externalId}]`, async (allowUnconfined) => {
+          // The server posts the "task merged" or "task accepted" report, so no local notice here.
+          await runWithUnconfinedSupport(`${isAnswer ? 'accept' : 'merge'} [${pendingGate.externalId}]`, async (allowUnconfined) => {
             await client.approveMergeTask(activeProjectId, pendingGate.taskId, { allowUnconfined });
           });
         }
@@ -871,7 +872,7 @@ export function RoomApp({
                 '',
                 'Routing & shortcuts:',
                 '  <message>          Send to Lead in current mode (auto / ask / quick / full)',
-                '  @<profile> <msg>   Idle profile -> read-only Ask; running coder -> steer',
+                '  @<profile> <msg>   Idle profile -> read-only Ask; running executor -> steer',
                 '  Tab                Autocomplete @profile or /command',
                 '  Shift+Tab          Switch mode',
                 '  Esc                Stop all running agents and tasks (or clear input when idle)',
@@ -1055,8 +1056,12 @@ export function RoomApp({
               return;
             }
             const diff = await client.getTaskDiff(activeProjectId, taskId);
-            const header = `# Diff for [${diff.externalId}] (${diff.files.length} file(s), +${diff.totalAdditions} -${diff.totalDeletions})\n\n`;
-            const body = diff.rawDiff || '(empty diff)';
+            const isAnswer = diff.output === 'answer';
+            const header = isAnswer
+              ? `# Answer for [${diff.externalId}]${diff.answerPath ? ` (${diff.answerPath})` : ''}\n\n`
+              : `# Diff for [${diff.externalId}] (${diff.files.length} file(s), +${diff.totalAdditions} -${diff.totalDeletions})\n\n`;
+            const body = isAnswer ? (diff.answer || '(empty answer)') : (diff.rawDiff || '(empty diff)');
+            const badge = isAnswer ? 'ANSWER' : 'DIFF';
             setPagerOpen(true);
             try {
               const res = await onOpenPager(header + body, `dalang-${diff.externalId}`);
@@ -1066,12 +1071,14 @@ export function RoomApp({
                     `Could not open $PAGER (${res.error ?? 'unknown'}). Inline summary:`,
                     ...body.split('\n').slice(0, 40),
                   ],
-                  { badge: 'DIFF' },
+                  { badge },
                 );
               } else {
                 pushNotice(
-                  `Closed diff for [${diff.externalId}] (${diff.files.length} file(s), +${diff.totalAdditions} -${diff.totalDeletions}).`,
-                  { badge: 'DIFF' },
+                  isAnswer
+                    ? `Closed answer for [${diff.externalId}].`
+                    : `Closed diff for [${diff.externalId}] (${diff.files.length} file(s), +${diff.totalAdditions} -${diff.totalDeletions}).`,
+                  { badge },
                 );
               }
             } finally {
@@ -1080,7 +1087,8 @@ export function RoomApp({
             return;
           }
 
-          case 'merge': {
+          case 'merge':
+          case 'accept': {
             if (!activeProjectId) {
               pushNotice('No active project.', { isError: true });
               return;
@@ -1095,12 +1103,13 @@ export function RoomApp({
                 )
               : guardTasks.find((t) => t.task.status === 'awaiting_merge' && t.canApproveMerge);
             if (!entry) {
-              pushNotice('No task awaiting merge.', { isError: true });
+              pushNotice(cmd.name === 'accept' ? 'No task awaiting acceptance.' : 'No task awaiting merge.', { isError: true });
               return;
             }
+            const isAnswer = entry.task.output === 'answer';
             setSending(true);
             try {
-              await runWithUnconfinedSupport(`merge [${entry.task.externalId}]`, async (allowUnconfined) => {
+              await runWithUnconfinedSupport(`${isAnswer ? 'accept' : 'merge'} [${entry.task.externalId}]`, async (allowUnconfined) => {
                 await client.approveMergeTask(activeProjectId, entry.task.id, {
                   allowUnconfined,
                   allowFailedReview: entry.task.status === 'review_failed',

@@ -48,6 +48,7 @@ import {
   type SessionWorkState,
   type TaskComplexity,
   type TaskDTO,
+  type TaskOutputKind,
   type TaskStatus,
   type UiLanguage,
   type UpdateSessionInput,
@@ -105,6 +106,8 @@ const UNFINISHED_TASK_STATUSES = new Set<string>([
 ]);
 
 type ChatTurnImage = TurnImage & { name: string };
+
+type PendingAutoWork = { sessionId: string; snapshot: string; plan: PlanContract };
 
 const AutoCommitSchema = z.object({
   paths: z.array(z.string().min(1)).min(1),
@@ -586,6 +589,24 @@ export class LeadService {
     return taskRows.some((t) => t.status === 'done') && !this.hasSessionUnfinishedWork(sessionId);
   }
 
+  private unfinishedWorkSnapshot(sessionId: string): string {
+    const sessionPlans = this.db.select({ id: plans.id }).from(plans).where(eq(plans.sessionId, sessionId)).all();
+    if (!sessionPlans.length) return '[]';
+    const rows = this.db.select({ id: tasks.id, title: tasks.title, status: tasks.status, branch: tasks.branchName, updatedAt: tasks.updatedAt })
+      .from(tasks).where(inArray(tasks.planId, sessionPlans.map((p) => p.id))).all();
+    return JSON.stringify(rows.sort((a, b) => a.id.localeCompare(b.id)));
+  }
+
+  private autoWorkApproval(blocker: SessionSummaryDTO, plan: PlanContract): AskMessageContent & { pendingAutoWork: PendingAutoWork } {
+    const snapshot = this.unfinishedWorkSnapshot(blocker.id);
+    const list = (JSON.parse(snapshot) as Array<{ title: string; status: string }>).map((task) => `${task.title} (${task.status})`).join(', ');
+    return {
+      text: `Work is blocked by session "${blocker.title || 'Untitled session'}"${list ? `: ${list}` : ''}. May I stop its running tasks and discard all its unfinished, unmerged work, including uncommitted files? This cannot be undone. If you approve, I will start your requested work. Reply yes or no.`,
+      suggestion: null,
+      pendingAutoWork: { sessionId: blocker.id, snapshot, plan },
+    };
+  }
+
   assertCanStartWorkInSession(projectId: string, sessionId: string): void {
     const other = this.db
       .select()
@@ -773,6 +794,10 @@ export class LeadService {
         ? { ...input, message: target.body }
         : input;
 
+    if ((effectiveInput.mode ?? 'auto') === 'auto' || effectiveInput.mode === 'quick') {
+      await this.executionRouter?.recoverEmptyFailedWork?.(projectId);
+    }
+
     const result = await this.exclusiveTurn(
       projectId,
       (signal, bindSession) => this.sendChatMessageInner(projectId, effectiveInput, signal, bindSession),
@@ -910,7 +935,7 @@ export class LeadService {
       historyBlock,
       `Question addressed to @${profile.name}:\n${questionBody || 'See the attached images.'}`,
       ``,
-      `Answer clearly and directly from your role's perspective based on the repository and room transcript.`,
+      `Answer clearly and directly from your role's perspective based on the project and room transcript.`,
     ]
       .filter(Boolean)
       .join('\n');
@@ -1140,6 +1165,50 @@ export class LeadService {
 
     bindSession?.(sessionRow.id);
     const effort = input.effort ?? this.leadEffortFor(sessionRow.provider);
+    if (requestedMode === 'auto' && images.length === 0 && /^(?:ya|yes|y|setuju|lanjut|boleh|ok|oke|no|n|tidak|jangan|batal)[.!\s]*$/i.test(input.message.trim())) {
+      const previous = this.getDiscussState(projectId, sessionRow.id).messages.at(-1);
+      const pending = previous?.role === 'lead' && previous.type === 'ask' && previous.content && typeof previous.content === 'object'
+        ? (previous.content as { pendingAutoWork?: PendingAutoWork }).pendingAutoWork : undefined;
+      if (pending) {
+        this.appendUserMessage(sessionRow.id, input.message.trim(), images);
+        if (/^(?:no|n|tidak|jangan|batal)[.!\s]*$/i.test(input.message.trim())) {
+          const askReply: AskMessageContent = { text: 'Kept the unfinished work. The requested work has not started.', suggestion: null };
+          this.appendMessage(sessionRow.id, 'lead', 'ask', askReply);
+          this.touchSession(sessionRow.id);
+          this.events?.emitEvent({ type: 'discuss.updated', projectId, sessionId: sessionRow.id });
+          this.events?.emitEvent({ type: 'sessions.updated', projectId, sessionId: sessionRow.id });
+          return { session: this.getSession(projectId, sessionRow.id), mode: requestedMode, askReply, messages: this.getDiscussState(projectId, sessionRow.id).messages };
+        }
+        const blocker = this.getWorkingSession(projectId);
+        if (blocker && (blocker.id !== pending.sessionId || this.unfinishedWorkSnapshot(blocker.id) !== pending.snapshot)) {
+          const askReply = this.autoWorkApproval(blocker, PlanContractSchema.parse(pending.plan));
+          askReply.text = `The blocking work changed since the previous request. ${askReply.text}`;
+          this.appendMessage(sessionRow.id, 'lead', 'ask', askReply);
+          this.touchSession(sessionRow.id);
+          this.events?.emitEvent({ type: 'discuss.updated', projectId, sessionId: sessionRow.id });
+          this.events?.emitEvent({ type: 'sessions.updated', projectId, sessionId: sessionRow.id });
+          return { session: this.getSession(projectId, sessionRow.id), mode: requestedMode, askReply, messages: this.getDiscussState(projectId, sessionRow.id).messages };
+        }
+        let text: string;
+        try {
+          const plan = PlanContractSchema.parse(pending.plan);
+          if (blocker) {
+            if (!this.executionRouter?.discardSessionWork) throw new Error('Automatic discard is unavailable.');
+            await this.executionRouter.discardSessionWork(projectId, blocker.id);
+          }
+          await this.startAutoPlan(project, sessionRow, plan);
+          text = blocker ? `Discarded unfinished work in "${blocker.title || 'Untitled session'}" and started the requested work.` : 'Started the requested work; the blocking session was already resolved.';
+        } catch (error) {
+          text = `Could not continue Auto work: ${error instanceof Error ? error.message : String(error)}`;
+        }
+        const askReply: AskMessageContent = { text, suggestion: null };
+        this.appendMessage(sessionRow.id, 'lead', 'ask', askReply);
+        this.touchSession(sessionRow.id);
+        this.events?.emitEvent({ type: 'discuss.updated', projectId, sessionId: sessionRow.id });
+        this.events?.emitEvent({ type: 'sessions.updated', projectId, sessionId: sessionRow.id });
+        return { session: this.getSession(projectId, sessionRow.id), mode: requestedMode, askReply, messages: this.getDiscussState(projectId, sessionRow.id).messages };
+      }
+    }
     if (requestedMode === 'ask' || requestedMode === 'auto') {
       const askReply = await this.runAskTurnInner(project, sessionRow, input.message, effort, images, requestedMode === 'auto', signal);
       if (requestedMode === 'auto' && askReply.autoStop) {
@@ -1259,6 +1328,12 @@ export class LeadService {
       : '';
 
     const completedWorkSummary = this.buildCompletedWorkContext(sessionRow.id);
+    const workingSession = auto ? this.getWorkingSession(project.id) : null;
+    const workBlocked = auto && (workingSession?.id !== sessionRow.id && workingSession
+      ? `Session "${workingSession.title?.trim() || 'Untitled session'}" has unfinished work. Merge or discard its work first.`
+      : this.hasSessionUnfinishedWork(sessionRow.id)
+        ? 'This session has unfinished work. Finish or discard it before starting a new Auto plan.'
+        : null);
     const activeRuns = auto && this.executionRouter
       ? this.executionRouter.listActiveRunsForSession(project.id, sessionRow.id)
       : [];
@@ -1271,24 +1346,25 @@ export class LeadService {
           ? `\nPrevious conversation in this session:\n${this.formatTranscript(priorMessages)}\n`
           : '';
       return [
-        auto ? `You are the Lead in DALANG Auto mode. Decide whether to answer, brainstorm, write a plan, ask for clarification or approval, delegate coding tasks, or stop running tasks.` : `You are the Lead architect in DALANG's Ask mode (read-only Q&A about this repository).`,
+        auto ? `You are the Lead in DALANG Auto mode. Decide whether to answer, brainstorm, write a plan, ask for clarification or approval, start tasks, or stop running tasks.` : `You are the Lead in DALANG's Ask mode (read-only Q&A about this project).`,
         buildAskLanguageInstruction(this.getLanguage()),
         `STRICT RULE: You are in READ-ONLY mode. Do NOT create, modify, or delete any files and do NOT run mutating commands.`,
         `Project: ${project.name} (${project.path})`,
         projectContext ? `\nCurrent PROJECT.md:\n${projectContext}\n` : '',
         completedWorkSummary ? `\n${completedWorkSummary}\n` : '',
         activeRunsBlock,
+        workBlocked ? `Work cannot start yet: ${workBlocked} Answer questions normally. For a work request, still return auto_plan; the system will ask the user to resolve the blocker before starting. Do not claim work has started.` : '',
         historyBlock,
         `User question:\n${userText || 'See the attached images.'}`,
         ``,
         `Response instructions:`,
-        `- Answer clearly and directly based on the repository and conversation context.`,
-        auto ? `- If the user explicitly asks for implementation, output JSON with answer and auto_plan containing a complete validated task plan. Delegate only the work requested; never modify files yourself. Use independent tasks for parallel work and depends_on for serial work. Each task must be small, have explicit files_allowed, acceptance criteria and a verify command; needs_split must be false. Schema for auto_plan: ${JSON.stringify(z.toJSONSchema(PlanContractSchema))}` : `- If the user is asking for a code change, do NOT make the edit; explain what would be needed and optionally suggest switching to "quick" (for a small single-task fix/feature) or "full" (for a larger multi-task feature).`,
+        `- Answer clearly and directly based on the project and conversation context.`,
+        auto ? `- If the user explicitly asks to execute work, output JSON with answer and auto_plan containing a complete validated task plan. Delegate only the work requested; never modify files yourself. Use independent tasks for parallel work and depends_on for serial work. Each task must be small with concrete acceptance criteria and needs_split false. Set output to "files" (with explicit files_allowed) when the task creates or edits project files, or "answer" (with files_allowed: []) when the task produces a standalone answer or report without changing project files. Include a verify command whenever the work can be checked by a command; omit verify (or set null) only when no command applies. Schema for auto_plan: ${JSON.stringify(z.toJSONSchema(PlanContractSchema))}` : `- If the user is asking for project changes or tasks to run, do NOT make edits; explain what would be needed and optionally suggest switching to "quick" (for a small single-task job) or "full" (for a larger multi-task plan).`,
         auto ? `- Questions, brainstorming, planning-only requests, and ambiguous requests must never have auto_plan. Answer in JSON {"answer": string, "auto_plan": null} and ask a specific question when necessary.` : '',
-        auto ? `- Ask for explicit informed approval before any action involving production, deployments, live services, production or user data, destructive data changes, risky database migrations, access or secret changes, external communications, billing, or other irreversible effects. Explain the exact action and impact, output no auto_plan, and wait for a subsequent user reply explicitly approving that action. A general coding request or plan approval is not approval for these actions. If uncertain, ask. Preserve these requirements in every delegated task.` : '',
-        auto ? `- If the user explicitly asks to stop running tasks or coders, return "auto_stop": true (to stop all running tasks in this session) or "auto_stop": {"taskId": "<externalId>"} (for one specific task). DALANG stops those running tasks immediately after your response; your read-only CLI does not prevent this.` : '',
+        auto ? `- Ask for explicit informed approval before any action involving production, deployments, live services, production or user data, destructive data changes, risky database migrations, access or secret changes, external communications, billing, or other irreversible effects. Explain the exact action and impact, output no auto_plan, and wait for a subsequent user reply explicitly approving that action. A general work request or plan approval is not approval for these actions. If uncertain, ask. Preserve these requirements in every delegated task.` : '',
+        auto ? `- If the user explicitly asks to stop running tasks or executors, return "auto_stop": true (to stop all running tasks in this session) or "auto_stop": {"taskId": "<externalId>"} (for one specific task). DALANG stops those running tasks immediately after your response; your read-only CLI does not prevent this.` : '',
         auto ? `- A user may explicitly request a local git commit. Inspect git status in the current checkout. If the request clearly authorizes the files, return auto_commit with paths containing exact individual changed files and a suitable commit message. Include only files the user authorized. If the scope is unclear, ask which files to commit and output no action. When asking for confirmation list every exact file in backticks. A later explicit yes approves only those listed files. Never use auto_plan to commit existing checkout changes. DALANG performs the commit in the user's active checkout after your response; your read-only CLI does not prevent this. A commit does not authorize push or deployment.` : '',
-        auto ? `- Return one JSON object {"answer": string, "auto_plan": object|null, "auto_commit": {"paths": string[], "message": string}|null, "auto_stop": true|{"taskId": string}|null}. Only use auto_commit if the latest user message explicitly requests a commit or explicitly approves the exact file list you just asked to commit. Only use auto_stop if the latest user message explicitly asks to stop running tasks/coders. Do not say a commit or stop succeeded before the system performs it. For regular answers all actions must be null.` : `- You may reply with a JSON object matching {"answer": string, "suggested_mode": "quick" | "full" | null, "suggestion_reason": string | null}, or plain text if no mode switch is needed.`,
+        auto ? `- Return one JSON object {"answer": string, "auto_plan": object|null, "auto_commit": {"paths": string[], "message": string}|null, "auto_stop": true|{"taskId": string}|null}. Only use auto_commit if the latest user message explicitly requests a commit or explicitly approves the exact file list you just asked to commit. Only use auto_stop if the latest user message explicitly asks to stop running tasks/executors. Do not say a commit or stop succeeded before the system performs it. For regular answers all actions must be null.` : `- You may reply with a JSON object matching {"answer": string, "suggested_mode": "quick" | "full" | null, "suggestion_reason": string | null}, or plain text if no mode switch is needed.`,
       ]
         .filter(Boolean)
         .join('\n');
@@ -1399,7 +1475,7 @@ export class LeadService {
         );
       }
 
-      const parsedReply = this.parseAskReply(turn);
+      let parsedReply: AskMessageContent & { pendingAutoWork?: PendingAutoWork } = this.parseAskReply(turn);
       let autoPlan: PlanContract | undefined;
       let autoCommit: AutoCommit | undefined;
       let autoStop: AutoStop | undefined;
@@ -1425,13 +1501,21 @@ export class LeadService {
         }
         if (candidate && typeof candidate === 'object' && 'auto_plan' in candidate && candidate.auto_plan != null) {
           autoPlan = PlanContractSchema.parse(candidate.auto_plan);
-          if (autoPlan.tasks.some((task) => task.needs_split || task.files_allowed.length === 0)) {
+          if (autoPlan.tasks.some((task) => task.needs_split || (task.output !== 'answer' && task.files_allowed.length === 0))) {
             throw new Error('Auto plan must contain focused tasks with explicit file boundaries.');
           }
         }
       }
-      if (autoPlan && autoCommit) throw new Error('A turn cannot both start coding tasks and commit the checkout.');
-      if (autoPlan && autoStop) throw new Error('A turn cannot both start and stop coding tasks.');
+      if (autoPlan && autoCommit) throw new Error('A turn cannot both start tasks and commit the checkout.');
+      if (autoPlan && autoStop) throw new Error('A turn cannot both start and stop tasks.');
+      if (autoPlan) {
+        const currentWorking = this.getWorkingSession(project.id);
+        const blocker = currentWorking ?? (this.hasSessionUnfinishedWork(sessionRow.id) ? this.getSession(project.id, sessionRow.id) : null);
+        if (blocker) {
+          parsedReply = this.autoWorkApproval(blocker, autoPlan);
+          autoPlan = undefined;
+        }
+      }
       // A fallback has its own CLI session. Rebuild the preferred provider's context on the next turn.
       const nextCliSessionId = usedFallback ? null : turn.sessionId ?? sessionRow.cliSessionId;
 
@@ -1612,7 +1696,7 @@ export class LeadService {
         : '';
 
     const prompt = [
-      `You are the Lead architect in DALANG's Quick mode (single-task mini plan for a bug fix or small feature, with NO brief).`,
+      `You are the Lead in DALANG's Quick mode (single-task mini plan, with NO brief).`,
       buildLanguageInstruction(this.getLanguage()),
       `Project: ${project.name} (${project.path})`,
       projectContext ? `\nCurrent PROJECT.md:\n${projectContext}\n` : '',
@@ -1621,11 +1705,11 @@ export class LeadService {
       `User request:\n${userText || 'See the attached images.'}`,
       ``,
       `Instructions:`,
-      `- Inspect the codebase to understand the exact files involved.`,
-      `- If this request can be completed safely in ONE focused task (narrow files_allowed, concrete acceptance criteria, exact verify command), set "verdict": "ready" and fill "task" (with id "T-001", milestone "Quick", role "engineer", complexity "low" or "medium", depends_on [], needs_split false).`,
-      `- If this request genuinely needs more than one task, touches many unrelated areas, or has major open design decisions, set "verdict": "too_large", omit "task", explain why in "reason", and list key observations in "findings".`,
-      `- The verify command runs inside the task worktree. Use paths relative to the project root; never cd into or reference the project's absolute path.`,
-      `- Do NOT edit application source files yourself. Write ONLY the JSON contract to "${relDraftPath}".`,
+      `- Inspect the project files to understand the context and exact files involved.`,
+      `- If this request can be completed safely in ONE focused task (concrete acceptance criteria; output "files" with narrow files_allowed when editing or creating project files, or output "answer" with files_allowed [] when returning a standalone answer without changing project files; and a verify command whenever a command can check the work, or omit verify when none applies), set "verdict": "ready" and fill "task" (with id "T-001", milestone "Quick", role "engineer", complexity "low" or "medium", depends_on [], needs_split false).`,
+      `- If this request genuinely needs more than one task, touches many unrelated areas, or has major open decisions, set "verdict": "too_large", omit "task", explain why in "reason", and list key observations in "findings".`,
+      `- When a verify command is provided, it runs inside the task worktree. Use paths relative to the project root; never cd into or reference the project's absolute path.`,
+      `- Do NOT edit project files yourself. Write ONLY the JSON contract to "${relDraftPath}".`,
       `- Schema: ${JSON.stringify(z.toJSONSchema(QuickPlanContractSchema))}`,
     ]
       .filter(Boolean)
@@ -1838,10 +1922,11 @@ export class LeadService {
       goal: string;
       role?: PlanTaskRole;
       complexity?: TaskComplexity;
+      output?: TaskOutputKind;
       filesAllowed?: string[];
       filesReference?: string[];
       acceptanceCriteria: string[];
-      verify: string;
+      verify?: string | null;
       profileOverride?: string | null;
       milestone?: string;
     },
@@ -1863,18 +1948,21 @@ export class LeadService {
     ensureProjectDir(project.path, sessionDir);
 
     const milestoneName = input.milestone?.trim() || 'Automation';
+    const normalizedVerify = input.verify?.trim() || null;
+    const normalizedOutput: TaskOutputKind = input.output ?? 'files';
     const normalizedTask: PlanTaskContract = {
       id: 'T-001',
       title: input.title,
       milestone: milestoneName,
       role: input.role ?? 'engineer',
       complexity: input.complexity ?? 'low',
+      output: normalizedOutput,
       depends_on: [],
       goal: input.goal,
-      files_allowed: input.filesAllowed ?? [],
+      files_allowed: normalizedOutput === 'answer' ? [] : (input.filesAllowed ?? []),
       files_reference: input.filesReference ?? [],
       acceptance_criteria: input.acceptanceCriteria,
-      verify: input.verify,
+      verify: normalizedVerify,
       needs_split: false,
     };
 
@@ -1918,13 +2006,14 @@ export class LeadService {
         milestone: normalizedTask.milestone,
         role: normalizedTask.role,
         complexity: normalizedTask.complexity,
+        outputKind: normalizedTask.output,
         status: 'approved',
         position: 0,
         goal: normalizedTask.goal,
         filesAllowedJson: JSON.stringify(normalizedTask.files_allowed),
         filesReferenceJson: JSON.stringify(normalizedTask.files_reference),
         acceptanceCriteriaJson: JSON.stringify(normalizedTask.acceptance_criteria),
-        verify: normalizedTask.verify,
+        verify: normalizedVerify,
         needsSplit: false,
         splitDepth: 0,
         parentTaskId: null,
@@ -2352,7 +2441,7 @@ export class LeadService {
         : '';
 
     const prompt = [
-      `You are the Lead architect in DALANG's Discuss phase.`,
+      `You are the Lead in DALANG's Discuss phase.`,
       buildLanguageInstruction(this.getLanguage()),
       `Project: ${project.name} (${project.path})`,
       projectContext ? `\nCurrent PROJECT.md:\n${projectContext}\n` : '',
@@ -2360,7 +2449,7 @@ export class LeadService {
       `User input:\n${userText || 'See the attached images.'}`,
       ``,
       `Instructions:`,
-      `- Ask focused, high-leverage clarification questions (2 to 5 questions) to pin down scope, stack, constraints, and edge cases.`,
+      `- Ask focused, high-leverage clarification questions (2 to 5 questions) to pin down scope, deliverables, constraints, and edge cases.`,
       `- If the goal is already completely clear, set "ready_for_brief": true and "questions": [].`,
       `- Write your JSON response directly to the file "${relRoundPath}" with round = ${nextRound}.`,
       `- Schema: ${JSON.stringify(z.toJSONSchema(DiscussRoundSchema))}`,
@@ -2948,9 +3037,10 @@ export class LeadService {
       `Approved Brief (v${briefDto.version}):\n${JSON.stringify(briefDto.content, null, 2)}`,
       ``,
       `Task design rules:`,
-      `- Each task needs an id like "T-001", "T-002", a milestone id ("M1", "M2"...), role ("engineer" or "qa"), complexity ("low", "medium", "high"), depends_on (array of task ids), goal, files_allowed, files_reference, acceptance_criteria, verify (exact test/check command), and needs_split (boolean).`,
-      `- Set needs_split: true if a task is still too large for one focused coding run.`,
-      `- Verify commands run inside the task worktree. Use paths relative to the project root; never cd into or reference the project's absolute path.`,
+      `- Each task needs an id like "T-001", "T-002", a milestone id ("M1", "M2"...), role ("engineer" or "qa"), complexity ("low", "medium", "high"), output ("files" or "answer", default "files"), depends_on (array of task ids), goal, files_allowed (required for files tasks, [] for answer tasks), files_reference, acceptance_criteria, verify (exact test/check command whenever a command can verify the work, or omit/null when none applies), and needs_split (boolean).`,
+      `- Set output to "answer" when the task only needs to return a standalone answer or report without changing project files.`,
+      `- Set needs_split: true if a task is still too large for one focused run.`,
+      `- When verify is set, it runs inside the task worktree. Use paths relative to the project root; never cd into or reference the project's absolute path.`,
       `- Write the plan JSON directly to "${relDraftPath}" with version = ${nextPlanVersion} and brief_version = ${briefDto.version}.`,
       `- Task ids must be unique, every milestone must exist in "milestones", and every depends_on id must be another task in the plan with no cycles.`,
       `- Schema: ${JSON.stringify(z.toJSONSchema(PlanContractSchema))}`,
@@ -3092,6 +3182,7 @@ export class LeadService {
             title: t.title,
             role: t.role,
             complexity: t.complexity,
+            output: t.output,
           })),
         },
       });
@@ -3321,13 +3412,14 @@ export class LeadService {
           milestone: task.milestone,
           role: task.role,
           complexity: task.complexity,
+          outputKind: task.output ?? 'files',
           status,
           position: entry.position,
           goal: task.goal,
-          filesAllowedJson: JSON.stringify(task.files_allowed),
+          filesAllowedJson: JSON.stringify(task.output === 'answer' ? [] : task.files_allowed),
           filesReferenceJson: JSON.stringify(task.files_reference),
           acceptanceCriteriaJson: JSON.stringify(task.acceptance_criteria),
-          verify: task.verify,
+          verify: task.verify?.trim() || null,
           needsSplit: task.needs_split,
           splitDepth,
           parentTaskId: parentExternalId,
@@ -3422,13 +3514,14 @@ export class LeadService {
       milestone: row.milestone,
       role: row.role as PlanTaskRole,
       complexity: row.complexity as TaskComplexity,
+      output: ((row.outputKind as TaskOutputKind) || 'files'),
       status: row.status as TaskStatus,
       position: row.position,
       goal: row.goal,
       filesAllowed: JSON.parse(row.filesAllowedJson) as string[],
       filesReference: JSON.parse(row.filesReferenceJson) as string[],
       acceptanceCriteria: JSON.parse(row.acceptanceCriteriaJson) as string[],
-      verify: row.verify,
+      verify: row.verify ?? null,
       needsSplit: Boolean(row.needsSplit),
       splitDepth: row.splitDepth,
       parentTaskId: row.parentTaskId,
@@ -3490,13 +3583,14 @@ export class LeadService {
         milestone: input.milestone,
         role: input.role,
         complexity: input.complexity,
+        outputKind: input.output ?? 'files',
         status: this.statusFor(input.needsSplit, input.status),
         position,
         goal: input.goal,
-        filesAllowedJson: JSON.stringify(input.filesAllowed),
+        filesAllowedJson: JSON.stringify(input.output === 'answer' ? [] : input.filesAllowed),
         filesReferenceJson: JSON.stringify(input.filesReference),
         acceptanceCriteriaJson: JSON.stringify(input.acceptanceCriteria),
-        verify: input.verify,
+        verify: input.verify?.trim() || null,
         needsSplit: input.needsSplit,
         splitDepth: 0,
         parentTaskId: null,
@@ -3548,6 +3642,7 @@ export class LeadService {
         ...(input.milestone !== undefined ? { milestone: input.milestone } : {}),
         ...(input.role !== undefined ? { role: input.role } : {}),
         ...(input.complexity !== undefined ? { complexity: input.complexity } : {}),
+        ...(input.output !== undefined ? { outputKind: input.output } : {}),
         ...(nextStatus !== undefined ? { status: nextStatus } : {}),
         ...(input.goal !== undefined ? { goal: input.goal } : {}),
         ...(input.filesAllowed !== undefined
@@ -3559,7 +3654,7 @@ export class LeadService {
         ...(input.acceptanceCriteria !== undefined
           ? { acceptanceCriteriaJson: JSON.stringify(input.acceptanceCriteria) }
           : {}),
-        ...(input.verify !== undefined ? { verify: input.verify } : {}),
+        ...(input.verify !== undefined ? { verify: input.verify?.trim() || null } : {}),
         ...(input.needsSplit !== undefined ? { needsSplit: input.needsSplit } : {}),
         ...(input.profileOverride !== undefined ? { profileOverride: input.profileOverride } : {}),
         updatedAt: now,
@@ -3773,6 +3868,9 @@ export class LeadService {
         }
         if (m.type === 'report' && m.content && typeof m.content === 'object') {
           const rep = m.content as RoomReportContent;
+          if (rep.event === 'task_accepted' && rep.answer) {
+            return `[${speaker}/report] ${rep.summary}\n${rep.answer}`;
+          }
           return `[${speaker}/report] ${rep.summary}`;
         }
         if (m.type === 'images' && m.content && typeof m.content === 'object') {
@@ -3802,11 +3900,17 @@ export class LeadService {
     const doneTasks = taskRows.filter((t) => t.status === 'done');
     if (doneTasks.length === 0) return '';
 
-    const lines = ['Completed and merged work in this session:'];
+    const lines = ['Completed work in this session:'];
     for (const t of doneTasks) {
       const files = (JSON.parse(t.filesAllowedJson) as string[]).join(', ');
+      const suffix =
+        t.outputKind === 'answer'
+          ? ` [accepted answer -> .dalang/answers/${t.id}.md]`
+          : t.mergeCommitSha
+            ? ` [merged ${t.mergeCommitSha.slice(0, 8)}]`
+            : '';
       lines.push(
-        `- ${t.externalId}: ${t.title} — Goal: ${t.goal}${files ? ` (files: ${files})` : ''}${t.mergeCommitSha ? ` [merged ${t.mergeCommitSha.slice(0, 8)}]` : ''}`,
+        `- ${t.externalId}: ${t.title} — Goal: ${t.goal}${files ? ` (files: ${files})` : ''}${suffix}`,
       );
     }
     return lines.join('\n');
@@ -3890,12 +3994,13 @@ export class LeadService {
         milestone: t.milestone,
         role: t.role,
         complexity: t.complexity,
+        output: t.output,
         depends_on: t.dependsOn,
         goal: t.goal,
         files_allowed: t.filesAllowed,
         files_reference: t.filesReference,
         acceptance_criteria: t.acceptanceCriteria,
-        verify: t.verify,
+        verify: t.verify ?? null,
         needs_split: t.needsSplit,
       })),
     };

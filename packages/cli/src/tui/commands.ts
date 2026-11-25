@@ -17,8 +17,9 @@ export const SLASH_COMMANDS: SlashCommandDef[] = [
   { name: 'model', usage: '/model', description: "Choose the Lead's model from every connected provider" },
   { name: 'config', usage: '/config', description: 'Language, limits refresh, agent CLIs, and the agent team' },
   { name: 'wizard', usage: '/wizard', description: 'Open the setup wizard again' },
-  { name: 'diff', usage: '/diff [taskId]', description: 'Open task diff in $PAGER' },
-  { name: 'merge', usage: '/merge [taskId]', description: 'Approve and merge the ready task' },
+  { name: 'diff', usage: '/diff [taskId]', description: 'Open task diff or answer in $PAGER' },
+  { name: 'merge', usage: '/merge [taskId]', description: 'Approve and merge (or accept) the ready task' },
+  { name: 'accept', usage: '/accept [taskId]', description: 'Accept the ready answer task (or merge a files task)' },
   { name: 'reject', usage: '/reject [taskId] [note]', description: 'Reject the awaiting task (--requeue to retry)' },
   { name: 'stop', usage: '/stop [taskId]', description: 'Stop all running agents and tasks (or one task)' },
   { name: 'web', usage: '/web', description: 'Open the web UI on the current session' },
@@ -138,11 +139,30 @@ export function getComposerCompletions(
   const query = mentionMatch[2].toLowerCase();
 
   const items: CompletionItem[] = [];
-  if (runningProfileNames.size > 0 && 'coder'.startsWith(query)) {
+  if (runningProfileNames.size > 0) {
+    if ('executor'.startsWith(query)) {
+      items.push({
+        value: '@executor',
+        label: '@executor',
+        detail: `steer running (${[...runningProfileNames].join(', ')})`,
+      });
+    }
+    if (query.length > 0 && 'coder'.startsWith(query)) {
+      items.push({
+        value: '@coder',
+        label: '@coder',
+        detail: `steer running (${[...runningProfileNames].join(', ')})`,
+      });
+    }
+  }
+
+  const qaProfile = profiles.find((p) => p.name.toLowerCase() === 'qa');
+  if (qaProfile && query.length > 0 && 'checker'.startsWith(query)) {
+    const isRunning = runningProfileNames.has(qaProfile.name);
     items.push({
-      value: '@coder',
-      label: '@coder',
-      detail: `steer running (${[...runningProfileNames].join(', ')})`,
+      value: '@checker',
+      label: '@checker',
+      detail: isRunning ? `running · steer (${qaProfile.provider})` : `idle · ask (${qaProfile.provider})`,
     });
   }
 

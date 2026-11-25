@@ -283,7 +283,7 @@ export class RoomApiClient {
     projectId: string,
     taskId: string,
     opts: { allowUnconfined?: boolean; allowFailedReview?: boolean; runIntegration?: boolean } = {},
-  ): Promise<{ task: TaskDTO; mergeCommitSha: string }> {
+  ): Promise<{ task: TaskDTO; mergeCommitSha: string | null; answerPath?: string | null }> {
     return this.request(
       `/api/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/approve-merge`,
       { method: 'POST', body: JSON.stringify(opts) },

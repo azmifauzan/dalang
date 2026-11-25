@@ -98,11 +98,14 @@ export function ChatTranscript({
             case 'task_failed':
               return t('room.msg.task_failed', { task });
             case 'verify_result':
+              if (rep.verifySkipped || rep.verifyExitCode == null) {
+                return t('room.msg.verify_skipped', { task });
+              }
               return rep.verifyExitCode === 0
                 ? t('room.msg.verify_pass', { task, cmd: rep.verifyCommand ?? '' })
                 : t('room.msg.verify_fail', {
                     task,
-                    code: rep.verifyExitCode ?? 1,
+                    code: rep.verifyExitCode,
                     cmd: rep.verifyCommand ?? '',
                   });
             case 'review_verdict':
@@ -122,6 +125,12 @@ export function ChatTranscript({
                 task,
                 title,
                 sha: rep.mergeCommitSha ? rep.mergeCommitSha.slice(0, 7) : '',
+              });
+            case 'task_accepted':
+              return t('room.msg.task_accepted', {
+                task,
+                title,
+                path: rep.answerPath ?? (rep.taskId ? `.dalang/answers/${rep.taskId}.md` : '.dalang/answers/'),
               });
             case 'task_rejected':
               return t('room.msg.task_rejected', { task, title });
@@ -158,13 +167,17 @@ export function ChatTranscript({
                       borderColor:
                         report?.reviewStatus === 'fail' || report?.event === 'task_failed'
                           ? 'var(--error)'
-                          : report?.reviewStatus === 'pass' || report?.event === 'task_merged'
+                          : report?.reviewStatus === 'pass' ||
+                              report?.event === 'task_merged' ||
+                              report?.event === 'task_accepted'
                             ? 'var(--pass)'
                             : 'var(--border-subtle)',
                       color:
                         report?.reviewStatus === 'fail' || report?.event === 'task_failed'
                           ? 'var(--error)'
-                          : report?.reviewStatus === 'pass' || report?.event === 'task_merged'
+                          : report?.reviewStatus === 'pass' ||
+                              report?.event === 'task_merged' ||
+                              report?.event === 'task_accepted'
                             ? 'var(--pass)'
                             : 'var(--text-secondary)',
                     }}
@@ -190,6 +203,17 @@ export function ChatTranscript({
                         deletions: report.diffStats.deletions,
                       })}
                     </p>
+                  )}
+                  {report.answer && (
+                    <div
+                      className="mt-2 rounded-[6px] border p-3"
+                      style={{
+                        backgroundColor: 'var(--bg-well)',
+                        borderColor: 'var(--border-subtle)',
+                      }}
+                    >
+                      <Markdown>{report.answer}</Markdown>
+                    </div>
                   )}
                   {report.findings && report.findings.length > 0 && (
                     <ul className="space-y-1 pt-1 text-xs" style={{ color: 'var(--text-secondary)' }}>

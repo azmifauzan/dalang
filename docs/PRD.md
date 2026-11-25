@@ -1,6 +1,6 @@
 # PRD: DALANG
 
-Nov 18, 2026 · @Fauzan · Updated through v0.13.6, Nov 25, 2026
+Nov 18, 2026 · @Fauzan · Updated through v0.14.0, Nov 25, 2026
 
 ## Summary
 
@@ -307,6 +307,7 @@ Each phase must be useful on its own before the next one starts.
 | v0.10 | Session protocols (Claude Code stream-json sessions, `codex app-server`, ACP), steering a running task, context handoff on fallback, native Windows confinement | A fallback mid-task continues from the handoff instead of starting over, on all three providers | Released in 0.10.0. Linux regression and live provider checks passed. Native Windows verification pending. |
 | v0.11 | Scheduled and webhook-triggered runs, outside agents over MCP | A scheduled run and a run started from a terminal agent both finish without opening the UI | Released in 0.11.0. Schema v14 adds `automations`, `automation_runs`, and `mcp_tokens`. Verified on 24 Nov 2026 with core cron, webhook, and MCP tests, a real-HTTP server test, a v13 to v14 upgrade test, and the Chromium Config check. A live check on a copy of the app data ran a real Claude Code client against `/mcp`: the read-only token saw 7 tools and only its project, and the full-access token's `start_task` finished, passed review, and auto-merged. A live every-minute schedule and a signed webhook each completed and merged; an unsigned webhook got 401. Codex accepted the generated config but was not run against `/mcp`. 0.11.1 adds signed timestamps and replay refusal for webhooks, and passes the webhook body to the coder only through `{{payload}}`, fenced as data. |
 | v0.12.0 | Terminal team room (`dalang`), `dalang web` rename, role reports & schema v15, `@<profile>` mention routing | In a TTY, `dalang` runs a Quick task from plan to merge with no browser; `dalang web` behaves like v0.11; routing tests cover Lead, idle Ask, and running coder steering | Released in v0.12.0. Schema v15 adds `author_profile_id` and `kind` on `messages`. Verified on Linux (Node 26, Ink 8, React 19.3) with v14 to v15 upgrade tests, core mention-routing and report tests, CLI routing and compatibility tests, and an Ink E2E Quick task from plan to merge with `/diff`, `/web`, and y/n gates. On 24 Nov 2026 a live run in a real pseudo-terminal, on a copy of the app data upgraded from v13 to v15, ran a Quick task from the Lead's plan (Claude) through the coder and review (Antigravity) to merge with no browser, and `@reviewer` answered in Ask mode. A second live run with empty app data and the real provider CLIs went through the first-run wizard to a first project, `/model` listed the Claude and Codex models, `/config` opened, the mouse wheel scrolled a long session, and the layout held at 80 by 24 and 110 by 38. macOS Terminal, WSL 2, and Windows Terminal rendering checks remain open. |
+| v0.14.0 | General tasks: Executor and Checker names, neutral prompts, optional verify, answer tasks, schema v16 | A non-code goal runs from plan to an accepted answer and a merged file without verify commands; a code Quick task behaves as in v0.13 | Released in v0.14.0. Schema v16 adds `output_kind` on tasks and automations and makes verify nullable. Two live terminal-room runs on 25 Nov 2026 (Claude Lead and reviewer, Antigravity executor) on a copy of real v15 app data. See [v0.14](#v014-general-tasks-released-in-v0140). |
 
 See [Roadmap after v0.4](#roadmap-after-v04) for the detail and the research behind it.
 
@@ -761,9 +762,11 @@ Scripted runs cover handoff from each of the three providers, including recent c
 - Outside agents over MCP: Claude Code or Codex in a terminal can read projects, sessions, tasks, logs, and automations (`read-only`) or start/stop tasks, merge, reject, and trigger automations (`full-access`) through persistent hashed bearer tokens on the loopback-only `/mcp` endpoint, optionally scoped to one project.
 - Managed in **Config → Automation** and over REST (`/api/automations`, `/api/mcp-tokens`), on schema v14. Automated and MCP-started runs each create a Quick session, so they go through the worktree, verify, review, and Gate 2 steps and stay visible in the UI. A trigger that arrives while another session has unfinished work is recorded as skipped.
 
-### v0.14: general tasks (draft plan, 25 Nov 2026)
+### v0.14: general tasks (released in v0.14.0)
 
-Status: draft. Nothing in this section is implemented.
+Status: released in v0.14.0 on schema v16 (phases 1 to 5). Unit, v15 to v16 upgrade, replay E2E (a `files` task without verify, and an `answer` task with a scope violation, accept, and reject), browser replay, and terminal room tests pass. Two live terminal-room runs on 25 Nov 2026 met every Done-when item; see the review table below. Not run: the web UI live, Codex as executor, macOS, and Windows.
+
+Note on schema v16 columns: in the actual SQLite schema, `verify_command` and `verify_exit_code` live on `reviews` (not `runs`), and `automations` also stores `output_kind` and nullable `verify`. Migration v16 rebuilds `tasks`, `reviews`, and `automations` safely while preserving every existing row as a `files` task with its existing verify values.
 
 #### Intent
 
@@ -847,6 +850,25 @@ Milestones: phases 1 and 2 can ship alone as a patch release (names and prompts,
 - Labels: Executor for the three task roles and Checker for QA, as in the table above. Lead and Reviewer keep their names.
 - Phases 1 and 2 (names and prompts) ship first as a patch release on v0.13, before the schema work.
 - Accepted answers live in `.dalang/answers/{task-id}.md` and in the session history, outside the user's files. A result the user wants as a project file is planned as a `files` task (for example `docs/report.md`), so it goes through review and merge like any other change.
+- Scope line (25 Nov 2026, review): `{task-id}` is the task's database id, not its external id. External ids such as `T-001` repeat in every Quick, automation, and MCP session, so a file named by external id was overwritten by the next session, and the next `T-001` answer task was shown and reviewed against the old accepted answer.
+
+#### Review against this plan (25 Nov 2026)
+
+Gate after the fixes below: typecheck, tests, and build pass. Two live runs on 25 Nov 2026 are described in the Done-when rows; every Done-when item is met. Not run: the web UI live, Codex as executor, macOS, and Windows.
+
+| Plan item | Result |
+| --- | --- |
+| 1. Names: Executor and Checker in web EN/ID, wizard, Config, terminal room, `/help`, room reports, docs; ids unchanged | Met. A grep of the web dictionaries and terminal labels finds no `Coder` or `QA` label. Fixed: five `coder` words left in `docs/USAGE.md`. |
+| `@executor` and `@checker` aliases | Met, with `@coder`, `@engineer`, and `@qa` kept. |
+| 2. Neutral Lead and seeded role prompts; refresh only untouched seeds | Met. `PREVIOUS_ROLE_PROMPTS` now holds a list per profile, so both older seeds refresh and edited prompts stay. |
+| 3. Optional verify, recorded as skipped, review from acceptance criteria | Met. A null exit code no longer forces a failed review; room, web, and Guard show "skipped". |
+| 4. Answer tasks: worktree, `answer.md`, scope check outside `.dalang/`, review on the answer, accept gate, room/web/`/diff` display | Met, with one deviation kept: `answer.md` sits in the session task folder (`.dalang/sessions/{session}/tasks/{id}/`) like `result.json`, with `.dalang/tasks/{id}/` used when there is no session. Fixed: accepted-answer file collision (scope line above), with a regression test that fails on the old code. |
+| 5. Schema v16 | Met. `tasks.output_kind` and `automations.output_kind` added; `tasks.verify`, `reviews.verify_command`, `reviews.verify_exit_code`, and `automations.verify` nullable (the plan named `runs.verify_command`; the column lives on `reviews`). The upgrade test keeps every v15 row. |
+| 6. REST, MCP `start_task`, automations accept optional `verify` and `output` | Met. MCP `start_task` without `verify` still falls back to the project integration command for `files` tasks. |
+| Done when: non-code goal run live in the terminal room | Met on 25 Nov 2026, one run. The built CLI ran in a pseudo-terminal (150×45) with a scratch `DALANG_HOME` on port 4199, in a new git folder holding three supplier notes. The Lead (Claude Opus, Auto mode) planned one `answer` task and one `files` task, both without verify. Executor: Antigravity `gemini-4-hydrogen`; reviewer: Claude Sonnet. Both reviews recorded verify as skipped and passed. `y` at Gate 2 accepted the answer: saved to `.dalang/answers/{task-id}.md` and the session history, no commit on `main`, branch and worktree removed. `y` merged `docs/supplier-summary.md`. Both reviewers said they could not run `git status` in the worktree. Cause: the project sat under `/tmp`, and the bwrap sandbox mounts an empty `/tmp`, which hid the main repository's `.git` that the worktree link points to. Fixed: the sandbox mounts that directory back read-only (`sandbox.ts`), with a test that runs `git status` through real bwrap and fails without the fix. Projects outside `/tmp` were not affected. |
+| Done when: code Quick task behaves as in v0.13 | Met on 25 Nov 2026, one live run in the terminal room (same setup, project under `/tmp` with a failing `node --test`). The Quick plan showed `executor · low` and `Verify: node --test`. Antigravity fixed `add()`, verify exited 0, and the Claude Sonnet review passed after its own read-only `git status` and `git diff` in the worktree (the `/tmp` fix above, now proven live). `/diff` showed the code diff, `y` merged, and both tests pass on `main`. |
+| Done when: database upgraded from v15 keeps every task and run | Met. Unit upgrade test, plus a copy of a real v15 app database opened by the live run: tasks 15, runs 4, sessions 13, messages 62 equal before and after, task rows identical, all `files`. The original database stayed on v15 with an unchanged hash. |
+| Outside this plan | Kept and tested (`v07-sessions.test.ts`): an Auto approval that discards a blocking session's unfinished work only after the user replies yes, and asks again when that work changed (`lead.ts`); and `recoverEmptyFailedWork`, which unlocks a failed task whose branch is gone and whose runs changed nothing (`executor.ts`). Fixed: the empty-work check allowed only `result.json`, so a failed answer task (which also writes `answer.md`) stayed locked; it now allows any file in the task's own artifact folder, with a test case that fails on the old rule. |
 
 ### v0.12, v0.13, v0.15, v0.16: terminal room, Auto, and chat apps
 

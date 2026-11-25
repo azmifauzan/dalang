@@ -247,6 +247,7 @@ describe('v0.6 backend: settings, language prompts, and update check', () => {
           milestone: 'M1',
           role: 'engineer',
           complexity: 'low',
+          output: 'files',
           status: 'reviewing',
           position: 0,
           goal: 'Add route',
@@ -340,7 +341,7 @@ describe('v0.6 backend: settings, language prompts, and update check', () => {
     const prompt = (id: string) =>
       (first.sqlite.prepare('SELECT role_prompt AS p FROM agent_profiles WHERE id = ?').get(id) as { p: string }).p;
     // A fresh install gets the detailed text.
-    expect(prompt('profile-coder-heavy')).toContain('senior engineer');
+    expect(prompt('profile-coder-heavy')).toContain('senior executor');
     expect(prompt('profile-reviewer')).toContain('independent reviewer');
     // Simulate a database seeded by an earlier release, with one profile edited by the user.
     const set = first.sqlite.prepare('UPDATE agent_profiles SET role_prompt = ? WHERE id = ?');
@@ -352,7 +353,7 @@ describe('v0.6 backend: settings, language prompts, and update check', () => {
     try {
       const read = (id: string) =>
         (second.sqlite.prepare('SELECT role_prompt AS p FROM agent_profiles WHERE id = ?').get(id) as { p: string }).p;
-      expect(read('profile-coder-small')).toContain('focused engineer working a small');
+      expect(read('profile-coder-small')).toContain('focused executor working a small');
       expect(read('profile-reviewer')).toBe('My own reviewer rules.');
     } finally {
       second.close();

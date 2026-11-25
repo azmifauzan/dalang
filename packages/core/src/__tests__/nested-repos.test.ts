@@ -714,3 +714,44 @@ describe('v0.9 workspace projects with nested repositories', () => {
     }
   });
 });
+
+describe('bwrap sandbox for a project kept under /tmp', () => {
+  it('mounts the main git dir back so git works inside a /tmp worktree', async () => {
+    const root = fs.mkdtempSync('/tmp/dalang-wt-');
+    try {
+      const main = path.join(root, 'main');
+      const wt = path.join(root, 'wt');
+      fs.mkdirSync(main);
+      const git = (cwd: string, ...args: string[]) =>
+        execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' });
+      git(main, 'init', '-q', '-b', 'main');
+      fs.writeFileSync(path.join(main, 'a.txt'), 'a\n');
+      git(main, 'add', '.');
+      git(main, 'commit', '-qm', 'init');
+      git(main, 'worktree', 'add', '-q', wt, '-b', 'T-001');
+
+      const runner: CliRunner = {
+        async which(bin) {
+          return bin === 'bwrap' ? '/usr/bin/bwrap' : null;
+        },
+        async run() {
+          throw new Error('not run');
+        },
+      };
+      for (const readOnly of [true, false]) {
+        const inv = await wrapWithBwrap(runner, null, wt, 'git', ['status', '--short'], { platform: 'linux', readOnly });
+        const mainGit = path.join(main, '.git');
+        const idx = inv.args.indexOf(mainGit);
+        expect(idx).toBeGreaterThan(inv.args.indexOf('/tmp'));
+        expect(inv.args[idx - 1]).toBe('--ro-bind');
+        if (process.platform === 'linux' && fs.existsSync('/usr/bin/bwrap')) {
+          // Real run: without the mount git prints "not a git repository".
+          const out = execFileSync(inv.command, inv.args, { encoding: 'utf8' });
+          expect(out).toBe('');
+        }
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

@@ -18,6 +18,7 @@ import {
   type CreateMcpTokenInput,
   type McpAccessLevel,
   type McpTokenDTO,
+  type TaskOutputKind,
 } from '@dalang/shared';
 import type { DalangDb } from '../db/client.js';
 import { agentProfiles, mcpTokens, projects } from '../db/schema.js';
@@ -272,18 +273,24 @@ export const EXTERNAL_MCP_WRITE_TOOLS = [
       properties: {
         project_id: { type: 'string', description: 'Project ID, exact name, or absolute path.' },
         title: { type: 'string', description: 'Short task title.' },
-        prompt: { type: 'string', description: 'Detailed goal and instructions for the coder.' },
+        prompt: { type: 'string', description: 'Detailed goal and instructions for the executor.' },
         role: { type: 'string', enum: ['engineer', 'qa'], default: 'engineer' },
         complexity: { type: 'string', enum: ['low', 'medium', 'high'], default: 'low' },
+        output: {
+          type: 'string',
+          enum: ['files', 'answer'],
+          default: 'files',
+          description: 'files (default): modifies project files; answer: writes a standalone markdown answer without modifying project files.',
+        },
         files_allowed: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Optional glob patterns the coder may edit (empty means full repo).',
+          description: 'Optional glob patterns the executor may edit (empty means full workspace for files tasks, or no project files for answer tasks).',
         },
         files_reference: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Optional reference file paths for the coder.',
+          description: 'Optional reference file paths for the executor.',
         },
         acceptance_criteria: {
           type: 'array',
@@ -292,7 +299,7 @@ export const EXTERNAL_MCP_WRITE_TOOLS = [
         },
         verify: {
           type: 'string',
-          description: 'Shell command to verify the change. Falls back to the project integration command if omitted.',
+          description: 'Optional shell command to verify the work. For files tasks, falls back to the project integration command if omitted; if none exists, review checks acceptance criteria directly.',
         },
         profile: {
           type: 'string',
@@ -461,10 +468,18 @@ export class ExternalMcpService {
       task_id: task.id,
       external_id: task.externalId,
       title: task.title,
+      output: task.output,
+      verify: task.verify,
       status: task.status,
       branch_name: task.branchName,
       merge_commit_sha: task.mergeCommitSha,
       review_rounds: task.reviewRounds,
+      ...(task.output === 'answer'
+        ? {
+            answer: guardEntry?.answer ?? null,
+            answer_path: guardEntry?.answerPath ?? null,
+          }
+        : {}),
       latest_run: taskRuns[0]
         ? {
             id: taskRuns[0].id,
@@ -591,21 +606,22 @@ export class ExternalMcpService {
       if (!parsed.success) return { data: `Invalid arguments: ${formatZodError(parsed.error)}`, isError: true };
       const input = parsed.data;
       const project = this.resolveScopedProject(scope, input.project_id);
+      const output: TaskOutputKind = input.output ?? 'files';
       const verifyCmd =
-        input.verify?.trim() ||
-        project.integrationCommand?.trim() ||
-        detectIntegrationCommand(project.path);
-      if (!verifyCmd) {
-        return {
-          data: 'A verify command is required because no integration command could be detected for this project.',
-          isError: true,
-        };
-      }
+        input.verify !== undefined
+          ? input.verify?.trim() || null
+          : output === 'answer'
+            ? null
+            : project.integrationCommand?.trim() || detectIntegrationCommand(project.path) || null;
       const profileOverride = this.resolveProfileId(input.profile);
       const criteria =
         input.acceptance_criteria && input.acceptance_criteria.length > 0
           ? input.acceptance_criteria
-          : [`Task goal satisfied and verify command \`${verifyCmd}\` exits with code 0`];
+          : [
+              verifyCmd
+                ? `Task goal satisfied and verify command \`${verifyCmd}\` exits with code 0`
+                : 'Task goal satisfied',
+            ];
 
       const created = this.leadService.createDirectApprovedTask(project.id, {
         sessionTitle: `[MCP] ${input.title}`,
@@ -614,6 +630,7 @@ export class ExternalMcpService {
         goal: input.prompt,
         role: input.role,
         complexity: input.complexity,
+        output,
         filesAllowed: input.files_allowed,
         filesReference: input.files_reference,
         acceptanceCriteria: criteria,

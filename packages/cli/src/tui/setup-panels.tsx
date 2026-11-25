@@ -361,8 +361,8 @@ export function TeamEditor({
       {data.error ? <Text color="red">{data.error}</Text> : null}
       <Text color={cross ? 'green' : 'yellow'}>
         {cross
-          ? 'Cross-provider review active: coder and reviewer use separate subscriptions.'
-          : 'Coder and reviewer use the same provider. Pick different providers for independent cross-model review.'}
+          ? 'Cross-provider review active: executor and reviewer use separate subscriptions.'
+          : 'Executor and reviewer use the same provider. Pick different providers for independent cross-model review.'}
       </Text>
       <Box marginTop={1}>
         <Menu

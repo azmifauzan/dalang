@@ -419,6 +419,31 @@ function findTopLevelGitEntries(workspacePath: string): string[] {
   return entries;
 }
 
+/**
+ * Git directories that the workspace's worktree `.git` link files point to and that sit under `/tmp`.
+ * The bwrap sandbox mounts an empty tmpfs on `/tmp`, which hides them, so git fails inside the
+ * worktree ("not a git repository") for a project kept under `/tmp`. They are mounted back read-only.
+ */
+function hiddenWorktreeGitDirs(workspacePath: string): string[] {
+  const dirs = new Set<string>();
+  for (const dotGit of findTopLevelGitEntries(workspacePath)) {
+    try {
+      if (!fs.lstatSync(dotGit).isFile()) continue;
+      const match = /^gitdir:\s*(.+)$/m.exec(fs.readFileSync(dotGit, 'utf8'));
+      if (!match) continue;
+      const gitDir = path.resolve(path.dirname(dotGit), match[1].trim());
+      const commonFile = path.join(gitDir, 'commondir');
+      const commonDir = fs.existsSync(commonFile)
+        ? path.resolve(gitDir, fs.readFileSync(commonFile, 'utf8').trim())
+        : gitDir;
+      if ((commonDir === '/tmp' || commonDir.startsWith('/tmp/')) && fs.existsSync(commonDir)) dirs.add(commonDir);
+    } catch {
+      // A link file that cannot be read leaves git as it was.
+    }
+  }
+  return [...dirs];
+}
+
 function windowsSandboxArgs(
   projectPath: string,
   command: string,
@@ -645,6 +670,7 @@ export async function wrapWithBwrap(
     projectPath,
     projectPath,
   ];
+  for (const gitDir of hiddenWorktreeGitDirs(projectPath)) bwrapArgs.push('--ro-bind', gitDir, gitDir);
   if (options.imageDir) bwrapArgs.push('--ro-bind', options.imageDir, options.imageDir);
   if (options.mcpDir) bwrapArgs.push('--ro-bind', options.mcpDir, options.mcpDir);
 

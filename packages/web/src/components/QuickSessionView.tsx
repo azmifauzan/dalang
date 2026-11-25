@@ -20,6 +20,7 @@ import { ModeComposer } from './ModeComposer.js';
 import { QuickTimeline } from './QuickTimeline.js';
 import { TaskSteering } from './TaskSteering.js';
 import { ErrorPanel, LoadingPanel } from './StateViews.js';
+import { Markdown } from './Markdown.js';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
@@ -251,7 +252,10 @@ export function QuickSessionView({
                     : t('sessions.quick.tooLargeTitle')}
                 </Badge>
                 {qp.task && (
-                  <Badge>{qp.task.id}</Badge>
+                  <>
+                    <Badge>{qp.task.id}</Badge>
+                    {qp.task.output === 'answer' && <Badge>{te('answer')}</Badge>}
+                  </>
                 )}
               </div>
               <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>
@@ -335,7 +339,7 @@ export function QuickSessionView({
                         {t('sessions.quick.verifyCmd')}
                       </div>
                       <code className="mt-0.5 block font-mono-token text-xs">
-                        {qp.task.verify}
+                        {qp.task.verify?.trim() || t('plan.verifySkipped')}
                       </code>
                     </div>
                   </div>
@@ -548,7 +552,10 @@ export function QuickSessionView({
                       {te(guardEntry.latestReview.status)}
                     </Badge>
                     <span className="font-mono-token text-xs" style={{ color: 'var(--text-secondary)' }}>
-                      {guardEntry.latestReview.reviewerProvider} · exit {guardEntry.latestReview.verifyExitCode}
+                      {guardEntry.latestReview.reviewerProvider} ·{' '}
+                      {guardEntry.latestReview.verifyExitCode === null
+                        ? t('guard.verifySkipped')
+                        : `exit ${guardEntry.latestReview.verifyExitCode}`}
                     </span>
                   </div>
                   {guardEntry.latestReview.contract.summary && (
@@ -567,19 +574,44 @@ export function QuickSessionView({
                 </div>
               )}
 
-              {/* Diff toggle & viewer */}
-              {guardEntry?.diffAvailable && (
+              {/* Diff or Answer toggle & viewer */}
+              {(guardEntry?.diffAvailable || quickTask.output === 'answer') && (
                 <div className="space-y-2">
                   <Button
                     type="button"
                     variant="outline"
                     onClick={() => setShowDiff((v) => !v)}
                   >
-                    {showDiff ? t('sessions.quick.hideDiff') : t('sessions.quick.viewDiff')}
+                    {quickTask.output === 'answer'
+                      ? showDiff
+                        ? t('sessions.quick.hideAnswer')
+                        : t('sessions.quick.viewAnswer')
+                      : showDiff
+                        ? t('sessions.quick.hideDiff')
+                        : t('sessions.quick.viewDiff')}
                   </Button>
 
-                  {showDiff && diffQuery.isLoading && <LoadingPanel label={t('guard.loadingDiff')} />}
-                  {showDiff && diffQuery.data?.diff && (
+                  {showDiff && diffQuery.isLoading && !guardEntry?.answer && (
+                    <LoadingPanel label={t('guard.loadingDiff')} />
+                  )}
+                  {showDiff && quickTask.output === 'answer' && (
+                    <div
+                      className="rounded-[6px] border p-3"
+                      style={{
+                        backgroundColor: 'var(--bg-well)',
+                        borderColor: 'var(--border-subtle)',
+                      }}
+                    >
+                      {(guardEntry?.answer ?? diffQuery.data?.diff.answer) ? (
+                        <Markdown>{(guardEntry?.answer ?? diffQuery.data?.diff.answer)!}</Markdown>
+                      ) : (
+                        <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+                          {t('guard.noAnswerAvailable')}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                  {showDiff && quickTask.output !== 'answer' && diffQuery.data?.diff && (
                     <div
                       className="space-y-3 rounded-[6px] border p-3"
                       style={{
@@ -643,9 +675,13 @@ export function QuickSessionView({
                           approveMergeMutation.mutate(quickTask.status === 'review_failed')
                         }
                       >
-                        {approveMergeMutation.isPending
-                          ? t('sessions.quick.merging')
-                          : t('sessions.quick.approveMerge')}
+                        {quickTask.output === 'answer'
+                          ? approveMergeMutation.isPending
+                            ? t('sessions.quick.accepting')
+                            : t('sessions.quick.approveAccept')
+                          : approveMergeMutation.isPending
+                            ? t('sessions.quick.merging')
+                            : t('sessions.quick.approveMerge')}
                       </Button>
                     )}
                     {guardEntry.canReject && (
@@ -704,7 +740,7 @@ export function QuickSessionView({
                 </div>
               )}
 
-              {/* Merged banner */}
+              {/* Merged or accepted banner */}
               {quickTask.status === 'done' && (
                 <div
                   className="rounded-[6px] border px-3 py-2 text-sm font-medium"
@@ -714,10 +750,14 @@ export function QuickSessionView({
                     color: 'var(--pass)',
                   }}
                 >
-                  {t('sessions.quick.mergedNotice', {
-                    branch: project.mainBranch,
-                    sha: (quickTask.mergeCommitSha ?? '').slice(0, 8) || 'HEAD',
-                  })}
+                  {quickTask.output === 'answer'
+                    ? t('sessions.quick.acceptedNotice', {
+                        path: guardEntry?.answerPath ?? `.dalang/answers/${quickTask.id}.md`,
+                      })
+                    : t('sessions.quick.mergedNotice', {
+                        branch: project.mainBranch,
+                        sha: (quickTask.mergeCommitSha ?? '').slice(0, 8) || 'HEAD',
+                      })}
                 </div>
               )}
             </section>

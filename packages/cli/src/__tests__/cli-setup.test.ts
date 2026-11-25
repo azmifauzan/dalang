@@ -419,7 +419,7 @@ describe('setup wizard (Ink)', () => {
 
     // Step 3: team. Everything starts on Claude, so the review is not cross-provider yet.
     await ui.waitFor('Step 3 of 4');
-    await ui.waitFor('Coder and reviewer use the same provider');
+    await ui.waitFor('Executor and reviewer use the same provider');
     // Reviewer is the 6th role: open it, change Provider to Codex, then Model to GPT-5.
     await ui.press(DOWN, DOWN, DOWN, DOWN, DOWN, '\r');
     await ui.waitFor('Reviewer (Arjuna)');

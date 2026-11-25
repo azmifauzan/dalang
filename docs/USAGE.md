@@ -18,10 +18,10 @@ Run `dalang` in an interactive terminal to open the team room. If a Dalang serve
 
 *Terminal room with demonstration data.*
 
-- **Auto:** Describe a question, plan, or implementation. The Lead decides how to proceed, can start approved task plans, and can stop running tasks when asked. Review changes before merging.
+- **Auto:** Describe a question, plan, or task (code or non-code). The Lead decides how to proceed, can start approved task plans, and can stop running tasks when asked. Review diffs or answers before merging or accepting.
 - **Ask:** Type a question for the Lead. Use `/model` to choose the provider, model, and reasoning effort for Lead messages.
-- **Quick:** Run `/mode quick`, then describe the change. Read the draft task, allowed files, and verification command. Press `y` and Enter at the run gate, or use `/run`. Inspect the review and `/diff`, then press `y` at the merge gate or use `/merge`.
-- **Full:** Run `/mode full`, discuss the scope, and use `/finish` to draft the brief. Approve the brief to generate a plan. Approve the plan to start work. Use `/diff T-001` and `/merge T-001` for an individual task, or `/web` to inspect the same session in the browser.
+- **Quick:** Run `/mode quick`, then describe the work. Read the draft task, output kind (`files` or `answer`), allowed files, and optional verification command. Press `y` and Enter at the run gate, or use `/run`. Inspect the review and `/diff`, then press `y` at the gate or use `/merge` (for file tasks) or `/accept` (for answer tasks).
+- **Full:** Run `/mode full`, discuss the scope, and use `/finish` to draft the brief. Approve the brief to generate a plan. Approve the plan to start work. Use `/diff T-001` and `/merge T-001` (or `/accept T-001` for answer tasks) for an individual task, or `/web` to inspect the same session in the browser.
 
 ### Read the timeline and live status
 
@@ -30,15 +30,15 @@ Run `dalang` in an interactive terminal to open the team room. If a Dalang serve
   - quick stats: the 5 hour (`5h`) and weekly (`wk`) limit left for each installed provider, the same numbers as the web usage bar, red at 20% or less, refreshed on the interval set in `/config`;
   - the model the Lead will answer with next, and where it comes from: chosen with `/model`, the open session, or the Lead profile. A new chat uses the Lead from Config (`/config` or the browser's **Config → Agents → Team**); a session already started keeps its own CLI and model, so use `/model` or `/new` after changing the Lead;
   - the agents running now with their models (`@coder-small Antigravity · gemini-4-hydrogen`), or the project folder when none runs.
-- **Team timeline:** the Lead, coders, and reviewer post plans, task status, diff stats, verification, and review verdicts under their own profile names. Agent replies render headings, emphasis, lists, code, and link labels. The browser chat shows the same feed.
+- **Team timeline:** the Lead, executors, checker, and reviewer post plans, task status, diff stats or answers, verification (or skipped verification), and review verdicts under their own profile names. Agent replies render headings, emphasis, lists, code, and link labels. The browser chat shows the same feed.
 - **Reply as it is written:** while the Lead, or a profile you asked with `@<profile>`, answers in Ask mode, the latest lines of the reply appear under the timeline with `writing...`, and the finished message replaces them. Claude Code, Codex, and Antigravity stream their text as they write it. A provider run without live output shows each finished message instead.
 - **Terminal title:** the title bar shows the chat title and project (for example `Fix login · shop`), with an animated spinner while a turn or task is running and `*` when a gate or question needs input. Question detection for free-form replies uses punctuation. The previous terminal title is restored on exit in terminals that support title stacks.
 - **Working status:** the line above the composer shows an animated spinner, elapsed time, the agent and provider, a short activity such as reading files, running a command, or writing a response, and an `Esc to stop` hint. `+N` counts other active agents. When a provider has no recognized activity event, the line shows a general working status.
 - **Mention routing (`@<profile>`):**
   - An untagged message, or `@lead`, goes to the Lead in the composer mode (`auto`, `ask`, `quick`, or `full`).
   - `@<profile>` for an idle profile (such as `@reviewer` or `@coder-small`) asks that profile in read-only Ask mode without changing the session mode.
-  - `@<profile>`, or `@coder`, while that coder is running sends your message as a steering note. A run on a CLI that cannot take steering refuses the message.
-- **Gates:** when a Quick plan, brief, plan, or finished task waits for you, type `y` or `n` and press Enter. `n` leaves the item waiting; a task waiting for merge is only discarded with `/reject`.
+  - `@<profile>`, `@executor`, or `@coder` while an executor is running sends your message as a steering note (`@checker` also routes to the checker profile). A run on a CLI that cannot take steering refuses the message.
+- **Gates:** when a Quick plan, brief, plan, or finished task waits for you, type `y` or `n` and press Enter. `n` leaves the item waiting; a task waiting for merge or acceptance is only discarded with `/reject`. For an answer task, accepting saves the answer to `.dalang/answers/{task-id}.md` (the task's internal id, shown in the accept report) and session history without creating a git merge commit.
 ### Commands and keyboard shortcuts
 
 ![Terminal Config menu](images/tui-config.png)
@@ -56,8 +56,9 @@ Run `dalang` in an interactive terminal to open the team room. If a Dalang serve
 | `/update [check\|clis\|all]` | Check for or install the latest Dalang release (prompting `/restart` when updated), update all connected agent CLIs (`clis`), or update both (`all`) |
 | `/restart` | Restart the room and return to the selected project, session, mode, and model. An embedded server refuses while an agent or task is active |
 | `/mouse` | Toggle mouse capture to allow ordinary text selection or wheel scrolling |
-| `/diff [taskId]` | Open the task diff in `$PAGER` (`less -R`, or `more` on Windows) |
-| `/merge [taskId]` | Merge a task that is waiting for merge |
+| `/diff [taskId]` | Open the task diff (or answer text for answer tasks) in `$PAGER` (`less -R`, or `more` on Windows) |
+| `/merge [taskId]` | Merge a file task (or accept an answer task) that is waiting for approval |
+| `/accept [taskId]` | Accept an answer task waiting for approval (saves to `.dalang/answers/{task-id}.md` and session history) |
 | `/reject [taskId] [note] [--requeue]` | Discard a task's work, or send it back to the queue |
 | `/stop [taskId]` | Stop all running agents, Lead turns, and tasks (or one task when `taskId` is given) |
 | `/run` | Approve the draft plan and start it |
@@ -66,7 +67,7 @@ Run `dalang` in an interactive terminal to open the team room. If a Dalang serve
 | `/help` | Show commands and shortcuts |
 | `/exit` | Leave the room (Ctrl+C works too) |
 
-Press `Esc` while any agent, coder, or Lead turn is running to stop all active work immediately (when idle, `Esc` clears the composer). Press `Shift+Tab` in the composer to cycle modes. Use `↑` and `↓` in the composer to recall prompts. Moving past the newest prompt with `↓` restores the current draft. `/resume` also makes the selected chat's saved prompts available. Press Enter to submit only after you have reviewed or edited the recalled text.
+Press `Esc` while any agent, executor, or Lead turn is running to stop all active work immediately (when idle, `Esc` clears the composer). Press `Shift+Tab` in the composer to cycle modes. Use `↑` and `↓` in the composer to recall prompts. Moving past the newest prompt with `↓` restores the current draft. `/resume` also makes the selected chat's saved prompts available. Press Enter to submit only after you have reviewed or edited the recalled text.
 
 Typing `/` or `@` opens a list. Move with `Up` and `Down`; `Enter` runs the highlighted command or fills in the highlighted `@<profile>`, and `Tab` fills either one in without running it. In `/config`, `/model`, and the wizard, `Up` and `Down` move, `Enter` chooses, and `Esc` goes back.
 
@@ -74,7 +75,7 @@ Scroll older messages with the mouse wheel (3 rows a notch), `PageUp` / `PageDow
 
 ## Browser workspace
 
-Run `dalang web` to open the local workspace, usually at `http://127.0.0.1:4173`. From the terminal room, use `/web` to open the active project and chat. In the walkthrough below, screenshots show demo repositories and replayed responses from v0.13.
+Run `dalang web` to open the local workspace, usually at `http://127.0.0.1:4173`. From the terminal room, use `/web` to open the active project and chat. In the walkthrough below, screenshots show demo repositories and replayed responses from v0.13 and v0.14.
 
 ## Set up your team and project
 
@@ -83,8 +84,9 @@ On your first launch, the wizard checks your agent CLIs, proposes a team, and op
 ![Setup wizard with provider, model, and reasoning effort controls for each role](images/setup.webp)
 
 - **Lead (Semar)** asks questions and drafts the brief and task plan.
-- **Coders (Bima and Kresna)** implement tasks. You can use different models for simple and complex work.
-- **Reviewer (Arjuna)** checks the changes against the task. Pick a different provider from the coder if you want a cross-provider review.
+- **Executors (Bima, Gatotkaca, Kresna)** carry out light, medium, and heavy tasks. You can use different models for each complexity tier.
+- **Checker (Srikandi)** checks and verifies task results against acceptance criteria.
+- **Reviewer (Arjuna)** independently reviews each task's diff or answer against acceptance criteria. Pick a different provider from the executor if you want a cross-provider review.
 - **Fallback** is an alternate CLI configuration Dalang can use when the primary cannot run.
 
 Choose **New project** to initialize a folder with Git, or **Open existing repo** to work on an existing checkout. Enter the local folder path. Use the sidebar to switch projects or add another one later.
@@ -103,7 +105,7 @@ A project opens into a chat with the Lead. Pick a mode beside the send button. D
 | --- | --- | --- |
 | **Auto** (default) | Questions, brainstorming, plans, and implementation | Lead responds or creates and starts a task plan. Independent tasks can run in parallel; dependent tasks wait for their prerequisites and merge approval. |
 | **Ask** | Questions about the repository | The Lead reads the repository and answers in chat. Dalang saves the transcript and keeps technical logs in an ignored directory. |
-| **Quick** | A small bug fix or feature | The Lead drafts a single task with allowed files, acceptance criteria, and a verify command. You run, review, and merge it from the chat. |
+| **Quick** | A small fix, feature, document edit, or question that needs one task | The Lead drafts a single task with its output (project files or a standalone answer), allowed files, acceptance criteria, and a verify command when a command can check the work. You run, review, and merge or accept it from the chat. |
 | **Full** | A larger change | You discuss scope, approve a brief and plan, then use the Work and Review views to run and merge tasks. |
 
 Auto uses the chosen Lead provider and model. The Lead is instructed to ask before sensitive actions involving production, data, deployments, secrets, billing, and external communication. This judgment relies on the model and is not a deterministic security boundary; limit access to production systems and review actions. Task changes still go through the existing sandbox, review, and merge gate.
@@ -122,9 +124,9 @@ Choose Claude Code or Codex, then click the paperclip at the lower left of the c
 
 ### Run a Quick fix
 
-1. Select **Quick** and describe the change. Check the proposed task, allowed files, acceptance criteria, and verify command. The verify command runs inside the task worktree, and Dalang rewrites the project's absolute path in it to a relative one.
+1. Select **Quick** and describe the change. Check the proposed task, output, allowed files, acceptance criteria, and verify command. A task without a verify command is checked by the reviewer against the acceptance criteria, and the verify step shows as skipped. The verify command runs inside the task worktree, and Dalang rewrites the project's absolute path in it to a relative one.
 2. Click **Run**. Dalang runs the task in a Git worktree, executes the verify command, and runs automated review. If the host sandbox is unavailable, the run requires explicit unconfined consent.
-3. Open **Show diff** and inspect the review. Click **Approve & merge** when ready, or send the task back with feedback.
+3. Open **Show diff** and inspect the review. Click **Approve & merge** when ready, or send the task back with feedback. For an answer task, open **Show answer** and click **Accept answer**: Dalang saves the answer to `.dalang/answers/<task-id>.md` and the session history, removes the worktree, and makes no commit.
 
 ![Quick chat showing a one-task plan ready to run](images/quick.webp)
 
@@ -155,7 +157,7 @@ In **Brief**, check the proposed scope, features, constraints, and assumptions. 
 
 ## 3. Approve the plan
 
-In **Plan**, inspect tasks on the **Kanban** board or switch to the **Dependency graph**. Open a task to edit its goal, allowed files, dependencies, profile override, acceptance criteria, and verify command. The verify command should be a command you would run locally, such as `node --test`.
+In **Plan**, inspect tasks on the **Kanban** board or switch to the **Dependency graph**. Open a task to edit its goal, **Output** (**Project files** or **Standalone answer**), allowed files, dependencies, profile override, acceptance criteria, and **Verify command (optional)**. A verify command should be a command you would run locally, such as `node --test`. Leave it empty for work that no command can check, such as a report; the reviewer then checks each acceptance criterion.
 
 ![Full Plan view showing the five-step navigation and an approved task on the kanban board](images/plan.webp)
 
@@ -170,18 +172,19 @@ Click **Start work** to run the approved queue. Dalang uses a separate Git workt
 - When **Message to the running agent** appears, use it to add a clarification to the active task. Claude and Codex support this with their session protocols.
 - Use **Stop** to interrupt an individual task or **Stop all runs** for the queue. Stopping a parent task also stops its delegated subtasks. Use **Resume session** when available to continue a stopped task with its existing worktree and conversation.
 - If a provider fails during coding and a backup is available, the backup gets recent run events and a partial diff along with the task brief.
-- During execution, a running coder can split independent parts of its task onto other profiles or providers via DALANG's local MCP server (`delegate_task`, `task_status`, `task_cancel`). Each subtask runs in its own worktree branched from the parent branch, passes verify and automated review, and merges back into the parent branch so the parent's review and Gate 2 diff include the combined result. Delegated subtasks appear under their parent task in **Tasks & live logs** and **Dependency graph**. Delegation is available to Claude Code and Codex coders; Antigravity cannot receive a per-run MCP server, so its coders work without the delegation tools. Native CLI subagents (Claude `Task` tool calls and Antigravity batches) appear read-only in the run inspector.
+- During execution, a running executor can split independent parts of its task onto other profiles or providers via DALANG's local MCP server (`delegate_task`, `task_status`, `task_cancel`). Each subtask runs in its own worktree branched from the parent branch, passes verify and automated review, and merges back into the parent branch so the parent's review and Gate 2 diff include the combined result. Delegated subtasks appear under their parent task in **Tasks & live logs** and **Dependency graph**. Delegation is available to Claude Code and Codex executors; Antigravity cannot receive a per-run MCP server, so its executors work without the delegation tools. Native CLI subagents (Claude `Task` tool calls and Antigravity batches) appear read-only in the run inspector.
 - Use **Retry** for a failed or stopped task. Where **Resume session** is available, use it to continue the provider session.
 - To restore a pre-run state, select the run and use **Rollback to pre-run checkpoint**. Dalang can refuse a rollback when it would lose uncommitted work or commits made outside Dalang. [Rollback troubleshooting](TROUBLESHOOTING.md)
 - If the sandbox is unavailable, see **Config → Security** for platform setup. Dalang asks for explicit confirmation before running tasks without filesystem confinement. [Sandbox and permissions](SANDBOX.md)
 
 ## 5. Review and merge
 
-After a coder finishes, Dalang runs the task’s verification and an automated review. Open **Review & merge** and select a task. Read the review findings, open **Show verify output**, and inspect the **Branch diff** before deciding.
+After an executor finishes, Dalang runs the task’s verification (or records it as skipped when the task has no verify command) and an automated review. Open **Review & merge** and select a task. Read the review findings, open **Show verify output**, and inspect the **Branch diff** before deciding. An answer task shows **Task answer** instead of a diff.
 
 ![Full Review and merge view showing a merged task and pull request controls](images/review.webp)
 
 - **Approve and merge** adds the task changes to the project’s target branch. Dalang refuses a merge only when an uncommitted file in the target repository is also changed by the task, leaving unrelated uncommitted edits intact. Dalang asks for a separate override if automated review failed.
+- **Accept answer** (answer tasks) saves the answer to `.dalang/answers/<task-id>.md` and the session history and removes the task worktree. Nothing is merged, and an answer task cannot be pushed.
 - **Reject and send back** lets you leave feedback and optionally requeue the task for another attempt.
 - Set the **Integration command** for project-wide checks, such as `npm test`. Run it after a merge using the checkbox, or manually with **Run integration suite**.
 
@@ -224,8 +227,8 @@ When DALANG login is enabled, use the **Sign out** icon on the far right of the 
 
 Open **Config → Automation** to run tasks without opening the browser.
 
-- **Schedules:** enter a 5-field cron expression in local time (for example `0 2 * * *` or `@daily`), a task title, instructions, allowed files, acceptance criteria, and a verify command. When the schedule is due, DALANG starts a Quick session and runs the task through the worktree, verify, and review steps. With auto-merge on, a passing task merges by itself; otherwise it waits in **Review & merge**. A schedule that comes due while another session has unfinished work is skipped and recorded in the run history.
-- **Webhooks:** a webhook automation gets a `/api/webhooks/<token>` URL and a signing secret that is shown once. Send the current Unix time in `X-Dalang-Timestamp`, and in `X-Dalang-Signature-256` send `sha256=` followed by the HMAC-SHA256 of `<timestamp>.<raw body>`. A timestamp more than 5 minutes from the DALANG machine's clock is refused, and so is a request that already started a run. `X-Hub-Signature-256` (HMAC of the body alone, as GitHub sends it) is also accepted; it has no timestamp, so DALANG refuses a repeat of the same signed body for 24 hours, until it restarts. A delivery that was skipped can be sent again. `{{event}}` in the instructions becomes the `X-Dalang-Event` or `X-GitHub-Event` header. The body reaches the coder only where the instructions contain `{{payload}}`, inside a block marked as data; without `{{payload}}`, the body is kept in the run history but not sent to the coder.
+- **Schedules:** enter a 5-field cron expression in local time (for example `0 2 * * *` or `@daily`), a task title, instructions, **Task output** (project files or a standalone answer), allowed files, acceptance criteria, and an optional verify command. When the schedule is due, DALANG starts a Quick session and runs the task through the worktree, verify, and review steps. With auto-merge on, a passing task merges by itself; otherwise it waits in **Review & merge**. A schedule that comes due while another session has unfinished work is skipped and recorded in the run history.
+- **Webhooks:** a webhook automation gets a `/api/webhooks/<token>` URL and a signing secret that is shown once. Send the current Unix time in `X-Dalang-Timestamp`, and in `X-Dalang-Signature-256` send `sha256=` followed by the HMAC-SHA256 of `<timestamp>.<raw body>`. A timestamp more than 5 minutes from the DALANG machine's clock is refused, and so is a request that already started a run. `X-Hub-Signature-256` (HMAC of the body alone, as GitHub sends it) is also accepted; it has no timestamp, so DALANG refuses a repeat of the same signed body for 24 hours, until it restarts. A delivery that was skipped can be sent again. `{{event}}` in the instructions becomes the `X-Dalang-Event` or `X-GitHub-Event` header. The body reaches the executor only where the instructions contain `{{payload}}`, inside a block marked as data; without `{{payload}}`, the body is kept in the run history but not sent to the executor.
 
   ```bash
   BODY='{"tag":"v1.2.0"}'
@@ -236,7 +239,7 @@ Open **Config → Automation** to run tasks without opening the browser.
     -H 'X-Dalang-Event: release' --data "$BODY"
   ```
 
-  Treat the body as untrusted input: anyone who can write into it can try to steer the coder. Leave auto-merge off for a webhook whose body carries text you do not control, so you review each change before it merges.
+  Treat the body as untrusted input: anyone who can write into it can try to steer the executor. Leave auto-merge off for a webhook whose body carries text you do not control, so you review each change before it merges.
 - **Outside agents over MCP:** create a `read-only` or `full-access` token, optionally limited to one project, and copy the Claude Code (`claude mcp add --transport http dalang ...`) or Codex (`~/.codex/config.toml`) snippet. Read-only tokens can call `list_projects`, `get_project`, `list_sessions`, `list_tasks`, `get_task`, `get_run_log`, and `list_automations`. Full-access tokens can also call `start_task`, `stop_task`, `approve_merge`, `reject_task`, and `trigger_automation`. By default `start_task` waits until coding and review finish; pass `mode: "async"` to get the task id back at once. The Codex snippet raises `tool_timeout_sec`, because Codex stops a tool call after 60 seconds by default.
 
 `/mcp` only answers connections from the same machine. In Docker, run the outside agent inside the container (`docker compose exec dalang claude ...`), because connections through the published port arrive from the Docker bridge address.

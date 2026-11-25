@@ -42,7 +42,7 @@ describe('database upgrade', () => {
     fresh.close();
 
     const upgraded = openDatabase(file);
-    expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(15);
+    expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(16);
     const runCols = (upgraded.sqlite.pragma('table_info(runs)') as Array<{ name: string }>).map((c) => c.name);
     expect(runCols).toContain('worktree_path');
     expect(runCols).toContain('input_tokens');
@@ -247,7 +247,7 @@ describe('database upgrade', () => {
     // Open and trigger v8 -> v9 upgrade
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(15);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(16);
 
       // Project A: 1 Full working session preserving brief, plan, tasks, messages, and moved artifacts
       const sessionsA = upgraded.sqlite
@@ -351,7 +351,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(15);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(16);
       const names = (
         upgraded.sqlite.prepare('SELECT name FROM agent_profiles ORDER BY name').all() as Array<{ name: string }>
       ).map((r) => r.name);
@@ -386,7 +386,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(15);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(16);
       const taskCols = (upgraded.sqlite.pragma('table_info(tasks)') as Array<{ name: string }>).map((c) => c.name);
       expect(taskCols).toContain('delegated_by_run_id');
       expect(taskCols).toContain('delegation_depth');
@@ -410,7 +410,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(15);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(16);
       const taskRepoCols = (
         upgraded.sqlite.pragma('table_info(task_repos)') as Array<{ name: string }>
       ).map((c) => c.name);
@@ -462,7 +462,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(15);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(16);
       const autoCols = (
         upgraded.sqlite.pragma('table_info(automations)') as Array<{ name: string }>
       ).map((c) => c.name);
@@ -519,7 +519,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(15);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(16);
       const msgCols = (
         upgraded.sqlite.pragma('table_info(messages)') as Array<{ name: string }>
       ).map((c) => c.name);
@@ -534,6 +534,230 @@ describe('database upgrade', () => {
         { id: 'm-q', kind: 'question', author_profile_id: 'profile-lead' },
         { id: 'm-user', kind: 'chat', author_profile_id: null },
       ]);
+    } finally {
+      upgraded.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('upgrades a v15 database to v16: keeps existing rows, adds output_kind, allows null verify, and refreshes untouched v0.13 prompts', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dalang-up16-'));
+    const file = path.join(dir, 'dalang.db');
+    const fresh = openDatabase(file);
+    const now = '2026-11-25T00:00:00.000Z';
+
+    fresh.sqlite.pragma('foreign_keys = OFF');
+    fresh.sqlite.exec(`
+      DROP TABLE IF EXISTS reviews;
+      DROP TABLE IF EXISTS tasks;
+      DROP TABLE IF EXISTS automations;
+
+      CREATE TABLE tasks (
+        id TEXT PRIMARY KEY,
+        plan_id TEXT NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
+        external_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        milestone TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'engineer',
+        complexity TEXT NOT NULL DEFAULT 'low',
+        status TEXT NOT NULL DEFAULT 'ready',
+        position INTEGER NOT NULL DEFAULT 0,
+        goal TEXT NOT NULL,
+        files_allowed_json TEXT NOT NULL DEFAULT '[]',
+        files_reference_json TEXT NOT NULL DEFAULT '[]',
+        acceptance_criteria_json TEXT NOT NULL DEFAULT '[]',
+        verify TEXT NOT NULL,
+        needs_split INTEGER NOT NULL DEFAULT 0,
+        split_depth INTEGER NOT NULL DEFAULT 0,
+        parent_task_id TEXT,
+        delegated_by_run_id TEXT,
+        delegation_depth INTEGER NOT NULL DEFAULT 0,
+        merge_target_branch TEXT,
+        profile_override TEXT,
+        review_rounds INTEGER NOT NULL DEFAULT 0,
+        branch_name TEXT,
+        merge_commit_sha TEXT,
+        rejection_note TEXT,
+        pr_url TEXT,
+        pushed_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE reviews (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        round INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        human_decision TEXT NOT NULL DEFAULT 'pending',
+        human_note TEXT,
+        reviewer_profile_id TEXT NOT NULL,
+        reviewer_provider TEXT NOT NULL,
+        reviewer_model TEXT,
+        verify_command TEXT NOT NULL,
+        verify_exit_code INTEGER NOT NULL,
+        verify_output TEXT NOT NULL DEFAULT '',
+        file_path TEXT NOT NULL,
+        commit_sha TEXT,
+        scope_warnings_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL,
+        decided_at TEXT
+      );
+
+      CREATE TABLE automations (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        cron_expr TEXT,
+        webhook_token TEXT UNIQUE,
+        webhook_secret TEXT,
+        title TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'engineer',
+        complexity TEXT NOT NULL DEFAULT 'low',
+        files_allowed_json TEXT NOT NULL DEFAULT '[]',
+        files_reference_json TEXT NOT NULL DEFAULT '[]',
+        acceptance_criteria_json TEXT NOT NULL DEFAULT '[]',
+        verify TEXT NOT NULL,
+        profile_override TEXT,
+        allow_unconfined INTEGER NOT NULL DEFAULT 0,
+        auto_merge INTEGER NOT NULL DEFAULT 0,
+        last_triggered_at TEXT,
+        next_run_at TEXT,
+        last_status TEXT,
+        last_error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+
+    fresh.sqlite
+      .prepare(
+        `INSERT INTO projects (id, name, path, main_branch, lead_provider, created_at, updated_at)
+         VALUES ('p16', 'v15-proj', ?, 'main', 'claude-code', ?, ?)`,
+      )
+      .run(path.join(dir, 'repo'), now, now);
+    fresh.sqlite
+      .prepare(
+        `INSERT INTO sessions (id, project_id, title, mode, work_state, phase, provider, created_at, updated_at)
+         VALUES ('s16', 'p16', 'Work', 'quick', 'idle', 'work', 'claude-code', ?, ?)`,
+      )
+      .run(now, now);
+    fresh.sqlite
+      .prepare(
+        `INSERT INTO plans (id, project_id, session_id, brief_id, version, status, file_path, created_at)
+         VALUES ('plan16', 'p16', 's16', NULL, 1, 'approved', '.dalang/sessions/s16/plan.json', ?)`,
+      )
+      .run(now);
+    fresh.sqlite
+      .prepare(
+        `INSERT INTO tasks (id, plan_id, external_id, title, milestone, role, complexity, status, position, goal, files_allowed_json, files_reference_json, acceptance_criteria_json, verify, created_at, updated_at)
+         VALUES ('t-old', 'plan16', 'T-001', 'Old task', 'M1', 'engineer', 'low', 'done', 0, 'Goal', '["src/a.ts"]', '[]', '["Passes"]', 'pnpm test', ?, ?)`,
+      )
+      .run(now, now);
+    fresh.sqlite
+      .prepare(
+        `INSERT INTO runs (id, project_id, task_id, profile_id, provider, kind, status, log_path, started_at, finished_at)
+         VALUES ('run-old', 'p16', 't-old', 'profile-reviewer', 'codex', 'review', 'completed', '.dalang/logs/run-old.log', ?, ?)`,
+      )
+      .run(now, now);
+    fresh.sqlite
+      .prepare(
+        `INSERT INTO reviews (id, project_id, task_id, run_id, round, status, reviewer_profile_id, reviewer_provider, verify_command, verify_exit_code, verify_output, file_path, scope_warnings_json, created_at)
+         VALUES ('rev-old', 'p16', 't-old', 'run-old', 1, 'pass', 'profile-reviewer', 'codex', 'pnpm test', 0, 'ok', '.dalang/tasks/T-001/review-1.json', '[]', ?)`,
+      )
+      .run(now);
+    fresh.sqlite
+      .prepare(
+        `INSERT INTO automations (id, project_id, name, kind, enabled, cron_expr, title, prompt, role, complexity, files_allowed_json, files_reference_json, acceptance_criteria_json, verify, created_at, updated_at)
+         VALUES ('auto-old', 'p16', 'Nightly', 'schedule', 1, '0 2 * * *', 'Check', 'Run check', 'engineer', 'low', '[]', '[]', '["OK"]', 'pnpm test', ?, ?)`,
+      )
+      .run(now, now);
+
+    // Put v0.13 seeded prompt on profile-qa and a custom prompt on profile-reviewer
+    const v13QaPrompt =
+      'You are a quality assurance engineer focused on verification, regression checks, and test coverage.\n- Read PROJECT.md, acceptance criteria, and the relevant implementation before writing or running tests.\n- Stay within files_allowed and verify edge cases, failure paths, and expected outputs with real test commands rather than assumptions.\n- Report concrete pass/fail command outputs and any uncovered risk clearly.';
+    fresh.sqlite.prepare('UPDATE agent_profiles SET role_prompt = ? WHERE id = ?').run(v13QaPrompt, 'profile-qa');
+    fresh.sqlite
+      .prepare('UPDATE agent_profiles SET role_prompt = ? WHERE id = ?')
+      .run('Custom reviewer rules stay.', 'profile-reviewer');
+
+    fresh.sqlite.pragma('foreign_keys = ON');
+    fresh.sqlite.pragma('user_version = 15');
+    fresh.close();
+
+    const upgraded = openDatabase(file);
+    try {
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(16);
+
+      const oldTask = upgraded.sqlite
+        .prepare(`SELECT external_id, output_kind, verify FROM tasks WHERE id = 't-old'`)
+        .get() as { external_id: string; output_kind: string; verify: string | null };
+      expect(oldTask).toEqual({ external_id: 'T-001', output_kind: 'files', verify: 'pnpm test' });
+
+      const oldReview = upgraded.sqlite
+        .prepare(`SELECT verify_command, verify_exit_code FROM reviews WHERE id = 'rev-old'`)
+        .get() as { verify_command: string | null; verify_exit_code: number | null };
+      expect(oldReview).toEqual({ verify_command: 'pnpm test', verify_exit_code: 0 });
+
+      const oldAuto = upgraded.sqlite
+        .prepare(`SELECT output_kind, verify FROM automations WHERE id = 'auto-old'`)
+        .get() as { output_kind: string; verify: string | null };
+      expect(oldAuto).toEqual({ output_kind: 'files', verify: 'pnpm test' });
+
+      // Insert a new answer task with NULL verify, a NULL-verify review, and a NULL-verify automation
+      upgraded.sqlite
+        .prepare(
+          `INSERT INTO tasks (id, plan_id, external_id, title, milestone, role, complexity, output_kind, status, position, goal, files_allowed_json, files_reference_json, acceptance_criteria_json, verify, created_at, updated_at)
+           VALUES ('t-ans', 'plan16', 'T-002', 'Answer task', 'M1', 'engineer', 'low', 'answer', 'ready', 1, 'Summarize', '[]', '[]', '["Clear summary"]', NULL, ?, ?)`,
+        )
+        .run(now, now);
+      upgraded.sqlite
+        .prepare(
+          `INSERT INTO runs (id, project_id, task_id, profile_id, provider, kind, status, log_path, started_at, finished_at)
+           VALUES ('run-ans', 'p16', 't-ans', 'profile-reviewer', 'codex', 'review', 'completed', '.dalang/logs/run-ans.log', ?, ?)`,
+        )
+        .run(now, now);
+      upgraded.sqlite
+        .prepare(
+          `INSERT INTO reviews (id, project_id, task_id, run_id, round, status, reviewer_profile_id, reviewer_provider, verify_command, verify_exit_code, verify_output, file_path, scope_warnings_json, created_at)
+           VALUES ('rev-ans', 'p16', 't-ans', 'run-ans', 1, 'pass', 'profile-reviewer', 'codex', NULL, NULL, '', '.dalang/tasks/T-002/review-1.json', '[]', ?)`,
+        )
+        .run(now);
+      upgraded.sqlite
+        .prepare(
+          `INSERT INTO automations (id, project_id, name, kind, enabled, cron_expr, title, prompt, role, complexity, output_kind, files_allowed_json, files_reference_json, acceptance_criteria_json, verify, created_at, updated_at)
+           VALUES ('auto-ans', 'p16', 'Weekly digest', 'schedule', 1, '0 9 * * 1', 'Digest', 'Write digest', 'engineer', 'low', 'answer', '[]', '[]', '["Covers last week"]', NULL, ?, ?)`,
+        )
+        .run(now, now);
+
+      const ansTask = upgraded.sqlite
+        .prepare(`SELECT output_kind, verify FROM tasks WHERE id = 't-ans'`)
+        .get() as { output_kind: string; verify: string | null };
+      expect(ansTask).toEqual({ output_kind: 'answer', verify: null });
+
+      const ansRev = upgraded.sqlite
+        .prepare(`SELECT verify_command, verify_exit_code FROM reviews WHERE id = 'rev-ans'`)
+        .get() as { verify_command: string | null; verify_exit_code: number | null };
+      expect(ansRev).toEqual({ verify_command: null, verify_exit_code: null });
+
+      // Untouched v0.13 prompt was refreshed to neutral wording; custom prompt stayed untouched
+      const qaPrompt = (
+        upgraded.sqlite.prepare(`SELECT role_prompt AS p FROM agent_profiles WHERE id = 'profile-qa'`).get() as {
+          p: string;
+        }
+      ).p;
+      expect(qaPrompt).toContain('You are a checker focused on verification');
+      const revPrompt = (
+        upgraded.sqlite.prepare(`SELECT role_prompt AS p FROM agent_profiles WHERE id = 'profile-reviewer'`).get() as {
+          p: string;
+        }
+      ).p;
+      expect(revPrompt).toBe('Custom reviewer rules stay.');
     } finally {
       upgraded.close();
       fs.rmSync(dir, { recursive: true, force: true });

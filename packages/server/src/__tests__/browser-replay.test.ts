@@ -796,10 +796,10 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
           );
           for (const role of [
             'Lead (Semar)',
-            'Coder, simple tasks (Bima)',
-            'Coder, medium tasks (Gatotkaca)',
-            'Coder, complex tasks (Kresna)',
-            'QA (Srikandi)',
+            'Executor, light tasks (Bima)',
+            'Executor, medium tasks (Gatotkaca)',
+            'Executor, heavy tasks (Kresna)',
+            'Checker (Srikandi)',
             'Reviewer (Arjuna)',
           ]) {
             for (const field of ['CLI', 'Model', 'Reasoning effort', 'Fallback']) {
@@ -807,10 +807,10 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
             }
           }
 
-          // Switch the simple-task coder to Claude Code and give the complex-task coder a model.
-          await setSelect('Coder, simple tasks (Bima): Provider', 'claude-code');
+          // Switch the light-task executor to Claude Code and give the heavy-task executor a model.
+          await setSelect('Executor, light tasks (Bima): Provider', 'claude-code');
           await new Promise((r) => setTimeout(r, 100));
-          const pickedModel = await setSelect('Coder, complex tasks (Kresna): Model');
+          const pickedModel = await setSelect('Executor, heavy tasks (Kresna): Model');
           await new Promise((r) => setTimeout(r, 100));
 
           // Screen 4: Create first project

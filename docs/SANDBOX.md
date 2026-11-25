@@ -27,6 +27,7 @@ On Linux and WSL 2, Dalang wraps agent turns and verify and integration commands
 - Root filesystem is mounted read-only (`--ro-bind / /`).
 - The project folder or isolated task worktree is the workspace mount. Ask and automated review use a read-only workspace mount.
 - Fresh `/tmp`, `/dev`, `/proc`, `--unshare-pid`, `--unshare-ipc`, `--new-session`, and `--die-with-parent`.
+- For a project kept under `/tmp`, the main repository's `.git` directory that a task worktree points to is mounted back read-only, so `git status` and `git diff` work inside the sandbox.
 - `/run/user` and `/run/docker.sock` are hidden so sandboxed agents cannot reach user systemd units or container daemons.
 - The sandbox masks the DALANG database and its SQLite sidecar files, Linux keyring files, and credentials under `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.docker`, `~/.kube`, `~/.config/gcloud`, `~/.git-credentials`, and `~/.netrc`. `~/.npmrc` stays readable for private npm registries.
 - Only the active provider's state directory (or the profile's custom `configDir`) is mounted writable for token refresh and session state.

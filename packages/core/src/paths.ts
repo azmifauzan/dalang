@@ -37,6 +37,19 @@ export function getTaskArtifactDir(projectPath: string, taskExternalId: string):
   return path.join(getProjectTasksDir(projectPath), taskExternalId);
 }
 
+export function getProjectAnswersDir(projectPath: string): string {
+  return path.join(getProjectDalangDir(projectPath), 'answers');
+}
+
+/** Accepted answer of a task, keyed by the task's database id (external ids like T-001 repeat across sessions). */
+export function getAcceptedAnswerPath(projectPath: string, taskId: string): string {
+  return path.join(getProjectAnswersDir(projectPath), `${taskId}.md`);
+}
+
+export function acceptedAnswerRelPath(taskId: string): string {
+  return `.dalang/answers/${taskId}.md`;
+}
+
 export function getProjectSessionsDir(projectPath: string): string {
   return path.join(getProjectDalangDir(projectPath), 'sessions');
 }

@@ -36,6 +36,7 @@ import {
   type TaskDiffFileDTO,
   type TaskDispatchPreviewDTO,
   type TaskDTO,
+  type TaskOutputKind,
   type TaskRepoDiffSummaryDTO,
   type TaskResultContract,
   type TaskReviewDTO,
@@ -62,6 +63,8 @@ import {
   tasks,
 } from '../db/schema.js';
 import {
+  acceptedAnswerRelPath,
+  getAcceptedAnswerPath,
   getProjectLogsDir,
   getSessionLogsDir,
   getSessionTaskArtifactDir,
@@ -100,6 +103,7 @@ import {
   isAncestorCommit,
   mergeTaskBranchIntoWorktree,
   mergeTaskBranchToMain,
+  openSafeGit,
   pushRefToRemote,
   removeTaskWorktree,
   resetRepoKeep,
@@ -232,7 +236,20 @@ function globToRegex(pattern: string): RegExp {
   return new RegExp(regexStr);
 }
 
-export function findScopeViolations(changedFiles: string[], filesAllowed: string[]): string[] {
+export function findScopeViolations(
+  changedFiles: string[],
+  filesAllowed: string[],
+  output: TaskOutputKind = 'files',
+): string[] {
+  if (output === 'answer') {
+    const warnings: string[] = [];
+    for (const rawFile of changedFiles) {
+      const file = rawFile.replace(/^\.\//, '');
+      if (file === '.dalang' || file.startsWith('.dalang/')) continue;
+      warnings.push(`Answer task must not modify project files: ${file}`);
+    }
+    return warnings;
+  }
   if (filesAllowed.length === 0) return [];
   const matchers = filesAllowed.map(globToRegex);
   const warnings: string[] = [];
@@ -370,6 +387,57 @@ export class ExecutionService {
     const allSessions = this.db.select({ id: sessions.id }).from(sessions).all();
     for (const s of allSessions) {
       this.leadService.reconcileSessionWorkState(s.id, false);
+    }
+  }
+
+  async recoverEmptyFailedWork(projectId: string): Promise<void> {
+    const session = this.leadService.getWorkingSession(projectId);
+    if (!session || this.listActiveRunsForSession(projectId, session.id).length || this.projectQueues.has(projectId)) return;
+    const project = this.getProjectRow(projectId);
+    const sessionPlans = this.db.select({ id: plans.id }).from(plans).where(eq(plans.sessionId, session.id)).all();
+    if (!sessionPlans.length) return;
+    const candidates = this.db.select().from(tasks).where(inArray(tasks.planId, sessionPlans.map((p) => p.id))).all();
+    let recovered = false;
+    for (const task of candidates) {
+      if (task.status !== 'failed' || !task.branchName || task.delegationDepth > 0) continue;
+      const taskRuns = this.db.select().from(runs).where(eq(runs.taskId, task.id)).all();
+      if (!taskRuns.length || taskRuns.some((r) => r.status === 'running' || !r.commitBefore || !r.commitAfter || !r.worktreePath || fs.existsSync(r.worktreePath))) continue;
+      if (fs.existsSync(getTaskWorktreeDir(this.worktreesRoot, projectId, task.externalId))) continue;
+      if (this.db.select().from(taskRepos).where(eq(taskRepos.taskId, task.id)).all().length) continue;
+      if (this.db.select().from(runRepoCheckpoints).where(inArray(runRepoCheckpoints.runId, taskRuns.map((r) => r.id))).all().length) continue;
+      try {
+        await assertRepoConfigSafe(project.path);
+        const git = openSafeGit(project.path);
+        const refs = await git.raw(['for-each-ref', '--format=%(refname)', `refs/heads/${task.branchName}`]);
+        if (refs.trim()) continue;
+        let nestedBranch = false;
+        for (const nested of findNestedRepos(project.path)) {
+          const nestedPath = path.join(project.path, nested);
+          await assertRepoConfigSafe(nestedPath);
+          if ((await openSafeGit(nestedPath).raw(['for-each-ref', '--format=%(refname)', `refs/heads/${task.branchName}`])).trim()) {
+            nestedBranch = true;
+            break;
+          }
+        }
+        if (nestedBranch) continue;
+        let empty = true;
+        for (const run of taskRuns) {
+          if (!/^[a-f0-9]{40,64}$/i.test(run.commitBefore!) || !/^[a-f0-9]{40,64}$/i.test(run.commitAfter!)) { empty = false; break; }
+          const changed = await git.raw(['diff', '--no-ext-diff', '--no-renames', '--name-only', '-z', run.commitBefore!, run.commitAfter!, '--']);
+          // Only DALANG's own files for this task (result.json, answer.md, review files) may differ.
+          const artifactDir = `.dalang/sessions/${session.id}/tasks/${task.externalId}/`;
+          if (changed.split('\0').some((file) => file && !file.startsWith(artifactDir))) { empty = false; break; }
+        }
+        if (!empty || this.listActiveRunsForSession(projectId, session.id).length || this.projectQueues.has(projectId)) continue;
+        const result = this.db.update(tasks).set({ branchName: null, updatedAt: new Date().toISOString() })
+          .where(and(eq(tasks.id, task.id), eq(tasks.status, 'failed'), eq(tasks.branchName, task.branchName))).run();
+        recovered ||= result.changes > 0;
+      } catch {
+        // Leave the lock in place when Git cannot prove the work is empty.
+      }
+    }
+    if (recovered && !this.listActiveRunsForSession(projectId, session.id).length && !this.projectQueues.has(projectId)) {
+      this.leadService.reconcileSessionWorkState(session.id);
     }
   }
 
@@ -605,7 +673,12 @@ export class ExecutionService {
     if (!fs.existsSync(worktreePath)) return;
     const relPaths = new Set<string>();
     for (const r of this.db.select().from(runs).where(eq(runs.taskId, taskId)).all()) {
-      if (r.resultPath) relPaths.add(r.resultPath);
+      if (r.resultPath) {
+        relPaths.add(r.resultPath);
+        if (r.resultPath.endsWith('/result.json')) {
+          relPaths.add(r.resultPath.replace(/result\.json$/, 'answer.md'));
+        }
+      }
     }
     for (const rev of this.db.select().from(reviews).where(eq(reviews.taskId, taskId)).all()) {
       if (rev.filePath) relPaths.add(rev.filePath);
@@ -973,6 +1046,7 @@ export class ExecutionService {
     return {
       taskId: task.id,
       externalId: task.externalId,
+      output: task.output,
       branchName: task.branchName,
       baseCommitSha: rootBaseSha,
       headCommitSha: rootHeadSha,
@@ -2196,12 +2270,15 @@ export class ExecutionService {
 
     const relResultPath = path.posix.join(relTaskDir, 'result.json');
     const absResultPath = path.join(worktreePath, relResultPath);
+    const relAnswerPath = path.posix.join(relTaskDir, 'answer.md');
+    const absAnswerPath = path.join(worktreePath, relAnswerPath);
     const relReviewPath = path.posix.join(relTaskDir, 'review.json');
     const absReviewPath = path.join(worktreePath, relReviewPath);
 
     // Clear stale outputs before running so only files written in this execution count.
     removeArtifactFile(worktreePath, absResultPath);
     if (!resumeSessionId) {
+      removeArtifactFile(worktreePath, absAnswerPath);
       removeArtifactFile(worktreePath, absReviewPath);
     }
 
@@ -2310,6 +2387,8 @@ export class ExecutionService {
         relTaskDir,
         absResultPath,
         relResultPath,
+        absAnswerPath,
+        relAnswerPath,
         absReviewPath,
         relReviewPath,
         resumeSessionId,
@@ -2343,6 +2422,8 @@ export class ExecutionService {
     relTaskDir: string;
     absResultPath: string;
     relResultPath: string;
+    absAnswerPath: string;
+    relAnswerPath: string;
     absReviewPath: string;
     relReviewPath: string;
     resumeSessionId: string | null;
@@ -2368,19 +2449,22 @@ export class ExecutionService {
       relLogsDir: ctx.relLogsDir,
       absResultPath: ctx.absResultPath,
       relResultPath: ctx.relResultPath,
+      absAnswerPath: ctx.absAnswerPath,
+      relAnswerPath: ctx.relAnswerPath,
       sessionToResume: ctx.resumeSessionId,
       kind: 'execute',
       prompt: ctx.resumeSessionId
-        ? this.buildResumePrompt(ctx.task, ctx.relResultPath, ctx.priorRejectionNote)
+        ? this.buildResumePrompt(ctx.task, ctx.relResultPath, ctx.priorRejectionNote, ctx.relAnswerPath)
         : this.buildTaskPrompt(
             ctx.task,
             ctx.initialProfile,
             ctx.relResultPath,
             ctx.priorRejectionNote,
             delegationEnabled,
+            ctx.relAnswerPath,
           ),
       buildPromptForProfile: (prof) =>
-        this.buildTaskPrompt(ctx.task, prof, ctx.relResultPath, ctx.priorRejectionNote, delegationEnabled),
+        this.buildTaskPrompt(ctx.task, prof, ctx.relResultPath, ctx.priorRejectionNote, delegationEnabled, ctx.relAnswerPath),
     });
 
     if (coderOutcome.status !== 'completed') {
@@ -2408,6 +2492,8 @@ export class ExecutionService {
       relTaskDir: ctx.relTaskDir,
       absResultPath: ctx.absResultPath,
       relResultPath: ctx.relResultPath,
+      absAnswerPath: ctx.absAnswerPath,
+      relAnswerPath: ctx.relAnswerPath,
       absReviewPath: ctx.absReviewPath,
       relReviewPath: ctx.relReviewPath,
     });
@@ -2432,6 +2518,8 @@ export class ExecutionService {
     relLogsDir: string;
     absResultPath: string;
     relResultPath: string;
+    absAnswerPath?: string;
+    relAnswerPath?: string;
     sessionToResume: string | null;
     kind: 'execute' | 'fix';
     prompt: string;
@@ -2726,6 +2814,11 @@ export class ExecutionService {
             opts.worktreePath,
             opts.absResultPath,
             opts.task.externalId,
+            {
+              output: opts.task.output,
+              absAnswerPath: opts.absAnswerPath,
+              relAnswerPath: opts.relAnswerPath,
+            },
           );
           if (!firstCheck.ok && !opts.execHandle.controller.signal.aborted) {
             if (!lease) {
@@ -2743,7 +2836,9 @@ export class ExecutionService {
               `Your task work finished, but the required contract file failed validation:`,
               firstCheck.error,
               ``,
-              `Please write a valid JSON file directly to "${opts.relResultPath}" matching this JSON Schema:`,
+              opts.task.output === 'answer' && opts.relAnswerPath
+                ? `Write your complete Markdown answer to "${opts.relAnswerPath}" (leaving project files unchanged), and write a valid JSON file directly to "${opts.relResultPath}" (including "answer") matching this JSON Schema:`
+                : `Please write a valid JSON file directly to "${opts.relResultPath}" matching this JSON Schema:`,
               JSON.stringify(jsonSchema, null, 2),
             ].join('\n');
 
@@ -2866,13 +2961,18 @@ export class ExecutionService {
         opts.worktreePath,
         opts.absResultPath,
         opts.task.externalId,
+        {
+          output: opts.task.output,
+          absAnswerPath: opts.absAnswerPath,
+          relAnswerPath: opts.relAnswerPath,
+        },
       );
       void resultAlreadyValidated;
 
       let scopeWarnings: string[];
       try {
         const changedFiles = await this.getWorkspaceChangedFiles(getReposForCoder());
-        scopeWarnings = findScopeViolations(changedFiles, opts.task.filesAllowed);
+        scopeWarnings = findScopeViolations(changedFiles, opts.task.filesAllowed, opts.task.output);
       } catch (err) {
         scopeWarnings = [
           `Could not verify files_allowed: ${err instanceof Error ? err.message : String(err)}`,
@@ -3249,6 +3349,8 @@ export class ExecutionService {
     relTaskDir: string;
     absResultPath: string;
     relResultPath: string;
+    absAnswerPath?: string;
+    relAnswerPath?: string;
     absReviewPath: string;
     relReviewPath: string;
     subtaskMergeTarget?: {
@@ -3326,37 +3428,65 @@ export class ExecutionService {
       let changedFiles: string[] = [];
       try {
         changedFiles = await this.getWorkspaceChangedFiles(taskRepoList, headByRepo);
-        activeScopeWarnings = findScopeViolations(changedFiles, ctx.task.filesAllowed);
+        activeScopeWarnings = findScopeViolations(changedFiles, ctx.task.filesAllowed, ctx.task.output);
       } catch (err) {
         activeScopeWarnings = [
           `Could not verify files_allowed: ${err instanceof Error ? err.message : String(err)}`,
         ];
       }
-      const diffData = await this.buildWorkspaceTaskDiff(ctx.task, taskRepoList, {
-        liveWorktree: true,
-      }).catch(() => null);
+      const isAnswerTask = ctx.task.output === 'answer';
+      const answerInfo = isAnswerTask
+        ? await this.readTaskAnswer(ctx.projectPath, ctx.task, {
+            sessionId: ctx.sessionId,
+            worktreePath: ctx.worktreePath,
+            commitSha: currentHead,
+            result: activeCoderResult,
+          })
+        : { answer: null, answerPath: null };
+      const diffData = isAnswerTask
+        ? null
+        : await this.buildWorkspaceTaskDiff(ctx.task, taskRepoList, {
+            liveWorktree: true,
+          }).catch(() => null);
 
       if (ctx.task.delegationDepth === 0) {
-        const diffStats = diffData
-          ? {
-              filesChanged: diffData.files.length,
-              insertions: diffData.totalAdditions,
-              deletions: diffData.totalDeletions,
-            }
-          : { filesChanged: changedFiles.length, insertions: 0, deletions: 0 };
-        const diffSummary = `${diffStats.filesChanged} file(s), +${diffStats.insertions} -${diffStats.deletions}`;
         const coderSummary = activeCoderResult?.summary?.trim() || `Completed [${ctx.task.externalId}]`;
-        this.postRoomReport(ctx.projectId, ctx.sessionId, activeCoderProfile.id, 'report', {
-          event: 'task_finished',
-          taskId: ctx.task.id,
-          externalId: ctx.task.externalId,
-          taskTitle: ctx.task.title,
-          profileName: activeCoderProfile.name,
-          provider: activeCoderProfile.provider,
-          model: activeCoderProfile.model || null,
-          diffStats,
-          summary: `Finished [${ctx.task.externalId}] (${diffSummary}): ${coderSummary}`,
-        });
+        if (isAnswerTask) {
+          this.postRoomReport(ctx.projectId, ctx.sessionId, activeCoderProfile.id, 'report', {
+            event: 'task_finished',
+            taskId: ctx.task.id,
+            externalId: ctx.task.externalId,
+            taskTitle: ctx.task.title,
+            output: 'answer',
+            answer: answerInfo.answer ?? undefined,
+            answerPath: answerInfo.answerPath ?? ctx.relAnswerPath ?? undefined,
+            profileName: activeCoderProfile.name,
+            provider: activeCoderProfile.provider,
+            model: activeCoderProfile.model || null,
+            summary: `Finished [${ctx.task.externalId}] (answer): ${coderSummary}`,
+          });
+        } else {
+          const diffStats = diffData
+            ? {
+                filesChanged: diffData.files.length,
+                insertions: diffData.totalAdditions,
+                deletions: diffData.totalDeletions,
+              }
+            : { filesChanged: changedFiles.length, insertions: 0, deletions: 0 };
+          const diffSummary = `${diffStats.filesChanged} file(s), +${diffStats.insertions} -${diffStats.deletions}`;
+          this.postRoomReport(ctx.projectId, ctx.sessionId, activeCoderProfile.id, 'report', {
+            event: 'task_finished',
+            taskId: ctx.task.id,
+            externalId: ctx.task.externalId,
+            taskTitle: ctx.task.title,
+            output: 'files',
+            profileName: activeCoderProfile.name,
+            provider: activeCoderProfile.provider,
+            model: activeCoderProfile.model || null,
+            diffStats,
+            summary: `Finished [${ctx.task.externalId}] (${diffSummary}): ${coderSummary}`,
+          });
+        }
       }
 
       const reviewOutcome = await this.executeSingleReviewRound({
@@ -3378,6 +3508,8 @@ export class ExecutionService {
         changedFiles,
         scopeWarnings: activeScopeWarnings,
         rawDiff: diffData?.rawDiff ?? '',
+        answerContent: answerInfo.answer,
+        relAnswerPath: ctx.relAnswerPath,
         coderResult: activeCoderResult,
         relLogsDir: ctx.relLogsDir,
         relTaskDir: ctx.relTaskDir,
@@ -3703,12 +3835,15 @@ export class ExecutionService {
         relLogsDir: ctx.relLogsDir,
         absResultPath: ctx.absResultPath,
         relResultPath: ctx.relResultPath,
+        absAnswerPath: ctx.absAnswerPath,
+        relAnswerPath: ctx.relAnswerPath,
         sessionToResume: activeCoderSessionId,
         kind: 'fix',
         prompt: buildFixPrompt({
           task: ctx.task,
           profile: activeCoderProfile,
           relResultPath: ctx.relResultPath,
+          relAnswerPath: ctx.relAnswerPath,
           round,
           review: reviewData,
           verifyOutput: reviewOutcome.verifyOutput,
@@ -3719,6 +3854,7 @@ export class ExecutionService {
             task: ctx.task,
             profile: prof,
             relResultPath: ctx.relResultPath,
+            relAnswerPath: ctx.relAnswerPath,
             round,
             review: reviewData,
             verifyOutput: reviewOutcome.verifyOutput,
@@ -3760,6 +3896,8 @@ export class ExecutionService {
     changedFiles: string[];
     scopeWarnings: string[];
     rawDiff: string;
+    answerContent?: string | null;
+    relAnswerPath?: string | null;
     coderResult: TaskResultContract | null;
     relLogsDir: string;
     relTaskDir: string;
@@ -3775,12 +3913,12 @@ export class ExecutionService {
     const runAttempt = async (
       reviewerProfile: AgentProfileDTO,
       usedFallback: boolean,
-      verifyInfo?: { exitCode: number; output: string },
+      verifyInfo?: { exitCode: number | null; output: string },
     ): Promise<{
       status: 'completed' | 'failed' | 'stopped';
       canFallback: boolean;
       contract?: ReviewContract;
-      verifyExitCode: number;
+      verifyExitCode: number | null;
       verifyOutput: string;
       error?: string;
     }> => {
@@ -3852,56 +3990,15 @@ export class ExecutionService {
       );
       if (opts.routeNote) emitDalangLine(`[dalang] ${opts.routeNote}`);
 
-      let verifyExitCode = verifyInfo?.exitCode ?? 0;
+      const verifyCommand = opts.task.verify?.trim() || null;
+      let verifyExitCode: number | null = verifyInfo ? verifyInfo.exitCode : null;
       let verifyOutput = verifyInfo?.output ?? '';
 
       if (!verifyInfo) {
-        emitDalangLine(`[dalang] Running verify command: ${opts.task.verify}`);
-        try {
-          const verifyRes = await this.registry.runShellCommand(opts.worktreePath, opts.task.verify, {
-            timeoutMs: Math.min(reviewerProfile.timeoutMs, 300_000),
-            idleTimeoutMs: reviewerProfile.idleTimeoutMs,
-            signal: opts.execHandle.controller.signal,
-            onLogLine: emitDalangLine,
-          });
-          if (verifyRes.aborted || opts.execHandle.controller.signal.aborted) {
-            const finishedAt = new Date().toISOString();
-            this.db
-              .update(runs)
-              .set({ status: 'stopped', finishedAt, failureReason: 'Stopped by user' })
-              .where(eq(runs.id, reviewRunId))
-              .run();
-            this.db
-              .update(tasks)
-              .set({ status: 'stopped', updatedAt: finishedAt })
-              .where(eq(tasks.id, opts.task.id))
-              .run();
-            this.events?.emitEvent({
-              type: 'run.finished',
-              projectId: opts.projectId,
-              taskId: opts.task.id,
-              runId: reviewRunId,
-              status: 'stopped',
-              error: 'Stopped by user',
-            });
-            return {
-              status: 'stopped',
-              canFallback: false,
-              verifyExitCode: 1,
-              verifyOutput: '',
-            };
-          }
-          verifyExitCode =
-            verifyRes.timedOut || verifyRes.idleTimedOut
-              ? 124
-              : (verifyRes.exitCode ?? 1);
-          const combinedVerify = [verifyRes.stdout, verifyRes.stderr].filter(Boolean).join('\n');
-          verifyOutput = tailOutput(
-            verifyRes.timedOut || verifyRes.idleTimedOut
-              ? `${combinedVerify}\n[dalang] Verify command timed out.`
-              : combinedVerify,
+        if (!verifyCommand) {
+          emitDalangLine(
+            `[dalang] No verify command configured; skipping verify step (reviewer will check acceptance criteria directly).`,
           );
-          emitDalangLine(`[dalang] Verify command exited with code ${verifyExitCode}`);
           if (opts.task.delegationDepth === 0) {
             this.postRoomReport(opts.projectId, opts.sessionId, reviewerProfile.id, 'report', {
               event: 'verify_result',
@@ -3909,29 +4006,91 @@ export class ExecutionService {
               externalId: opts.task.externalId,
               taskTitle: opts.task.title,
               profileName: reviewerProfile.name,
-              verifyCommand: opts.task.verify,
-              verifyExitCode,
-              summary: `Verify ${verifyExitCode === 0 ? 'passed' : 'failed'} (exit ${verifyExitCode}) for [${opts.task.externalId}]: ${opts.task.verify}`,
+              verifyCommand: null,
+              verifyExitCode: null,
+              verifySkipped: true,
+              summary: `Verify skipped (no command) for [${opts.task.externalId}]; reviewer checking acceptance criteria`,
             });
           }
-        } catch (err) {
-          if (opts.execHandle.controller.signal.aborted) {
-            const finishedAt = new Date().toISOString();
-            this.db
-              .update(runs)
-              .set({ status: 'stopped', finishedAt, failureReason: 'Stopped by user' })
-              .where(eq(runs.id, reviewRunId))
-              .run();
-            this.db
-              .update(tasks)
-              .set({ status: 'stopped', updatedAt: finishedAt })
-              .where(eq(tasks.id, opts.task.id))
-              .run();
-            return { status: 'stopped', canFallback: false, verifyExitCode: 1, verifyOutput: '' };
+        } else {
+          emitDalangLine(`[dalang] Running verify command: ${verifyCommand}`);
+          try {
+            const verifyRes = await this.registry.runShellCommand(opts.worktreePath, verifyCommand, {
+              timeoutMs: Math.min(reviewerProfile.timeoutMs, 300_000),
+              idleTimeoutMs: reviewerProfile.idleTimeoutMs,
+              signal: opts.execHandle.controller.signal,
+              onLogLine: emitDalangLine,
+            });
+            if (verifyRes.aborted || opts.execHandle.controller.signal.aborted) {
+              const finishedAt = new Date().toISOString();
+              this.db
+                .update(runs)
+                .set({ status: 'stopped', finishedAt, failureReason: 'Stopped by user' })
+                .where(eq(runs.id, reviewRunId))
+                .run();
+              this.db
+                .update(tasks)
+                .set({ status: 'stopped', updatedAt: finishedAt })
+                .where(eq(tasks.id, opts.task.id))
+                .run();
+              this.events?.emitEvent({
+                type: 'run.finished',
+                projectId: opts.projectId,
+                taskId: opts.task.id,
+                runId: reviewRunId,
+                status: 'stopped',
+                error: 'Stopped by user',
+              });
+              return {
+                status: 'stopped',
+                canFallback: false,
+                verifyExitCode: 1,
+                verifyOutput: '',
+              };
+            }
+            verifyExitCode =
+              verifyRes.timedOut || verifyRes.idleTimedOut
+                ? 124
+                : (verifyRes.exitCode ?? 1);
+            const combinedVerify = [verifyRes.stdout, verifyRes.stderr].filter(Boolean).join('\n');
+            verifyOutput = tailOutput(
+              verifyRes.timedOut || verifyRes.idleTimedOut
+                ? `${combinedVerify}\n[dalang] Verify command timed out.`
+                : combinedVerify,
+            );
+            emitDalangLine(`[dalang] Verify command exited with code ${verifyExitCode}`);
+            if (opts.task.delegationDepth === 0) {
+              this.postRoomReport(opts.projectId, opts.sessionId, reviewerProfile.id, 'report', {
+                event: 'verify_result',
+                taskId: opts.task.id,
+                externalId: opts.task.externalId,
+                taskTitle: opts.task.title,
+                profileName: reviewerProfile.name,
+                verifyCommand,
+                verifyExitCode,
+                verifySkipped: false,
+                summary: `Verify ${verifyExitCode === 0 ? 'passed' : 'failed'} (exit ${verifyExitCode}) for [${opts.task.externalId}]: ${verifyCommand}`,
+              });
+            }
+          } catch (err) {
+            if (opts.execHandle.controller.signal.aborted) {
+              const finishedAt = new Date().toISOString();
+              this.db
+                .update(runs)
+                .set({ status: 'stopped', finishedAt, failureReason: 'Stopped by user' })
+                .where(eq(runs.id, reviewRunId))
+                .run();
+              this.db
+                .update(tasks)
+                .set({ status: 'stopped', updatedAt: finishedAt })
+                .where(eq(tasks.id, opts.task.id))
+                .run();
+              return { status: 'stopped', canFallback: false, verifyExitCode: 1, verifyOutput: '' };
+            }
+            verifyExitCode = 1;
+            verifyOutput = err instanceof Error ? err.message : String(err);
+            emitDalangLine(`[dalang:error] Verify execution failed: ${verifyOutput}`);
           }
-          verifyExitCode = 1;
-          verifyOutput = err instanceof Error ? err.message : String(err);
-          emitDalangLine(`[dalang:error] Verify execution failed: ${verifyOutput}`);
         }
       }
 
@@ -3948,6 +4107,8 @@ export class ExecutionService {
         changedFiles: opts.changedFiles,
         scopeWarnings: opts.scopeWarnings,
         rawDiff: opts.rawDiff,
+        answerContent: opts.answerContent,
+        relAnswerPath: opts.relAnswerPath,
         coderResult: opts.coderResult,
         language: this.getLanguage(),
       });
@@ -4224,7 +4385,7 @@ export class ExecutionService {
           reviewerProfileId: reviewerProfile.id,
           reviewerProvider: reviewerProfile.provider,
           reviewerModel: reviewerProfile.model || null,
-          verifyCommand: opts.task.verify,
+          verifyCommand,
           verifyExitCode,
           verifyOutput,
           filePath: relRoundReviewPath,
@@ -4267,7 +4428,9 @@ export class ExecutionService {
           (finalContract.findings.length > 0
             ? finalContract.findings[0].note
             : finalContract.status === 'pass'
-              ? 'Ready to merge.'
+              ? opts.task.output === 'answer'
+                ? 'Ready to accept.'
+                : 'Ready to merge.'
               : 'Changes requested.');
         this.postRoomReport(
           opts.projectId,
@@ -4279,6 +4442,7 @@ export class ExecutionService {
             taskId: opts.task.id,
             externalId: opts.task.externalId,
             taskTitle: opts.task.title,
+            output: opts.task.output,
             profileName: reviewerProfile.name,
             provider: reviewerProfile.provider,
             model: reviewerProfile.model || null,
@@ -4287,6 +4451,7 @@ export class ExecutionService {
             findingsCount: finalContract.findings.length,
             findings: finalContract.findings.slice(0, 5),
             verifyExitCode,
+            verifySkipped: verifyCommand === null,
             summary: `Review round ${opts.round} [${opts.task.externalId}]: ${verdictLabel} (${finalContract.findings.length} finding(s)). ${verdictNote}`,
           },
         );
@@ -4334,10 +4499,67 @@ export class ExecutionService {
     };
   }
 
+  private async readTaskAnswer(
+    projectPath: string,
+    task: Pick<TaskDTO, 'id' | 'externalId' | 'output' | 'status'>,
+    opts: {
+      sessionId?: string | null;
+      worktreePath?: string | null;
+      commitSha?: string | null;
+      result?: TaskResultContract | null;
+    } = {},
+  ): Promise<{ answer: string | null; answerPath: string | null }> {
+    // External ids such as T-001 repeat across sessions, so the accepted copy is keyed by the task's own id.
+    const acceptedRel = acceptedAnswerRelPath(task.id);
+    const acceptedAbs = getAcceptedAnswerPath(projectPath, task.id);
+    if (task.status === 'done' && fs.existsSync(acceptedAbs)) {
+      try {
+        const content = readArtifactFile(projectPath, acceptedAbs);
+        if (content.trim()) return { answer: content, answerPath: acceptedRel };
+      } catch {
+        // Fall through to worktree/git candidates.
+      }
+    }
+
+    const relCandidates: string[] = [];
+    if (opts.sessionId) {
+      relCandidates.push(path.posix.join('.dalang', 'sessions', opts.sessionId, 'tasks', task.externalId, 'answer.md'));
+    }
+    relCandidates.push(path.posix.join('.dalang', 'tasks', task.externalId, 'answer.md'));
+
+    for (const rel of relCandidates) {
+      if (opts.worktreePath && fs.existsSync(opts.worktreePath)) {
+        const wtAbs = path.join(opts.worktreePath, rel);
+        if (fs.existsSync(wtAbs)) {
+          try {
+            const content = readArtifactFile(opts.worktreePath, wtAbs);
+            if (content.trim()) return { answer: content, answerPath: rel };
+          } catch {
+            // try next
+          }
+        }
+      }
+      const fromProjectOrGit = await readArtifactWithGitFallback(projectPath, rel, opts.commitSha);
+      if (fromProjectOrGit?.trim()) {
+        return { answer: fromProjectOrGit, answerPath: rel };
+      }
+    }
+
+    if (opts.result?.answer?.trim()) {
+      return {
+        answer: opts.result.answer,
+        answerPath: relCandidates[0] ?? null,
+      };
+    }
+
+    return { answer: null, answerPath: null };
+  }
+
   private validateResultFile(
     worktreePath: string,
     absResultPath: string,
     expectedTaskId: string,
+    answerOpts?: { output: TaskOutputKind; absAnswerPath?: string; relAnswerPath?: string },
   ): { ok: true; data: TaskResultContract } | { ok: false; error: string } {
     const rel = path.relative(worktreePath, absResultPath).split(path.sep).join('/');
     if (!fs.existsSync(absResultPath)) {
@@ -4365,6 +4587,48 @@ export class ExecutionService {
         error: `Result task_id "${validated.data.task_id}" does not match expected "${expectedTaskId}".`,
       };
     }
+
+    if (answerOpts?.output === 'answer' && validated.data.status === 'completed' && answerOpts.absAnswerPath) {
+      const legacyAnswerAbs = path.join(worktreePath, '.dalang', 'tasks', expectedTaskId, 'answer.md');
+      let answerText: string | null = null;
+      if (fs.existsSync(answerOpts.absAnswerPath)) {
+        try {
+          const text = readArtifactFile(worktreePath, answerOpts.absAnswerPath);
+          if (text.trim()) answerText = text;
+        } catch (err) {
+          return { ok: false, error: err instanceof Error ? err.message : String(err) };
+        }
+      }
+      if (!answerText && legacyAnswerAbs !== answerOpts.absAnswerPath && fs.existsSync(legacyAnswerAbs)) {
+        try {
+          const text = readArtifactFile(worktreePath, legacyAnswerAbs);
+          if (text.trim()) {
+            answerText = text;
+            writeArtifactFile(worktreePath, answerOpts.absAnswerPath, text, 'replace');
+          }
+        } catch (err) {
+          return { ok: false, error: err instanceof Error ? err.message : String(err) };
+        }
+      }
+      if (!answerText && validated.data.answer?.trim()) {
+        answerText = validated.data.answer;
+        writeArtifactFile(worktreePath, answerOpts.absAnswerPath, answerText, 'replace');
+      }
+      if (!answerText) {
+        return {
+          ok: false,
+          error: `Answer task must write a non-empty markdown answer to "${answerOpts.relAnswerPath ?? '.dalang/tasks/' + expectedTaskId + '/answer.md'}" (and include it in "answer").`,
+        };
+      }
+      return {
+        ok: true,
+        data: {
+          ...validated.data,
+          answer: validated.data.answer?.trim() ? validated.data.answer : answerText,
+        },
+      };
+    }
+
     return { ok: true, data: validated.data };
   }
 
@@ -4374,8 +4638,12 @@ export class ExecutionService {
     relResultPath: string,
     rejectionNote?: string | null,
     delegationRequested = false,
+    relAnswerPath?: string | null,
   ): string {
     const delegationEnabled = delegationRequested && providerSupportsDelegation(profile.provider);
+    const isAnswer = task.output === 'answer';
+    const hasVerify = Boolean(task.verify?.trim());
+    const effectiveAnswerPath = relAnswerPath || path.posix.join('.dalang', 'tasks', task.externalId, 'answer.md');
     const jsonSchema = z.toJSONSchema(TaskResultContractSchema);
     const availableProfiles = delegationEnabled
       ? this.profiles
@@ -4396,18 +4664,33 @@ export class ExecutionService {
         ].join('\n')
       : '';
 
+    const scopeBlock = isAnswer
+      ? [
+          `Output mode: ANSWER.`,
+          `- Read project files as needed, but leave ALL project files unchanged (do not create, edit, or delete any file outside ".dalang/").`,
+          `- Write your complete Markdown answer directly to "${effectiveAnswerPath}".`,
+          `- Also include the answer text in the "answer" field of "${relResultPath}".`,
+        ].join('\n')
+      : [
+          `Allowed files (stay within these patterns; do not modify unrelated files):`,
+          task.filesAllowed.length > 0 ? task.filesAllowed.map((f) => `- ${f}`).join('\n') : '- (project workspace)',
+        ].join('\n');
+
+    const verifyBlock = hasVerify
+      ? [`Verify command (must be run before finishing):`, task.verify!].join('\n')
+      : `Verify command: none (no verify command is set; the reviewer will check every acceptance criterion directly against your result).`;
+
     return [
       `You are executing task ${task.externalId}: "${task.title}" (milestone ${task.milestone}) for a project managed by DALANG.`,
       profile.rolePrompt ? `Role instructions: ${profile.rolePrompt}` : '',
       rejectionNote ? `Previous Guard rejection feedback (must be addressed):\n${rejectionNote}` : '',
       ``,
-      `Read PROJECT.md first for project stack and conventions.`,
+      `Read PROJECT.md first for project context and conventions.`,
       ``,
       `Goal:`,
       task.goal,
       ``,
-      `Allowed files (stay within these patterns; do not modify unrelated files):`,
-      task.filesAllowed.length > 0 ? task.filesAllowed.map((f) => `- ${f}`).join('\n') : '- (project workspace)',
+      scopeBlock,
       ``,
       `Reference files:`,
       task.filesReference.length > 0 ? task.filesReference.map((f) => `- ${f}`).join('\n') : '- PROJECT.md',
@@ -4415,8 +4698,7 @@ export class ExecutionService {
       `Acceptance criteria:`,
       task.acceptanceCriteria.map((c) => `- ${c}`).join('\n'),
       ``,
-      `Verify command (must be run before finishing):`,
-      task.verify,
+      verifyBlock,
       delegationBlock,
       ``,
       `When done, write a JSON file directly to "${relResultPath}" matching this JSON Schema:`,
@@ -4432,11 +4714,19 @@ export class ExecutionService {
     task: TaskDTO,
     relResultPath: string,
     rejectionNote?: string | null,
+    relAnswerPath?: string | null,
   ): string {
+    const isAnswer = task.output === 'answer';
+    const effectiveAnswerPath = relAnswerPath || path.posix.join('.dalang', 'tasks', task.externalId, 'answer.md');
     return [
       `Resume work on task ${task.externalId}: "${task.title}".`,
       rejectionNote ? `Previous Guard rejection feedback:\n${rejectionNote}` : '',
-      `Verify command to run before finishing: ${task.verify}`,
+      isAnswer
+        ? `Output mode: answer. Leave project files unchanged and write your complete answer to "${effectiveAnswerPath}".`
+        : '',
+      task.verify?.trim()
+        ? `Verify command to run before finishing: ${task.verify}`
+        : `No verify command is configured; make sure every acceptance criterion is satisfied.`,
       `When finished, write the updated result JSON to "${relResultPath}" with task_id "${task.externalId}".`,
     ]
       .filter(Boolean)
@@ -5225,7 +5515,7 @@ export class ExecutionService {
       merged_into_parent: row.status === 'done' && Boolean(row.mergeCommitSha),
       merge_commit_sha: row.mergeCommitSha ?? null,
       files_allowed: filesAllowed,
-      verify: row.verify,
+      verify: row.verify ?? null,
       review_status: latestReviewDto ? latestReviewDto.status : null,
       review_rounds: row.reviewRounds,
       review_findings: latestReviewDto ? latestReviewDto.contract.findings : [],
@@ -5338,18 +5628,34 @@ export class ExecutionService {
       const latestRun = taskRuns[0] ?? null;
       const latestReview = taskReviews[0] ?? null;
       const storedRepos = this.db.select().from(taskRepos).where(eq(taskRepos.taskId, task.id)).all();
-      const diffAvailable = Boolean(
-        task.branchName ||
-          task.mergeCommitSha ||
-          storedRepos.some((r) => Boolean(r.branchName || r.mergeCommitSha)) ||
-          (latestRun?.commitBefore && latestRun?.commitAfter),
-      );
+      const worktreePath = getTaskWorktreeDir(this.worktreesRoot, projectId, task.externalId);
+      const answerInfo =
+        task.output === 'answer'
+          ? await this.readTaskAnswer(project.path, task, {
+              sessionId,
+              worktreePath,
+              commitSha: latestRun?.commitAfter ?? null,
+              result: latestRun?.result ?? null,
+            })
+          : { answer: null, answerPath: null };
+      const diffAvailable =
+        task.output === 'answer'
+          ? Boolean(answerInfo.answer)
+          : Boolean(
+              task.branchName ||
+                task.mergeCommitSha ||
+                storedRepos.some((r) => Boolean(r.branchName || r.mergeCommitSha)) ||
+                (latestRun?.commitBefore && latestRun?.commitAfter),
+            );
       guardTasks.push({
         task,
         latestRun,
         reviews: taskReviews,
         latestReview,
         diffAvailable,
+        ...(task.output === 'answer'
+          ? { answer: answerInfo.answer, answerPath: answerInfo.answerPath }
+          : {}),
         canApproveMerge: task.status === 'awaiting_merge' || task.status === 'review_failed',
         canReject: task.status === 'awaiting_merge' || task.status === 'review_failed',
       });
@@ -5407,6 +5713,31 @@ export class ExecutionService {
     const earliestCoderRun = [...taskRuns].reverse().find((r) => r.status !== 'rolled_back');
 
     const worktreePath = getTaskWorktreeDir(this.worktreesRoot, projectId, task.externalId);
+    if (task.output === 'answer') {
+      const latestRunDto = latestRun ? await this.toRunDTO(project.path, latestRun, task) : null;
+      const answerInfo = await this.readTaskAnswer(project.path, task, {
+        sessionId: sid,
+        worktreePath,
+        commitSha: latestRun?.commitAfter ?? null,
+        result: latestRunDto?.result ?? null,
+      });
+      return {
+        taskId: task.id,
+        externalId: task.externalId,
+        output: 'answer',
+        answer: answerInfo.answer,
+        answerPath: answerInfo.answerPath,
+        branchName: task.branchName,
+        baseCommitSha: null,
+        headCommitSha: null,
+        files: [],
+        rawDiff: answerInfo.answer ?? '',
+        totalAdditions: 0,
+        totalDeletions: 0,
+        truncated: false,
+      };
+    }
+
     const repos = this.getTaskRepos(task.id, project.path, {
       baseBranch: project.mainBranch,
       baseSha: earliestCoderRun?.commitBefore ?? project.mainBranch,
@@ -5454,6 +5785,7 @@ export class ExecutionService {
     return {
       taskId: task.id,
       externalId: task.externalId,
+      output: task.output,
       branchName: task.branchName,
       baseCommitSha: null,
       headCommitSha: null,
@@ -5475,6 +5807,7 @@ export class ExecutionService {
     mergeCommitSha: string;
     integrationRun: IntegrationRunDTO | null;
     pushPrResult?: PushPrResultDTO | null;
+    answerPath?: string | null;
   }> {
     const project = this.getProjectRow(projectId);
     const sid = this.leadService.resolveSessionIdForTask(projectId, taskId, explicitSessionId);
@@ -5486,18 +5819,18 @@ export class ExecutionService {
       throw new Error(`Subtask ${task.externalId} merges into its parent branch, not directly into ${project.mainBranch}.`);
     }
     if (this.activeTasks.has(task.id) || task.status === 'running' || task.status === 'reviewing') {
-      throw new Error(`Wait for ${task.externalId} to finish running before merging.`);
+      throw new Error(`Wait for ${task.externalId} to finish running before ${task.output === 'answer' ? 'accepting' : 'merging'}.`);
     }
     if (task.status === 'done') {
-      throw new Error(`Task ${task.externalId} has already been merged.`);
+      throw new Error(`Task ${task.externalId} has already been ${task.output === 'answer' ? 'accepted' : 'merged'}.`);
     }
     if (task.status !== 'awaiting_merge' && !(task.status === 'review_failed' && input.allowFailedReview)) {
       if (task.status === 'review_failed') {
         throw new Error(
-          `Task ${task.externalId} failed review. Confirm override (allowFailedReview) or reject it back to the coder.`,
+          `Task ${task.externalId} failed review. Confirm override (allowFailedReview) or reject it back to the executor.`,
         );
       }
-      throw new Error(`Task ${task.externalId} is "${task.status}" and is not ready for merge.`);
+      throw new Error(`Task ${task.externalId} is "${task.status}" and is not ready for ${task.output === 'answer' ? 'acceptance' : 'merge'}.`);
     }
 
     const branchName = task.branchName ?? `dalang/${task.externalId}`;
@@ -5509,6 +5842,98 @@ export class ExecutionService {
       worktreePath,
       mergeCommitSha: task.mergeCommitSha ?? null,
     });
+
+    if (task.output === 'answer') {
+      const taskRuns = this.db
+        .select()
+        .from(runs)
+        .where(eq(runs.taskId, task.id))
+        .orderBy(desc(runs.startedAt), desc(runs.attempt))
+        .all();
+      const latestRun = taskRuns[0];
+      const latestRunDto = latestRun ? await this.toRunDTO(project.path, latestRun, task) : null;
+      const answerInfo = await this.readTaskAnswer(project.path, task, {
+        sessionId: sid,
+        worktreePath,
+        commitSha: latestRun?.commitAfter ?? null,
+        result: latestRunDto?.result ?? null,
+      });
+      if (!answerInfo.answer?.trim()) {
+        throw new Error(`No answer content found for task ${task.externalId}.`);
+      }
+
+      const relAcceptedPath = acceptedAnswerRelPath(task.id);
+      const absAcceptedPath = getAcceptedAnswerPath(project.path, task.id);
+
+      await this.withProjectGitLock(projectId, async () => {
+        writeArtifactFile(project.path, absAcceptedPath, answerInfo.answer!, 'replace');
+        this.preserveWorktreeTaskArtifacts(project.path, worktreePath, task.id);
+        await this.removeWorkspaceWorktreesAndBranches(project.path, worktreePath, repos, {
+          deleteBranches: true,
+          defaultMainBranch: project.mainBranch,
+          branchName,
+        });
+      });
+
+      const now = new Date().toISOString();
+      this.db
+        .update(reviews)
+        .set({ humanDecision: 'approved', decidedAt: now })
+        .where(and(eq(reviews.taskId, task.id), eq(reviews.humanDecision, 'pending')))
+        .run();
+
+      this.db
+        .update(tasks)
+        .set({
+          status: 'done',
+          branchName: null,
+          mergeCommitSha: null,
+          rejectionNote: null,
+          updatedAt: now,
+        })
+        .where(eq(tasks.id, task.id))
+        .run();
+
+      const stillActive = [...this.activeTasks.values()].some((a) => a.sessionId === sid);
+      this.leadService.reconcileSessionWorkState(sid, stillActive);
+      this.events?.emitEvent({ type: 'plan.updated', projectId, sessionId: sid });
+      this.postRoomReport(projectId, sid, null, 'report', {
+        event: 'task_accepted',
+        taskId: task.id,
+        externalId: task.externalId,
+        taskTitle: task.title,
+        output: 'answer',
+        answer: answerInfo.answer,
+        answerPath: relAcceptedPath,
+        summary: `Accepted answer [${task.externalId}] ${task.title} (saved to ${relAcceptedPath})`,
+      });
+
+      const updatedPlan = this.leadService.getPlan(projectId, sid)!;
+      const updatedTask = updatedPlan.tasks.find((t) => t.id === task.id)!;
+      if (this.leadService.getSession(projectId, sid).mode === 'auto') {
+        const queue = this.projectQueues.get(projectId);
+        if (queue) {
+          queue.wake();
+        } else if (this.buildDispatchPreviews(updatedPlan, await this.registry.isSandboxReady()).some((item) => item.eligible)) {
+          try {
+            await this.startExecution(projectId, { sessionId: sid, allowUnconfined: input.allowUnconfined });
+          } catch (error) {
+            this.postRoomReport(projectId, sid, null, 'status', {
+              event: 'auto_resume_failed',
+              summary: `Unable to resume Auto tasks: ${error instanceof Error ? error.message : String(error)}`,
+            });
+          }
+        }
+      }
+      return {
+        task: updatedTask,
+        mergeCommitSha: '',
+        integrationRun: null,
+        pushPrResult: null,
+        answerPath: relAcceptedPath,
+      };
+    }
+
     const nestedNames = this.getNestedRepoNames(repos);
 
     const { mergeCommitSha, mergedRepos } = await this.withProjectGitLock(projectId, async () => {
@@ -5740,7 +6165,9 @@ export class ExecutionService {
         `### Automated Review (Round ${latestReview.round})`,
         `- Verdict: **${latestReview.status.toUpperCase()}**`,
         `- Reviewer: ${latestReview.reviewerProfileName} (${latestReview.reviewerProvider}${latestReview.reviewerModel ? ` / ${latestReview.reviewerModel}` : ''})`,
-        `- Verify (\`${latestReview.verifyCommand}\`): exit ${latestReview.verifyExitCode}`,
+        latestReview.verifyCommand
+          ? `- Verify (\`${latestReview.verifyCommand}\`): exit ${latestReview.verifyExitCode}`
+          : `- Verify: skipped (no command)`,
       );
       if (latestReview.contract.summary) {
         lines.push('', latestReview.contract.summary);
@@ -5780,6 +6207,9 @@ export class ExecutionService {
     const createPr = input.createPr !== false;
     const taskBranch = task.branchName ?? `dalang/${task.externalId}`;
     const worktreePath = getTaskWorktreeDir(this.worktreesRoot, projectId, task.externalId);
+    if (task.output === 'answer') {
+      throw new Error(`Answer task ${task.externalId} has no git branch to push.`);
+    }
     const repos = this.getTaskRepos(task.id, project.path, {
       baseBranch: project.mainBranch,
       baseSha: project.mainBranch,
@@ -6704,8 +7134,8 @@ export class ExecutionService {
       reviewerProfileName: profile?.name ?? row.reviewerProfileId,
       reviewerProvider: row.reviewerProvider as ProviderId,
       reviewerModel: row.reviewerModel ?? null,
-      verifyCommand: row.verifyCommand,
-      verifyExitCode: row.verifyExitCode,
+      verifyCommand: row.verifyCommand ?? null,
+      verifyExitCode: row.verifyExitCode ?? null,
       verifyOutput: row.verifyOutput,
       filePath: row.filePath,
       commitSha: row.commitSha ?? null,
