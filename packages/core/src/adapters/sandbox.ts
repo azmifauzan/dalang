@@ -426,6 +426,12 @@ function findTopLevelGitEntries(workspacePath: string): string[] {
  */
 function hiddenWorktreeGitDirs(workspacePath: string): string[] {
   const dirs = new Set<string>();
+  let workspaceRoot: string;
+  try {
+    workspaceRoot = fs.realpathSync(workspacePath);
+  } catch {
+    return [];
+  }
   for (const dotGit of findTopLevelGitEntries(workspacePath)) {
     try {
       if (!fs.lstatSync(dotGit).isFile()) continue;
@@ -442,7 +448,13 @@ function hiddenWorktreeGitDirs(workspacePath: string): string[] {
       if (!fs.existsSync(commonFile)) continue;
       const commonDir = fs.realpathSync(path.resolve(gitDir, fs.readFileSync(commonFile, 'utf8').trim()));
       const isGitDir = fs.existsSync(path.join(commonDir, 'HEAD')) && fs.existsSync(path.join(commonDir, 'objects'));
-      if (isGitDir && commonDir.startsWith('/tmp/')) dirs.add(commonDir);
+      // The admin dir must be git's own `<common>/worktrees/<name>` in host /tmp, outside the writable
+      // workspace, so a run cannot plant one: the run's /tmp is a tmpfs and the workspace is excluded.
+      const inWorkspace = (p: string) => p === workspaceRoot || p.startsWith(workspaceRoot + path.sep);
+      const isAdminDir = path.dirname(path.dirname(gitDir)) === commonDir && path.basename(path.dirname(gitDir)) === 'worktrees';
+      if (isGitDir && isAdminDir && commonDir.startsWith('/tmp/') && !inWorkspace(gitDir) && !inWorkspace(commonDir)) {
+        dirs.add(commonDir);
+      }
     } catch {
       // A link file that cannot be read leaves git as it was.
     }

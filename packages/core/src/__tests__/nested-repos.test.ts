@@ -785,3 +785,36 @@ describe('bwrap sandbox ignores forged worktree links', () => {
     }
   });
 });
+
+describe('bwrap sandbox ignores a planted worktree admin dir', () => {
+  it('does not mount another /tmp repo named by an admin dir inside the workspace', async () => {
+    const root = fs.mkdtempSync('/tmp/dalang-plant-');
+    try {
+      const victim = path.join(root, 'victim');
+      fs.mkdirSync(victim);
+      execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: victim });
+      const victimGit = path.join(victim, '.git');
+      const wt = path.join(root, 'wt');
+      const admin = path.join(wt, 'fake-admin');
+      fs.mkdirSync(path.join(wt, 'nested'), { recursive: true });
+      fs.mkdirSync(admin, { recursive: true });
+      // Everything below sits in the writable workspace: a link file, its back-link, and a commondir
+      // naming a real repo elsewhere in /tmp.
+      fs.writeFileSync(path.join(wt, 'nested', '.git'), `gitdir: ${admin}\n`);
+      fs.writeFileSync(path.join(admin, 'gitdir'), `${path.join(wt, 'nested', '.git')}\n`);
+      fs.writeFileSync(path.join(admin, 'commondir'), `${victimGit}\n`);
+      const runner: CliRunner = {
+        async which(bin) {
+          return bin === 'bwrap' ? '/usr/bin/bwrap' : null;
+        },
+        async run() {
+          throw new Error('not run');
+        },
+      };
+      const inv = await wrapWithBwrap(runner, null, wt, 'git', ['status'], { platform: 'linux', readOnly: true });
+      expect(inv.args).not.toContain(victimGit);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

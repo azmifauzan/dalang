@@ -2,6 +2,11 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
+## 0.14.2 (Sandbox git mount hardening), 25 Nov
+
+- **Second security fix for the `/tmp` git mount.** In 0.14.1 a task run could still plant a fake worktree admin folder inside its own workspace, with a back-link and a `commondir` naming another git repository under the host `/tmp`, and a later run mounted that repository read-only. A git directory is now mounted only when its admin folder is git's own `<repository>/worktrees/<name>` in the host `/tmp`, and neither folder is inside the workspace. A run cannot write there, because its `/tmp` is a throwaway tmpfs. Use 0.14.2 instead of 0.14.0 or 0.14.1. No database migration is required.
+- **Verified:** typecheck, tests, and build. A planted-admin-folder test fails on 0.14.1 and passes on 0.14.2, and `git status` still runs through real bwrap in a `/tmp` worktree. The packed tarball was installed in an empty folder. Not run: live providers, macOS, and Windows.
+
 ## 0.14.1 (Sandbox git mount fix), 25 Nov
 
 - **Security fix for the `/tmp` git mount added in 0.14.0.** A task run could write a `.git` link file pointing anywhere under `/tmp`, and a later run in the same worktree mounted that path read-only, which let it read files in the host `/tmp`. DALANG now mounts a git directory back only when git's own worktree back-link points at that exact `.git` file and the directory holds `HEAD` and `objects`. A run cannot forge the back-link, because its `/tmp` is a throwaway tmpfs. Projects outside `/tmp` were never affected. Use 0.14.1 instead of 0.14.0. No database migration is required.
