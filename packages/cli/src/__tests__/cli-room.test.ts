@@ -89,6 +89,8 @@ describe('CLI command routing (v0.12)', () => {
 describe('TUI commands, completions, and formatting', () => {
   it('reads the answer out of a JSON reply that is still being written', () => {
     expect(liveReplyText('Plain **text**')).toBe('Plain **text**');
+    expect(liveReplyText('```json\n{\"answer\": \"Halo\\nsemua')).toBe('Halo\nsemua');
+    expect(liveReplyText('```js')).toBe('');
     expect(liveReplyText('{"suggested_mode": null, "ans')).toBe('');
     expect(liveReplyText('{"answer": "Line one\\nLine \\"two\\" \\u00e9')).toBe('Line one\nLine "two" é');
     // An escape cut off at the end of a batch waits for the next one.
@@ -165,7 +167,7 @@ describe('TUI commands, completions, and formatting', () => {
     ];
 
     const slashMatches = getComposerCompletions('/m', profiles, new Set());
-    expect(slashMatches.map((c) => c.value)).toEqual(['/mode', '/model', '/merge']);
+    expect(slashMatches.map((c) => c.value)).toEqual(['/mouse', '/mode', '/model', '/merge']);
     expect(applyComposerCompletion('/m', '/mode')).toBe('/mode ');
 
     const mentionMatches = getComposerCompletions('@cod', profiles, new Set(['coder-small']));

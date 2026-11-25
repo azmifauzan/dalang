@@ -37,11 +37,11 @@ The Linux sandbox needs `xdg-dbus-proxy` and an active desktop session to connec
 3. In **Config → Task routing**, match a task role and complexity to a primary profile. Put specific rules above broader rules because Dalang uses the first match. A task can also name a profile override in **Plan**.
 4. Set a fallback provider, model, and effort on the profile or the routing rule. For example, match low-complexity engineering tasks to a Codex profile, high-complexity engineering tasks to a Claude Code profile, and set a backup for either rule if you have another signed-in account.
 
-Model and effort options come from the CLI. If a saved model is marked **(unavailable)**, refresh status and choose a model the CLI still reports. Some models offer a context variant, such as **Use 1M context**, on the same profile. Use `/model` in the terminal or the model chip in the browser to choose a CLI, model, and reasoning effort for the Lead. Use `/config` in the terminal for team models and effort. The browser has controls for account directories, fallback targets, and task routing.
+Model and effort options come from the CLI. If a saved model is marked **(unavailable)**, refresh status and choose a model the CLI still reports. Some models offer a context variant, such as **Use 1M context**, on the same profile. Use `/model` in the terminal or the model chip in the browser to choose a CLI, model, and reasoning effort for the Lead. Use `/config` in the terminal for team models and effort. The terminal team editor also sets a fallback provider, model, effort, and account directory for each role. The browser additionally exposes task routing.
 
-### Fallback for the Lead in Ask
+### Configure fallbacks for all roles
 
-Edit the Lead profile in the browser under **Config → Agents → Team**. Set a backup provider, model, and effort. When Claude reports a quota limit, Ask can retry the question in read-only mode with the saved conversation and this backup. Choose a different provider or a separately signed-in account directory. Sonnet and Opus on the same Claude account share the account quota. The session keeps its preferred provider for the next question.
+Set each role's fallback in the terminal under **/config → Agent team → role → Fallback**, or edit its profile in the browser under **Config → Agents → Team**. Choose a provider, model, effort, and optional account directory, or turn the fallback off. Ask and Auto use the Lead's fallback when Claude reports a quota limit, Codex reports HTTP 429 or a usage limit. The Lead tries its selected provider first, even if a cached usage reading is exhausted. The fallback receives the saved conversation. Choose a different provider or a separately signed-in account directory. Sonnet and Opus on the same Claude account share the account quota. The session keeps its preferred provider for the next question.
 
 ## Use separate accounts
 

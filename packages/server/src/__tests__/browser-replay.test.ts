@@ -415,11 +415,11 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
             }
           };
 
-          // Upgrade path: existing project skips wizard and opens straight into Ask chat with its
+          // Upgrade path: existing project skips wizard and opens straight into Auto chat with its
           // existing Full session listed in the sidebar + update notice.
           const homeText = await waitForText('Browser Replay App');
           expect(homeText).not.toContain('Welcome to DALANG');
-          expect(homeText).toContain('Ask anything about this repository');
+          expect(homeText).toContain('Ask, plan, or describe work');
           await waitForText('Version 9.9.0 is available');
 
           // Open the existing Full session from the sidebar to enter the 5-step stepper.
@@ -855,9 +855,9 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
 
           await clickButton('Create project & start Discuss');
 
-          // Lands directly in the project's Ask chat (no session created yet) with the goal prefilled in the composer!
+          // Lands directly in the project's Auto chat (no session created yet) with the goal prefilled in the composer!
           await waitForText('Wizard Starter App');
-          await waitForText('Ask anything about this repository');
+          await waitForText('Ask, plan, or describe work');
           await waitForText('No saved sessions yet');
           const composerVal = await browser.cdp.evalJs<string>(
             `document.querySelector('textarea')?.value ?? ''`,
@@ -1174,14 +1174,15 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
             })()`);
           };
 
-          // 1. Project opens straight into Ask chat with 0 sessions created, no stepper, no timeline
-          const openText = await waitForText('Ask anything about this repository');
+          // 1. Project opens in Auto with 0 sessions created, no stepper, no timeline
+          const openText = await waitForText('Ask, plan, or describe work');
           expect(openText).toContain('No saved sessions yet');
           expect(openText).not.toContain('Review & merge');
           const stillZero = await apiJson<{ sessions: unknown[] }>(`/api/projects/${project.id}/sessions`);
           expect(stillZero.sessions).toHaveLength(0);
 
           // 2. Ask mode: send question -> creates Ask session in sidebar, shows answer + Lead suggestion, leaves git status clean!
+          await browser.cdp.evalJs(`document.querySelector('main [data-mode-option="ask"]')?.click()`);
           const openedFilePicker = await browser.cdp.evalJs<boolean>(`(() => {
             const attach = document.querySelector('main button[aria-label="Attach images"]');
             const fileInput = document.querySelector('main input[type=file]');
@@ -1210,7 +1211,7 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
 
           // 3. Quick mode: click + New chat -> pick Quick in composer -> fix seeded bug in one screen!
           await clickButton('+ New chat');
-          await waitForText('Ask anything about this repository');
+          await waitForText('Ask, plan, or describe work');
           await browser.cdp.evalJs(`(() => {
             const btn = [...document.querySelectorAll('main [role="group"] button')].find(b => b.textContent?.trim() === 'Quick');
             btn?.click();
@@ -1261,7 +1262,7 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
 
           // While Quick session is working, open + New chat: selecting Quick shows lock banner naming the working session, while Ask still works!
           await clickButton('+ New chat');
-          await waitForText('Ask anything about this repository');
+          await waitForText('Ask, plan, or describe work');
           await browser.cdp.evalJs(`(() => {
             const btn = [...document.querySelectorAll('main [role="group"] button')].find(b => b.textContent?.trim() === 'Quick');
             btn?.click();
@@ -1301,7 +1302,7 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
 
           // 4. Quick too_large -> one-click Switch to Full -> lands in Full 5-step stepper (Discuss) with findings!
           await clickButton('+ New chat');
-          await waitForText('Ask anything about this repository');
+          await waitForText('Ask, plan, or describe work');
           await browser.cdp.evalJs(`(() => {
             const btn = [...document.querySelectorAll('main [role="group"] button')].find(b => b.textContent?.trim() === 'Quick');
             btn?.click();

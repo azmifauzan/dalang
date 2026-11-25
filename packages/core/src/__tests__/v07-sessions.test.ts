@@ -57,6 +57,7 @@ class SessionModesFakeRunner implements CliRunner {
     suggestion_reason: 'Single-line bug fix in src/math.mjs.',
   };
   public quickModeVerdict: 'ready' | 'too_large' = 'ready';
+  public autoResponse: unknown = { answer: 'What would you like to know?', auto_plan: null };
 
   async which(bin: string): Promise<string | null> {
     if (bin === 'claude' || bin === 'codex' || bin === 'agy' || bin === 'git') {
@@ -98,6 +99,12 @@ class SessionModesFakeRunner implements CliRunner {
         idleTimedOut: false,
         aborted: false,
       };
+    }
+
+    if (prompt.includes('Lead in DALANG Auto mode')) {
+      const out = JSON.stringify({ type: 'result', session_id: 'cli-sess-auto-1', result: JSON.stringify(this.autoResponse) }) + '\n';
+      options.onStdoutLine?.(out.trim());
+      return ok(out);
     }
 
     // 1. Ask mode (read-only)
@@ -307,6 +314,131 @@ async function setupProjectWithSeededBug(runner: SessionModesFakeRunner) {
   return { conn, projectSvc, leadSvc, execSvc, events, project, projDir };
 }
 
+describe('Auto commit in the active checkout', () => {
+  it('commits only requested files and leaves unrelated staged and untracked files intact', async () => {
+    const runner = new SessionModesFakeRunner();
+    runner.autoResponse = {
+      answer: 'I will commit the selected files.', auto_plan: null,
+      auto_commit: { paths: ['src/math.mjs', 'src/new.mjs'], message: 'Fix math' },
+    };
+    const { conn, leadSvc, project, projDir } = await setupProjectWithSeededBug(runner);
+    try {
+      fs.writeFileSync(path.join(projDir, 'src/math.mjs'), 'export const answer = 42;\n');
+      fs.writeFileSync(path.join(projDir, 'src/new.mjs'), 'export const added = true;\n');
+      fs.writeFileSync(path.join(projDir, 'src/other.mjs'), 'unrelated\n');
+      fs.writeFileSync(path.join(projDir, 'src/math.test.mjs'), 'staged unrelated\n');
+      execFileSync('git', ['add', 'src/math.test.mjs'], { cwd: projDir });
+      const result = await leadSvc.sendChatMessage(project.id, { mode: 'auto', message: 'Commit src/math.mjs and src/new.mjs' });
+      expect(result.messages.some((entry) => String(entry.content).includes('Committed src/math.mjs'))).toBe(true);
+      const committed = execFileSync('git', ['show', '--format=', '--name-only', 'HEAD'], { cwd: projDir, encoding: 'utf8' });
+      expect(committed.trim().split('\n').sort()).toEqual(['src/math.mjs', 'src/new.mjs']);
+      const staged = execFileSync('git', ['diff', '--cached', '--name-only'], { cwd: projDir, encoding: 'utf8' });
+      expect(staged.trim()).toBe('src/math.test.mjs');
+      expect(fs.readFileSync(path.join(projDir, 'src/other.mjs'), 'utf8')).toBe('unrelated\n');
+    } finally { conn.close(); }
+  });
+
+  it('accepts a clear yes after Lead lists the exact commit files', async () => {
+    const runner = new SessionModesFakeRunner();
+    runner.autoResponse = { answer: 'Commit `src/math.mjs`?', auto_commit: null };
+    const { conn, leadSvc, project, projDir } = await setupProjectWithSeededBug(runner);
+    try {
+      fs.writeFileSync(path.join(projDir, 'src/math.mjs'), 'changed\n');
+      const first = await leadSvc.sendChatMessage(project.id, { mode: 'auto', message: 'Please commit the fix' });
+      runner.autoResponse = { answer: 'I will commit it.', auto_commit: { paths: ['src/math.mjs'], message: 'Fix math' } };
+      const result = await leadSvc.sendChatMessage(project.id, { sessionId: first.session.id, mode: 'auto', message: 'ya' });
+      expect(result.messages.some((entry) => String(entry.content).includes('Committed src/math.mjs'))).toBe(true);
+    } finally { conn.close(); }
+  });
+
+  it('does not execute a commit action without a user commit request', async () => {
+    const runner = new SessionModesFakeRunner();
+    runner.autoResponse = { answer: 'Working.', auto_commit: { paths: ['src/math.mjs'], message: 'Fix' } };
+    const { conn, leadSvc, project, projDir } = await setupProjectWithSeededBug(runner);
+    try {
+      const before = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: projDir, encoding: 'utf8' });
+      await expect(leadSvc.sendChatMessage(project.id, { mode: 'auto', message: 'Explain the bug' }))
+        .rejects.toThrow('explicit request');
+      expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: projDir, encoding: 'utf8' })).toBe(before);
+    } finally { conn.close(); }
+  });
+
+  it('does not overwrite partially staged content when committing a file', async () => {
+    const runner = new SessionModesFakeRunner();
+    runner.autoResponse = { answer: 'I will commit the file.', auto_commit: { paths: ['src/math.mjs'], message: 'Fix' } };
+    const { conn, leadSvc, project, projDir } = await setupProjectWithSeededBug(runner);
+    try {
+      const file = path.join(projDir, 'src/math.mjs');
+      fs.writeFileSync(file, 'staged content\n');
+      execFileSync('git', ['add', 'src/math.mjs'], { cwd: projDir });
+      fs.writeFileSync(file, 'unstaged content\n');
+      const before = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: projDir, encoding: 'utf8' });
+      const result = await leadSvc.sendChatMessage(project.id, { mode: 'auto', message: 'Commit src/math.mjs' });
+      expect(result.messages.some((entry) => String(entry.content).includes('both staged and unstaged'))).toBe(true);
+      expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: projDir, encoding: 'utf8' })).toBe(before);
+      expect(execFileSync('git', ['show', ':src/math.mjs'], { cwd: projDir, encoding: 'utf8' })).toBe('staged content\n');
+      expect(fs.readFileSync(file, 'utf8')).toBe('unstaged content\n');
+    } finally { conn.close(); }
+  });
+});
+
+describe('Auto session mode', () => {
+  it('answers and asks for sensitive approval without dispatching work', async () => {
+    const runner = new SessionModesFakeRunner();
+    runner.autoResponse = { answer: 'This changes production data. May I proceed?', auto_plan: null };
+    const { conn, leadSvc, project } = await setupProjectWithSeededBug(runner);
+    const started: string[] = [];
+    leadSvc.setExecutionRouter({
+      listActiveRunsForSession: () => [],
+      steerTask: async () => {},
+      startExecution: async (_projectId, input) => { started.push(input.sessionId); },
+    });
+    try {
+      const result = await leadSvc.sendChatMessage(project.id, { mode: 'auto', message: 'Update production data' });
+      expect(result.session.mode).toBe('auto');
+      expect(result.askReply?.text).toContain('May I proceed');
+      expect(leadSvc.getPlan(project.id, result.session.id)).toBeNull();
+      expect(started).toEqual([]);
+      expect(runner.calls.find((call) => call.prompt.includes('Lead in DALANG Auto mode'))?.prompt)
+        .toContain('production or user data');
+    } finally {
+      conn.close();
+    }
+  });
+
+  it('validates and dispatches a multi-task plan in the same session', async () => {
+    const runner = new SessionModesFakeRunner();
+    const task = (id: string, file: string, depends_on: string[]) => ({
+      id, title: id, milestone: 'M1', role: 'engineer', complexity: 'low', depends_on,
+      goal: `Fix ${file}`, files_allowed: [file], files_reference: [],
+      acceptance_criteria: ['Tests pass'], verify: 'node --test', needs_split: false,
+    });
+    runner.autoResponse = {
+      answer: 'I will implement this.',
+      auto_plan: { milestones: [{ id: 'M1', title: 'Fix' }], tasks: [
+        task('T-001', 'src/math.mjs', []), task('T-002', 'src/math.test.mjs', ['T-001']),
+      ] },
+    };
+    const { conn, leadSvc, project } = await setupProjectWithSeededBug(runner);
+    const started: string[] = [];
+    leadSvc.setExecutionRouter({
+      listActiveRunsForSession: () => [],
+      steerTask: async () => {},
+      startExecution: async (_projectId, input) => { started.push(input.sessionId); },
+    });
+    try {
+      const result = await leadSvc.sendChatMessage(project.id, { mode: 'auto', message: 'Fix the math code' });
+      const plan = leadSvc.getPlan(project.id, result.session.id);
+      expect(plan?.status).toBe('approved');
+      expect(plan?.tasks).toHaveLength(2);
+      expect(plan?.tasks[1].dependsOn).toEqual(['T-001']);
+      expect(started).toEqual([result.session.id]);
+    } finally {
+      conn.close();
+    }
+  });
+});
+
 describe('v0.7 Session Modes (Ask, Quick, Full)', () => {
   it('creates no session when opening a project, runs Ask read-only with clean git status, and supports promotion to Quick/Full', async () => {
     const runner = new SessionModesFakeRunner();
@@ -318,17 +450,19 @@ describe('v0.7 Session Modes (Ask, Quick, Full)', () => {
       // 2. First Ask message creates an Ask session and leaves git status completely clean
       const askTurn = await leadSvc.sendChatMessage(project.id, {
         mode: 'ask',
-        message: 'Why does add(2, 3) fail in src/math.mjs?',
+        message: 'Kenapa add(2, 3) gagal di src/math.mjs?',
       });
       expect(askTurn.session.mode).toBe('ask');
       expect(askTurn.session.workState).toBe('idle');
-      expect(askTurn.session.title).toContain('Why does add(2, 3) fail');
+      expect(askTurn.session.title).toContain('Kenapa add(2, 3) gagal');
       expect(leadSvc.listSessions(project.id)).toHaveLength(1);
 
       // Verify Ask adapter call ran read-only (plan mode in Claude Code)
       const askCall = runner.calls.find((c) => c.prompt.includes('Ask mode (read-only'));
       expect(askCall).toBeDefined();
       expect(askCall!.args).toContain('plan');
+      expect(askCall!.prompt).toContain('match the language of the latest user question');
+      expect(askCall!.prompt).toContain('falling back to English');
 
       // Verify git status is 100% clean
       const gitStatus = execFileSync('git', ['status', '--porcelain'], {

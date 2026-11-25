@@ -367,6 +367,7 @@ export function extractActivityPreview(rawLine: string): string | null {
   if (!trimmed.startsWith('{')) return null;
   try {
     const obj = JSON.parse(trimmed) as Record<string, unknown>;
+    if (obj.type === 'provider.error' && obj.retrying === true) return 'Provider is reconnecting';
     if (obj.type === 'assistant') {
       const content = (obj.message as { content?: unknown } | null)?.content;
       if (Array.isArray(content)) {

@@ -159,6 +159,38 @@ function mountRoom(client: RoomApiClient, extra: Record<string, unknown> = {}) {
 }
 
 describe('room screens (Ink, stub server)', () => {
+  it('restarts with the selected project and session, and restores them on startup', async () => {
+    const { client, sent } = roomClient();
+    const requested: unknown[] = [];
+    const ui = mountRoom(client, { onRequestRestart: (room: unknown) => requested.push(room) });
+    await ui.waitFor('Lead Claude');
+    await ui.press('/resume 1', '\r');
+    await ui.waitFor('Resumed');
+    await ui.press('/restart', '\r');
+    await sleep(100);
+    expect(requested).toEqual([{ projectId: 'p1', sessionId: 's1', mode: 'ask', modelChoice: null }]);
+
+    const restored = mountRoom(client, { initialRoom: requested[0] });
+    await restored.waitFor('Earlier chat');
+    await restored.press('hello', '\r');
+    expect(sent).toContainEqual(expect.objectContaining({ sessionId: 's1', message: 'hello' }));
+  });
+
+  it('keeps an embedded server running while work is active in another project', async () => {
+    const other = { ...project, id: 'p2', name: 'other', path: '/work/other' };
+    const { client } = roomClient({
+      listProjects: async () => [project, other],
+      listSessions: async (id: string) => ({ sessions: id === 'p2' ? [{ ...session, id: 's2', projectId: 'p2' }] : [session] }),
+      getExecutionState: async (id: string) => ({ runs: [], activeRuns: [], queueRunning: id === 'p2' }),
+    });
+    const requested: unknown[] = [];
+    const ui = mountRoom(client, { embedded: true, onRequestRestart: (room: unknown) => requested.push(room) });
+    await ui.waitFor('Lead Claude');
+    await ui.press('/restart', '\r');
+    await ui.waitFor('Cannot restart while an agent or task is running');
+    expect(requested).toEqual([]);
+  });
+
   it('recalls prior prompts with Up and restores the draft with Down', async () => {
     const messages = ['older question', 'recent question'].map((content, index) => ({
       id: `prompt-${index}`, sessionId: 's1', role: 'user', type: 'text', content,
@@ -248,7 +280,7 @@ describe('room screens (Ink, stub server)', () => {
 
     // A JSON reply shows only its answer, decoded as it arrives; a terminal escape never gets through.
     const streaming = ui.mark();
-    emit({ type: 'lead.text', projectId: 'p1', sessionId: 's1', phase: 'ask', text: '{"answer": "First **par', reset: true });
+    emit({ type: 'lead.text', projectId: 'p1', sessionId: 's1', phase: 'ask', text: '```json\n{"answer": "First **par', reset: true });
     await ui.waitFor('writing...', streaming);
     emit({ type: 'lead.text', projectId: 'p1', sessionId: 's1', phase: 'ask', text: 't**\\n\\nSecond \\u001b[2Jline' });
     await ui.waitFor('Second line', streaming);
@@ -334,8 +366,28 @@ describe('room screens (Ink, stub server)', () => {
     await ui.press('hello', '\r');
     await sleep(150);
     expect(sent).toEqual([
-      { sessionId: undefined, mode: 'ask', message: 'hello', provider: 'claude-code', model: 'sonnet', effort: 'high' },
+      { sessionId: undefined, mode: 'auto', message: 'hello', provider: 'claude-code', model: 'sonnet', effort: 'high' },
     ]);
+  });
+
+  it('toggles mouse capture to allow ordinary text selection', async () => {
+    const { client } = roomClient();
+    const ui = mountRoom(client, { enableMouse: true });
+    await ui.waitFor('Lead Claude');
+    await ui.press('/mouse', '\r');
+    await ui.waitFor('Mouse capture off');
+    await ui.press('/mouse', '\r');
+    await ui.waitFor('Mouse capture on');
+  });
+
+  it('cycles modes with Shift+Tab before command completion', async () => {
+    const { client, sent } = roomClient();
+    const ui = mountRoom(client);
+    await ui.waitFor('Lead Claude');
+    await ui.press('\x1b[Z');
+    await ui.press('hello', '\r');
+    await sleep(150);
+    expect(sent).toEqual([expect.objectContaining({ mode: 'ask', message: 'hello' })]);
   });
 
   it('opens /config and /wizard from the composer and comes back with Esc', async () => {

@@ -249,6 +249,47 @@ export async function getBranchHeadCommit(projectPath: string, branchName: strin
   }
 }
 
+/** Commit only the explicitly selected files in the user's checkout. */
+export async function commitSelectedFiles(
+  projectPath: string,
+  paths: string[],
+  message: string,
+): Promise<string> {
+  await assertRepoConfigSafe(projectPath);
+  if (!message.trim() || !paths.length || paths.some((file) =>
+    !file || path.isAbsolute(file) || file.startsWith('-') || file.startsWith(':') ||
+    file.split(/[\\/]/).some((part) => part === '..' || part === '.git' || part === '.dalang')
+  )) throw new Error('Choose specific repository files and a commit message.');
+
+  const git = openSafeGit(projectPath);
+  const status = await git.status(['--untracked-files=all', '--no-renames']);
+  const entries = new Map(status.files.map((file) => [file.path, file]));
+  const unique = [...new Set(paths)];
+  for (const file of unique) {
+    const entry = entries.get(file);
+    if (!entry) throw new Error(`File is not an individually changed file: ${file}`);
+    if (entry.index !== ' ' && entry.index !== '?' && entry.working_dir !== ' ') {
+      throw new Error(`File has both staged and unstaged changes: ${file}. Finish staging it first.`);
+    }
+  }
+  const previouslyUnstaged = unique.filter((file) => {
+    const entry = entries.get(file)!;
+    return entry.index === ' ' || entry.index === '?';
+  });
+  try {
+    await git.raw(['add', '-A', '--', ...unique.map((file) => `:(literal)${file}`)]);
+    await git.raw(['commit', '--only', '-m', message.trim(), '--', ...unique.map((file) => `:(literal)${file}`)]);
+  } catch (error) {
+    if (previouslyUnstaged.length) {
+      await git.raw(['reset', '-q', 'HEAD', '--', ...previouslyUnstaged.map((file) => `:(literal)${file}`)]);
+    }
+    throw error;
+  }
+  const head = await getHeadCommit(projectPath);
+  if (!head) throw new Error('Commit created but HEAD could not be resolved.');
+  return head;
+}
+
 export async function createGitCheckpoint(
   projectPath: string,
   message: string,

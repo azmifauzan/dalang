@@ -142,7 +142,7 @@ If the npm registry does not have the newest release yet, install the tarball at
 
 ### Database upgrades
 
-Dalang upgrades its database the first time a newer version starts, from any earlier release, and keeps your projects, sessions, briefs, plans, tasks, settings, and profiles. The current schema is v15:
+Dalang upgrades its database the first time a newer version starts, from any earlier release, and keeps your projects, sessions, briefs, plans, tasks, settings, and profiles. The current schema is v15. Version 0.13.0 adds no database migration:
 
 | Release | Schema | What the upgrade does |
 | --- | --- | --- |

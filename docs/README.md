@@ -4,11 +4,11 @@
 
 1. [Install Dalang](INSTALL.md) on Linux, macOS, native Windows, or WSL 2, or [run it with Docker](INSTALL.md#run-with-docker).
 2. [Set up a provider](PROVIDERS.md) and sign in to at least one coding-agent CLI.
-3. Run `dalang` and follow the [terminal walkthrough](USAGE.md#terminal-team-room), or run `dalang web` and follow the [browser walkthrough](USAGE.md#browser-workspace). Use Ask to explore, Quick for a one-task fix, or Full for work that needs a brief and plan.
+3. Run `dalang` and follow the [terminal walkthrough](USAGE.md#terminal-team-room), or run `dalang web` and follow the [browser walkthrough](USAGE.md#browser-workspace). Auto is the default; use Ask to explore read-only, Quick for a one-task fix, or Full for work that needs a brief and plan.
 
 ## Find a topic
 
-- [Choose Ask, Quick, or Full](USAGE.md#choose-ask-quick-or-full)
+- [Choose Auto, Ask, Quick, or Full](USAGE.md#choose-auto-ask-quick-or-full)
 - [Run and review tasks in the terminal](USAGE.md#run-and-review-work-in-the-terminal)
 - [Recall prompts and use terminal shortcuts](USAGE.md#commands-and-keyboard-shortcuts)
 - [Attach images in the browser](USAGE.md#attach-images)

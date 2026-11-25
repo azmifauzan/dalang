@@ -1,12 +1,12 @@
 # PRD: DALANG
 
-Nov 18, 2026 · @Fauzan · Updated through v0.7.3, Nov 21, 2026
+Nov 18, 2026 · @Fauzan · Updated through v0.13.0, Nov 25, 2026
 
 ## Summary
 
-Dalang is a local browser workbench for Claude Code, Codex CLI, and Antigravity CLI. Every project opens into a chat. Ask answers repository questions, Quick runs one reviewed task, and Full coordinates larger changes through a brief and task plan. [Current user guide](USAGE.md)
+Dalang is a local terminal and browser workbench for Claude Code, Codex CLI, and Antigravity CLI. Every project opens into a chat. Auto chooses between answering, discussing, planning, and starting work; Ask answers repository questions, Quick runs one reviewed task, and Full coordinates larger changes through a brief and task plan. [Current user guide](USAGE.md)
 
-All three modes save their conversation per project. Quick and Full run tasks in isolated Git worktrees with verification, automated review, and explicit merge approval. The dispatcher uses routing rules to select providers and models by role and task complexity.
+All four modes save their conversation per project. Quick and Full run tasks in isolated Git worktrees with verification, automated review, and explicit merge approval. The dispatcher uses routing rules to select providers and models by role and task complexity.
 
 Dalang runs on the user's machine and uses the official CLI logins. The name comes from the original workflow: **Discuss · Agree · List · Assign · Navigate · Guard**.
 
@@ -636,7 +636,7 @@ The v0.6 flow always runs `Discuss → Brief → Plan → Work → Review & merg
 - **The mode lives in the composer.** A small segmented control beside the send button reads `Ask | Quick | Full`, with Ask selected. Switching it changes what sending does: Ask sends a message, Quick asks the Lead for a mini plan, Full starts the Discuss step with the Brief gate. The sidebar lists projects, and a project expands to its sessions (newest first, each with a small mode mark and a dot when it is `working`); `New chat` sits at the top of that list. The mode is never picked in the sidebar.
 - **Switching up is promotion, and it happens on send.** Choosing a mode in the control only decides what the next message does, so looking at Quick or Full changes nothing. When a message is sent in a higher mode, the session moves up and carries the conversation over (the Lead's earlier answers become context for the brief or the mini plan). A question (Ask) can be sent in any session at any time and never changes its mode, so a Full session can still be asked something. Quick is not offered inside a Full session until its work is finished, because a Full session already holds a brief and a plan. Switching down is disabled while the session is `working`, with a short reason, because work that changed files cannot become read-only. The Lead may suggest a switch in the chat ("this looks like a small fix, switch to Quick?") with a one-click button; it never switches on its own.
 - **The stepper and timeline appear only after a switch.** Ask shows no steps. Quick shows a short timeline (Request → Work → Review → Merge). Full shows the five-step stepper. A strip above the chat shows the mode badge and the session title (click to rename).
-- **Ask** (the default): a chat with the Lead about the repository. Read-only: no tasks, no worktree, nothing written outside `.dalang/` chat logs. Switching to Full from here is the "turn this talk into a brief" path.
+- **Ask** (the default in v0.7): a chat with the Lead about the repository. Read-only: no tasks, no worktree, nothing written outside `.dalang/` chat logs. Switching to Full from here is the "turn this talk into a brief" path.
 - **Quick**: for a bug fix or small feature. The user writes the request; the Lead returns one mini plan card (a single task with `files_allowed`, no brief) in the chat; one click on `Run` starts it; the usual verify, review (with the fix loop), and merge gate follow. If the Lead judges the work to need more than one task or touches many areas, it says so and offers a switch to Full, which keeps the request and the Lead's findings as the start of the Discuss step.
 - **Full**: Discuss, Brief, Plan, Work, and Review & merge. The composer supplies the Lead model and each step holds its own controls.
 - **The merge gate applies in every mode that changes files.** Lighter modes skip planning ceremony, not safety: sandbox, `files_allowed`, verify, review, and the approval to merge stay.
@@ -761,7 +761,7 @@ Scripted runs cover handoff from each of the three providers, including recent c
 - Outside agents over MCP: Claude Code or Codex in a terminal can read projects, sessions, tasks, logs, and automations (`read-only`) or start/stop tasks, merge, reject, and trigger automations (`full-access`) through persistent hashed bearer tokens on the loopback-only `/mcp` endpoint, optionally scoped to one project.
 - Managed in **Config → Automation** and over REST (`/api/automations`, `/api/mcp-tokens`), on schema v14. Automated and MCP-started runs each create a Quick session, so they go through the worktree, verify, review, and Gate 2 steps and stay visible in the UI. A trigger that arrives while another session has unfinished work is recorded as skipped.
 
-### v0.12 to v0.14: team room in the terminal and chat apps
+### v0.12 to v0.15: terminal room, Auto, and chat apps
 
 The terminal team room shipped in v0.12.0. The Telegram and Slack bridges remain draft plans. [Terminal user guide](USAGE.md#terminal-team-room)
 
@@ -773,7 +773,7 @@ The terminal team room shipped in v0.12.0. The Telegram and Slack bridges remain
 
 - `dalang` with no subcommand starts the terminal room. The current web server becomes `dalang web`.
 - The room is a team discussion: the Lead, coders, and reviewer post their own messages (brief and plan, task start, task finish with diff stats, verify result, review verdict).
-- Chat apps: Telegram first (v0.13), Slack after it (v0.14), on one shared bridge core.
+- Chat apps: Telegram first (v0.14), Slack after it (v0.15), on one shared bridge core.
 - One bot per role on each chat app. Group chats are supported.
 - Starting coders and merging are allowed from Telegram and Slack. The user accepted that an allowlisted chat account can run and merge code on the machine.
 
@@ -807,7 +807,15 @@ Review against this plan (24 Nov 2026):
 - `/model` applies to the Lead's messages only, not to `@profile` questions or to running coders.
 - Seen in the live run, not part of this phase: the Antigravity reviewer could not run `git status` in the task worktree because the worktree's `.git` link pointed to a gitdir it could not see; the review still passed by comparing files. Whether earlier releases show the same is not yet verified.
 
-#### v0.13: Telegram bridge
+#### v0.13: Auto mode and terminal improvements
+
+- Auto is the default for new chats. The Lead chooses whether to answer, discuss, plan, or start a validated task plan, and may request approval for sensitive actions. The sensitive-action decision is model-driven, not a deterministic production or data access control.
+- Independent tasks can run in parallel. Dependent tasks wait for prerequisite merges, and Auto resumes eligible tasks after a merge. Guard still requires the user's merge decision.
+- Auto can commit explicitly selected files in the active checkout after a user request. It preserves unrelated staging and refuses partially staged selected files. Git hooks and commit signing are disabled by DALANG's safe Git configuration.
+- Shift+Tab cycles composer modes, `/restart` restores the selected room, and `/mouse` toggles mouse capture. Team fallback targets are editable per role in terminal Config. The terminal and browser render streamed JSON answers as readable text.
+- This release does not add a database migration. Live provider behavior and non-Linux terminals still require separate verification.
+
+#### v0.14: Telegram bridge
 
 Checked against the Telegram Bot FAQ and Bot API pages on 24 Nov 2026 (Bot API changelog dated 22 Nov 2026). Items marked "not yet verified" need the probe phase.
 
@@ -821,7 +829,7 @@ Checked against the Telegram Bot FAQ and Bot API pages on 24 Nov 2026 (Bot API c
 - Limits (Bot FAQ): about one message per second per chat and 20 messages per minute per bot in a group. Each bot gets a send queue, and coder progress edits one status message instead of posting new ones. Long diffs go as a document (uploads up to 50 MB).
 - Not yet verified: whether typing `@` in a group suggests bot usernames.
 
-#### v0.14: Slack bridge
+#### v0.15: Slack bridge
 
 Checked against Slack developer docs and Slack help articles on 24 Nov 2026.
 
@@ -845,11 +853,11 @@ Checked against Slack developer docs and Slack help articles on 24 Nov 2026.
 | 6     | Slack adapter on the bridge core                                                                                 | 5          | M    |
 | 7     | Docs and release for each milestone                                                                              | 4, 5, 6    | S    |
 
-Milestones: v0.12 is phases 0 to 4 (the terminal room), v0.13 is phase 5 (Telegram), v0.14 is phase 6 (Slack). Phases 3 and 5 can run in parallel after phase 2.
+Milestones: v0.12 is phases 0 to 4 (the terminal room), v0.13 is Auto mode, v0.14 is phase 5 (Telegram), and v0.15 is phase 6 (Slack). Phases 3 and 5 can run in parallel after phase 2.
 
 ### Not planned
 
-Remote access, relays, and companion phone apps require a separate deployment and authentication design. The optional DALANG password covers the local instance. The Telegram and Slack bridges (v0.13, v0.14) are outbound connections from the local server, not inbound access.
+Remote access, relays, and companion phone apps require a separate deployment and authentication design. The optional DALANG password covers the local instance. The Telegram and Slack bridges (v0.14, v0.15) are outbound connections from the local server, not inbound access.
 
 ## Risks, mitigations, and decisions
 

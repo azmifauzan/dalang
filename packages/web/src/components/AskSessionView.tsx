@@ -80,7 +80,7 @@ export function AskSessionView({
 
   // Picking a mode only decides what the next message does. The session moves up when that message is sent,
   // so looking at Quick or Full changes nothing until you send.
-  const [chosenMode, setChosenMode] = useState<SessionMode>('ask');
+  const [chosenMode, setChosenMode] = useState<SessionMode>(session?.mode ?? 'auto');
   const selectedMode = session ? chosenMode : draftMode;
   const handleSelectMode = (nextMode: SessionMode) => {
     if (session) setChosenMode(nextMode);

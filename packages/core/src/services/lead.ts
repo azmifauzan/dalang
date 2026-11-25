@@ -91,6 +91,7 @@ import {
 export const MAX_SPLIT_DEPTH = 2;
 
 const MODE_RANK: Record<SessionMode, number> = {
+  auto: 0,
   ask: 0,
   quick: 1,
   full: 2,
@@ -104,6 +105,12 @@ const UNFINISHED_TASK_STATUSES = new Set<string>([
 ]);
 
 type ChatTurnImage = TurnImage & { name: string };
+
+const AutoCommitSchema = z.object({
+  paths: z.array(z.string().min(1)).min(1),
+  message: z.string().trim().min(1).max(500),
+});
+type AutoCommit = z.infer<typeof AutoCommitSchema>;
 
 function decodeChatImages(images: ChatImage[]): ChatTurnImage[] {
   return images.map(({ name, mimeType, data }) => {
@@ -163,6 +170,11 @@ export function buildLanguageInstruction(language: UiLanguage): string {
     return 'Language: Write all human-readable prose (answers, questions, options, reasons, summaries, brief fields, milestone titles and descriptions, task titles, goals, and acceptance criteria) in clear, natural Indonesian (Bahasa Indonesia). Keep JSON keys, enum values, code, file paths, and verify commands in English.';
   }
   return 'Language: Write all human-readable prose in clear English. Keep JSON keys, enum values, code, file paths, and verify commands in English.';
+}
+
+function buildAskLanguageInstruction(language: UiLanguage): string {
+  const fallback = language === 'id' ? 'Indonesian (Bahasa Indonesia)' : 'English';
+  return `Language: Reply in the language the user explicitly requests. Otherwise, match the language of the latest user question. If it is unclear, use the language of the preceding user messages, falling back to ${fallback}. Apply this to all user-facing prose, including any mode suggestion reason. Preserve JSON keys, enum values, code, file paths, and commands.`;
 }
 
 export interface ChatTurnResult {
@@ -303,7 +315,7 @@ export class LeadService {
     const project = this.getProjectRow(projectId);
     const now = new Date().toISOString();
     const id = crypto.randomUUID();
-    const mode: SessionMode = input.mode ?? 'ask';
+    const mode: SessionMode = input.mode ?? 'auto';
     const lead = this.leadDefaults(project);
     const provider: ProviderId = input.provider ?? lead.provider;
     const model = input.model !== undefined ? (input.model?.trim() || null) : lead.model;
@@ -816,7 +828,7 @@ export class LeadService {
     const prompt = [
       `You are "${profile.name}" in DALANG's team room, answering a direct @${profile.name} question in read-only Ask mode.`,
       profile.rolePrompt ? `\nYour role instructions:\n${profile.rolePrompt}\n` : '',
-      buildLanguageInstruction(this.getLanguage()),
+      buildAskLanguageInstruction(this.getLanguage()),
       `STRICT RULE: You are in READ-ONLY mode. Do NOT create, modify, or delete any files and do NOT run mutating commands.`,
       `Project: ${project.name} (${project.path})`,
       projectContext ? `\nCurrent PROJECT.md:\n${projectContext}\n` : '',
@@ -952,7 +964,7 @@ export class LeadService {
     input: ChatMessageInput,
   ): Promise<ChatTurnResult> {
     const project = this.getProjectRow(projectId);
-    const requestedMode: SessionMode = input.mode ?? 'ask';
+    const requestedMode: SessionMode = input.mode ?? 'auto';
     const images = decodeChatImages(input.images ?? []);
     const existingSession = input.sessionId ? this.getSessionRow(projectId, input.sessionId) : null;
     if (images.length && (input.provider ?? existingSession?.provider ?? this.leadDefaults(project).provider) === 'antigravity') {
@@ -995,7 +1007,14 @@ export class LeadService {
         sessionRow = this.getSessionRow(projectId, sessionRow.id);
       }
 
-      if (MODE_RANK[requestedMode] > MODE_RANK[currentMode]) {
+      if (requestedMode === 'auto' && currentMode !== 'auto') {
+        this.db.update(sessions).set({ mode: 'auto', updatedAt: new Date().toISOString() })
+          .where(eq(sessions.id, sessionRow.id)).run();
+        sessionRow = this.getSessionRow(projectId, sessionRow.id);
+        this.events?.emitEvent({ type: 'sessions.updated', projectId, sessionId: sessionRow.id });
+      } else if (requestedMode === 'auto') {
+        // Auto owns the turn without changing its current phase.
+      } else if (MODE_RANK[requestedMode] > MODE_RANK[currentMode]) {
         if (requestedMode === 'quick') {
           this.assertCanStartWorkInSession(projectId, sessionRow.id);
         }
@@ -1038,11 +1057,35 @@ export class LeadService {
     }
 
     const effort = input.effort ?? this.leadEffortFor(sessionRow.provider);
-    if (requestedMode === 'ask') {
-      const askReply = await this.runAskTurnInner(project, sessionRow, input.message, effort, images);
+    if (requestedMode === 'ask' || requestedMode === 'auto') {
+      const askReply = await this.runAskTurnInner(project, sessionRow, input.message, effort, images, requestedMode === 'auto');
+      if (requestedMode === 'auto' && askReply.autoCommit) {
+        try {
+          if (!this.executionRouter?.commitWorkspace) throw new Error('Checkout commits are unavailable.');
+          const sha = await this.executionRouter.commitWorkspace(projectId, askReply.autoCommit);
+          this.postRoomMessage(projectId, sessionRow.id, {
+            role: 'system', type: 'text', kind: 'status',
+            content: `Committed ${askReply.autoCommit.paths.join(', ')} (${sha.slice(0, 12)}).`,
+          });
+        } catch (error) {
+          this.postRoomMessage(projectId, sessionRow.id, {
+            role: 'system', type: 'error',
+            content: `Could not commit: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+      }
+      if (requestedMode === 'auto' && askReply.autoPlan) {
+        try {
+          await this.startAutoPlan(project, sessionRow, askReply.autoPlan);
+        } catch (error) {
+          this.appendMessage(sessionRow.id, 'system', 'error',
+            `Could not start Auto work: ${error instanceof Error ? error.message : String(error)}`);
+          this.events?.emitEvent({ type: 'discuss.updated', projectId, sessionId: sessionRow.id });
+        }
+      }
       return {
         session: this.getSession(projectId, sessionRow.id),
-        mode: 'ask',
+        mode: requestedMode,
         askReply,
         messages: this.getDiscussState(projectId, sessionRow.id).messages,
       };
@@ -1088,7 +1131,8 @@ export class LeadService {
     rawMessage: string,
     effort: EffortLevel = 'medium',
     images: ChatTurnImage[] = [],
-  ): Promise<AskMessageContent> {
+    auto = false,
+  ): Promise<AskMessageContent & { autoPlan?: PlanContract; autoCommit?: AutoCommit }> {
     const userText = rawMessage.trim();
     const priorMessages = this.getDiscussState(project.id, sessionRow.id).messages;
     this.appendUserMessage(sessionRow.id, userText, images);
@@ -1113,8 +1157,8 @@ export class LeadService {
           ? `\nPrevious conversation in this session:\n${this.formatTranscript(priorMessages)}\n`
           : '';
       return [
-        `You are the Lead architect in DALANG's Ask mode (read-only Q&A about this repository).`,
-        buildLanguageInstruction(this.getLanguage()),
+        auto ? `You are the Lead in DALANG Auto mode. Decide whether to answer, brainstorm, write a plan, ask for clarification or approval, or delegate coding tasks.` : `You are the Lead architect in DALANG's Ask mode (read-only Q&A about this repository).`,
+        buildAskLanguageInstruction(this.getLanguage()),
         `STRICT RULE: You are in READ-ONLY mode. Do NOT create, modify, or delete any files and do NOT run mutating commands.`,
         `Project: ${project.name} (${project.path})`,
         projectContext ? `\nCurrent PROJECT.md:\n${projectContext}\n` : '',
@@ -1124,8 +1168,11 @@ export class LeadService {
         ``,
         `Response instructions:`,
         `- Answer clearly and directly based on the repository and conversation context.`,
-        `- If the user is asking for a code change, do NOT make the edit; explain what would be needed and optionally suggest switching to "quick" (for a small single-task fix/feature) or "full" (for a larger multi-task feature).`,
-        `- You may reply with a JSON object matching {"answer": string, "suggested_mode": "quick" | "full" | null, "suggestion_reason": string | null}, or plain text if no mode switch is needed.`,
+        auto ? `- If the user explicitly asks for implementation, output JSON with answer and auto_plan containing a complete validated task plan. Delegate only the work requested; never modify files yourself. Use independent tasks for parallel work and depends_on for serial work. Each task must be small, have explicit files_allowed, acceptance criteria and a verify command; needs_split must be false. Schema for auto_plan: ${JSON.stringify(z.toJSONSchema(PlanContractSchema))}` : `- If the user is asking for a code change, do NOT make the edit; explain what would be needed and optionally suggest switching to "quick" (for a small single-task fix/feature) or "full" (for a larger multi-task feature).`,
+        auto ? `- Questions, brainstorming, planning-only requests, and ambiguous requests must never have auto_plan. Answer in JSON {"answer": string, "auto_plan": null} and ask a specific question when necessary.` : '',
+        auto ? `- Ask for explicit informed approval before any action involving production, deployments, live services, production or user data, destructive data changes, risky database migrations, access or secret changes, external communications, billing, or other irreversible effects. Explain the exact action and impact, output no auto_plan, and wait for a subsequent user reply explicitly approving that action. A general coding request or plan approval is not approval for these actions. If uncertain, ask. Preserve these requirements in every delegated task.` : '',
+        auto ? `- A user may explicitly request a local git commit. Inspect git status in the current checkout. If the request clearly authorizes the files, return auto_commit with paths containing exact individual changed files and a suitable commit message. Include only files the user authorized. If the scope is unclear, ask which files to commit and output no action. When asking for confirmation list every exact file in backticks. A later explicit yes approves only those listed files. Never use auto_plan to commit existing checkout changes. DALANG performs the commit in the user's active checkout after your response; your read-only CLI does not prevent this. A commit does not authorize push or deployment.` : '',
+        auto ? `- Return one JSON object {"answer": string, "auto_plan": object|null, "auto_commit": {"paths": string[], "message": string}|null}. Only use auto_commit if the latest user message explicitly requests a commit or explicitly approves the exact file list you just asked to commit. Do not say a commit succeeded before the system performs it. For regular answers both actions must be null.` : `- You may reply with a JSON object matching {"answer": string, "suggested_mode": "quick" | "full" | null, "suggestion_reason": string | null}, or plain text if no mode switch is needed.`,
       ]
         .filter(Boolean)
         .join('\n');
@@ -1181,30 +1228,32 @@ export class LeadService {
       attemptUsage = mergeTokenUsage(attemptUsage, turn.usage);
       return turn;
     };
-    announceAttempt();
-
     let usedFallback = false;
+    let attempted = false;
     try {
+      announceAttempt();
+      attempted = true;
       let turn = await run(sessionRow.cliSessionId, effort);
-      // If resuming a saved CLI session failed, transparently retry once with saved message context.
+      // If resuming a saved CLI session failed, retry once with saved message context.
       if (!turn.rateLimitReason && sessionRow.cliSessionId && (turn.exitCode !== 0 || !turn.text.trim())) {
         turn = await run(null, effort);
       }
 
       if (turn.rateLimitReason) {
+        const reason = turn.rateLimitReason;
         const leadId = this.getLeadProfileId();
         const fallback = leadId ? this.profiles.getProfile(leadId).fallback : null;
-        if (!fallback) throw new Error(turn.rateLimitReason);
+        if (!fallback) throw new Error(reason);
         if (buildAccountKey(fallback.provider, fallback.configDir) === buildAccountKey(primaryProvider)) {
-          throw new Error(`${turn.rateLimitReason}. The Lead fallback uses the same CLI account. Choose another provider or account.`);
+          throw new Error(`${reason}. The Lead fallback uses the same CLI account. Choose another provider or account.`);
         }
         if (images.length && fallback.provider === 'antigravity') {
-          throw new Error(`${turn.rateLimitReason}. The Lead fallback cannot accept image attachments.`);
+          throw new Error(`${reason}. The Lead fallback cannot accept image attachments.`);
         }
         const blocked = this.registry.providerBlockedReason(fallback.provider, await this.registry.isSandboxReady());
-        if (blocked) throw new Error(`${turn.rateLimitReason}. Lead fallback unavailable: ${blocked}`);
+        if (blocked) throw new Error(`${reason}. Lead fallback unavailable: ${blocked}`);
 
-        recordAttempt('failed', turn.sessionId ?? sessionRow.cliSessionId, turn.rateLimitReason);
+        recordAttempt('failed', turn.sessionId ?? sessionRow.cliSessionId, reason);
         usedFallback = true;
         provider = fallback.provider;
         model = fallback.model || null;
@@ -1213,6 +1262,7 @@ export class LeadService {
         attemptStartedAt = new Date().toISOString();
         attemptUsage = undefined;
         announceAttempt();
+        attempted = true;
         turn = await run(null, fallback.effort);
       }
 
@@ -1224,6 +1274,30 @@ export class LeadService {
       }
 
       const parsedReply = this.parseAskReply(turn);
+      let autoPlan: PlanContract | undefined;
+      let autoCommit: AutoCommit | undefined;
+      if (auto) {
+        const candidate = extractJsonCandidate(turn);
+        if (candidate && typeof candidate === 'object' && 'auto_commit' in candidate && candidate.auto_commit != null) {
+          autoCommit = AutoCommitSchema.parse(candidate.auto_commit);
+          const lastLead = priorMessages.at(-1)?.role === 'lead' ? priorMessages.at(-1) : undefined;
+          const lastText = lastLead?.content && typeof lastLead.content === 'object' && 'text' in lastLead.content
+            ? String(lastLead.content.text) : typeof lastLead?.content === 'string' ? lastLead.content : '';
+          const approvedListedFiles = /^(?:ya|yes|y|setuju|lanjut|boleh|ok|oke)[.!\s]*$/i.test(rawMessage.trim()) &&
+            /\b(?:commit|komit)\b/i.test(lastText) && lastText.includes('?') &&
+            autoCommit.paths.every((file) => lastText.includes(`\`${file}\``));
+          if (!/\b(?:commit|komit)\b/i.test(rawMessage) && !approvedListedFiles) {
+            throw new Error('A commit requires an explicit request or approval of the listed files.');
+          }
+        }
+        if (candidate && typeof candidate === 'object' && 'auto_plan' in candidate && candidate.auto_plan != null) {
+          autoPlan = PlanContractSchema.parse(candidate.auto_plan);
+          if (autoPlan.tasks.some((task) => task.needs_split || task.files_allowed.length === 0)) {
+            throw new Error('Auto plan must contain focused tasks with explicit file boundaries.');
+          }
+        }
+      }
+      if (autoPlan && autoCommit) throw new Error('A turn cannot both start coding tasks and commit the checkout.');
       // A fallback has its own CLI session. Rebuild the preferred provider's context on the next turn.
       const nextCliSessionId = usedFallback ? null : turn.sessionId ?? sessionRow.cliSessionId;
 
@@ -1249,10 +1323,10 @@ export class LeadService {
       this.events?.emitEvent({ type: 'discuss.updated', projectId: project.id, sessionId: sessionRow.id });
       this.events?.emitEvent({ type: 'sessions.updated', projectId: project.id, sessionId: sessionRow.id });
 
-      return parsedReply;
+      return { ...parsedReply, ...(autoPlan ? { autoPlan } : {}), ...(autoCommit ? { autoCommit } : {}) };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      recordAttempt('failed', usedFallback ? null : sessionRow.cliSessionId, msg);
+      if (attempted) recordAttempt('failed', usedFallback ? null : sessionRow.cliSessionId, msg);
       this.appendMessage(sessionRow.id, 'system', 'error', msg);
       this.events?.emitEvent({
         type: 'lead.turn_finished',
@@ -1322,6 +1396,37 @@ export class LeadService {
       text: turn.text.trim() || '(no response)',
       suggestion: null,
     };
+  }
+
+  private async startAutoPlan(
+    project: typeof projects.$inferSelect,
+    session: typeof sessions.$inferSelect,
+    contract: PlanContract,
+  ): Promise<void> {
+    this.assertCanStartWorkInSession(project.id, session.id);
+    if (this.hasSessionUnfinishedWork(session.id)) {
+      throw conflictError('Finish or discard the existing work before starting a new Auto plan.');
+    }
+    if (!this.executionRouter?.startExecution) throw new Error('Task execution is unavailable.');
+    const previous = this.db.select().from(plans).where(eq(plans.sessionId, session.id)).orderBy(desc(plans.version)).get();
+    const version = (previous?.version ?? 0) + 1;
+    const plan = PlanContractSchema.parse({ ...contract, version });
+    const sessionDir = getSessionDir(project.path, session.id);
+    ensureProjectDir(project.path, sessionDir);
+    const planPath = path.join(sessionDir, 'plan.json');
+    writeArtifactFile(project.path, planPath, JSON.stringify(plan, null, 2));
+    const planId = crypto.randomUUID();
+    const now = new Date().toISOString();
+    this.db.transaction((tx) => {
+      tx.insert(plans).values({
+        id: planId, projectId: project.id, sessionId: session.id, briefId: null,
+        version, status: 'draft', filePath: path.relative(project.path, planPath).split(path.sep).join('/'),
+        createdAt: now, approvedAt: null,
+      }).run();
+      this.persistPlanTasks(planId, plan.tasks.map((task) => ({ task, splitDepth: 0, parentExternalId: null })));
+    });
+    this.approvePlan(project.id, session.id);
+    await this.executionRouter.startExecution(project.id, { sessionId: session.id });
   }
 
   private async runQuickTurnInner(

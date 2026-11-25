@@ -152,8 +152,8 @@ export class RoomApiClient {
     return res.project;
   }
 
-  async listSessions(projectId: string): Promise<{ sessions: SessionSummaryDTO[]; workingSessionId: string | null }> {
-    return this.request(`/api/projects/${encodeURIComponent(projectId)}/sessions`);
+  async listSessions(projectId: string, includeArchived = false): Promise<{ sessions: SessionSummaryDTO[]; workingSessionId: string | null }> {
+    return this.request(`/api/projects/${encodeURIComponent(projectId)}/sessions${includeArchived ? '?includeArchived=1' : ''}`);
   }
 
   async createSession(projectId: string, mode: SessionMode = 'ask'): Promise<SessionSummaryDTO> {

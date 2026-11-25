@@ -74,7 +74,8 @@ describe('Lead settings from Config', () => {
         idleTimedOut: false,
       };
     });
-    const lead = new LeadService(conn.db, new ProviderRegistry(runner));
+    const registry = new ProviderRegistry(runner);
+    const lead = new LeadService(conn.db, registry);
     const projectService = new ProjectService(conn.db);
     const project = await projectService.createOrOpen({
       mode: 'create',
@@ -117,7 +118,8 @@ describe('team room mention routing and feed (v0.12)', () => {
       mode: 'create', path: mkTmp('dalang-ask-quota-repo-'), initGitIfMissing: true, leadProvider: 'claude-code',
     });
     const profiles = new ProfileService(conn.db);
-    const lead = new LeadService(conn.db, new ProviderRegistry(runner));
+    const registry = new ProviderRegistry(runner);
+    const lead = new LeadService(conn.db, registry);
     profiles.updateProfile('profile-lead', { fallback: { provider: 'codex', model: '', effort: 'medium', configDir: null } });
     const first = await lead.sendChatMessage(project.id, { mode: 'ask', message: 'First question' });
     const sessionId = first.session.id;
@@ -135,6 +137,15 @@ describe('team room mention routing and feed (v0.12)', () => {
       .rejects.toThrow('The Lead fallback uses the same CLI account');
     expect(calls).toHaveLength(4);
     expect(lead.getSessionDetail(project.id, sessionId).messages.at(-1)?.role).toBe('system');
+
+    profiles.updateProfile('profile-lead', { fallback: { provider: 'codex', model: '', effort: 'medium', configDir: null } });
+    registry.setUsageSnapshot('claude-code', {
+      available: true,
+      windows: [{ group: 'Claude', window: '5h', label: '5h', usedPercent: 100, remainingPercent: 0, resetsAt: null }],
+    });
+    const cached = await lead.sendChatMessage(project.id, { sessionId, mode: 'ask', message: 'Fourth question' });
+    expect(cached.askReply?.text).toBe('Answered by the fallback');
+    expect(calls.slice(4).map((bin) => path.basename(bin))).toEqual(['claude', 'codex']);
   });
 
   it('parses leading mentions and ignores non-mention tokens', () => {
@@ -247,6 +258,7 @@ describe('team room mention routing and feed (v0.12)', () => {
     ]);
     expect(calls[1]?.bin).toContain('codex');
     expect(calls[1]?.readOnly).toBe(true);
+    expect(calls[1]?.prompt).toContain('match the language of the latest user question');
 
     const revMsg = revRes.messages[revRes.messages.length - 1];
     expect(revMsg.role).toBe('agent');

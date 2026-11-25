@@ -93,6 +93,7 @@ export interface RoleEdit {
   provider?: ProviderId;
   model?: string;
   effort?: EffortLevel;
+  fallback?: FallbackTarget | null;
 }
 
 export interface RoleValue {
@@ -114,14 +115,16 @@ export function roleValue(
   edit: RoleEdit | undefined,
   usable: ReadonlySet<ProviderId>,
   providers: ProviderStatus[],
+  preferAvailable = true,
 ): RoleValue {
   const e = edit ?? {};
   const readyFallback = PROVIDER_ORDER.find((id) => usable.has(id)) ?? profile.provider;
-  const provider = e.provider ?? (usable.has(profile.provider) ? profile.provider : readyFallback);
+  const provider = e.provider ?? (!preferAvailable || usable.has(profile.provider) ? profile.provider : readyFallback);
   const model = e.model ?? (provider === profile.provider ? profile.model : '');
   const allowed = effortsFor(providers, provider, model);
   const wanted = e.effort ?? profile.effort;
-  const effort = allowed.includes(wanted) ? wanted : (allowed[0] as EffortLevel);
+  const unchanged = !preferAvailable && e.effort === undefined && e.model === undefined && e.provider === undefined;
+  const effort = unchanged || allowed.includes(wanted) ? wanted : (allowed[0] as EffortLevel);
   return { provider, model, effort };
 }
 
@@ -156,8 +159,9 @@ export function planTeamChanges(input: {
   providers: ProviderStatus[];
   usable: ReadonlySet<ProviderId>;
   edits: Record<string, RoleEdit>;
+  suggestFallbacks?: boolean;
 }): TeamPlan {
-  const { profiles, rules, providers, usable, edits } = input;
+  const { profiles, rules, providers, usable, edits, suggestFallbacks = true } = input;
   const roles = roleProfiles(profiles);
   const fallbackByProfile = new Map<string, FallbackTarget | null>();
   const plan: TeamPlan = { profileUpdates: [], ruleUpdates: [] };
@@ -165,8 +169,10 @@ export function planTeamChanges(input: {
   for (const key of ROLE_KEYS) {
     const prof = roles[key];
     if (!prof) continue;
-    const v = roleValue(prof, edits[prof.id], usable, providers);
-    const fallback = roleFallback(prof, v.provider, usable, rules);
+    const v = roleValue(prof, edits[prof.id], usable, providers, suggestFallbacks);
+    const fallback = edits[prof.id]?.fallback !== undefined
+      ? edits[prof.id].fallback!
+      : suggestFallbacks ? roleFallback(prof, v.provider, usable, rules) : prof.fallback;
     fallbackByProfile.set(prof.id, fallback);
     if (
       v.provider !== prof.provider ||
@@ -211,12 +217,13 @@ export function isCrossProvider(
   providers: ProviderStatus[],
   usable: ReadonlySet<ProviderId>,
   edits: Record<string, RoleEdit>,
+  preferAvailable = true,
 ): boolean {
   const roles = roleProfiles(profiles);
   if (!roles.reviewer) return false;
-  const reviewer = roleValue(roles.reviewer, edits[roles.reviewer.id], usable, providers).provider;
+  const reviewer = roleValue(roles.reviewer, edits[roles.reviewer.id], usable, providers, preferAvailable).provider;
   return [roles.coderLight, roles.coderMedium, roles.coderHeavy].some(
-    (p) => p && roleValue(p, edits[p.id], usable, providers).provider !== reviewer,
+    (p) => p && roleValue(p, edits[p.id], usable, providers, preferAvailable).provider !== reviewer,
   );
 }
 

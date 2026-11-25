@@ -74,6 +74,53 @@ it('steers and interrupts a Codex turn, then resumes the returned thread ID', as
   expect(resumed).toMatchObject({ sessionId: 'thread-1', aborted: false, text: 'resumed' });
 });
 
+it('keeps a Codex turn running after a retryable provider error', async () => {
+  const logs: string[] = [];
+  const runner = protocolRunner('codex', 'app-server', ({ id, method }, emit) => {
+    if (method === 'initialize') emit({ id, result: {} });
+    if (method === 'thread/start') emit({ id, result: { thread: { id: 'thread-1' } } });
+    if (method === 'turn/start') {
+      emit({ id, result: { turn: { id: 'turn-1' } } });
+      emit({ method: 'error', params: {
+        threadId: 'thread-1', turnId: 'turn-1', willRetry: true,
+        error: { message: 'Reconnecting', additionalDetails: 'Model at capacity' },
+      } });
+      emit({ method: 'item/completed', params: {
+        threadId: 'thread-1', item: { type: 'agentMessage', text: 'Hello' },
+      } });
+      emit({ method: 'turn/completed', params: {
+        threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' },
+      } });
+    }
+  });
+  const result = await new CodexAdapter(runner).runTurn({
+    projectPath: process.cwd(), prompt: 'Hello', permissionMode: 'read-only',
+    onLogLine: (line) => logs.push(line),
+  });
+  expect(result).toMatchObject({ exitCode: 0, text: 'Hello' });
+  expect(logs.map((line) => JSON.parse(line))).toContainEqual({
+    type: 'provider.error', message: 'Reconnecting Model at capacity', retrying: true,
+  });
+});
+
+it('returns a Codex rate limit for read-only fallback', async () => {
+  const runner = protocolRunner('codex', 'app-server', ({ id, method }, emit) => {
+    if (method === 'initialize') emit({ id, result: {} });
+    if (method === 'thread/start') emit({ id, result: { thread: { id: 'thread-1' } } });
+    if (method === 'turn/start') {
+      emit({ id, result: { turn: { id: 'turn-1' } } });
+      emit({ method: 'error', params: {
+        threadId: 'thread-1', turnId: 'turn-1', willRetry: true,
+        error: { message: 'Reconnecting', codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: 429 } } },
+      } });
+    }
+  });
+  const result = await new CodexAdapter(runner).runTurn({
+    projectPath: process.cwd(), prompt: 'Hello', permissionMode: 'read-only',
+  });
+  expect(result).toMatchObject({ exitCode: 1, rateLimitReason: 'Codex rate limited the request (HTTP 429).' });
+});
+
 it('cancels an ACP prompt and keeps the Antigravity session available to resume', async () => {
   let finish!: (message: unknown) => void;
   let promptId: number | undefined;

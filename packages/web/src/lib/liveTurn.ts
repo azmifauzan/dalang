@@ -1,3 +1,5 @@
+import { liveReplyText } from '@dalang/shared';
+
 /**
  * A readable view of what a CLI is doing, built from its raw log lines.
  * Each CLI writes its own JSON events (Claude Code stream-json, Codex JSONL, Antigravity step updates);
@@ -52,11 +54,6 @@ function toolActivity(name: string, input: unknown): LiveActivity {
 
 function humanize(stepType: string): string {
   return stepType.replace(/[_-]+/g, ' ').trim();
-}
-
-/** Only plain prose is worth showing live; a JSON reply is shown once it is finished and parsed. */
-function looksLikeJson(text: string): boolean {
-  return text.trimStart().startsWith('{');
 }
 
 export function applyLogLine(turn: LiveTurn, line: string): LiveTurn {
@@ -120,5 +117,5 @@ export function applyLogLine(turn: LiveTurn, line: string): LiveTurn {
 
 /** The text to show while the turn runs, or an empty string when it would be raw JSON. */
 export function displayLiveText(turn: LiveTurn): string {
-  return looksLikeJson(turn.text) ? '' : turn.text;
+  return liveReplyText(turn.text);
 }

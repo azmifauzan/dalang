@@ -60,6 +60,8 @@ export interface RoomAppProps {
   openBrowser: (url: string) => void;
   onOpenPager: (content: string, label: string) => Promise<{ ok: boolean; error?: string }>;
   onRequestExit?: () => void;
+  initialRoom?: { projectId: string | null; sessionId: string | null; mode: SessionMode; modelChoice: ModelChoice | null };
+  onRequestRestart?: (room: { projectId: string | null; sessionId: string | null; mode: SessionMode; modelChoice: ModelChoice | null }) => void;
   /** Let the mouse wheel scroll the timeline (asks the terminal for wheel reports). */
   enableMouse?: boolean;
 }
@@ -120,6 +122,8 @@ export function RoomApp({
   openBrowser,
   onOpenPager,
   onRequestExit,
+  initialRoom,
+  onRequestRestart,
   enableMouse = false,
 }: RoomAppProps) {
   const { exit } = useApp();
@@ -158,7 +162,7 @@ export function RoomApp({
   const [execution, setExecution] = useState<ExecutionStateDTO | null>(null);
   const [guard, setGuard] = useState<GuardStateDTO | null>(null);
   const [profiles, setProfiles] = useState<AgentProfileDTO[]>([]);
-  const [mode, setMode] = useState<SessionMode>('ask');
+  const [mode, setMode] = useState<SessionMode>('auto');
   const [providerStatus, setProviderStatus] = useState<ProviderStatus[] | null>(null);
   const [screen, setScreen] = useState<'room' | 'wizard' | 'config' | 'model'>('room');
   const [modelChoice, setModelChoice] = useState<ModelChoice | null>(null);
@@ -170,6 +174,7 @@ export function RoomApp({
   const [liveReplies] = useState(createLiveReplyStore);
   const [sending, setSending] = useState(false);
   const [pagerOpen, setPagerOpen] = useState(false);
+  const [mouseCapture, setMouseCapture] = useState(enableMouse);
   const [scrollOffset, setScrollOffset] = useState(0);
   // The most the timeline can scroll back, set on each render. A scroll past it would be lost
   // rows to come back through.
@@ -178,7 +183,7 @@ export function RoomApp({
     setScrollOffset((s) => Math.min(maxScrollRef.current, Math.max(0, s + rows)));
   }, []);
   const onWheel = useCallback((notches: number) => scrollBy(notches * WHEEL_ROWS), [scrollBy]);
-  useMouseWheel(onWheel, enableMouse);
+  useMouseWheel(onWheel, mouseCapture);
 
   // Composer state
   const [input, setInput] = useState('');
@@ -352,12 +357,18 @@ export function RoomApp({
       setProjects(projList);
       setProfiles(profList);
 
-      const matched = matchProjectForCwd(projList, cwd) ?? projList[0] ?? null;
+      const matched = projList.find((p) => p.id === initialRoom?.projectId) ?? matchProjectForCwd(projList, cwd) ?? projList[0] ?? null;
       if (matched) {
         setActiveProjectId(matched.id);
-        // The room opens on a new session; /resume brings an earlier one back.
-        setActiveSessionId(null);
-        await refreshSessionState(matched.id, null);
+        const restored = matched.id === initialRoom?.projectId ? initialRoom.sessionId : null;
+        const sessionList = restored ? await client.listSessions(matched.id, true) : null;
+        const sessionId = sessionList?.sessions.some((s) => s.id === restored) ? restored : null;
+        setActiveSessionId(sessionId);
+        await refreshSessionState(matched.id, sessionId);
+        if (initialRoom) {
+          setMode(initialRoom.mode);
+          setModelChoice(initialRoom.modelChoice);
+        }
       } else {
         // First run: the setup wizard, like the web.
         setScreen('wizard');
@@ -369,7 +380,7 @@ export function RoomApp({
       });
       setReady(true);
     }
-  }, [client, cwd, pushNotice, refreshSessionState]);
+  }, [client, cwd, initialRoom, pushNotice, refreshSessionState]);
 
   useEffect(() => {
     void bootstrap();
@@ -652,7 +663,7 @@ export function RoomApp({
       setActiveProjectId(project.id);
       setActiveSessionId(null);
       setDetail(null);
-      setMode('ask');
+      setMode('auto');
       setScreen('room');
       await refreshSessionState(project.id, null);
       await reloadAfterSetup();
@@ -679,6 +690,28 @@ export function RoomApp({
             handleExit();
             return;
 
+          case 'restart': {
+            if (!onRequestRestart) {
+              pushNotice('Restart is unavailable in this terminal.', { isError: true });
+              return;
+            }
+            if (embedded) {
+              const allProjects = await client.listProjects();
+              const states = await Promise.all(allProjects.map(async (project) => {
+                const { sessions: projectSessions } = await client.listSessions(project.id, true);
+                const executions = await Promise.all(projectSessions.map((session) => client.getExecutionState(project.id, session.id)));
+                return projectSessions.some((session) => session.turn) || executions.some((state) => state.queueRunning || state.activeRuns.length > 0);
+              }));
+              if (states.some(Boolean)) {
+                pushNotice('Cannot restart while an agent or task is running. Wait until it finishes or use /stop.', { isError: true });
+                return;
+              }
+            }
+            onRequestRestart({ projectId: activeProjectId, sessionId: activeSessionId, mode, modelChoice });
+            exit();
+            return;
+          }
+
           case 'help': {
             pushNotice(
               [
@@ -686,9 +719,11 @@ export function RoomApp({
                 ...SLASH_COMMANDS.map((c) => `  ${c.usage.padEnd(42)} ${c.description}`),
                 '',
                 'Routing & shortcuts:',
-                '  <message>          Send to Lead in current mode (ask / quick / full)',
+                '  <message>          Send to Lead in current mode (auto / ask / quick / full)',
                 '  @<profile> <msg>   Idle profile -> read-only Ask; running coder -> steer',
                 '  Tab                Autocomplete @profile or /command',
+                '  Shift+Tab          Switch mode',
+                '  /mouse             Toggle wheel capture for text selection',
                 '  PageUp / PageDown  Scroll timeline (or Ctrl+U / Ctrl+D, or the mouse wheel)',
                 '  y / n + Enter      Answer the active gate prompt',
               ],
@@ -697,16 +732,24 @@ export function RoomApp({
             return;
           }
 
+          case 'mouse': {
+            setMouseCapture((enabled) => !enabled);
+            pushNotice(mouseCapture
+              ? 'Mouse capture off. Select text normally; use PageUp and PageDown to scroll.'
+              : 'Mouse capture on. Use the wheel to scroll; hold Shift while selecting text.');
+            return;
+          }
+
           case 'mode': {
             const arg = cmd.args[0]?.toLowerCase();
             if (!arg) {
-              pushNotice(`Composer mode is [${mode}]. Switch with /mode ask, /mode quick, or /mode full.`, {
+              pushNotice(`Composer mode is [${mode}]. Switch with Shift+Tab or /mode auto, ask, quick, or full.`, {
                 badge: 'MODE',
               });
               return;
             }
-            if (arg !== 'ask' && arg !== 'quick' && arg !== 'full') {
-              pushNotice('Usage: /mode [ask|quick|full]', { isError: true });
+            if (arg !== 'auto' && arg !== 'ask' && arg !== 'quick' && arg !== 'full') {
+              pushNotice('Usage: /mode [auto|ask|quick|full]', { isError: true });
               return;
             }
             setMode(arg);
@@ -769,7 +812,7 @@ export function RoomApp({
             setActiveProjectId(target.id);
             setActiveSessionId(null);
             setDetail(null);
-            setMode('ask');
+            setMode('auto');
             await refreshSessionState(target.id, null);
             pushNotice(`Switched to project "${target.name}". New session.`, { badge: 'PROJECT' });
             return;
@@ -784,7 +827,7 @@ export function RoomApp({
             setDetail(null);
             setExecution(null);
             setGuard(null);
-            setMode('ask');
+            setMode('auto');
             syncedModeKeyRef.current = null;
             pushNotice('New session. Send a message to begin.', { badge: 'SESSION' });
             return;
@@ -1035,14 +1078,19 @@ export function RoomApp({
       }
     },
     [
+      mouseCapture,
       activeProjectId,
       activeSessionId,
       client,
       cwd,
       detail,
+      embedded,
+      exit,
       guard,
       handleExit,
       mode,
+      modelChoice,
+      onRequestRestart,
       onOpenPager,
       openBrowser,
       openModelPicker,
@@ -1157,6 +1205,12 @@ export function RoomApp({
       // A mouse report must never land in the composer as typed text.
       const ch = stripMouse(rawCh);
       if (pagerOpen) return;
+
+      if (!authNeeded && (key.tab && key.shift || rawCh === '\u001b[Z')) {
+        const modes: SessionMode[] = ['auto', 'ask', 'quick', 'full'];
+        setMode((current) => modes[(modes.indexOf(current) + 1) % modes.length]);
+        return;
+      }
 
       // Auth prompt mode
       if (authNeeded) {
@@ -1592,7 +1646,7 @@ export function RoomApp({
               {resumableSessions(sessions).length > 0
                 ? `/resume continues one of ${resumableSessions(sessions).length} earlier session(s). `
                 : ''}
-              Switch modes with /mode ask | quick | full. Open the browser UI anytime with /web.
+              Switch modes with Shift+Tab or /mode auto | ask | quick | full. Open the browser UI anytime with /web.
             </Text>
           </Box>
         ) : (
@@ -1679,7 +1733,7 @@ export function RoomApp({
         <Text dimColor wrap="truncate-end">
           {startIdx > 0 || clampedOffset > 0
             ? '↑/↓ prompt history · /help /exit'
-            : '↑/↓ prompt history · @profile tag/steer · /model /resume /new /config /wizard /web /help /exit'}
+            : '↑/↓ prompt history · @profile tag/steer · /model /resume /new /restart /config /wizard /web /help /exit'}
         </Text>
         {clampedOffset > 0 ? (
           <Text color="yellow" wrap="truncate-end">

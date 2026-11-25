@@ -4,7 +4,14 @@
  * and an empty string until that field starts.
  */
 export function liveReplyText(raw: string): string {
-  const text = raw.trimStart();
+  let text = raw.trimStart();
+  if (text.startsWith('`')) {
+    if (/^`{1,3}(?:j(?:s(?:o(?:n)?)?)?)?$/i.test(text)) return '';
+    const fence = /^```(?:json)?\s*/i.exec(text);
+    if (!fence) return raw;
+    text = text.slice(fence[0].length);
+    if (!text) return '';
+  }
   if (!text.startsWith('{')) return raw;
   const start = /"answer"\s*:\s*"/.exec(text);
   if (!start) return '';

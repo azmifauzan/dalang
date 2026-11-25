@@ -7,6 +7,7 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 
 const MODE_RANK: Record<SessionMode, number> = {
+  auto: 0,
   ask: 0,
   quick: 1,
   full: 2,
@@ -71,7 +72,7 @@ export function ModeComposer({
   const getDisabledReason = (mode: SessionMode): string | null => {
     if (!currentPersistedMode) return null;
     // A question is read-only, so it can be asked anywhere. Only a lighter way of working is refused.
-    if (mode === 'ask') return null;
+    if (mode === 'ask' || mode === 'auto') return null;
     if (MODE_RANK[mode] < MODE_RANK[currentPersistedMode]) {
       if (isWorking) {
         return t('sessions.modeDownDisabledWorking');
@@ -86,13 +87,13 @@ export function ModeComposer({
   };
 
   const disabledHint =
-    (['ask', 'quick', 'full'] as const)
+    (['auto', 'ask', 'quick', 'full'] as const)
       .map((m) => getDisabledReason(m))
       .find((r) => Boolean(r)) ?? null;
 
   const placeholder = isFinishedSession && selectedMode === 'ask'
     ? t('sessions.followUpPlaceholder')
-    : selectedMode === 'ask'
+    : (selectedMode === 'ask' || selectedMode === 'auto')
       ? t('sessions.askPlaceholder')
       : selectedMode === 'quick'
         ? t('sessions.quickPlaceholder')
@@ -110,13 +111,22 @@ export function ModeComposer({
     submitLabel ??
     (busy
       ? t('sessions.sending')
-      : selectedMode === 'ask'
+      : (selectedMode === 'ask' || selectedMode === 'auto')
         ? t('sessions.sendAsk')
         : selectedMode === 'quick'
           ? t('sessions.sendQuick')
           : t('sessions.sendFull'));
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Tab' && e.shiftKey) {
+      const modes: SessionMode[] = ['auto', 'ask', 'quick', 'full'];
+      const available = modes.filter((mode) => !getDisabledReason(mode));
+      if (!busy && available.length) {
+        e.preventDefault();
+        onSelectMode(available[(available.indexOf(selectedMode) + 1) % available.length]);
+      }
+      return;
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       if (e.nativeEvent.isComposing || e.keyCode === 229) return;
@@ -266,7 +276,7 @@ export function ModeComposer({
             backgroundColor: 'var(--bg-well)',
           }}
         >
-          {(['ask', 'quick', 'full'] as const).map((mode) => {
+          {(['auto', 'ask', 'quick', 'full'] as const).map((mode) => {
             const active = selectedMode === mode;
             const disabledReason = getDisabledReason(mode);
             const disabled = Boolean(disabledReason) || busy;

@@ -7,10 +7,12 @@ export interface SlashCommandDef {
 }
 
 export const SLASH_COMMANDS: SlashCommandDef[] = [
-  { name: 'mode', usage: '/mode [ask|quick|full]', description: 'Show or switch chat mode' },
+  { name: 'mouse', usage: '/mouse', description: 'Toggle mouse wheel capture for text selection' },
+  { name: 'mode', usage: '/mode [auto|ask|quick|full]', description: 'Show or switch chat mode' },
   { name: 'project', usage: '/project [list|<n|name>|open [path]|create [path]]', description: 'List, switch, or open a project' },
   { name: 'new', usage: '/new', description: 'Start a new session' },
   { name: 'resume', usage: '/resume [n|id]', description: 'Pick a previous session to continue' },
+  { name: 'restart', usage: '/restart', description: 'Restart DALANG and return to this session' },
   { name: 'model', usage: '/model', description: "Choose the Lead's model from every connected provider" },
   { name: 'config', usage: '/config', description: 'Language, limits refresh, agent CLIs, and the agent team' },
   { name: 'wizard', usage: '/wizard', description: 'Open the setup wizard again' },

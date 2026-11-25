@@ -12,6 +12,7 @@ import {
   PROVIDER_ORDER,
   providerLabel,
   roleProfiles,
+  roleFallback,
   roleValue,
   ROLE_KEYS,
   ROLE_LABEL,
@@ -19,7 +20,7 @@ import {
   type RoleEdit,
   type RoleKey,
 } from './team.js';
-import { Menu, type MenuItem } from './ui.js';
+import { Field, Menu, type MenuItem } from './ui.js';
 
 /** What the Antigravity keyring consent means, from the web wizard. */
 const KEYRING_RISK =
@@ -170,6 +171,7 @@ export function TeamEditor({
   onBack,
   extraItems = [],
   onExtra,
+  suggestFallbacks = true,
 }: {
   data: SetupData;
   acceptLabel: string;
@@ -177,27 +179,84 @@ export function TeamEditor({
   onBack: () => void;
   extraItems?: MenuItem[];
   onExtra?: (item: MenuItem) => void;
+  suggestFallbacks?: boolean;
 }) {
   const keyring = data.settings?.antigravityKeyringAccess ?? false;
   const usable = useMemo(() => usableProviderIds(data.providers, keyring), [data.providers, keyring]);
   const [edits, setEdits] = useState<Record<string, RoleEdit>>({});
   const [role, setRole] = useState<RoleKey | null>(null);
-  const [field, setField] = useState<'provider' | 'model' | 'effort' | null>(null);
+  const [field, setField] = useState<'provider' | 'model' | 'effort' | 'fallback' | 'fallback-provider' | 'fallback-model' | 'fallback-effort' | 'fallback-account' | null>(null);
   const roles = useMemo(() => roleProfiles(data.profiles), [data.profiles]);
   const patch = (id: string, next: RoleEdit) =>
     setEdits((prev) => ({ ...prev, [id]: { ...(prev[id] ?? {}), ...next } }));
 
   const prof = role ? roles[role] : null;
-  const cur = prof ? roleValue(prof, edits[prof.id], usable, data.providers) : null;
+  const cur = prof ? roleValue(prof, edits[prof.id], usable, data.providers, suggestFallbacks) : null;
+  const fallback = prof && cur
+    ? edits[prof.id]?.fallback !== undefined
+      ? edits[prof.id].fallback!
+      : suggestFallbacks ? roleFallback(prof, cur.provider, usable, data.rules) : prof.fallback
+    : null;
 
   if (role && prof && cur) {
-    const back = () => (field ? setField(null) : setRole(null));
+    const back = () => (field?.startsWith('fallback-') ? setField('fallback') : field ? setField(null) : setRole(null));
     const heading = (
       <Text bold>
         {ROLE_LABEL[role]}
         <Text dimColor>{`   ${describeRole(cur)}`}</Text>
       </Text>
     );
+    if (field === 'fallback-provider') {
+      return <Box flexDirection="column">{heading}<Menu key="fallback-provider" onCancel={back}
+        initialKey={fallback?.provider ?? 'none'}
+        items={[{ key: 'none', label: 'No fallback' }, ...PROVIDER_ORDER.map((id) => ({
+          key: id, label: providerLabel(id), detail: usable.has(id) ? undefined : 'not ready: sign in first', disabled: !usable.has(id),
+        }))]}
+        onSelect={(item) => {
+          const provider = item.key as ProviderId;
+          const next = item.key === 'none' ? null : fallback?.provider === provider ? fallback : {
+            provider, model: '', effort: 'medium' as EffortLevel, configDir: null,
+          };
+          patch(prof.id, { fallback: next });
+          setField('fallback');
+        }} /></Box>;
+    }
+    if (field === 'fallback-model' && fallback) {
+      const models = modelsOf(data.providers, fallback.provider);
+      const items: MenuItem[] = [{ key: '', label: 'CLI default' }];
+      if (fallback.model && !models.some((m) => m.value === fallback.model)) items.push({ key: fallback.model, label: fallback.model });
+      for (const m of models) items.push({ key: m.value, label: modelLabel(m), detail: m.value });
+      return <Box flexDirection="column">{heading}<Menu key="fallback-model" items={items} initialKey={fallback.model} onCancel={back}
+        onSelect={(item) => {
+          const allowed = effortsFor(data.providers, fallback.provider, item.key);
+          patch(prof.id, { fallback: { ...fallback, model: item.key, effort: allowed.includes(fallback.effort) ? fallback.effort : allowed[0] } });
+          setField('fallback');
+        }} /></Box>;
+    }
+    if (field === 'fallback-effort' && fallback) {
+      return <Box flexDirection="column">{heading}<Menu key="fallback-effort" initialKey={fallback.effort} onCancel={back}
+        items={effortsFor(data.providers, fallback.provider, fallback.model).map((level) => ({ key: level, label: level }))}
+        onSelect={(item) => { patch(prof.id, { fallback: { ...fallback, effort: item.key as EffortLevel } }); setField('fallback'); }} /></Box>;
+    }
+    if (field === 'fallback-account' && fallback) {
+      return <Box flexDirection="column">{heading}<Field key="fallback-account" label="Account config directory"
+        initialValue={fallback.configDir ?? ''} placeholder="Default account" onCancel={back}
+        onSubmit={(value) => { patch(prof.id, { fallback: { ...fallback, configDir: value.trim() || null } }); setField('fallback'); }} /></Box>;
+    }
+    if (field === 'fallback') {
+      const details = fallback ? describeRole(fallback) : 'Off';
+      const items: MenuItem[] = [
+        { key: 'fallback-provider', label: 'Fallback provider', detail: fallback ? providerLabel(fallback.provider) : 'Off' },
+        ...(fallback ? [
+          { key: 'fallback-model', label: 'Fallback model', detail: fallback.model || 'CLI default' },
+          { key: 'fallback-effort', label: 'Fallback reasoning effort', detail: fallback.effort },
+          { key: 'fallback-account', label: 'Fallback account directory', detail: fallback.configDir || 'Default account' },
+        ] : []),
+        { key: 'done', label: 'Done' },
+      ];
+      return <Box flexDirection="column">{heading}<Text dimColor>Fallback: {details}</Text><Menu key="fallback" items={items} onCancel={back}
+        onSelect={(item) => setField(item.key === 'done' ? null : item.key as typeof field)} /></Box>;
+    }
     if (field === 'provider') {
       return (
         <Box flexDirection="column">
@@ -276,9 +335,10 @@ export function TeamEditor({
             { key: 'provider', label: 'Provider', detail: providerLabel(cur.provider) },
             { key: 'model', label: 'Model', detail: cur.model || 'CLI default' },
             { key: 'effort', label: 'Reasoning effort', detail: cur.effort },
+            { key: 'fallback', label: 'Fallback', detail: fallback ? describeRole(fallback) : 'Off' },
             { key: 'done', label: 'Done' },
           ]}
-          onSelect={(item) => (item.key === 'done' ? setRole(null) : setField(item.key as 'provider' | 'model' | 'effort'))}
+          onSelect={(item) => (item.key === 'done' ? setRole(null) : setField(item.key as 'provider' | 'model' | 'effort' | 'fallback'))}
         />
       </Box>
     );
@@ -288,15 +348,16 @@ export function TeamEditor({
     ...ROLE_KEYS.map((key): MenuItem => {
       const p = roles[key];
       if (!p) return { key, label: ROLE_LABEL[key], detail: 'profile missing: restore it in the web Config', disabled: true };
-      return { key, label: ROLE_LABEL[key], detail: describeRole(roleValue(p, edits[p.id], usable, data.providers)) };
+      return { key, label: ROLE_LABEL[key], detail: describeRole(roleValue(p, edits[p.id], usable, data.providers, suggestFallbacks)) };
     }),
     { key: 'accept', label: acceptLabel, detail: data.busy ?? undefined },
     ...extraItems,
   ];
-  const cross = isCrossProvider(data.profiles, data.providers, usable, edits);
+  const cross = isCrossProvider(data.profiles, data.providers, usable, edits, suggestFallbacks);
 
   return (
     <Box flexDirection="column">
+      {data.error ? <Text color="red">{data.error}</Text> : null}
       <Text color={cross ? 'green' : 'yellow'}>
         {cross
           ? 'Cross-provider review active: coder and reviewer use separate subscriptions.'
@@ -318,6 +379,7 @@ export function TeamEditor({
                 providers: data.providers,
                 usable,
                 edits,
+                suggestFallbacks,
               });
               void data.applyTeam(plan).then((ok) => {
                 if (ok) onAccepted();

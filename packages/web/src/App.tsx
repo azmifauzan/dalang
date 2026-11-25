@@ -113,7 +113,7 @@ function AppShell({ authEnabled }: { authEnabled: boolean }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
     () => readStored('dalang.sidebarCollapsed') === '1',
   );
-  const [draftMode, setDraftMode] = useState<SessionMode>('ask');
+  const [draftMode, setDraftMode] = useState<SessionMode>('auto');
   const [showArchivedSessions, setShowArchivedSessions] = useState(false);
   const [projectStep, setProjectStep] = useState<ProjectStepId>('discuss');
   const [initialGoal, setInitialGoal] = useState<string>('');
@@ -218,7 +218,7 @@ function AppShell({ authEnabled }: { authEnabled: boolean }) {
     if (!activeProjectId || !projects.some((p) => p.id === activeProjectId)) {
       setActiveProjectId(projects[0].id);
       setActiveSessionId(projects[0].workingSessionId ?? null);
-      setDraftMode('ask');
+      setDraftMode('auto');
     }
   }, [projectsQuery.isSuccess, projects, activeProjectId, activeSessionId]);
 
@@ -295,7 +295,7 @@ function AppShell({ authEnabled }: { authEnabled: boolean }) {
       if (remaining.length > 0) {
         setActiveProjectId(remaining[0].id);
         setActiveSessionId(remaining[0].workingSessionId ?? null);
-        setDraftMode('ask');
+        setDraftMode('auto');
         setSection('project');
       } else {
         setActiveProjectId(null);
@@ -341,7 +341,7 @@ function AppShell({ authEnabled }: { authEnabled: boolean }) {
     onSuccess: (_res, vars) => {
       if (activeSessionId === vars.sessionId) {
         setActiveSessionId(null);
-        setDraftMode('ask');
+        setDraftMode('auto');
       }
       qc.invalidateQueries({ queryKey: ['sessions', vars.projectId] });
       qc.invalidateQueries({ queryKey: ['projects'] });
@@ -656,7 +656,7 @@ function AppShell({ authEnabled }: { authEnabled: boolean }) {
     setActiveProjectId(project.id);
     // Opening a project shows its active working session if one exists, otherwise straight into an empty Ask chat (creates no session).
     setActiveSessionId(project.workingSessionId ?? null);
-    setDraftMode('ask');
+    setDraftMode('auto');
     setSection('project');
     previousSectionRef.current = 'project';
     setQuickError(null);
@@ -666,7 +666,8 @@ function AppShell({ authEnabled }: { authEnabled: boolean }) {
   const handleNewChat = (project: ProjectSummary) => {
     setActiveProjectId(project.id);
     setActiveSessionId(null);
-    setDraftMode('ask');
+    setDraftMode('auto');
+    setProjectStep('discuss');
     setSection('project');
     previousSectionRef.current = 'project';
     setQuickError(null);
@@ -728,7 +729,7 @@ function AppShell({ authEnabled }: { authEnabled: boolean }) {
     writeStored('dalang.wizardDismissed', '1');
     setActiveProjectId(project.id);
     setActiveSessionId(null);
-    setDraftMode(goalText.trim() ? 'full' : 'ask');
+    setDraftMode('auto');
     setInitialGoal(goalText);
     setProjectStep('discuss');
     setSection('project');
@@ -928,8 +929,24 @@ function AppShell({ authEnabled }: { authEnabled: boolean }) {
                 <ErrorPanel title={t('plan.actionFailed')} detail={quickError} />
               )}
 
-              {/* Empty chat or Ask session: NO stepper, NO timeline */}
-              {(!activeSession || activeSession.mode === 'ask') && (
+              {activeSession?.mode === 'auto' && (
+                <nav className="flex gap-2" aria-label={t('nav.projectStepsAria')}>
+                  {(['discuss', 'work', 'review'] as const).map((step) => (
+                    <button key={step} type="button" onClick={() => setProjectStep(step)} aria-pressed={projectStep === step}>
+                      {t(step === 'discuss' ? 'step.1.label' : step === 'work' ? 'step.4.label' : 'step.5.label')}
+                    </button>
+                  ))}
+                </nav>
+              )}
+              {activeSession?.mode === 'auto' && projectStep === 'work' && (
+                <WorkView project={activeProject} sessionId={activeSession.id} liveLogsByRunId={runLogsByRunId}
+                  liveActivity={liveActivityByProject[activeProject.id] ?? []}
+                  onGoToPlan={() => setProjectStep('discuss')} onGoToReview={() => setProjectStep('review')} />
+              )}
+              {activeSession?.mode === 'auto' && projectStep === 'review' && (
+                <GuardView project={activeProject} sessionId={activeSession.id} onGoToWork={() => setProjectStep('work')} />
+              )}
+              {(!activeSession || activeSession.mode === 'ask' || (activeSession.mode === 'auto' && projectStep !== 'work' && projectStep !== 'review')) && (
                 <AskSessionView
                   key={`${activeProject.id}:${activeSession?.id ?? 'new'}`}
                   project={activeProject}

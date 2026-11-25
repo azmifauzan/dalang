@@ -1,10 +1,11 @@
 import React from 'react';
+import { spawn } from 'node:child_process';
 import { render } from 'ink';
 import { startDalangServer } from '@dalang/server';
 import { probeServerHealth, RoomApiClient } from './client.js';
 import { openTextInPager } from './format.js';
 import { mouseEnabled } from './mouse.js';
-import { RoomApp } from './RoomApp.js';
+import { RoomApp, type RoomAppProps } from './RoomApp.js';
 
 export interface StartTerminalRoomOptions {
   port: number;
@@ -16,6 +17,14 @@ export interface StartTerminalRoomOptions {
 export async function startTerminalRoom(options: StartTerminalRoomOptions): Promise<void> {
   const { port, staticDir, openBrowser } = options;
   const cwd = options.cwd ?? process.cwd();
+  let initialRoom: RoomAppProps['initialRoom'];
+  try {
+    if (process.env.DALANG_RESTART_ROOM) initialRoom = JSON.parse(process.env.DALANG_RESTART_ROOM);
+  } catch {
+    // A malformed restart state opens the room normally.
+  }
+  delete process.env.DALANG_RESTART_ROOM;
+  let restartRoom: RoomAppProps['initialRoom'];
 
   const existing = await probeServerHealth(port);
   let embeddedClose: (() => Promise<void>) | null = null;
@@ -69,6 +78,8 @@ export async function startTerminalRoom(options: StartTerminalRoomOptions): Prom
       cwd,
       openBrowser,
       onOpenPager: runPagerWithCleanTty,
+      initialRoom,
+      onRequestRestart: (room) => { restartRoom = room; },
       enableMouse: Boolean(process.stdout.isTTY) && mouseEnabled(),
     }),
     // Redraw only changed lines, and allow 60 frames a second so a keystroke is not held behind a
@@ -88,5 +99,20 @@ export async function startTerminalRoom(options: StartTerminalRoomOptions): Prom
     process.off('SIGINT', onSignal);
     process.off('SIGTERM', onSignal);
     await cleanup();
+  }
+  if (restartRoom) {
+    const env = { ...process.env, DALANG_RESTART_ROOM: JSON.stringify(restartRoom) };
+    const args = [...process.execArgv, ...process.argv.slice(1)];
+    if (process.platform !== 'win32' && typeof process.execve === 'function') {
+      process.execve(process.execPath, [process.execPath, ...args], env);
+    }
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(process.execPath, args, { stdio: 'inherit', env });
+      child.once('error', reject);
+      child.once('exit', (code, signal) => {
+        process.exitCode = code ?? (signal ? 1 : 0);
+        resolve();
+      });
+    });
   }
 }

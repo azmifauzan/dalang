@@ -102,6 +102,7 @@ export function ConfigScreen({
     body = (
       <TeamEditor
         data={data}
+        suggestFallbacks={false}
         acceptLabel="Save team"
         onAccepted={toMain}
         onBack={toMain}

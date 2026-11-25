@@ -501,6 +501,8 @@ export class CodexAdapter implements CliAdapter {
     const messages: string[] = [];
     let streamItemId: string | null = null;
     let usage: TurnTokenUsage | undefined;
+    let lastProviderError = '';
+    let rateLimitReason: string | undefined;
     let stderr = '';
     try {
       const turn = await withSessionRpc(this.runner, invocation.command, invocation.args, {
@@ -518,6 +520,18 @@ export class CodexAdapter implements CliAdapter {
         },
       }, (method, params) => {
         if (params.threadId !== sessionId) return;
+        if (method === 'error' && (!turnId || params.turnId === turnId)) {
+          const error = object(params.error);
+          lastProviderError = [error.message, error.additionalDetails]
+            .filter((part): part is string => typeof part === 'string' && part.length > 0)
+            .join(' ');
+          log({ type: 'provider.error', message: lastProviderError, retrying: params.willRetry === true });
+          const info = error.codexErrorInfo;
+          if (readOnly && submitted && (info === 'usageLimitExceeded' || object(object(info).responseStreamDisconnected).httpStatusCode === 429)) {
+            rateLimitReason = info === 'usageLimitExceeded' ? 'Codex usage limit exceeded.' : 'Codex rate limited the request (HTTP 429).';
+            complete({ status: 'failed', error: { message: rateLimitReason } });
+          }
+        }
         if (method === 'item/agentMessage/delta' && typeof params.delta === 'string') {
           // A new message item after earlier text starts a new paragraph.
           if (params.itemId !== streamItemId) {
@@ -600,11 +614,13 @@ export class CodexAdapter implements CliAdapter {
         text, sessionId, structuredOutput, aborted, usage, logFilePath: options.logFilePath, stdout: '',
         stderr: redactSecrets(typeof error === 'string' ? error : stderr, secrets),
         exitCode: turn.status === 'completed' || aborted ? 0 : 1,
+        ...(rateLimitReason ? { rateLimitReason } : {}),
       };
     } catch (error) {
       if (options.signal?.aborted) return { text: '', sessionId, aborted: true, exitCode: null, stdout: '', stderr };
       if (!submitted || error instanceof SessionRpcError && error.code === -32601) return null;
-      return { text: messages.join('\n'), sessionId, exitCode: 1, stdout: '', stderr: redactSecrets(String(error), secrets), usage };
+      const detail = lastProviderError ? `${String(error)} ${lastProviderError}` : String(error);
+      return { text: messages.join('\n'), sessionId, exitCode: 1, stdout: '', stderr: redactSecrets(detail, secrets), usage };
     } finally {
       options.onControls?.(null);
       controller.abort();

@@ -2,6 +2,15 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
+## 0.13.0 (Auto mode and terminal controls), 25 Nov
+
+- **Auto mode.** New chats default to Auto. The Lead chooses between answering, brainstorming, planning, and starting a validated task plan. Independent tasks can run in parallel; dependent tasks continue after their prerequisites are merged. Task review and merge approval remain in Guard.
+- **Sensitive actions.** The Lead is instructed to request approval for actions involving production, data, credentials, billing, and other sensitive operations. This decision depends on the model and does not enforce a production or data security boundary.
+- **Commit selected files.** Auto can handle an explicit request to commit files in the active checkout. Unrelated staged changes are preserved. A selected file with both staged and unstaged changes is refused. DALANG disables Git hooks and signing for the commit under its safe Git configuration.
+- **Terminal controls.** Shift+Tab cycles modes, `/restart` restores the selected room, and `/mouse` toggles mouse capture for selection. JSON answers stream as readable text, including fenced output.
+- **Fallback and language.** Every team role's fallback can be configured in the TUI, including provider, model, effort, and account. Ask and Auto support the configured Lead fallback on quota errors. The Lead follows the language of the user's latest question.
+- **Documentation.** Updated the guides and added a terminal room screenshot with demonstration data. No database migration is required.
+
 ## 0.12.1 (Live replies in the terminal room), 25 Nov
 
 - **Replies stream in the terminal room.** An Ask reply from the Lead or an `@<profile>` now shows its latest lines under the timeline while it is written, instead of appearing only when the turn ends. Claude Code runs Ask with `--include-partial-messages`; Codex streams through its app-server text deltas; Antigravity streams its message chunks. For a reply written as the JSON answer contract, the room shows the `answer` text, not the JSON. The server sends the text as `lead.text` WebSocket events in 50 ms batches. Partial-message events are not written to the turn log. The browser chat still shows the reply when each message finishes. Verified live in a pseudo-terminal with Claude Code (a 30-line reply arriving line by line) and Codex (a one-sentence reply); Antigravity streaming has not run live yet.

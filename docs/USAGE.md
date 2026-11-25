@@ -14,6 +14,11 @@ Run `dalang` in an interactive terminal to open the team room. If a Dalang serve
 
 ### Run and review work in the terminal
 
+![Terminal room in Auto mode with a sample conversation](images/tui-room.png)
+
+*Terminal room with demonstration data.*
+
+- **Auto:** Describe a question, plan, or implementation. The Lead decides how to proceed and can start approved task plans. Review changes before merging.
 - **Ask:** Type a question for the Lead. Use `/model` to choose the provider, model, and reasoning effort for Lead messages.
 - **Quick:** Run `/mode quick`, then describe the change. Read the draft task, allowed files, and verification command. Press `y` and Enter at the run gate, or use `/run`. Inspect the review and `/diff`, then press `y` at the merge gate or use `/merge`.
 - **Full:** Run `/mode full`, discuss the scope, and use `/finish` to draft the brief. Approve the brief to generate a plan. Approve the plan to start work. Use `/diff T-001` and `/merge T-001` for an individual task, or `/web` to inspect the same session in the browser.
@@ -29,21 +34,26 @@ Run `dalang` in an interactive terminal to open the team room. If a Dalang serve
 - **Reply as it is written:** while the Lead, or a profile you asked with `@<profile>`, answers in Ask mode, the latest lines of the reply appear under the timeline with `writing...`, and the finished message replaces them. Claude Code, Codex, and Antigravity stream their text as they write it. A provider run without live output shows each finished message instead.
 - **Working status:** the line above the composer shows an animated spinner, elapsed time, the agent and provider, and a short activity such as reading files, running a command, or writing a response. `+N` counts other active agents. When a provider has no recognized activity event, the line shows a general working status.
 - **Mention routing (`@<profile>`):**
-  - An untagged message, or `@lead`, goes to the Lead in the composer mode (`ask`, `quick`, or `full`).
+  - An untagged message, or `@lead`, goes to the Lead in the composer mode (`auto`, `ask`, `quick`, or `full`).
   - `@<profile>` for an idle profile (such as `@reviewer` or `@coder-small`) asks that profile in read-only Ask mode without changing the session mode.
   - `@<profile>`, or `@coder`, while that coder is running sends your message as a steering note. A run on a CLI that cannot take steering refuses the message.
 - **Gates:** when a Quick plan, brief, plan, or finished task waits for you, type `y` or `n` and press Enter. `n` leaves the item waiting; a task waiting for merge is only discarded with `/reject`.
 ### Commands and keyboard shortcuts
 
+![Terminal Config menu](images/tui-config.png)
+
+
 | Command | What it does |
 | --- | --- |
-| `/mode [ask\|quick\|full]` | Show the composer mode, or switch it |
+| `/mode [auto\|ask\|quick\|full]` | Show the composer mode, or switch it |
 | `/project [list\|<n\|name>\|open [path]\|create [path]]` | List, switch, open, or create a project |
 | `/model` | Choose the Lead's model from every connected provider, then its reasoning effort. The active model is marked. Applies to your next messages until you pick another or go back to the Lead's own setting |
 | `/config` | Language, provider limits refresh, update checks, agent CLIs (status, re-check, Antigravity keyring), and the agent team (provider, model, and effort per role) |
 | `/wizard` | Open the setup wizard again |
 | `/new` | Start a new session |
 | `/resume [n\|id]` | Pick an earlier session of this project from a list, newest first, and continue it |
+| `/restart` | Restart the room and return to the selected project, session, mode, and model. An embedded server refuses while an agent or task is active |
+| `/mouse` | Toggle mouse capture to allow ordinary text selection or wheel scrolling |
 | `/diff [taskId]` | Open the task diff in `$PAGER` (`less -R`, or `more` on Windows) |
 | `/merge [taskId]` | Merge a task that is waiting for merge |
 | `/reject [taskId] [note] [--requeue]` | Discard a task's work, or send it back to the queue |
@@ -54,11 +64,11 @@ Run `dalang` in an interactive terminal to open the team room. If a Dalang serve
 | `/help` | Show commands and shortcuts |
 | `/exit` | Leave the room (Ctrl+C works too) |
 
-Use `↑` and `↓` in the composer to recall prompts. Moving past the newest prompt with `↓` restores the current draft. `/resume` also makes the selected chat's saved prompts available. Press Enter to submit only after you have reviewed or edited the recalled text.
+Press `Shift+Tab` in the composer to cycle modes. Use `↑` and `↓` in the composer to recall prompts. Moving past the newest prompt with `↓` restores the current draft. `/resume` also makes the selected chat's saved prompts available. Press Enter to submit only after you have reviewed or edited the recalled text.
 
 Typing `/` or `@` opens a list. Move with `Up` and `Down`; `Enter` runs the highlighted command or fills in the highlighted `@<profile>`, and `Tab` fills either one in without running it. In `/config`, `/model`, and the wizard, `Up` and `Down` move, `Enter` chooses, and `Esc` goes back.
 
-Scroll older messages with the mouse wheel (3 rows a notch), `PageUp` / `PageDown`, or `Ctrl+U` / `Ctrl+D`. The footer shows how many rows are above and below. Because the room asks the terminal to report the wheel, plain click-and-drag text selection stops working: hold `Shift` while you drag to select and copy. Set `DALANG_NO_MOUSE=1` to leave the mouse to the terminal; the keyboard scrolling still works. Theme, the app password, and factory reset stay in the web **Config**.
+Scroll older messages with the mouse wheel (3 rows a notch), `PageUp` / `PageDown`, or `Ctrl+U` / `Ctrl+D`. The footer shows how many rows are above and below. Because the room asks the terminal to report the wheel, plain click-and-drag text selection stops working: hold `Shift` while you drag to select and copy. Run `/mouse` to toggle capture, or set `DALANG_NO_MOUSE=1` to leave the mouse to the terminal; the keyboard scrolling still works. Theme, the app password, and factory reset stay in the web **Config**.
 
 ## Browser workspace
 
@@ -81,15 +91,20 @@ Dalang uses `PROJECT.md` for repository instructions and can link `CLAUDE.md` an
 
 On native Windows without symlink privileges, Dalang creates instruction files that refer agents to `PROJECT.md`. Existing user-owned instruction files remain in place. The native Windows runner uses `cmd.exe` for task verification and integration; use Windows-compatible commands, or open the project from WSL 2 for POSIX commands.
 
-## Choose Ask, Quick, or Full
+## Choose Auto, Ask, Quick, or Full
 
 A project opens into a chat with the Lead. Pick a mode beside the send button. Dalang saves the session when you send the first message.
 
 | Mode | Use it for | What happens |
 | --- | --- | --- |
-| **Ask** (default) | Questions about the repository | The Lead reads the repository and answers in chat. Dalang saves the transcript and keeps technical logs in an ignored directory. |
+| **Auto** (default) | Questions, brainstorming, plans, and implementation | Lead responds or creates and starts a task plan. Independent tasks can run in parallel; dependent tasks wait for their prerequisites and merge approval. |
+| **Ask** | Questions about the repository | The Lead reads the repository and answers in chat. Dalang saves the transcript and keeps technical logs in an ignored directory. |
 | **Quick** | A small bug fix or feature | The Lead drafts a single task with allowed files, acceptance criteria, and a verify command. You run, review, and merge it from the chat. |
 | **Full** | A larger change | You discuss scope, approve a brief and plan, then use the Work and Review views to run and merge tasks. |
+
+Auto uses the chosen Lead provider and model. The Lead is instructed to ask before sensitive actions involving production, data, deployments, secrets, billing, and external communication. This judgment relies on the model and is not a deterministic security boundary; limit access to production systems and review actions. Task changes still go through the existing sandbox, review, and merge gate.
+
+You can explicitly request a local commit of specified changed files in Auto. Dalang commits selected files in the active checkout, preserves unrelated staging, and refuses a selected file with both staged and unstaged changes. Git safety settings disable hooks and commit signing for this operation. Push and deployment need their own authorization.
 
 ### Ask about the code
 

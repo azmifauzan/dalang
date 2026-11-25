@@ -82,6 +82,7 @@ import {
   assertRepoConfigSafe,
   branchExists,
   createGitCheckpoint,
+  commitSelectedFiles,
   createGitHubPullRequest,
   createHiddenCheckpointRef,
   createTaskWorktree,
@@ -390,6 +391,16 @@ export class ExecutionService {
         this.projectGitLocks.delete(projectId);
       }
     }
+  }
+
+  async commitWorkspace(projectId: string, input: { paths: string[]; message: string }): Promise<string> {
+    const project = this.getProjectRow(projectId);
+    return this.withProjectGitLock(projectId, async () => {
+      if (this.projectQueues.has(projectId) || this.getActiveTasksForProject(projectId).length) {
+        throw new Error('Wait for active tasks to finish before committing the checkout.');
+      }
+      return commitSelectedFiles(project.path, input.paths, input.message);
+    });
   }
 
   private appendDalangLog(logFileAbs: string, line: string): void {
@@ -5684,7 +5695,23 @@ export class ExecutionService {
       }
     }
 
-    const updatedTask = this.leadService.getPlan(projectId, sid)!.tasks.find((t) => t.id === task.id)!;
+    const updatedPlan = this.leadService.getPlan(projectId, sid)!;
+    const updatedTask = updatedPlan.tasks.find((t) => t.id === task.id)!;
+    if (this.leadService.getSession(projectId, sid).mode === 'auto') {
+      const queue = this.projectQueues.get(projectId);
+      if (queue) {
+        queue.wake();
+      } else if (this.buildDispatchPreviews(updatedPlan, await this.registry.isSandboxReady()).some((item) => item.eligible)) {
+        try {
+          await this.startExecution(projectId, { sessionId: sid, allowUnconfined: input.allowUnconfined });
+        } catch (error) {
+          this.postRoomReport(projectId, sid, null, 'status', {
+            event: 'auto_resume_failed',
+            summary: `Unable to resume Auto tasks: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+      }
+    }
     return { task: updatedTask, mergeCommitSha, integrationRun, pushPrResult };
   }
 

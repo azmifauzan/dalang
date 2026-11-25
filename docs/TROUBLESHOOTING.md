@@ -55,7 +55,7 @@ Then open `http://127.0.0.1:4180`. To use the terminal room against that server,
 
 ### Text in the terminal room cannot be selected
 
-The room asks the terminal to report the mouse wheel so it can scroll older messages, and that stops plain click-and-drag selection. Hold `Shift` while you drag (most terminals), or start Dalang with `DALANG_NO_MOUSE=1 dalang` to leave the mouse to the terminal. `PageUp` and `PageDown` scroll either way. If a crash leaves the terminal printing odd characters when you move the mouse, run `reset`.
+The room asks the terminal to report the mouse wheel so it can scroll older messages, and that stops plain click-and-drag selection. Hold `Shift` while you drag (most terminals), run `/mouse` to toggle capture, or start Dalang with `DALANG_NO_MOUSE=1 dalang` to leave the mouse to the terminal. `PageUp` and `PageDown` scroll either way. If a crash leaves the terminal printing odd characters when you move the mouse, run `reset`.
 
 ### Up and Down move through suggestions instead of prompts
 

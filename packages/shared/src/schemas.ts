@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const DALANG_VERSION = '0.12.1';
+export const DALANG_VERSION = '0.13.0';
 
 export const MAX_DELEGATION_DEPTH = 1;
 export const DEFAULT_MAX_SUBTASKS_PER_TASK = 6;
@@ -62,7 +62,7 @@ export type PlanTaskRole = z.infer<typeof PlanTaskRoleSchema>;
 export const SessionPhaseSchema = z.enum(['discuss', 'agree', 'list', 'run']);
 export type SessionPhase = z.infer<typeof SessionPhaseSchema>;
 
-export const SessionModeSchema = z.enum(['ask', 'quick', 'full']);
+export const SessionModeSchema = z.enum(['auto', 'ask', 'quick', 'full']);
 export type SessionMode = z.infer<typeof SessionModeSchema>;
 
 export const SessionWorkStateSchema = z.enum(['idle', 'working']);
@@ -387,7 +387,7 @@ export const DiscussMessageInputSchema = z.object({
 export type DiscussMessageInput = z.infer<typeof DiscussMessageInputSchema>;
 
 export const CreateSessionInputSchema = z.object({
-  mode: SessionModeSchema.default('ask'),
+  mode: SessionModeSchema.default('auto'),
   title: z.string().trim().max(160).optional(),
   provider: ProviderIdSchema.optional(),
   model: z.string().nullable().optional(),
@@ -409,7 +409,7 @@ export type SwitchSessionModeInput = z.infer<typeof SwitchSessionModeInputSchema
 
 export const ChatMessageInputSchema = z.object({
   sessionId: z.string().min(1).optional(),
-  mode: SessionModeSchema.default('ask'),
+  mode: SessionModeSchema.default('auto'),
   message: z.string(),
   images: z.array(ChatImageSchema).max(MAX_CHAT_IMAGES).optional(),
   answers: z
@@ -562,6 +562,7 @@ export type SessionMessageType =
   | 'error';
 
 export type RoomReportEvent =
+  | 'auto_resume_failed'
   | 'task_started'
   | 'task_finished'
   | 'task_failed'

@@ -121,6 +121,20 @@ const rules = (): RoutingRuleDTO[] => [
 // ---------------------------------------------------------------------------------------------
 
 describe('team setup logic', () => {
+  it('preserves and disables configured fallbacks for individual roles', () => {
+    const profiles = teamProfiles();
+    const fallback = { provider: 'codex' as const, model: 'gpt-5', effort: 'low' as const, configDir: '/tmp/second-account' };
+    profiles.find((p) => p.name === 'reviewer')!.fallback = fallback;
+    const input = { profiles, rules: rules(), providers: [claude, codex], usable: usableProviderIds([claude, codex], false), suggestFallbacks: false };
+    const kept = planTeamChanges({ ...input, edits: {} });
+    expect(kept.profileUpdates).toEqual([]);
+    expect(kept.ruleUpdates.find((u) => u.id === 'r-reviewer')?.body.fallback).toEqual(fallback);
+    const disabled = planTeamChanges({ ...input, edits: { 'profile-reviewer': { fallback: null } } });
+    expect(disabled.profileUpdates.find((u) => u.id === 'profile-reviewer')?.body.fallback).toBeNull();
+    const offline = planTeamChanges({ ...input, usable: new Set<ProviderId>(['codex']), edits: {} });
+    expect(offline.profileUpdates).toEqual([]);
+  });
+
   it('counts a provider as usable only when installed and signed in, and Antigravity also needs the keyring', () => {
     const agy = provider('antigravity');
     expect([...usableProviderIds([claude, codex, agyMissing], false)]).toEqual(['claude-code', 'codex']);
@@ -408,7 +422,7 @@ describe('setup wizard (Ink)', () => {
     await ui.waitFor('GPT-5');
     await ui.press(DOWN, '\r'); // CLI default -> GPT-5
     await ui.waitFor('Codex · gpt-5');
-    await ui.press(DOWN, DOWN, DOWN, '\r'); // Done
+    await ui.press(DOWN, DOWN, DOWN, DOWN, '\r'); // Done
     await ui.waitFor('Cross-provider review active');
     await ui.press(DOWN, DOWN, DOWN, DOWN, DOWN, DOWN, '\r'); // Accept team & continue
 
@@ -545,6 +559,40 @@ describe('/model picker (Ink)', () => {
 });
 
 describe('/config (Ink)', () => {
+  it('sets a reviewer fallback and saves it to the profile and routing rule', async () => {
+    const { client, calls } = stubClient();
+    const ui = mount(React.createElement(ConfigScreen, {
+      client, width: 110, height: 36, onClose: () => {}, onWizard: () => {},
+    }));
+    await ui.waitFor('Agent team');
+    await ui.press(DOWN, DOWN, DOWN, DOWN, '\r');
+    await ui.waitFor('Reviewer (Arjuna)');
+    await ui.press(DOWN, DOWN, DOWN, DOWN, DOWN, '\r');
+    await ui.waitFor('Reasoning effort');
+    await ui.press(DOWN, DOWN, DOWN, '\r');
+    await ui.waitFor('Fallback provider');
+    await ui.press('\r');
+    await ui.waitFor('No fallback');
+    await ui.press(DOWN, DOWN, '\r');
+    await ui.waitFor('Fallback model');
+    await ui.press(DOWN, '\r');
+    await ui.waitFor('GPT-5');
+    await ui.press(DOWN, '\r');
+    await ui.waitFor('Fallback reasoning effort');
+    await ui.press(DOWN, DOWN, DOWN, DOWN, '\r');
+    await ui.waitFor('Reviewer (Arjuna)');
+    await ui.press(DOWN, DOWN, DOWN, DOWN, '\r');
+    await ui.waitFor('Save team');
+    await ui.press(DOWN, DOWN, DOWN, DOWN, DOWN, DOWN, '\r');
+    await sleep(200);
+    expect(calls.updateProfile).toContainEqual(['profile-reviewer', expect.objectContaining({
+      fallback: { provider: 'codex', model: 'gpt-5', effort: 'low', configDir: null },
+    })]);
+    expect(calls.updateRoutingRule).toContainEqual(['r-reviewer', expect.objectContaining({
+      fallback: { provider: 'codex', model: 'gpt-5', effort: 'low', configDir: null },
+    })]);
+  });
+
   it('changes the language and the limits refresh interval through the settings API', async () => {
     const { client, calls } = stubClient();
     const ui = mount(
