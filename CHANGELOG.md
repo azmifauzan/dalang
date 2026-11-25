@@ -2,7 +2,12 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
-## 0.13.1 (Current web screenshots), 25 Nov
+## 0.13.2 (Terminal title status), 25 Nov
+
+- The terminal title shows an animated spinner while the selected session is processing and `*` when a question or gate is waiting for input. Free-form questions are detected from punctuation; title restoration depends on terminal support.
+- Includes the web screenshot and Auto composer hint changes from the unpublished 0.13.1 snapshot. No database migration is required.
+
+## 0.13.1 (Unpublished snapshot), 25 Nov
 
 - Replaced the browser walkthrough screenshots with the current v0.13 interface, using isolated demo projects and replayed responses. The README now shows the Auto composer.
 - Corrected the browser composer hint for Auto, which previously described the Full workflow.

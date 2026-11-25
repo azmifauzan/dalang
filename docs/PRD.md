@@ -1,6 +1,6 @@
 # PRD: DALANG
 
-Nov 18, 2026 · @Fauzan · Updated through v0.13.1, Nov 25, 2026
+Nov 18, 2026 · @Fauzan · Updated through v0.13.2, Nov 25, 2026
 
 ## Summary
 
@@ -813,6 +813,7 @@ Review against this plan (24 Nov 2026):
 - Independent tasks can run in parallel. Dependent tasks wait for prerequisite merges, and Auto resumes eligible tasks after a merge. Guard still requires the user's merge decision.
 - Auto can commit explicitly selected files in the active checkout after a user request. It preserves unrelated staging and refuses partially staged selected files. Git hooks and commit signing are disabled by DALANG's safe Git configuration.
 - Shift+Tab cycles composer modes, `/restart` restores the selected room, and `/mouse` toggles mouse capture. Team fallback targets are editable per role in terminal Config. The terminal and browser render streamed JSON answers as readable text.
+- v0.13.2 adds terminal title status: a spinner while the selected session works and `*` while input is needed. Free-form question detection is heuristic; restoration of the previous title depends on terminal support.
 - This release does not add a database migration. Live provider behavior and non-Linux terminals still require separate verification.
 
 #### v0.14: Telegram bridge

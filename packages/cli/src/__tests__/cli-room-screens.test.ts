@@ -139,6 +139,7 @@ function mountRoom(client: RoomApiClient, extra: Record<string, unknown> = {}) {
   });
   return {
     screen: () => screen,
+    unmount: () => inst.unmount(),
     mark: () => screen.length,
     since: (mark: number) => screen.slice(mark),
     waitFor: async (needle: string, from = 0, timeoutMs = 6000) => {
@@ -159,6 +160,48 @@ function mountRoom(client: RoomApiClient, extra: Record<string, unknown> = {}) {
 }
 
 describe('room screens (Ink, stub server)', () => {
+  it('updates the terminal title for running work and questions, then restores it on exit', async () => {
+    let emit!: (event: ServerEvent) => void;
+    let turn: { phase: string; provider: string; startedAt: string } | null = null;
+    let messages: Array<Record<string, unknown>> = [];
+    let waitingToMerge = false;
+    const current = () => ({ ...session, turn });
+    const { client } = roomClient({
+      listSessions: async () => ({ sessions: [current()], workingSessionId: null }),
+      getSessionDetail: async () => ({ session: current(), messages, briefs: [], plan: null }),
+      getGuardState: async () => ({ mainBranch: 'main', tasks: waitingToMerge ? [{ task: { id: 't1', externalId: 'T-001', title: 'Fix', status: 'awaiting_merge' }, canApproveMerge: true }] : [] }),
+      connectEvents: (listener: typeof emit) => { emit = listener; return () => {}; },
+    });
+    const ui = mountRoom(client);
+    await ui.waitFor('Lead Claude');
+    await ui.press('/resume 1', '\r');
+    await ui.waitFor('Resumed');
+
+    const started = ui.mark();
+    turn = { phase: 'ask', provider: 'claude-code', startedAt: new Date().toISOString() };
+    emit({ type: 'lead.turn_started', projectId: 'p1', sessionId: 's1' });
+    await ui.waitFor('\x1b]0;⠋ DALANG · demo\x07', started);
+    await ui.waitFor('\x1b]0;⠙ DALANG · demo\x07', started);
+
+    const asked = ui.mark();
+    turn = null;
+    messages = [{ id: 'q', role: 'lead', type: 'ask', content: { text: 'Which file should I change?' }, createdAt: session.updatedAt }];
+    emit({ type: 'lead.turn_finished', projectId: 'p1', sessionId: 's1' });
+    await ui.waitFor('\x1b]0;* DALANG · demo\x07', asked);
+
+    const answered = ui.mark();
+    messages = [...messages, { id: 'a', role: 'user', type: 'text', content: 'Use app.ts', createdAt: session.updatedAt }];
+    emit({ type: 'discuss.updated', projectId: 'p1', sessionId: 's1' });
+    await ui.waitFor('\x1b]0;DALANG · demo\x07', answered);
+    const gate = ui.mark();
+    waitingToMerge = true;
+    emit({ type: 'plan.updated', projectId: 'p1', sessionId: 's1' });
+    await ui.waitFor('\x1b]0;* DALANG · demo\x07', gate);
+    const exiting = ui.mark();
+    ui.unmount();
+    await ui.waitFor('\x1b[23;0t', exiting);
+  });
+
   it('restarts with the selected project and session, and restores them on startup', async () => {
     const { client, sent } = roomClient();
     const requested: unknown[] = [];

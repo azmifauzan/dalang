@@ -29,6 +29,7 @@ import { stripMouse, useMouseWheel, WHEEL_ROWS } from './mouse.js';
 import { providerLabel, usableProviderIds } from './team.js';
 import { Wizard } from './Wizard.js';
 import { WorkingStatus } from './WorkingStatus.js';
+import { useTerminalTitle, waitingForReply } from './title.js';
 import { createLiveReplyStore, LiveReply, useHasLiveReply } from './LiveReply.js';
 import { markdownRows } from './markdown.js';
 import {
@@ -506,6 +507,18 @@ export function RoomApp({
     () => detectPendingGate(detail, guard),
     [detail, guard],
   );
+
+  const titleSession = activeSession?.id === activeSessionId && activeSession.projectId === activeProjectId
+    ? activeSession : null;
+  const titleExecution = execution?.projectId === activeProjectId && execution.sessionId === activeSessionId
+    ? execution : null;
+  const titleWorking = sending || Boolean(titleSession?.turn) || Boolean(titleExecution?.queueRunning) ||
+    Boolean(titleExecution?.activeRuns.some((run) => run.status === 'running'));
+  const titleMessages = detail?.session.id === activeSessionId && detail.session.projectId === activeProjectId
+    ? detail.messages : [];
+  const titleWaiting = authNeeded || Boolean(pendingUnconfinedAction) || Boolean(pendingGate && titleSession?.id === detail?.session.id) ||
+    (!titleWorking && waitingForReply(titleMessages));
+  useTerminalTitle(ttyOut, activeProject?.name, titleWaiting && !sending ? 'waiting' : titleWorking ? 'working' : 'idle');
 
   const handleExit = useCallback(() => {
     onRequestExit?.();

@@ -10,7 +10,7 @@
 
 - [Choose Auto, Ask, Quick, or Full](USAGE.md#choose-auto-ask-quick-or-full)
 - [Run and review tasks in the terminal](USAGE.md#run-and-review-work-in-the-terminal)
-- [Recall prompts and use terminal shortcuts](USAGE.md#commands-and-keyboard-shortcuts)
+- [Recall prompts, read the terminal title status, and use shortcuts](USAGE.md#read-the-timeline-and-live-status)
 - [Attach images in the browser](USAGE.md#attach-images)
 - [Set a DALANG password](INSTALL.md#require-a-dalang-password)
 - [Reopen, archive, or discard work in a chat](USAGE.md#continue-or-manage-a-chat)

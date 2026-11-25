@@ -53,6 +53,10 @@ Then open `http://127.0.0.1:4180`. To use the terminal room against that server,
 
 `dalang` opens the terminal room only when both stdin and stdout are a terminal. Piped output, a service manager, or `docker compose` start `dalang web` instead. `dalang --port` and `dalang --no-open` without a subcommand also start the web server, with a deprecation notice. Run `dalang doctor`: the **Terminal room (TTY)** check reports what Dalang detected.
 
+### Terminal title does not change or restore
+
+The room updates the title of the active terminal with an animated spinner during work and `*` for pending input. Some terminal emulators or multiplexers do not support these title commands or restoring a previous title. The room's on-screen status and gates remain available. Free-form question detection relies on punctuation, so it can miss a question or show `*` for a rhetorical one.
+
 ### Text in the terminal room cannot be selected
 
 The room asks the terminal to report the mouse wheel so it can scroll older messages, and that stops plain click-and-drag selection. Hold `Shift` while you drag (most terminals), run `/mouse` to toggle capture, or start Dalang with `DALANG_NO_MOUSE=1 dalang` to leave the mouse to the terminal. `PageUp` and `PageDown` scroll either way. If a crash leaves the terminal printing odd characters when you move the mouse, run `reset`.

@@ -31,6 +31,8 @@ import {
   wrapTimelineLine,
 } from '../tui/format.js';
 import { RoomApp } from '../tui/RoomApp.js';
+import { waitingForReply } from '../tui/title.js';
+import type { DiscussMessageDTO } from '@dalang/shared';
 
 const tempDirs: string[] = [];
 const cleanups: Array<() => Promise<void>> = [];
@@ -87,6 +89,16 @@ describe('CLI command routing (v0.12)', () => {
 });
 
 describe('TUI commands, completions, and formatting', () => {
+  it('detects structured and conversational questions until the user replies', () => {
+    const question = { role: 'lead', type: 'questions', content: { questions: [{ question: 'Which one?' }] } };
+    const report = { role: 'system', type: 'text', content: 'Status updated' };
+    const answer = { role: 'user', type: 'text', content: 'The first one' };
+    expect(waitingForReply([question, report] as DiscussMessageDTO[])).toBe(true);
+    expect(waitingForReply([question, answer] as DiscussMessageDTO[])).toBe(false);
+    expect(waitingForReply([{ role: 'agent', type: 'ask', content: { text: 'Which file?' } }] as DiscussMessageDTO[])).toBe(true);
+    expect(waitingForReply([{ role: 'lead', type: 'ask', content: { text: 'Done.' } }] as DiscussMessageDTO[])).toBe(false);
+  });
+
   it('reads the answer out of a JSON reply that is still being written', () => {
     expect(liveReplyText('Plain **text**')).toBe('Plain **text**');
     expect(liveReplyText('```json\n{\"answer\": \"Halo\\nsemua')).toBe('Halo\nsemua');
