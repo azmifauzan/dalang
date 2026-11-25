@@ -55,7 +55,7 @@ Then open `http://127.0.0.1:4180`. To use the terminal room against that server,
 
 ### Terminal title does not change or restore
 
-The room updates the title of the active terminal with an animated spinner during work and `*` for pending input. Some terminal emulators or multiplexers do not support these title commands or restoring a previous title. The room's on-screen status and gates remain available. Free-form question detection relies on punctuation, so it can miss a question or show `*` for a rhetorical one.
+The room updates the title of the active terminal with an animated spinner during work and `*` for pending input. Some terminal emulators or multiplexers do not support these title commands or restoring a previous title. Some terminals also limit how often a tab title may change, so the title spinner can look less smooth than the status-line spinner. The room's on-screen status and gates remain available. Free-form question detection relies on punctuation, so it can miss a question or show `*` for a rhetorical one.
 
 ### Text in the terminal room cannot be selected
 

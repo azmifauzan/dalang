@@ -1,6 +1,6 @@
 # PRD: DALANG
 
-Nov 18, 2026 · @Fauzan · Updated through v0.13.3, Nov 25, 2026
+Nov 18, 2026 · @Fauzan · Updated through v0.13.4, Nov 25, 2026
 
 ## Summary
 
@@ -814,7 +814,8 @@ Review against this plan (24 Nov 2026):
 - Auto can commit explicitly selected files in the active checkout after a user request. It preserves unrelated staging and refuses partially staged selected files. Git hooks and commit signing are disabled by DALANG's safe Git configuration.
 - Shift+Tab cycles composer modes, `/restart` restores the selected room, and `/mouse` toggles mouse capture. Team fallback targets are editable per role in terminal Config. The terminal and browser render streamed JSON answers as readable text.
 - v0.13.2 adds terminal title status: a spinner while the selected session works and `*` while input is needed. Free-form question detection is heuristic; restoration of the previous title depends on terminal support.
-- v0.13.3 adds `Esc` in the terminal room to stop all running agents, tasks, subtasks, and Lead turns, enables `auto_stop` in Auto mode, allows `/stop` while a Lead turn is in flight, hardens process-exit settlement on abort/timeout, and adds `/update [check|clis|all]` (plus `dalang update --clis|--all` and `POST /api/providers/update-all`) with a persistent restart notification after Dalang updates.
+- v0.13.3 adds `Esc` in the terminal room to stop all running agents, tasks, subtasks, and Lead turns, enables `auto_stop` in Auto mode, allows `/stop` while a Lead turn is in flight, hardens process-exit settlement on abort/timeout, and adds `/update [check|clis|all]` (plus `dalang update --clis|--all` and `POST /api/providers/update-all`) with a persistent restart notification after Dalang updates. The terminal room header, running-agent row, `/model`, `/config`, and setup wizard show resolved model names (for example `Claude Opus 5.5`) instead of CLI aliases.
+- v0.13.4 runs the terminal title spinner at the room spinner's 120 ms pace and is the first published release of the v0.13.3 changes; v0.13.3 was tagged but not published.
 - This release does not add a database migration. Live provider behavior and non-Linux terminals still require separate verification.
 
 #### v0.14: Telegram bridge

@@ -2,6 +2,11 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
+## 0.13.4 (Smoother terminal title spinner), 25 Nov
+
+- The terminal title spinner now advances every 120 ms, the same pace as the status-line spinner in the room, instead of every 250 ms. Terminals that throttle title updates can still show it less smoothly.
+- First published release of the 0.13.3 changes (`Esc` stop-all, `/update`, readable model labels). Version 0.13.3 was tagged but not published to npm or GitHub Releases. No database migration is required.
+
 ## 0.13.3 (Stop all with Esc and /update command), 25 Nov
 
 - **Stop all running work reliably.** Pressing `Esc` in the terminal room immediately stops all running agents, tasks, subtasks, and in-flight Lead or `@<profile>` turns (the live status bar shows `Esc to stop`; when idle, `Esc` still clears the composer). `/stop` and `/exit` remain submittable while the Lead is mid-turn, `POST /api/projects/:id/execution/stop` cancels both task queues and active Lead turns, and `NodeCliRunner` no longer hangs waiting for stdio `close` if a grandchild holds pipes open after abort or timeout.
