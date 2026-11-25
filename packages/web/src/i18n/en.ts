@@ -936,6 +936,7 @@ export const en = {
   'sessions.sendFull': 'Send',
   'sessions.sending': 'Sending...',
   'sessions.readOnlyHint': 'Read-only chat. Nothing is written to the repository.',
+  'sessions.autoHint': 'Lead chooses how to respond or start work. Merge approval still applies.',
   'sessions.quickHint': 'Returns a single-task mini plan without a brief. Merge gate still applies.',
   'sessions.fullHint': 'Starts the guided five-step workflow with brief and merge gates.',
   'sessions.followUpHint': 'This session is finished. Ask questions about what was done, or switch to Quick or Full for a new cycle.',

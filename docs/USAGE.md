@@ -72,7 +72,7 @@ Scroll older messages with the mouse wheel (3 rows a notch), `PageUp` / `PageDow
 
 ## Browser workspace
 
-Run `dalang web` to open the local workspace, usually at `http://127.0.0.1:4173`. From the terminal room, use `/web` to open the active project and chat. In the walkthrough below, screenshots show demo repositories and replayed responses.
+Run `dalang web` to open the local workspace, usually at `http://127.0.0.1:4173`. From the terminal room, use `/web` to open the active project and chat. In the walkthrough below, screenshots show demo repositories and replayed responses from v0.13.
 
 ## Set up your team and project
 
@@ -94,6 +94,8 @@ On native Windows without symlink privileges, Dalang creates instruction files t
 ## Choose Auto, Ask, Quick, or Full
 
 A project opens into a chat with the Lead. Pick a mode beside the send button. Dalang saves the session when you send the first message.
+
+![New browser chat with Auto selected](images/auto.webp)
 
 | Mode | Use it for | What happens |
 | --- | --- | --- |
@@ -122,7 +124,7 @@ Choose Claude Code or Codex, then click the paperclip at the lower left of the c
 2. Click **Run**. Dalang runs the task in a Git worktree, executes the verify command, and runs automated review. If the host sandbox is unavailable, the run requires explicit unconfined consent.
 3. Open **Show diff** and inspect the review. Click **Approve & merge** when ready, or send the task back with feedback.
 
-![Quick chat with the Request, Work, Review, and Merge timeline and a one-task plan ready to run](images/quick.webp)
+![Quick chat showing a one-task plan ready to run](images/quick.webp)
 
 If the Lead finds the request needs a broader plan, use **Switch to Full (keeps findings)** to take the request and findings into Discuss.
 
@@ -161,7 +163,7 @@ Break broad tasks into smaller ones with clear file boundaries. Use dependencies
 
 Click **Start work** to run the approved queue. Dalang uses a separate Git worktree for each task. The wayang stage and **Activity feed** show progress. Click a figure or select a task under **Tasks & live logs** to inspect its output, attempts, and changed files. **Routing & queue** shows profile assignments and fallbacks. **Dependency graph** shows execution waves and what is waiting.
 
-![Work view showing an active task on the wayang stage above its activity feed and run inspector](images/work.webp)
+![Work view showing the wayang stage and activity feed](images/work.webp)
 
 - When **Message to the running agent** appears, use it to add a clarification to the active task. Claude and Codex support this with their session protocols.
 - Use **Stop** to interrupt an individual task or **Stop all runs** for the queue. Stopping a parent task also stops its delegated subtasks. Use **Resume session** when available to continue a stopped task with its existing worktree and conversation.
@@ -175,7 +177,7 @@ Click **Start work** to run the approved queue. Dalang uses a separate Git workt
 
 After a coder finishes, Dalang runs the task’s verification and an automated review. Open **Review & merge** and select a task. Read the review findings, open **Show verify output**, and inspect the **Branch diff** before deciding.
 
-![Full Review and merge view showing a task awaiting approval, its automated review, and the merge controls](images/review.webp)
+![Full Review and merge view showing a merged task and pull request controls](images/review.webp)
 
 - **Approve and merge** adds the task changes to the project’s target branch. Dalang refuses a merge only when an uncommitted file in the target repository is also changed by the task, leaving unrelated uncommitted edits intact. Dalang asks for a separate override if automated review failed.
 - **Reject and send back** lets you leave feedback and optionally requeue the task for another attempt.
@@ -210,7 +212,7 @@ In **Remote push and pull request**, select the Git remote (usually `origin`). A
 | **Config → About** | Check your version, look for updates, and open support docs. |
 | **Statistics** | Filter Lead, execution, fix, and review runs by project and time window. See duration, failures, fallback events, reported tokens, and API-equivalent cost estimates. |
 
-![Statistics showing Lead, execution, fix, and review counts by provider, with captured tokens and estimated costs](images/statistics.webp)
+![Statistics overview showing runs, token usage, and estimated costs](images/statistics.webp)
 
 The provider limits bar shows the tightest five-hour and weekly windows each installed CLI reports. **Details** lists the available windows, reset times when reported, and a refresh button. Dalang refreshes when a run finishes and every five minutes while the page is visible. Choose three, five, or ten minutes in **Config → General**. [Providers and accounts](PROVIDERS.md)
 

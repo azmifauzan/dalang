@@ -101,11 +101,13 @@ export function ModeComposer({
 
   const helperHint = isFinishedSession
     ? t('sessions.followUpHint')
-    : selectedMode === 'ask'
-      ? t('sessions.readOnlyHint')
-      : selectedMode === 'quick'
-        ? t('sessions.quickHint')
-        : t('sessions.fullHint');
+    : selectedMode === 'auto'
+      ? t('sessions.autoHint')
+      : selectedMode === 'ask'
+        ? t('sessions.readOnlyHint')
+        : selectedMode === 'quick'
+          ? t('sessions.quickHint')
+          : t('sessions.fullHint');
 
   const resolvedSubmitLabel =
     submitLabel ??

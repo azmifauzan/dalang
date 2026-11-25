@@ -71,7 +71,7 @@ While an agent works, the status line shows a spinner, elapsed time, and a short
 
 Run `dalang web` to open the workspace at `http://127.0.0.1:4173`. The sidebar holds saved chats, and the composer supports image attachments with Claude Code and Codex. Web Config includes task routing, fallback accounts, authentication, and automations. [Browser walkthrough](docs/USAGE.md#browser-workspace)
 
-![Dalang's browser workspace showing an Ask chat and an attached screenshot](docs/images/ask.webp)
+![Dalang's browser workspace with Auto selected](docs/images/auto.webp)
 
 On Windows, task verification uses `cmd.exe`; use Windows-compatible commands. Existing repository instructions are preserved, and installations without symlink privileges use files that point agents to `PROJECT.md`. [Windows setup](docs/INSTALL.md#native-windows)
 

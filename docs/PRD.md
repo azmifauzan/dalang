@@ -1,6 +1,6 @@
 # PRD: DALANG
 
-Nov 18, 2026 · @Fauzan · Updated through v0.13.0, Nov 25, 2026
+Nov 18, 2026 · @Fauzan · Updated through v0.13.1, Nov 25, 2026
 
 ## Summary
 

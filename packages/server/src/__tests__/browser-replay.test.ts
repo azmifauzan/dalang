@@ -1177,6 +1177,7 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
           // 1. Project opens in Auto with 0 sessions created, no stepper, no timeline
           const openText = await waitForText('Ask, plan, or describe work');
           expect(openText).toContain('No saved sessions yet');
+          expect(openText).toContain('Lead chooses how to respond or start work. Merge approval still applies.');
           expect(openText).not.toContain('Review & merge');
           const stillZero = await apiJson<{ sessions: unknown[] }>(`/api/projects/${project.id}/sessions`);
           expect(stillZero.sessions).toHaveLength(0);

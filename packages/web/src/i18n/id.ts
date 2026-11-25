@@ -938,6 +938,7 @@ export const id: Record<TranslationKey, string> = {
   'sessions.sendFull': 'Kirim',
   'sessions.sending': 'Mengirim...',
   'sessions.readOnlyHint': 'Obrolan baca-saja. Tidak ada yang ditulis ke repositori.',
+  'sessions.autoHint': 'Lead memilih cara menjawab atau memulai pekerjaan. Persetujuan gabung tetap berlaku.',
   'sessions.quickHint': 'Menghasilkan rencana singkat satu tugas tanpa brief. Gerbang gabung tetap berlaku.',
   'sessions.fullHint': 'Memulai alur terpandu lima langkah dengan gerbang brief dan gabung.',
   'sessions.followUpHint': 'Sesi ini sudah selesai. Ajukan pertanyaan lanjutan tentang hasilnya, atau pilih Cepat atau Penuh untuk siklus baru.',

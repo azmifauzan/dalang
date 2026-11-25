@@ -2,6 +2,11 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
+## 0.13.1 (Current web screenshots), 25 Nov
+
+- Replaced the browser walkthrough screenshots with the current v0.13 interface, using isolated demo projects and replayed responses. The README now shows the Auto composer.
+- Corrected the browser composer hint for Auto, which previously described the Full workflow.
+
 ## 0.13.0 (Auto mode and terminal controls), 25 Nov
 
 - **Auto mode.** New chats default to Auto. The Lead chooses between answering, brainstorming, planning, and starting a validated task plan. Independent tasks can run in parallel; dependent tasks continue after their prerequisites are merged. Task review and merge approval remain in Guard.
