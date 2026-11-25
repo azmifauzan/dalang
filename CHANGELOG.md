@@ -2,6 +2,10 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
+## 0.13.5 (Short process name in tab titles), 25 Nov
+
+- The `dalang` process now names itself `dalang`. Terminals that append the running command to the tab title (such as Ptyxis and GNOME Console) show `dalang` instead of `node /full/path/to/bin/dalang`. No database migration is required.
+
 ## 0.13.4 (Smoother terminal title spinner), 25 Nov
 
 - The terminal title spinner now advances every 120 ms, the same pace as the status-line spinner in the room, instead of every 250 ms. Terminals that throttle title updates can still show it less smoothly.

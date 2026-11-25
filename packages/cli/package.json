@@ -1,6 +1,6 @@
 {
   "name": "dalang-cli",
-  "version": "0.13.4",
+  "version": "0.13.5",
   "description": "DALANG: local orchestrator for Claude Code, Codex, and Antigravity CLI",
   "license": "MIT",
   "type": "module",
