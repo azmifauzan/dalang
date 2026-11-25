@@ -85,13 +85,24 @@ export class NodeCliRunner implements CliRunner {
       const idleMs = options.idleTimeoutMs ?? 180_000;
 
       let idleTimer: NodeJS.Timeout | null = null;
+      let forceKillTimer: NodeJS.Timeout | null = null;
+      let exitCloseTimer: NodeJS.Timeout | null = null;
+      const terminateChild = () => {
+        if (settled) return;
+        child.kill('SIGTERM');
+        if (!forceKillTimer) {
+          forceKillTimer = setTimeout(() => {
+            if (!settled) child.kill('SIGKILL');
+          }, 2000);
+          forceKillTimer.unref();
+        }
+      };
       const resetIdle = () => {
         if (idleTimer) clearTimeout(idleTimer);
         if (idleMs > 0) {
           idleTimer = setTimeout(() => {
             idleTimedOut = true;
-            child.kill('SIGTERM');
-            setTimeout(() => child.kill('SIGKILL'), 2000).unref();
+            terminateChild();
           }, idleMs);
         }
       };
@@ -100,25 +111,21 @@ export class NodeCliRunner implements CliRunner {
         totalMs > 0
           ? setTimeout(() => {
               timedOut = true;
-              child.kill('SIGTERM');
-              setTimeout(() => child.kill('SIGKILL'), 2000).unref();
+              terminateChild();
             }, totalMs)
           : null;
 
       const onAbort = () => {
         aborted = true;
-        if (!settled) {
-          child.kill('SIGTERM');
-          setTimeout(() => {
-            if (!settled) child.kill('SIGKILL');
-          }, 2000).unref();
-        }
+        terminateChild();
       };
       options.signal?.addEventListener('abort', onAbort, { once: true });
 
       const cleanupTimers = () => {
         if (totalTimer) clearTimeout(totalTimer);
         if (idleTimer) clearTimeout(idleTimer);
+        if (forceKillTimer) clearTimeout(forceKillTimer);
+        if (exitCloseTimer) clearTimeout(exitCloseTimer);
         options.signal?.removeEventListener('abort', onAbort);
       };
 
@@ -160,7 +167,7 @@ export class NodeCliRunner implements CliRunner {
         reject(err);
       });
 
-      child.on('close', (exitCode) => {
+      const finish = (exitCode: number | null) => {
         if (settled) return;
         settled = true;
         cleanupTimers();
@@ -174,6 +181,22 @@ export class NodeCliRunner implements CliRunner {
           idleTimedOut,
           aborted,
         });
+      };
+
+      child.on('exit', (exitCode) => {
+        if (settled || (!aborted && !timedOut && !idleTimedOut)) return;
+        // If a grandchild inherited stdio and keeps pipes open after the child exited,
+        // stop waiting for `close` so abort/timeout cannot hang indefinitely.
+        exitCloseTimer = setTimeout(() => {
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          finish(exitCode);
+        }, 250);
+        exitCloseTimer.unref();
+      });
+
+      child.on('close', (exitCode) => {
+        finish(exitCode);
       });
 
       if (options.onSpawn && child.stdin) {
@@ -189,12 +212,7 @@ export class NodeCliRunner implements CliRunner {
             }
           },
           kill: () => {
-            if (!settled) {
-              child.kill('SIGTERM');
-              setTimeout(() => {
-                if (!settled) child.kill('SIGKILL');
-              }, 2000).unref();
-            }
+            terminateChild();
           },
         });
       }

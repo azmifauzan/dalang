@@ -43,6 +43,11 @@ import {
   SLASH_COMMANDS,
 } from './commands.js';
 import {
+  formatConnectedClisUpdateLines,
+  runUpdate,
+  type UpdateReport,
+} from '../update.js';
+import {
   detectPendingGate,
   extractActivityPreview,
   formatRoomMessage,
@@ -63,6 +68,7 @@ export interface RoomAppProps {
   onRequestExit?: () => void;
   initialRoom?: { projectId: string | null; sessionId: string | null; mode: SessionMode; modelChoice: ModelChoice | null };
   onRequestRestart?: (room: { projectId: string | null; sessionId: string | null; mode: SessionMode; modelChoice: ModelChoice | null }) => void;
+  onRunDalangUpdate?: (opts: { checkOnly?: boolean; onStatus?: (line: string) => void }) => Promise<UpdateReport>;
   /** Let the mouse wheel scroll the timeline (asks the terminal for wheel reports). */
   enableMouse?: boolean;
 }
@@ -125,6 +131,7 @@ export function RoomApp({
   onRequestExit,
   initialRoom,
   onRequestRestart,
+  onRunDalangUpdate,
   enableMouse = false,
 }: RoomAppProps) {
   const { exit } = useApp();
@@ -174,6 +181,9 @@ export function RoomApp({
   const [activityPreviews, setActivityPreviews] = useState(() => new Map<string, string>());
   const [liveReplies] = useState(createLiveReplyStore);
   const [sending, setSending] = useState(false);
+  const [busyActivity, setBusyActivity] = useState<string | null>(null);
+  const [stopping, setStopping] = useState(false);
+  const [pendingRestartVersion, setPendingRestartVersion] = useState<string | null>(null);
   const [pagerOpen, setPagerOpen] = useState(false);
   const [mouseCapture, setMouseCapture] = useState(enableMouse);
   const [scrollOffset, setScrollOffset] = useState(0);
@@ -205,6 +215,7 @@ export function RoomApp({
   const refreshSequenceRef = useRef(0);
   const sendingRef = useRef(false);
   sendingRef.current = sending;
+  const stoppingRef = useRef(false);
   const knownSessionIdsRef = useRef<Set<string>>(new Set());
   knownSessionIdsRef.current = new Set(sessions.map((x) => x.id));
 
@@ -422,6 +433,27 @@ export function RoomApp({
     };
   }, [ready, authNeeded, client]);
 
+  // Passive update check on startup: announces a newer DALANG release once if checks are enabled.
+  const announcedUpdateRef = useRef(false);
+  useEffect(() => {
+    if (!ready || authNeeded || announcedUpdateRef.current) return;
+    let cancelled = false;
+    void client
+      .getUpdateStatus?.(false)
+      .then((status) => {
+        if (cancelled || announcedUpdateRef.current || !status?.updateAvailable || !status.latestVersion) return;
+        announcedUpdateRef.current = true;
+        pushNotice(
+          `Update available: DALANG v${status.currentVersion} -> v${status.latestVersion}. Run /update to install.`,
+          { badge: 'UPDATE' },
+        );
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [ready, authNeeded, client, pushNotice]);
+
   // Subscribe to live WebSocket events once authenticated & ready
   useEffect(() => {
     if (!ready || authNeeded) return;
@@ -514,6 +546,10 @@ export function RoomApp({
     ? execution : null;
   const titleWorking = sending || Boolean(titleSession?.turn) || Boolean(titleExecution?.queueRunning) ||
     Boolean(titleExecution?.activeRuns.some((run) => run.status === 'running'));
+  const hasRunningWork =
+    titleWorking ||
+    Boolean(execution?.queueRunning) ||
+    Boolean(execution?.activeRuns?.some((run) => run.status === 'running'));
   const titleMessages = detail?.session.id === activeSessionId && detail.session.projectId === activeProjectId
     ? detail.messages : [];
   const titleWaiting = authNeeded || Boolean(pendingUnconfinedAction) || Boolean(pendingGate && titleSession?.id === detail?.session.id) ||
@@ -524,6 +560,48 @@ export function RoomApp({
     onRequestExit?.();
     exit();
   }, [exit, onRequestExit]);
+
+  const stopRunningWork = useCallback(
+    async (taskId?: string) => {
+      if (!activeProjectId) {
+        pushNotice('No active project.', { isError: true });
+        return;
+      }
+      if (!taskId && stoppingRef.current) return;
+      if (!taskId) {
+        stoppingRef.current = true;
+        setStopping(true);
+        setPendingUnconfinedAction(null);
+      }
+      try {
+        const res = await client.stopExecution(
+          activeProjectId,
+          taskId ? { sessionId: activeSessionId ?? undefined, taskId } : {},
+        );
+        if (!taskId) {
+          if (activeSessionId) liveReplies.clear(activeSessionId);
+          setActivityPreviews(new Map());
+        }
+        pushNotice(
+          res.stopped
+            ? taskId
+              ? `Stopped task ${taskId}.`
+              : 'Stopped all running work.'
+            : 'No active execution to stop.',
+          { badge: 'STOP' },
+        );
+        await refreshSessionState(activeProjectId, activeSessionId);
+      } catch (err) {
+        pushNotice(err instanceof Error ? err.message : String(err), { isError: true });
+      } finally {
+        if (!taskId) {
+          stoppingRef.current = false;
+          setStopping(false);
+        }
+      }
+    },
+    [activeProjectId, activeSessionId, client, liveReplies, pushNotice, refreshSessionState],
+  );
 
   const runWithUnconfinedSupport = useCallback(
     async (label: string, fn: (allowUnconfined: boolean) => Promise<void>) => {
@@ -703,6 +781,66 @@ export function RoomApp({
             handleExit();
             return;
 
+          case 'update': {
+            const sub = cmd.args[0]?.toLowerCase();
+            if (sub && !['check', 'clis', 'cli', 'providers', 'all'].includes(sub)) {
+              pushNotice('Usage: /update [check|clis|all]', { isError: true });
+              return;
+            }
+            const checkOnly = sub === 'check';
+            const clisOnly = sub === 'clis' || sub === 'cli' || sub === 'providers';
+            const includeClis = clisOnly || sub === 'all';
+            const runDalang = onRunDalangUpdate ?? ((opts) => runUpdate(undefined, opts));
+
+            setSending(true);
+            try {
+              if (!clisOnly) {
+                setBusyActivity(checkOnly ? 'Checking for DALANG updates...' : 'Updating DALANG...');
+                const report = await runDalang({
+                  checkOnly,
+                  onStatus: (line) => setBusyActivity(line),
+                });
+                if (!report.ok) {
+                  pushNotice(
+                    [report.message, ...(report.detail ? [report.detail] : [])],
+                    { isError: true, badge: 'UPDATE' },
+                  );
+                } else if (report.updated) {
+                  setPendingRestartVersion(report.latestVersion ?? report.currentVersion);
+                  pushNotice(
+                    [
+                      report.message,
+                      `Restart DALANG to load v${report.latestVersion}: run /restart (or exit and reopen dalang).`,
+                    ],
+                    { badge: 'UPDATE' },
+                  );
+                } else if (report.updateAvailable) {
+                  pushNotice(
+                    [report.message, 'Run /update to install, or /update all to also update connected CLIs.'],
+                    { badge: 'UPDATE' },
+                  );
+                } else {
+                  pushNotice(report.message, { badge: 'UPDATE' });
+                }
+              }
+
+              if (includeClis) {
+                setBusyActivity('Updating connected agent CLIs...');
+                const cliRes = await client.updateAllConnectedClis();
+                setProviderStatus(cliRes.providers);
+                const failed = cliRes.results.some((r) => r.status === 'failed');
+                pushNotice(
+                  ['Connected CLI updates:', ...formatConnectedClisUpdateLines(cliRes.results)],
+                  { isError: failed, badge: 'UPDATE' },
+                );
+              }
+            } finally {
+              setBusyActivity(null);
+              setSending(false);
+            }
+            return;
+          }
+
           case 'restart': {
             if (!onRequestRestart) {
               pushNotice('Restart is unavailable in this terminal.', { isError: true });
@@ -736,6 +874,7 @@ export function RoomApp({
                 '  @<profile> <msg>   Idle profile -> read-only Ask; running coder -> steer',
                 '  Tab                Autocomplete @profile or /command',
                 '  Shift+Tab          Switch mode',
+                '  Esc                Stop all running agents and tasks (or clear input when idle)',
                 '  /mouse             Toggle wheel capture for text selection',
                 '  PageUp / PageDown  Scroll timeline (or Ctrl+U / Ctrl+D, or the mouse wheel)',
                 '  y / n + Enter      Answer the active gate prompt',
@@ -1009,19 +1148,7 @@ export function RoomApp({
           }
 
           case 'stop': {
-            if (!activeProjectId) {
-              pushNotice('No active project.', { isError: true });
-              return;
-            }
-            const taskId = cmd.args[0];
-            const res = await client.stopExecution(activeProjectId, {
-              sessionId: activeSessionId ?? undefined,
-              taskId,
-            });
-            pushNotice(res.stopped ? 'Stopped running execution.' : 'No active execution to stop.', {
-              badge: 'STOP',
-            });
-            await refreshSessionState(activeProjectId, activeSessionId);
+            await stopRunningWork(cmd.args[0]);
             return;
           }
 
@@ -1104,6 +1231,7 @@ export function RoomApp({
       mode,
       modelChoice,
       onRequestRestart,
+      onRunDalangUpdate,
       onOpenPager,
       openBrowser,
       openModelPicker,
@@ -1112,6 +1240,7 @@ export function RoomApp({
       refreshSessionState,
       runWithUnconfinedSupport,
       sessions,
+      stopRunningWork,
     ],
   );
 
@@ -1171,7 +1300,10 @@ export function RoomApp({
         void refreshSessionState(activeProjectId, res.session.id);
       } catch (err) {
         setSending(false);
-        pushNotice(err instanceof Error ? err.message : String(err), { isError: true });
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg !== 'Stopped by user') {
+          pushNotice(msg, { isError: true });
+        }
       }
     },
     [
@@ -1283,8 +1415,10 @@ export function RoomApp({
 
       // Submit
       if (key.return) {
-        if (sending) return;
         const submit = resolveComposerSubmit(input, completions, completionIdx);
+        const trimmedSubmit = submit.text.trim().toLowerCase();
+        const allowWhileSending = trimmedSubmit === '/stop' || trimmedSubmit.startsWith('/stop ') || trimmedSubmit === '/exit';
+        if (sending && !allowWhileSending) return;
         if (submit.action === 'fill') {
           setInput(submit.text);
           setCursor(submit.text.length);
@@ -1351,7 +1485,16 @@ export function RoomApp({
         }
         return;
       }
-      if (key.escape) {
+      if (key.escape && rawCh === '') {
+        if (hasRunningWork) {
+          void stopRunningWork();
+          return;
+        }
+        if (pendingUnconfinedAction) {
+          setPendingUnconfinedAction(null);
+          pushNotice(`Cancelled ${pendingUnconfinedAction.label}.`);
+          return;
+        }
         setHistoryIdx(-1);
         setInput('');
         setCursor(0);
@@ -1364,7 +1507,9 @@ export function RoomApp({
         const submits = chunk.endsWith('\n');
         const text = chunk.replace(/\n+$/, '').replace(/\n/g, ' ');
         const next = input.slice(0, cursor) + text + input.slice(cursor);
-        if (submits && !sending) {
+        const trimmedNext = next.trim().toLowerCase();
+        const allowWhileSending = trimmedNext === '/stop' || trimmedNext.startsWith('/stop ') || trimmedNext === '/exit';
+        if (submits && (!sending || allowWhileSending)) {
           void handleSubmit(next);
           return;
         }
@@ -1457,7 +1602,7 @@ export function RoomApp({
     completions.length > 0
       ? Math.min(completions.length, POPUP_SIZE) + 2 + (completions.length > POPUP_SIZE ? 1 : 0)
       : 0;
-  const gateRows = pendingGate || pendingUnconfinedAction ? 3 : 0;
+  const gateRows = pendingGate || pendingUnconfinedAction || pendingRestartVersion ? 3 : 0;
   const turn = activeSession?.id === activeSessionId && activeSession.projectId === activeProjectId
     ? activeSession.turn
     : null;
@@ -1518,7 +1663,7 @@ export function RoomApp({
           setScreen('room');
           pushNotice(
             choice
-              ? `Lead model set to ${describeModel(choice)}. It applies to your next messages.`
+              ? `Lead model set to ${describeModel(choice, modelData.providers)}. It applies to your next messages.`
               : "Back to the Lead's own model setting.",
             { badge: 'MODEL' },
           );
@@ -1549,7 +1694,7 @@ export function RoomApp({
   // 4 columns of border and padding, plus the 7 the icon takes (5 wide and a 2 column gap).
   const titleRoom = termSize.cols - 4 - 7 - headerRight.length - 2 - headerLeftFixed.length;
   const statChips = providerStatus === null ? null : providerStatChips(providerStatus);
-  const runningAgents = describeRunningAgents(execution?.runs ?? []);
+  const runningAgents = describeRunningAgents(execution?.runs ?? [], providerStatus ?? modelData?.providers ?? []);
   const fullTitle = activeSession?.title || 'new chat';
   const headerTitle =
     titleRoom <= 3
@@ -1628,7 +1773,7 @@ export function RoomApp({
             <Text bold>Lead </Text>
             {activeModel ? (
               <>
-                <Text>{describeModel(activeModel)}</Text>
+                <Text>{describeModel(activeModel, providerStatus ?? modelData?.providers ?? [])}</Text>
                 <Text dimColor>{`  (${ACTIVE_SOURCE_LABEL[activeModel.source]})`}</Text>
               </>
             ) : (
@@ -1677,19 +1822,28 @@ export function RoomApp({
         <WorkingStatus
           key={turn.startedAt}
           actor={stripControl(`@${turn.phase.startsWith('ask:') ? turn.phase.slice(4) : 'lead'} (${providerLabel(turn.provider)})`)}
-          activity={hasLiveReply ? 'Writing a response' : activityPreviews.get(activeSessionId) ?? 'Working'}
+          activity={stopping ? 'Stopping...' : hasLiveReply ? 'Writing a response' : activityPreviews.get(activeSessionId) ?? 'Working'}
           startedAt={turn.startedAt}
           others={activeRuns.length}
+          hint={stopping ? undefined : 'Esc to stop'}
         />
       ) : activeRun ? (
         <WorkingStatus
           key={activeRun.id}
           actor={stripControl(`@${activeRun.profileName} (${providerLabel(activeRun.provider)})`)}
-          activity={activityPreviews.get(activeRun.id) ?? `Working on ${stripControl(activeRun.taskExternalId)}`}
+          activity={stopping ? 'Stopping...' : activityPreviews.get(activeRun.id) ?? `Working on ${stripControl(activeRun.taskExternalId)}`}
           startedAt={activeRun.startedAt}
           others={activeRuns.length - 1}
+          hint={stopping ? undefined : 'Esc to stop'}
         />
-      ) : sending ? <WorkingStatus actor="Dalang" activity="Waiting for a response" others={0} /> : null}
+      ) : sending ? (
+        <WorkingStatus
+          actor="Dalang"
+          activity={stopping ? 'Stopping...' : busyActivity ?? 'Waiting for a response'}
+          others={0}
+          hint={stopping || busyActivity ? undefined : 'Esc to stop'}
+        />
+      ) : null}
 
       {/* Active gate prompt */}
       {pendingUnconfinedAction ? (
@@ -1702,6 +1856,12 @@ export function RoomApp({
         <Box borderStyle="single" borderColor="yellow" paddingX={1}>
           <Text bold color="yellow" wrap="truncate-middle">
             [GATE] {pendingGate.prompt}
+          </Text>
+        </Box>
+      ) : pendingRestartVersion ? (
+        <Box borderStyle="single" borderColor="green" paddingX={1}>
+          <Text bold color="green" wrap="truncate-middle">
+            [UPDATE] DALANG v{pendingRestartVersion} installed. Run /restart to apply the update.
           </Text>
         </Box>
       ) : null}
@@ -1746,7 +1906,7 @@ export function RoomApp({
         <Text dimColor wrap="truncate-end">
           {startIdx > 0 || clampedOffset > 0
             ? '↑/↓ prompt history · /help /exit'
-            : '↑/↓ prompt history · @profile tag/steer · /model /resume /new /restart /config /wizard /web /help /exit'}
+            : '↑/↓ prompt history · @profile tag/steer · /model /resume /new /update /restart /config /wizard /web /help /exit'}
         </Text>
         {clampedOffset > 0 ? (
           <Text color="yellow" wrap="truncate-end">

@@ -1,5 +1,5 @@
 import type { AgentProfileDTO, EffortLevel, ProviderId, ProviderStatus, TaskRunDTO } from '@dalang/shared';
-import { effortsFor, modelLabel, PROVIDER_ORDER, providerLabel } from './team.js';
+import { effortsFor, modelLabel, modelValueLabel, PROVIDER_ORDER, providerLabel } from './team.js';
 
 /** The model the user picked with `/model` for the Lead, sent with each chat message. */
 export interface ModelChoice {
@@ -55,9 +55,12 @@ export function modelOptions(providers: ProviderStatus[], usable: ReadonlySet<Pr
   return out;
 }
 
-/** "Claude · sonnet · high" for the header and notices. */
-export function describeModel(choice: Pick<ModelChoice, 'provider' | 'model'> & { effort?: string | null }): string {
-  return [providerLabel(choice.provider), choice.model || 'CLI default', choice.effort || null]
+/** "Claude · Claude Sonnet 5.5 · high" for the header and notices. */
+export function describeModel(
+  choice: Pick<ModelChoice, 'provider' | 'model'> & { effort?: string | null },
+  providers: ProviderStatus[] = [],
+): string {
+  return [providerLabel(choice.provider), modelValueLabel(providers, choice.provider, choice.model), choice.effort || null]
     .filter(Boolean)
     .join(' · ');
 }
@@ -102,8 +105,11 @@ export const ACTIVE_SOURCE_LABEL: Record<ActiveLeadModel['source'], string> = {
 };
 
 /** One entry per agent that is running now: "@coder-small Antigravity · gemini-4-hydrogen". */
-export function describeRunningAgents(runs: Pick<TaskRunDTO, 'status' | 'profileName' | 'provider' | 'model' | 'kind'>[]): string[] {
+export function describeRunningAgents(
+  runs: Pick<TaskRunDTO, 'status' | 'profileName' | 'provider' | 'model' | 'kind'>[],
+  providers: ProviderStatus[] = [],
+): string[] {
   return runs
     .filter((r) => r.status === 'running')
-    .map((r) => `@${r.profileName} ${providerLabel(r.provider)} · ${r.model || 'CLI default'}`);
+    .map((r) => `@${r.profileName} ${providerLabel(r.provider)} · ${modelValueLabel(providers, r.provider, r.model)}`);
 }

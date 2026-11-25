@@ -1,9 +1,11 @@
 import os from 'node:os';
+import type { ProviderCliUpdateResultDTO } from '@dalang/shared';
 import {
   compareSemver,
   DALANG_VERSION,
   fetchLatestNpmVersion,
   NodeCliRunner,
+  ProviderRegistry,
   type CliRunner,
   type UpdateRegistryFetcher,
 } from '@dalang/core';
@@ -181,4 +183,50 @@ export function formatUpdateReport(report: UpdateReport): string {
     lines.push(report.detail);
   }
   return lines.join('\n');
+}
+
+export interface ConnectedClisUpdateReport {
+  ok: boolean;
+  updatedCount: number;
+  failedCount: number;
+  skippedCount: number;
+  results: ProviderCliUpdateResultDTO[];
+}
+
+/**
+ * Updates every connected provider CLI (`installed && loggedIn`) via `<binary> update`.
+ */
+export async function runConnectedClisUpdate(
+  runner: CliRunner = new NodeCliRunner(),
+  opts: { onStatus?: (line: string) => void } = {},
+): Promise<ConnectedClisUpdateReport> {
+  opts.onStatus?.('Checking connected agent CLIs...');
+  const registry = new ProviderRegistry(runner);
+  const { results } = await registry.updateConnectedClis({
+    onProgress: opts.onStatus,
+  });
+  const updatedCount = results.filter((r) => r.status === 'updated').length;
+  const failedCount = results.filter((r) => r.status === 'failed').length;
+  const skippedCount = results.filter((r) => r.status === 'skipped').length;
+  return {
+    ok: failedCount === 0,
+    updatedCount,
+    failedCount,
+    skippedCount,
+    results,
+  };
+}
+
+export function formatConnectedClisUpdateLines(results: ProviderCliUpdateResultDTO[]): string[] {
+  const connected = results.filter((r) => r.status !== 'skipped');
+  if (connected.length === 0) {
+    return [
+      'No connected agent CLIs found to update.',
+      ...results.map((r) => `  - ${r.displayName} (${r.binary}): skipped (${r.message})`),
+    ];
+  }
+  return results.map((r) => {
+    const marker = r.status === 'updated' ? '✓' : r.status === 'failed' ? '✗' : '-';
+    return `  ${marker} ${r.displayName} (${r.binary}): ${r.status === 'skipped' ? `skipped (${r.message})` : r.message}`;
+  });
 }

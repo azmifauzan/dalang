@@ -12,6 +12,7 @@ export interface ActiveCoderRunInfo {
 
 export interface RoomExecutionRouter {
   startExecution?(projectId: string, input: { sessionId: string }): Promise<unknown>;
+  stopExecution?(projectId: string, taskId?: string, sessionId?: string): Promise<{ stopped: boolean }>;
   commitWorkspace?(projectId: string, input: { paths: string[]; message: string }): Promise<string>;
   listActiveRunsForSession(projectId: string, sessionId: string): ActiveCoderRunInfo[];
   steerTask(projectId: string, taskId: string, runId: string, message: string): Promise<void>;

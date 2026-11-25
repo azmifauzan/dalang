@@ -2,6 +2,13 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
+## 0.13.3 (Stop all with Esc and /update command), 25 Nov
+
+- **Stop all running work reliably.** Pressing `Esc` in the terminal room immediately stops all running agents, tasks, subtasks, and in-flight Lead or `@<profile>` turns (the live status bar shows `Esc to stop`; when idle, `Esc` still clears the composer). `/stop` and `/exit` remain submittable while the Lead is mid-turn, `POST /api/projects/:id/execution/stop` cancels both task queues and active Lead turns, and `NodeCliRunner` no longer hangs waiting for stdio `close` if a grandchild holds pipes open after abort or timeout.
+- **Auto mode can stop running tasks.** Asking the Lead in Auto mode to stop active coders can now trigger `auto_stop` to stop running tasks in the session directly.
+- **`/update` command and connected CLI updates.** Added `/update [check|clis|all]` in the terminal room and `dalang update [--check|--clis|--all] [--json]` in the shell. `/update` checks npm for the latest release, installs it, and shows both a timeline notice and a persistent restart banner prompting `/restart`. `/update clis` (and `POST /api/providers/update-all`) updates every connected provider CLI (`installed && loggedIn`) in sequence with per-CLI version reporting and isolated error handling. Startup also announces an available DALANG update once when version checks are enabled. No database migration is required.
+- **Readable model labels in the terminal room.** The header, running-agent row, `/model`, `/config`, and setup wizard now display resolved model names (such as `Claude Opus 5.5` or `GPT-5`) instead of raw CLI aliases.
+
 ## 0.13.2 (Terminal title status), 25 Nov
 
 - The terminal title shows an animated spinner while the selected session is processing and `*` when a question or gate is waiting for input. Free-form questions are detected from punctuation; title restoration depends on terminal support.

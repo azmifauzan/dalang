@@ -65,7 +65,7 @@ dalang
 
 *Terminal room with demonstration data.*
 
-While an agent works, the status line shows a spinner, elapsed time, and a short activity summary. The terminal title animates during work and shows `*` when a question or gate awaits your input. Replies render Markdown in the timeline. Use **↑ / ↓** to recall prompts, `/resume` to reopen a saved chat, `/restart` to restart and return to it, `/mouse` to toggle mouse capture, and `/web` to open the same chat in your browser. [Terminal walkthrough and command reference](docs/USAGE.md#terminal-team-room)
+While an agent works, the status line shows a spinner, elapsed time, and a short activity summary. Press `Esc` (or run `/stop`) at any time to stop all running agents and tasks. The terminal title animates during work and shows `*` when a question or gate awaits your input. Replies render Markdown in the timeline. Use **↑ / ↓** to recall prompts, `/resume` to reopen a saved chat, `/update` to check or install updates for Dalang and connected CLIs, `/restart` to restart and return to it, `/mouse` to toggle mouse capture, and `/web` to open the same chat in your browser. [Terminal walkthrough and command reference](docs/USAGE.md#terminal-team-room)
 
 ## Browser workspace
 

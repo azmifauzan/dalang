@@ -21,6 +21,7 @@ export interface RunContractOptions<T> {
   maxRetries?: number;
   logsDir?: string;
   tmpDir?: string;
+  signal?: AbortSignal;
   onLogLine?: (line: string) => void;
 }
 
@@ -108,6 +109,11 @@ export async function runContractTurn<T>(
   let totalUsage: TurnTokenUsage | undefined;
 
   for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
+    if (options.signal?.aborted) {
+      const stopErr = new Error('Stopped by user');
+      Object.assign(stopErr, { usage: totalUsage, logFilePath, aborted: true });
+      throw stopErr;
+    }
     const outFilePath = path.join(tmpDir, `${options.schemaName}-attempt-${attempt}.txt`);
 
     let turn: AdapterTurnResult;
@@ -120,6 +126,7 @@ export async function runContractTurn<T>(
         model: options.model,
         effort: options.effort ?? 'high',
         outputFilePath: outFilePath,
+        signal: options.signal,
         logFilePath,
         onLogLine: options.onLogLine,
       });
@@ -132,6 +139,11 @@ export async function runContractTurn<T>(
 
     lastTurn = turn;
     totalUsage = mergeTokenUsage(totalUsage, turn.usage);
+    if (turn.aborted || options.signal?.aborted) {
+      const stopErr = new Error('Stopped by user');
+      Object.assign(stopErr, { usage: totalUsage, logFilePath, aborted: true });
+      throw stopErr;
+    }
     if (turn.sessionId) {
       currentSessionId = turn.sessionId;
     }

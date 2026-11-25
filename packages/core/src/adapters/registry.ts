@@ -1,6 +1,7 @@
 import os from 'node:os';
 import {
   buildAccountKey,
+  type ProviderCliUpdateResultDTO,
   type ProviderId,
   type ProviderStatus,
   type ProviderUsage,
@@ -132,6 +133,90 @@ export class ProviderRegistry {
     } finally {
       this.cliUpdates.delete(id);
     }
+  }
+
+  /**
+   * Updates every connected provider CLI (`installed && loggedIn`) sequentially so each adapter's
+   * status and version are refreshed cleanly and one failure does not block the rest.
+   */
+  async updateConnectedClis(
+    options: {
+      statuses?: ProviderStatus[];
+      onProgress?: (line: string) => void;
+    } = {},
+  ): Promise<{ results: ProviderCliUpdateResultDTO[]; providers: ProviderStatus[] }> {
+    const initialStatuses = options.statuses ?? (await this.checkAllStatuses());
+    const results: ProviderCliUpdateResultDTO[] = [];
+    const updatedProviders: ProviderStatus[] = [];
+
+    for (const status of initialStatuses) {
+      if (!status.installed) {
+        results.push({
+          provider: status.id,
+          displayName: status.displayName,
+          binary: status.binary,
+          status: 'skipped',
+          beforeVersion: null,
+          afterVersion: null,
+          message: 'Not installed',
+        });
+        updatedProviders.push(status);
+        continue;
+      }
+      if (!status.loggedIn) {
+        results.push({
+          provider: status.id,
+          displayName: status.displayName,
+          binary: status.binary,
+          status: 'skipped',
+          beforeVersion: status.version,
+          afterVersion: status.version,
+          message: 'Not connected (login needed)',
+        });
+        updatedProviders.push(status);
+        continue;
+      }
+
+      options.onProgress?.(`Updating ${status.displayName} (${status.binary})...`);
+      try {
+        await this.updateCli(status.id);
+        const refreshed = await this.getAdapter(status.id).checkStatus();
+        if (refreshed.loggedIn) {
+          this.setUsageSnapshot(refreshed.id, refreshed.usage, Date.now());
+        }
+        updatedProviders.push(refreshed);
+        const before = status.version;
+        const after = refreshed.version;
+        const versionText =
+          before && after && before !== after
+            ? `${before} -> ${after}`
+            : after
+              ? `${after} (up to date)`
+              : 'Updated';
+        results.push({
+          provider: status.id,
+          displayName: status.displayName,
+          binary: status.binary,
+          status: 'updated',
+          beforeVersion: before,
+          afterVersion: after,
+          message: versionText,
+        });
+      } catch (err) {
+        updatedProviders.push(status);
+        results.push({
+          provider: status.id,
+          displayName: status.displayName,
+          binary: status.binary,
+          status: 'failed',
+          beforeVersion: status.version,
+          afterVersion: status.version,
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    return { results, providers: updatedProviders };
   }
 
   getCachedUsage(provider: ProviderId, configDir?: string | null): UsageSnapshot | null {

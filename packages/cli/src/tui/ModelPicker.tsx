@@ -32,7 +32,7 @@ export function ModelPicker({
   const activeKey = active ? `${active.provider}:${active.model}` : undefined;
 
   const subtitle = active
-    ? `Active now: ${describeModel(active)} (${ACTIVE_SOURCE_LABEL[active.source]})`
+    ? `Active now: ${describeModel(active, providers)} (${ACTIVE_SOURCE_LABEL[active.source]})`
     : 'No model is set yet.';
 
   if (picked) {
@@ -46,7 +46,7 @@ export function ModelPicker({
     ];
     return (
       <Screen
-        title={`Reasoning effort for ${describeModel({ provider: picked.provider, model: picked.model })}`}
+        title={`Reasoning effort for ${describeModel({ provider: picked.provider, model: picked.model }, providers)}`}
         subtitle={subtitle}
         hint="Up/Down move · Enter choose · Esc back"
         width={width}

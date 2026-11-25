@@ -12,6 +12,7 @@ export const SLASH_COMMANDS: SlashCommandDef[] = [
   { name: 'project', usage: '/project [list|<n|name>|open [path]|create [path]]', description: 'List, switch, or open a project' },
   { name: 'new', usage: '/new', description: 'Start a new session' },
   { name: 'resume', usage: '/resume [n|id]', description: 'Pick a previous session to continue' },
+  { name: 'update', usage: '/update [check|clis|all]', description: 'Check/install DALANG update or update all connected CLIs' },
   { name: 'restart', usage: '/restart', description: 'Restart DALANG and return to this session' },
   { name: 'model', usage: '/model', description: "Choose the Lead's model from every connected provider" },
   { name: 'config', usage: '/config', description: 'Language, limits refresh, agent CLIs, and the agent team' },
@@ -19,7 +20,7 @@ export const SLASH_COMMANDS: SlashCommandDef[] = [
   { name: 'diff', usage: '/diff [taskId]', description: 'Open task diff in $PAGER' },
   { name: 'merge', usage: '/merge [taskId]', description: 'Approve and merge the ready task' },
   { name: 'reject', usage: '/reject [taskId] [note]', description: 'Reject the awaiting task (--requeue to retry)' },
-  { name: 'stop', usage: '/stop [taskId]', description: 'Stop running task execution' },
+  { name: 'stop', usage: '/stop [taskId]', description: 'Stop all running agents and tasks (or one task)' },
   { name: 'web', usage: '/web', description: 'Open the web UI on the current session' },
   { name: 'run', usage: '/run', description: 'Approve and run the current draft plan' },
   { name: 'finish', usage: '/finish', description: 'Finish Discuss and write the brief (Full mode)' },
@@ -107,6 +108,18 @@ export function getComposerCompletions(
         label: `${number}. ${clip(s.title?.trim() || '(untitled)', 44)}`,
         detail: `[${s.mode}] ${relativeTime(s.updatedAt)}${s.workState === 'working' ? ' · working' : ''}`,
       }));
+  }
+
+  // `/update <subcommand>`: check DALANG update, update connected CLIs, or update everything.
+  const updateMatch = trimmedStart.match(/^\/update\s+(\S*)$/i);
+  if (updateMatch) {
+    const query = updateMatch[1].toLowerCase();
+    const options: CompletionItem[] = [
+      { value: '/update check', label: '/update check', detail: 'Check for the latest DALANG version' },
+      { value: '/update clis', label: '/update clis', detail: 'Update all connected agent CLIs (Claude, Codex, Agy)' },
+      { value: '/update all', label: '/update all', detail: 'Update DALANG and all connected agent CLIs' },
+    ];
+    return options.filter((opt) => !query || opt.value.slice('/update '.length).startsWith(query));
   }
 
   // Slash command completion when typing `/...` with no space yet

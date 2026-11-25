@@ -63,7 +63,7 @@ The room asks the terminal to report the mouse wheel so it can scroll older mess
 
 ### Up and Down move through suggestions instead of prompts
 
-While the `/` or `@` suggestions are open, arrow keys move the selection. Press Esc to clear the composer, then use `↑` to recall prompts. Use `/resume` first if the prompt is in an older session. [Terminal shortcuts](USAGE.md#commands-and-keyboard-shortcuts)
+While the `/` or `@` suggestions are open, arrow keys move the selection. When idle, press `Esc` to clear the composer (when agents or tasks are running, `Esc` stops all running work first), then use `↑` to recall prompts. Use `/resume` first if the prompt is in an older session. [Terminal shortcuts](USAGE.md#commands-and-keyboard-shortcuts)
 
 ### Windows source install asks for C++ Build Tools
 
@@ -130,7 +130,7 @@ For Docker, sign in inside the container using the [Docker sign-in commands](INS
 
 ### Update CLI fails
 
-Wait for that provider's active turns to finish, then retry **Update CLI**. If the message points to an installation managed by a package manager or a permissions error, use that installation's update command and refresh CLI status. [Provider updates](PROVIDERS.md#update-provider-clis)
+Wait for that provider's active turns to finish (or press `Esc` / run `/stop`), then retry **Update CLI**, `/update clis`, or `dalang update --clis`. If the message points to an installation managed by a package manager or a permissions error, use that installation's update command and refresh CLI status. [Provider updates](PROVIDERS.md#update-provider-clis)
 
 ### Provider stays in cooldown after quota resets
 

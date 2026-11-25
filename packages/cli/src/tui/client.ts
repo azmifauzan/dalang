@@ -9,6 +9,8 @@ import type {
   GuardStateDTO,
   PlanDTO,
   ProjectSummary,
+  ProviderCliUpdateResultDTO,
+  ProviderId,
   ProviderStatus,
   RoomRouteInfo,
   RoutingRuleDTO,
@@ -21,6 +23,7 @@ import type {
   UpdateProfileInput,
   UpdateRoutingRuleInput,
   UpdateSettingsInput,
+  UpdateStatusDTO,
 } from '@dalang/shared';
 
 export interface ServerEvent {
@@ -310,6 +313,28 @@ export class RoomApiClient {
       method: 'POST',
     });
     return res.providers;
+  }
+
+  async getUpdateStatus(force = false): Promise<UpdateStatusDTO> {
+    const res = await this.request<{ update: UpdateStatusDTO }>(
+      `/api/update-status${force ? '?force=1' : ''}`,
+    );
+    return res.update;
+  }
+
+  async updateProviderCli(provider: ProviderId): Promise<{ providers: ProviderStatus[] }> {
+    return this.request(`/api/providers/${encodeURIComponent(provider)}/update`, {
+      method: 'POST',
+    });
+  }
+
+  async updateAllConnectedClis(): Promise<{
+    results: ProviderCliUpdateResultDTO[];
+    providers: ProviderStatus[];
+  }> {
+    return this.request('/api/providers/update-all', {
+      method: 'POST',
+    });
   }
 
   async updateSettings(body: UpdateSettingsInput): Promise<SettingsDTO> {

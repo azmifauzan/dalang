@@ -241,6 +241,14 @@ describe('model choice logic', () => {
     expect(activeLeadModel({ choice: null, session: null, leadProfile })?.source).toBe('profile');
     expect(activeLeadModel({ choice: null, session: null, leadProfile: null })).toBeNull();
     expect(describeModel({ provider: 'claude-code', model: '', effort: 'high' })).toBe('Claude · CLI default · high');
+    const providers = [{ id: 'claude-code', models: [
+      { value: 'opus', resolvedModel: 'claude-opus-5-5', displayName: 'Opus', variants: [] },
+      { value: 'claude-fable-5-2', resolvedModel: 'claude-fable-5-2', displayName: 'Fable', variants: [{ id: '1m', label: '1M context', value: 'claude-fable-5-2[1m]' }] },
+    ] }] as unknown as ProviderStatus[];
+    expect(describeModel({ provider: 'claude-code', model: 'opus', effort: 'high' }, providers)).toBe('Claude · Claude Opus 5.5 · high');
+    expect(describeModel({ provider: 'claude-code', model: 'claude-fable-5-2[1m]' }, providers)).toBe('Claude · Claude Fable 5.2');
+    expect(describeModel({ provider: 'claude-code', model: 'claude-sonnet-5-5' })).toBe('Claude · Claude Sonnet 5.5');
+    expect(describeModel({ provider: 'codex', model: 'gpt-x' }, providers)).toBe('Codex · gpt-x');
   });
 
   it('names the agents that are running now with their models', () => {
@@ -421,7 +429,7 @@ describe('setup wizard (Ink)', () => {
     await ui.press(DOWN, '\r'); // Model
     await ui.waitFor('GPT-5');
     await ui.press(DOWN, '\r'); // CLI default -> GPT-5
-    await ui.waitFor('Codex · gpt-5');
+    await ui.waitFor('Codex · GPT-5');
     await ui.press(DOWN, DOWN, DOWN, DOWN, '\r'); // Done
     await ui.waitFor('Cross-provider review active');
     await ui.press(DOWN, DOWN, DOWN, DOWN, DOWN, DOWN, '\r'); // Accept team & continue
@@ -503,14 +511,14 @@ describe('/model picker (Ink)', () => {
       }),
     );
     await ui.waitFor("Choose the Lead's model");
-    await ui.waitFor('Active now: Claude · sonnet · high (this session)');
+    await ui.waitFor('Active now: Claude · Sonnet · high (this session)');
     await ui.waitFor('Codex · GPT-5');
     expect(ui.screen()).not.toContain('Antigravity ·');
     await ui.waitFor('(active)');
 
     // The highlight starts on the active model: Enter opens its effort list, preselecting the model default.
     await ui.press('\r');
-    await ui.waitFor('Reasoning effort for Claude · sonnet');
+    await ui.waitFor('Reasoning effort for Claude · Sonnet');
     await ui.press(DOWN, '\r'); // medium -> high
     await sleep(100);
     expect(chosen).toEqual([{ provider: 'claude-code', model: 'sonnet', effort: 'high' }]);
@@ -532,7 +540,7 @@ describe('/model picker (Ink)', () => {
     await ui.waitFor('No model is set yet.');
     // default(0), Claude CLI default(1), Sonnet(2), Haiku(3)
     await ui.press(DOWN, DOWN, DOWN, '\r');
-    await ui.waitFor('Reasoning effort for Claude · haiku');
+    await ui.waitFor('Reasoning effort for Claude · Haiku');
     await ui.waitFor('xhigh'); // the CLI named no levels, so all five are offered
     await ui.press('\r'); // "Lead's usual effort"
     await sleep(100);

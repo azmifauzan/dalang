@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const DALANG_VERSION = '0.13.2';
+export const DALANG_VERSION = '0.13.3';
 
 export const MAX_DELEGATION_DEPTH = 1;
 export const DEFAULT_MAX_SUBTASKS_PER_TASK = 6;
@@ -909,6 +909,18 @@ export interface UpdateStatusDTO {
   checkedAt: string | null;
   checkEnabled: boolean;
   releaseNotesUrl: string;
+}
+
+export type ProviderCliUpdateStatus = 'updated' | 'failed' | 'skipped';
+
+export interface ProviderCliUpdateResultDTO {
+  provider: ProviderId;
+  displayName: string;
+  binary: string;
+  status: ProviderCliUpdateStatus;
+  beforeVersion: string | null;
+  afterVersion: string | null;
+  message: string;
 }
 
 export interface RoutingRuleDTO {

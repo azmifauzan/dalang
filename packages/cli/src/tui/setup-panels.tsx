@@ -8,6 +8,7 @@ import {
   isCrossProvider,
   modelLabel,
   modelsOf,
+  modelValueLabel,
   planTeamChanges,
   PROVIDER_ORDER,
   providerLabel,
@@ -156,8 +157,8 @@ export function ProvidersPanel({
   );
 }
 
-function describeRole(value: { provider: ProviderId; model: string; effort: EffortLevel }): string {
-  return [providerLabel(value.provider), value.model || 'CLI default', value.effort].join(' · ');
+function describeRole(providers: ProviderStatus[], value: { provider: ProviderId; model: string; effort: EffortLevel }): string {
+  return [providerLabel(value.provider), modelValueLabel(providers, value.provider, value.model), value.effort].join(' · ');
 }
 
 /**
@@ -203,7 +204,7 @@ export function TeamEditor({
     const heading = (
       <Text bold>
         {ROLE_LABEL[role]}
-        <Text dimColor>{`   ${describeRole(cur)}`}</Text>
+        <Text dimColor>{`   ${describeRole(data.providers, cur)}`}</Text>
       </Text>
     );
     if (field === 'fallback-provider') {
@@ -244,11 +245,11 @@ export function TeamEditor({
         onSubmit={(value) => { patch(prof.id, { fallback: { ...fallback, configDir: value.trim() || null } }); setField('fallback'); }} /></Box>;
     }
     if (field === 'fallback') {
-      const details = fallback ? describeRole(fallback) : 'Off';
+      const details = fallback ? describeRole(data.providers, fallback) : 'Off';
       const items: MenuItem[] = [
         { key: 'fallback-provider', label: 'Fallback provider', detail: fallback ? providerLabel(fallback.provider) : 'Off' },
         ...(fallback ? [
-          { key: 'fallback-model', label: 'Fallback model', detail: fallback.model || 'CLI default' },
+          { key: 'fallback-model', label: 'Fallback model', detail: modelValueLabel(data.providers, fallback.provider, fallback.model) },
           { key: 'fallback-effort', label: 'Fallback reasoning effort', detail: fallback.effort },
           { key: 'fallback-account', label: 'Fallback account directory', detail: fallback.configDir || 'Default account' },
         ] : []),
@@ -333,9 +334,9 @@ export function TeamEditor({
           onCancel={back}
           items={[
             { key: 'provider', label: 'Provider', detail: providerLabel(cur.provider) },
-            { key: 'model', label: 'Model', detail: cur.model || 'CLI default' },
+            { key: 'model', label: 'Model', detail: modelValueLabel(data.providers, cur.provider, cur.model) },
             { key: 'effort', label: 'Reasoning effort', detail: cur.effort },
-            { key: 'fallback', label: 'Fallback', detail: fallback ? describeRole(fallback) : 'Off' },
+            { key: 'fallback', label: 'Fallback', detail: fallback ? describeRole(data.providers, fallback) : 'Off' },
             { key: 'done', label: 'Done' },
           ]}
           onSelect={(item) => (item.key === 'done' ? setRole(null) : setField(item.key as 'provider' | 'model' | 'effort' | 'fallback'))}
@@ -348,7 +349,7 @@ export function TeamEditor({
     ...ROLE_KEYS.map((key): MenuItem => {
       const p = roles[key];
       if (!p) return { key, label: ROLE_LABEL[key], detail: 'profile missing: restore it in the web Config', disabled: true };
-      return { key, label: ROLE_LABEL[key], detail: describeRole(roleValue(p, edits[p.id], usable, data.providers, suggestFallbacks)) };
+      return { key, label: ROLE_LABEL[key], detail: describeRole(data.providers, roleValue(p, edits[p.id], usable, data.providers, suggestFallbacks)) };
     }),
     { key: 'accept', label: acceptLabel, detail: data.busy ?? undefined },
     ...extraItems,

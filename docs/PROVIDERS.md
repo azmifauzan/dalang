@@ -22,7 +22,7 @@ Use `Get-Command claude,codex,agy -All` to inspect installed launchers, then `da
 
 ## Update provider CLIs
 
-Use **Config → Agents → Update CLI** on an installed provider. Dalang runs `claude update`, `codex update`, or `agy update` and refreshes the displayed version. Let that provider's active turns finish before updating. If your CLI installation is managed by a package manager that requires separate updates or elevated permissions, update it through that package manager and refresh its status in Dalang.
+Use `/update clis` (or `/update all`) in the terminal room, `dalang update --clis` (or `dalang update --all`) from the shell, or **Config → Agents → Update CLI** in the browser on an installed provider. Dalang runs `claude update`, `codex update`, or `agy update` on every connected CLI (`installed && loggedIn`) and refreshes the displayed versions. Let active turns finish (or stop them with `Esc` / `/stop`) before updating. If your CLI installation is managed by a package manager that requires separate updates or elevated permissions, update it through that package manager and refresh its status in Dalang.
 
 For browser chat images, select Claude Code or Codex in the composer. [Attach images](USAGE.md#attach-images)
 

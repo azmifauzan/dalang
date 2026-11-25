@@ -75,6 +75,18 @@ export function modelLabel(m: Pick<ProviderModelInfo, 'displayName' | 'resolvedM
   return `Claude ${claude[1].charAt(0).toUpperCase()}${claude[1].slice(1)} ${claude[2]}.${claude[3]}`;
 }
 
+/**
+ * How a saved model value reads in a summary: the alias "opus" a profile stores names the same model
+ * as the list ("Claude Opus 5.5"); a value the CLI does not list keeps its own text.
+ */
+export function modelValueLabel(providers: ProviderStatus[], provider: ProviderId, value: string | null): string {
+  if (!value) return 'CLI default';
+  const info = modelsOf(providers, provider).find(
+    (m) => m.value === value || m.resolvedModel === value || m.variants.some((v) => v.value === value),
+  );
+  return modelLabel(info ?? { displayName: value, resolvedModel: value });
+}
+
 export function modelsOf(providers: ProviderStatus[], provider: ProviderId): ProviderModelInfo[] {
   return providers.find((p) => p.id === provider)?.models ?? [];
 }

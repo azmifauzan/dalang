@@ -3,11 +3,12 @@ import { Box, Text, useAnimation, useIsScreenReaderEnabled } from 'ink';
 
 const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
-export function WorkingStatus({ actor, activity, startedAt, others }: {
+export function WorkingStatus({ actor, activity, startedAt, others, hint }: {
   actor: string;
   activity: string;
   startedAt?: string;
   others: number;
+  hint?: string;
 }) {
   const screenReader = useIsScreenReaderEnabled();
   const [mountedAt] = useState(Date.now);
@@ -21,6 +22,7 @@ export function WorkingStatus({ actor, activity, startedAt, others }: {
       <Text color="yellow" wrap="truncate-end">
         {screenReader ? '' : `${frames[frame % frames.length]} `}{elapsed} · <Text bold>{actor}</Text>
         {others > 0 ? ` +${others}` : ''} · {activity}
+        {hint ? <Text dimColor>{` · ${hint}`}</Text> : null}
       </Text>
     </Box>
   );

@@ -112,6 +112,15 @@ const AutoCommitSchema = z.object({
 });
 type AutoCommit = z.infer<typeof AutoCommitSchema>;
 
+const AutoStopSchema = z.union([
+  z.literal(true),
+  z.object({
+    all: z.boolean().optional(),
+    taskId: z.string().trim().min(1).optional(),
+  }),
+]);
+type AutoStop = { taskId?: string };
+
 function decodeChatImages(images: ChatImage[]): ChatTurnImage[] {
   return images.map(({ name, mimeType, data }) => {
     const bytes = Buffer.from(data, 'base64');
@@ -190,6 +199,12 @@ export interface ChatTurnResult {
 
 export class LeadService {
   private readonly activeTurns = new Set<string>();
+  private readonly activeTurnHandles = new Set<{
+    projectId: string;
+    sessionId: string | null;
+    controller: AbortController;
+    promise: Promise<unknown>;
+  }>();
   private readonly profiles: ProfileService;
   private executionRouter: RoomExecutionRouter | null = null;
 
@@ -248,17 +263,74 @@ export class LeadService {
     });
   }
 
+  private trackAbortableTurn<T>(
+    projectId: string,
+    initialSessionId: string | null,
+    run: (signal: AbortSignal, bindSession: (sessionId: string) => void) => Promise<T>,
+  ): Promise<T> {
+    const controller = new AbortController();
+    const handle: {
+      projectId: string;
+      sessionId: string | null;
+      controller: AbortController;
+      promise: Promise<unknown>;
+    } = {
+      projectId,
+      sessionId: initialSessionId,
+      controller,
+      promise: Promise.resolve(),
+    };
+    const promise = (async () => {
+      try {
+        return await run(controller.signal, (sessionId) => {
+          handle.sessionId = sessionId;
+        });
+      } finally {
+        this.activeTurnHandles.delete(handle);
+      }
+    })();
+    handle.promise = promise;
+    this.activeTurnHandles.add(handle);
+    return promise;
+  }
+
   /** One Lead turn per project at a time: turns share a CLI session and write numbered artifacts. */
-  private async exclusiveTurn<T>(projectId: string, run: () => Promise<T>): Promise<T> {
+  private async exclusiveTurn<T>(
+    projectId: string,
+    run: (signal: AbortSignal, bindSession: (sessionId: string) => void) => Promise<T>,
+    initialSessionId?: string,
+  ): Promise<T> {
     if (this.activeTurns.has(projectId)) {
       throw new Error('The Lead is still working on this project. Wait for the current turn to finish.');
     }
     this.activeTurns.add(projectId);
     try {
-      return await run();
+      return await this.trackAbortableTurn(projectId, initialSessionId ?? null, run);
     } finally {
       this.activeTurns.delete(projectId);
     }
+  }
+
+  async stopTurns(projectId: string, sessionId?: string): Promise<{ stopped: boolean }> {
+    const matching = [...this.activeTurnHandles].filter(
+      (entry) =>
+        entry.projectId === projectId &&
+        (!sessionId || entry.sessionId === null || entry.sessionId === sessionId),
+    );
+    if (matching.length === 0) return { stopped: false };
+    for (const entry of matching) {
+      entry.controller.abort();
+    }
+    await Promise.all(matching.map((entry) => entry.promise.catch(() => undefined)));
+    return { stopped: true };
+  }
+
+  async stopAllTurns(): Promise<void> {
+    const all = [...this.activeTurnHandles];
+    for (const entry of all) {
+      entry.controller.abort();
+    }
+    await Promise.all(all.map((entry) => entry.promise.catch(() => undefined)));
   }
 
   // ---------------------------------------------------------------------------
@@ -701,8 +773,10 @@ export class LeadService {
         ? { ...input, message: target.body }
         : input;
 
-    const result = await this.exclusiveTurn(projectId, () =>
-      this.sendChatMessageInner(projectId, effectiveInput),
+    const result = await this.exclusiveTurn(
+      projectId,
+      (signal, bindSession) => this.sendChatMessageInner(projectId, effectiveInput, signal, bindSession),
+      effectiveInput.sessionId,
     );
     return {
       ...result,
@@ -854,114 +928,122 @@ export class LeadService {
     });
 
     const textStream = this.askTextStream(project.id, sessionRow.id, turnPhase);
-    try {
-      const turn = await adapter.runTurn({
-        projectPath: project.path,
-        prompt,
-        images,
-        sessionId: null,
-        model: profile.model || null,
-        effort: input.effort ?? profile.effort,
-        configDir: profile.configDir,
-        permissionMode: 'read-only',
-        timeoutMs: profile.timeoutMs,
-        idleTimeoutMs: profile.idleTimeoutMs,
-        logFilePath,
-        onLogLine: (line) =>
-          this.events?.emitEvent({
-            type: 'lead.log',
-            projectId: project.id,
-            sessionId: sessionRow.id,
-            phase: turnPhase,
-            line,
-          }),
-        onTextDelta: textStream.push,
-      }).finally(textStream.flush);
+    return this.trackAbortableTurn(project.id, sessionRow.id, async (signal) => {
+      try {
+        const turn = await adapter.runTurn({
+          projectPath: project.path,
+          prompt,
+          images,
+          sessionId: null,
+          model: profile.model || null,
+          effort: input.effort ?? profile.effort,
+          configDir: profile.configDir,
+          permissionMode: 'read-only',
+          timeoutMs: profile.timeoutMs,
+          idleTimeoutMs: profile.idleTimeoutMs,
+          signal,
+          logFilePath,
+          onLogLine: (line) =>
+            this.events?.emitEvent({
+              type: 'lead.log',
+              projectId: project.id,
+              sessionId: sessionRow.id,
+              phase: turnPhase,
+              line,
+            }),
+          onTextDelta: textStream.push,
+        }).finally(textStream.flush);
 
-      if (turn.exitCode !== 0 && !turn.text.trim()) {
-        throw new Error(
-          `@${profile.name} ask turn failed (exit ${turn.exitCode ?? 'unknown'}): ${(turn.stderr || 'No response').slice(0, 240)}`,
-        );
+        if (turn.aborted || signal.aborted) {
+          throw new Error('Stopped by user');
+        }
+        if (turn.exitCode !== 0 && !turn.text.trim()) {
+          throw new Error(
+            `@${profile.name} ask turn failed (exit ${turn.exitCode ?? 'unknown'}): ${(turn.stderr || 'No response').slice(0, 240)}`,
+          );
+        }
+
+        const parsedReply = this.parseAskReply(turn);
+        this.recordLeadTurn({
+          projectId: project.id,
+          sessionId: sessionRow.id,
+          phase: turnPhase,
+          provider: profile.provider,
+          model: profile.model || null,
+          status: 'completed',
+          cliSessionId: turn.sessionId,
+          startedAt,
+          logPath: relLogPath,
+          usage: turn.usage,
+        });
+
+        this.postRoomMessage(project.id, sessionRow.id, {
+          role: 'agent',
+          type: 'ask',
+          kind: 'chat',
+          authorProfileId: profile.id,
+          content: parsedReply,
+        });
+
+        this.events?.emitEvent({
+          type: 'lead.turn_finished',
+          projectId: project.id,
+          sessionId: sessionRow.id,
+          phase: turnPhase,
+          ok: true,
+        });
+        this.events?.emitEvent({ type: 'sessions.updated', projectId: project.id, sessionId: sessionRow.id });
+
+        return {
+          session: this.getSession(project.id, sessionRow.id),
+          mode: 'ask',
+          askReply: parsedReply,
+          messages: this.getDiscussState(project.id, sessionRow.id).messages,
+          routedTo: {
+            kind: 'ask',
+            profileId: profile.id,
+            profileName: profile.name,
+          },
+        };
+      } catch (err) {
+        const msg = signal.aborted ? 'Stopped by user' : err instanceof Error ? err.message : String(err);
+        this.recordLeadTurn({
+          projectId: project.id,
+          sessionId: sessionRow.id,
+          phase: turnPhase,
+          provider: profile.provider,
+          model: profile.model || null,
+          status: 'failed',
+          cliSessionId: null,
+          startedAt,
+          failureReason: msg,
+          logPath: relLogPath,
+        });
+        this.postRoomMessage(project.id, sessionRow.id, {
+          role: 'system',
+          type: signal.aborted ? 'text' : 'error',
+          kind: 'status',
+          authorProfileId: profile.id,
+          content: msg,
+        });
+        this.events?.emitEvent({
+          type: 'lead.turn_finished',
+          projectId: project.id,
+          sessionId: sessionRow.id,
+          phase: turnPhase,
+          ok: false,
+          error: msg,
+        });
+        throw signal.aborted ? new Error(msg) : err;
       }
-
-      const parsedReply = this.parseAskReply(turn);
-      this.recordLeadTurn({
-        projectId: project.id,
-        sessionId: sessionRow.id,
-        phase: turnPhase,
-        provider: profile.provider,
-        model: profile.model || null,
-        status: 'completed',
-        cliSessionId: turn.sessionId,
-        startedAt,
-        logPath: relLogPath,
-        usage: turn.usage,
-      });
-
-      this.postRoomMessage(project.id, sessionRow.id, {
-        role: 'agent',
-        type: 'ask',
-        kind: 'chat',
-        authorProfileId: profile.id,
-        content: parsedReply,
-      });
-
-      this.events?.emitEvent({
-        type: 'lead.turn_finished',
-        projectId: project.id,
-        sessionId: sessionRow.id,
-        phase: turnPhase,
-        ok: true,
-      });
-      this.events?.emitEvent({ type: 'sessions.updated', projectId: project.id, sessionId: sessionRow.id });
-
-      return {
-        session: this.getSession(project.id, sessionRow.id),
-        mode: 'ask',
-        askReply: parsedReply,
-        messages: this.getDiscussState(project.id, sessionRow.id).messages,
-        routedTo: {
-          kind: 'ask',
-          profileId: profile.id,
-          profileName: profile.name,
-        },
-      };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      this.recordLeadTurn({
-        projectId: project.id,
-        sessionId: sessionRow.id,
-        phase: turnPhase,
-        provider: profile.provider,
-        model: profile.model || null,
-        status: 'failed',
-        cliSessionId: null,
-        startedAt,
-        failureReason: msg,
-        logPath: relLogPath,
-      });
-      this.postRoomMessage(project.id, sessionRow.id, {
-        role: 'system',
-        type: 'error',
-        kind: 'status',
-        authorProfileId: profile.id,
-        content: msg,
-      });
-      this.events?.emitEvent({
-        type: 'lead.turn_finished',
-        projectId: project.id,
-        sessionId: sessionRow.id,
-        phase: turnPhase,
-        ok: false,
-        error: msg,
-      });
-      throw err;
-    }
+    });
   }
 
   private async sendChatMessageInner(
     projectId: string,
     input: ChatMessageInput,
+    signal?: AbortSignal,
+    bindSession?: (sessionId: string) => void,
   ): Promise<ChatTurnResult> {
     const project = this.getProjectRow(projectId);
     const requestedMode: SessionMode = input.mode ?? 'auto';
@@ -1056,9 +1138,33 @@ export class LeadService {
       }
     }
 
+    bindSession?.(sessionRow.id);
     const effort = input.effort ?? this.leadEffortFor(sessionRow.provider);
     if (requestedMode === 'ask' || requestedMode === 'auto') {
-      const askReply = await this.runAskTurnInner(project, sessionRow, input.message, effort, images, requestedMode === 'auto');
+      const askReply = await this.runAskTurnInner(project, sessionRow, input.message, effort, images, requestedMode === 'auto', signal);
+      if (requestedMode === 'auto' && askReply.autoStop) {
+        try {
+          if (!this.executionRouter?.stopExecution) throw new Error('Stopping execution is unavailable.');
+          const stopped = await this.executionRouter.stopExecution(
+            projectId,
+            askReply.autoStop.taskId,
+            sessionRow.id,
+          );
+          this.postRoomMessage(projectId, sessionRow.id, {
+            role: 'system', type: 'text', kind: 'status',
+            content: stopped.stopped
+              ? askReply.autoStop.taskId
+                ? `Stopped task ${askReply.autoStop.taskId}.`
+                : 'Stopped running execution.'
+              : 'No active execution to stop.',
+          });
+        } catch (error) {
+          this.postRoomMessage(projectId, sessionRow.id, {
+            role: 'system', type: 'error',
+            content: `Could not stop execution: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+      }
       if (requestedMode === 'auto' && askReply.autoCommit) {
         try {
           if (!this.executionRouter?.commitWorkspace) throw new Error('Checkout commits are unavailable.');
@@ -1098,6 +1204,7 @@ export class LeadService {
         input.message,
         effort,
         images,
+        signal,
       );
       return {
         session: this.getSession(projectId, sessionRow.id),
@@ -1116,7 +1223,7 @@ export class LeadService {
       provider: input.provider,
       model: input.model ?? undefined,
       effort,
-    }, images);
+    }, images, signal);
     return {
       session: this.getSession(projectId, sessionRow.id),
       mode: 'full',
@@ -1132,7 +1239,8 @@ export class LeadService {
     effort: EffortLevel = 'medium',
     images: ChatTurnImage[] = [],
     auto = false,
-  ): Promise<AskMessageContent & { autoPlan?: PlanContract; autoCommit?: AutoCommit }> {
+    signal?: AbortSignal,
+  ): Promise<AskMessageContent & { autoPlan?: PlanContract; autoCommit?: AutoCommit; autoStop?: AutoStop }> {
     const userText = rawMessage.trim();
     const priorMessages = this.getDiscussState(project.id, sessionRow.id).messages;
     this.appendUserMessage(sessionRow.id, userText, images);
@@ -1151,18 +1259,25 @@ export class LeadService {
       : '';
 
     const completedWorkSummary = this.buildCompletedWorkContext(sessionRow.id);
+    const activeRuns = auto && this.executionRouter
+      ? this.executionRouter.listActiveRunsForSession(project.id, sessionRow.id)
+      : [];
+    const activeRunsBlock = activeRuns.length > 0
+      ? `\nCurrently running tasks in this session:\n${activeRuns.map((r) => `- [${r.externalId}] @${r.profileName} (${r.kind})`).join('\n')}\n`
+      : '';
     const buildPrompt = (includeHistory: boolean) => {
       const historyBlock =
         includeHistory && priorMessages.length > 0
           ? `\nPrevious conversation in this session:\n${this.formatTranscript(priorMessages)}\n`
           : '';
       return [
-        auto ? `You are the Lead in DALANG Auto mode. Decide whether to answer, brainstorm, write a plan, ask for clarification or approval, or delegate coding tasks.` : `You are the Lead architect in DALANG's Ask mode (read-only Q&A about this repository).`,
+        auto ? `You are the Lead in DALANG Auto mode. Decide whether to answer, brainstorm, write a plan, ask for clarification or approval, delegate coding tasks, or stop running tasks.` : `You are the Lead architect in DALANG's Ask mode (read-only Q&A about this repository).`,
         buildAskLanguageInstruction(this.getLanguage()),
         `STRICT RULE: You are in READ-ONLY mode. Do NOT create, modify, or delete any files and do NOT run mutating commands.`,
         `Project: ${project.name} (${project.path})`,
         projectContext ? `\nCurrent PROJECT.md:\n${projectContext}\n` : '',
         completedWorkSummary ? `\n${completedWorkSummary}\n` : '',
+        activeRunsBlock,
         historyBlock,
         `User question:\n${userText || 'See the attached images.'}`,
         ``,
@@ -1171,8 +1286,9 @@ export class LeadService {
         auto ? `- If the user explicitly asks for implementation, output JSON with answer and auto_plan containing a complete validated task plan. Delegate only the work requested; never modify files yourself. Use independent tasks for parallel work and depends_on for serial work. Each task must be small, have explicit files_allowed, acceptance criteria and a verify command; needs_split must be false. Schema for auto_plan: ${JSON.stringify(z.toJSONSchema(PlanContractSchema))}` : `- If the user is asking for a code change, do NOT make the edit; explain what would be needed and optionally suggest switching to "quick" (for a small single-task fix/feature) or "full" (for a larger multi-task feature).`,
         auto ? `- Questions, brainstorming, planning-only requests, and ambiguous requests must never have auto_plan. Answer in JSON {"answer": string, "auto_plan": null} and ask a specific question when necessary.` : '',
         auto ? `- Ask for explicit informed approval before any action involving production, deployments, live services, production or user data, destructive data changes, risky database migrations, access or secret changes, external communications, billing, or other irreversible effects. Explain the exact action and impact, output no auto_plan, and wait for a subsequent user reply explicitly approving that action. A general coding request or plan approval is not approval for these actions. If uncertain, ask. Preserve these requirements in every delegated task.` : '',
+        auto ? `- If the user explicitly asks to stop running tasks or coders, return "auto_stop": true (to stop all running tasks in this session) or "auto_stop": {"taskId": "<externalId>"} (for one specific task). DALANG stops those running tasks immediately after your response; your read-only CLI does not prevent this.` : '',
         auto ? `- A user may explicitly request a local git commit. Inspect git status in the current checkout. If the request clearly authorizes the files, return auto_commit with paths containing exact individual changed files and a suitable commit message. Include only files the user authorized. If the scope is unclear, ask which files to commit and output no action. When asking for confirmation list every exact file in backticks. A later explicit yes approves only those listed files. Never use auto_plan to commit existing checkout changes. DALANG performs the commit in the user's active checkout after your response; your read-only CLI does not prevent this. A commit does not authorize push or deployment.` : '',
-        auto ? `- Return one JSON object {"answer": string, "auto_plan": object|null, "auto_commit": {"paths": string[], "message": string}|null}. Only use auto_commit if the latest user message explicitly requests a commit or explicitly approves the exact file list you just asked to commit. Do not say a commit succeeded before the system performs it. For regular answers both actions must be null.` : `- You may reply with a JSON object matching {"answer": string, "suggested_mode": "quick" | "full" | null, "suggestion_reason": string | null}, or plain text if no mode switch is needed.`,
+        auto ? `- Return one JSON object {"answer": string, "auto_plan": object|null, "auto_commit": {"paths": string[], "message": string}|null, "auto_stop": true|{"taskId": string}|null}. Only use auto_commit if the latest user message explicitly requests a commit or explicitly approves the exact file list you just asked to commit. Only use auto_stop if the latest user message explicitly asks to stop running tasks/coders. Do not say a commit or stop succeeded before the system performs it. For regular answers all actions must be null.` : `- You may reply with a JSON object matching {"answer": string, "suggested_mode": "quick" | "full" | null, "suggestion_reason": string | null}, or plain text if no mode switch is needed.`,
       ]
         .filter(Boolean)
         .join('\n');
@@ -1214,6 +1330,7 @@ export class LeadService {
         effort: runEffort,
         configDir,
         permissionMode: 'read-only',
+        signal,
         logFilePath: attemptLog,
         onLogLine: (line) =>
           this.events?.emitEvent({
@@ -1234,9 +1351,15 @@ export class LeadService {
       announceAttempt();
       attempted = true;
       let turn = await run(sessionRow.cliSessionId, effort);
+      if (turn.aborted || signal?.aborted) {
+        throw new Error('Stopped by user');
+      }
       // If resuming a saved CLI session failed, retry once with saved message context.
       if (!turn.rateLimitReason && sessionRow.cliSessionId && (turn.exitCode !== 0 || !turn.text.trim())) {
         turn = await run(null, effort);
+        if (turn.aborted || signal?.aborted) {
+          throw new Error('Stopped by user');
+        }
       }
 
       if (turn.rateLimitReason) {
@@ -1264,6 +1387,9 @@ export class LeadService {
         announceAttempt();
         attempted = true;
         turn = await run(null, fallback.effort);
+        if (turn.aborted || signal?.aborted) {
+          throw new Error('Stopped by user');
+        }
       }
 
       if (turn.rateLimitReason) throw new Error(turn.rateLimitReason);
@@ -1276,8 +1402,15 @@ export class LeadService {
       const parsedReply = this.parseAskReply(turn);
       let autoPlan: PlanContract | undefined;
       let autoCommit: AutoCommit | undefined;
+      let autoStop: AutoStop | undefined;
       if (auto) {
         const candidate = extractJsonCandidate(turn);
+        if (candidate && typeof candidate === 'object' && 'auto_stop' in candidate && candidate.auto_stop != null && candidate.auto_stop !== false) {
+          const parsedStop = AutoStopSchema.parse(candidate.auto_stop);
+          if (parsedStop === true || parsedStop.all || parsedStop.taskId) {
+            autoStop = parsedStop === true ? {} : { taskId: parsedStop.taskId };
+          }
+        }
         if (candidate && typeof candidate === 'object' && 'auto_commit' in candidate && candidate.auto_commit != null) {
           autoCommit = AutoCommitSchema.parse(candidate.auto_commit);
           const lastLead = priorMessages.at(-1)?.role === 'lead' ? priorMessages.at(-1) : undefined;
@@ -1298,6 +1431,7 @@ export class LeadService {
         }
       }
       if (autoPlan && autoCommit) throw new Error('A turn cannot both start coding tasks and commit the checkout.');
+      if (autoPlan && autoStop) throw new Error('A turn cannot both start and stop coding tasks.');
       // A fallback has its own CLI session. Rebuild the preferred provider's context on the next turn.
       const nextCliSessionId = usedFallback ? null : turn.sessionId ?? sessionRow.cliSessionId;
 
@@ -1323,11 +1457,16 @@ export class LeadService {
       this.events?.emitEvent({ type: 'discuss.updated', projectId: project.id, sessionId: sessionRow.id });
       this.events?.emitEvent({ type: 'sessions.updated', projectId: project.id, sessionId: sessionRow.id });
 
-      return { ...parsedReply, ...(autoPlan ? { autoPlan } : {}), ...(autoCommit ? { autoCommit } : {}) };
+      return {
+        ...parsedReply,
+        ...(autoPlan ? { autoPlan } : {}),
+        ...(autoCommit ? { autoCommit } : {}),
+        ...(autoStop ? { autoStop } : {}),
+      };
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = signal?.aborted ? 'Stopped by user' : err instanceof Error ? err.message : String(err);
       if (attempted) recordAttempt('failed', usedFallback ? null : sessionRow.cliSessionId, msg);
-      this.appendMessage(sessionRow.id, 'system', 'error', msg);
+      this.appendMessage(sessionRow.id, 'system', signal?.aborted ? 'text' : 'error', msg);
       this.events?.emitEvent({
         type: 'lead.turn_finished',
         projectId: project.id,
@@ -1337,7 +1476,7 @@ export class LeadService {
         error: msg,
       });
       this.events?.emitEvent({ type: 'discuss.updated', projectId: project.id, sessionId: sessionRow.id });
-      throw err;
+      throw signal?.aborted ? new Error(msg) : err;
     }
   }
 
@@ -1435,6 +1574,7 @@ export class LeadService {
     rawMessage: string,
     effort: EffortLevel = 'high',
     images: ChatTurnImage[] = [],
+    signal?: AbortSignal,
   ): Promise<{ quickPlan: QuickPlanContract; plan: PlanDTO | null }> {
     const userText = rawMessage.trim();
     const priorMessages = this.getDiscussState(project.id, sessionRow.id).messages;
@@ -1515,6 +1655,7 @@ export class LeadService {
         schemaName: `quick-plan-v${nextPlanVersion}`,
         logsDir,
         tmpDir,
+        signal,
         onLogLine: (line) =>
           this.events?.emitEvent({
             type: 'lead.log',
@@ -1831,12 +1972,18 @@ export class LeadService {
     projectId: string,
     input: DiscussMessageInput,
   ): Promise<{ round: DiscussRound; messages: DiscussMessageDTO[]; sessionId?: string }> {
-    return this.exclusiveTurn(projectId, () => this.sendDiscussMessageInner(projectId, input));
+    return this.exclusiveTurn(
+      projectId,
+      (signal, bindSession) => this.sendDiscussMessageInner(projectId, input, [], signal, bindSession),
+      input.sessionId,
+    );
   }
 
   finishDiscussAndWriteBrief(projectId: string, sessionId?: string): Promise<BriefDTO> {
-    return this.exclusiveTurn(projectId, () =>
-      this.finishDiscussAndWriteBriefInner(projectId, sessionId),
+    return this.exclusiveTurn(
+      projectId,
+      (signal, bindSession) => this.finishDiscussAndWriteBriefInner(projectId, sessionId, signal, bindSession),
+      sessionId,
     );
   }
 
@@ -1846,13 +1993,19 @@ export class LeadService {
     note: string,
     sessionId?: string,
   ): Promise<BriefDTO> {
-    return this.exclusiveTurn(projectId, () =>
-      this.reviseBriefInner(projectId, version, note, sessionId),
+    return this.exclusiveTurn(
+      projectId,
+      (signal, bindSession) => this.reviseBriefInner(projectId, version, note, sessionId, signal, bindSession),
+      sessionId,
     );
   }
 
   generatePlan(projectId: string, sessionId?: string): Promise<PlanDTO> {
-    return this.exclusiveTurn(projectId, () => this.generatePlanInner(projectId, sessionId));
+    return this.exclusiveTurn(
+      projectId,
+      (signal, bindSession) => this.generatePlanInner(projectId, sessionId, signal, bindSession),
+      sessionId,
+    );
   }
 
   private getProjectRow(projectId: string) {
@@ -2147,6 +2300,8 @@ export class LeadService {
     projectId: string,
     input: DiscussMessageInput,
     images: ChatTurnImage[] = [],
+    signal?: AbortSignal,
+    bindSession?: (sessionId: string) => void,
   ): Promise<{ round: DiscussRound; messages: DiscussMessageDTO[]; sessionId: string }> {
     const project = this.getProjectRow(projectId);
     const session = this.getOrCreateLeadSession(
@@ -2155,6 +2310,7 @@ export class LeadService {
       input.provider,
       input.model,
     );
+    bindSession?.(session.id);
     // Ensure session mode is promoted to `full` when running Discuss.
     if (session.mode !== 'full') {
       this.switchSessionMode(projectId, session.id, 'full');
@@ -2236,6 +2392,7 @@ export class LeadService {
         schemaName: `discuss-round-${nextRound}`,
         logsDir,
         tmpDir,
+        signal,
         onLogLine: (line) =>
           this.events?.emitEvent({
             type: 'lead.log',
@@ -2318,9 +2475,12 @@ export class LeadService {
   private async finishDiscussAndWriteBriefInner(
     projectId: string,
     explicitSessionId?: string,
+    signal?: AbortSignal,
+    bindSession?: (sessionId: string) => void,
   ): Promise<BriefDTO> {
     const project = this.getProjectRow(projectId);
     const session = this.getOrCreateLeadSession(projectId, explicitSessionId);
+    bindSession?.(session.id);
     if (session.mode !== 'full') {
       this.switchSessionMode(projectId, session.id, 'full');
     }
@@ -2370,6 +2530,7 @@ export class LeadService {
         schemaName: `brief-v${nextVersion}`,
         logsDir,
         tmpDir,
+        signal,
         onLogLine: (line) =>
           this.events?.emitEvent({
             type: 'lead.log',
@@ -2549,9 +2710,12 @@ export class LeadService {
     version: number,
     note: string,
     explicitSessionId?: string,
+    signal?: AbortSignal,
+    bindSession?: (sessionId: string) => void,
   ): Promise<BriefDTO> {
     const project = this.getProjectRow(projectId);
     const session = this.getOrCreateLeadSession(projectId, explicitSessionId);
+    bindSession?.(session.id);
     const prevBrief = this.getBriefByVersion(projectId, version, session.id);
     const existingBriefs = this.listBriefs(projectId, session.id);
     const nextVersion = existingBriefs[0].version + 1;
@@ -2596,6 +2760,7 @@ export class LeadService {
         schemaName: `brief-v${nextVersion}`,
         logsDir,
         tmpDir,
+        signal,
         onLogLine: (line) =>
           this.events?.emitEvent({
             type: 'lead.log',
@@ -2723,9 +2888,12 @@ export class LeadService {
   private async generatePlanInner(
     projectId: string,
     explicitSessionId?: string,
+    signal?: AbortSignal,
+    bindSession?: (sessionId: string) => void,
   ): Promise<PlanDTO> {
     const project = this.getProjectRow(projectId);
     const session = this.getOrCreateLeadSession(projectId, explicitSessionId);
+    bindSession?.(session.id);
     const approvedBrief = this.db
       .select()
       .from(briefs)
@@ -2813,6 +2981,7 @@ export class LeadService {
         schemaName: `plan-v${nextPlanVersion}`,
         logsDir,
         tmpDir,
+        signal,
         onLogLine: (line) =>
           this.events?.emitEvent({
             type: 'lead.log',
@@ -2833,6 +3002,7 @@ export class LeadService {
         sessionId: currentSessionId,
         model: session.model,
         tasksList: result.data.tasks,
+        signal,
         onSessionId: (sid) => {
           currentSessionId = sid;
         },
@@ -2973,6 +3143,7 @@ export class LeadService {
     try {
       return await runContractTurn(opts);
     } catch (err) {
+      if (opts.signal?.aborted) throw err;
       // Only fall back to a fresh CLI session if the CLI process failed to resume (not on Zod schema errors).
       const msg = err instanceof Error ? err.message : String(err);
       const isValidationError =
@@ -3006,6 +3177,7 @@ export class LeadService {
     sessionId: string | null;
     model: string | null;
     tasksList: PlanTaskContract[];
+    signal?: AbortSignal;
     onSessionId: (sid: string | null) => void;
     onUsage?: (usage: TurnTokenUsage | undefined) => void;
     onLogLine?: (line: string) => void;
@@ -3051,6 +3223,7 @@ export class LeadService {
           schemaName: `split-${item.task.id}-d${depth + 1}`,
           logsDir,
           tmpDir,
+          signal: opts.signal,
           onLogLine: opts.onLogLine,
         });
 

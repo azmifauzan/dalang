@@ -6,7 +6,12 @@ import { DALANG_VERSION } from '@dalang/core';
 import { startDalangServer } from '@dalang/server';
 import { formatDoctorReport, runDoctorChecks } from './doctor.js';
 import { startTerminalRoom } from './tui/index.js';
-import { formatUpdateReport, runUpdate } from './update.js';
+import {
+  formatConnectedClisUpdateLines,
+  formatUpdateReport,
+  runConnectedClisUpdate,
+  runUpdate,
+} from './update.js';
 
 export { DALANG_VERSION };
 
@@ -14,7 +19,7 @@ export type ResolvedCliCommand =
   | { kind: 'help' }
   | { kind: 'version' }
   | { kind: 'doctor'; asJson: boolean }
-  | { kind: 'update'; asJson: boolean; checkOnly: boolean }
+  | { kind: 'update'; asJson: boolean; checkOnly: boolean; clisOnly: boolean; includeClis: boolean }
   | { kind: 'room'; port: number }
   | { kind: 'web'; port: number; shouldOpen: boolean; deprecated: boolean };
 
@@ -61,10 +66,15 @@ export function resolveCliCommand(
   }
 
   if (argv[0] === 'update') {
+    const clisFlag = argv.includes('--clis') || argv.includes('clis');
+    const allFlag = argv.includes('--all') || argv.includes('all');
+    const checkOnly = argv.includes('--check') || argv.includes('check');
     return {
       kind: 'update',
       asJson: argv.includes('--json'),
-      checkOnly: argv.includes('--check'),
+      checkOnly,
+      clisOnly: clisFlag && !allFlag,
+      includeClis: clisFlag || allFlag,
     };
   }
 
@@ -125,7 +135,8 @@ Usage:
   dalang room [--port <number>]     Open the terminal team room on another port
   dalang web [options]              Start the local DALANG web server and open the browser
   dalang doctor [--json]            Check Node, git, sandbox, data directory, terminal, and CLI logins
-  dalang update [--check] [--json]  Check for a newer version and install it via npm
+  dalang update [--check|--clis|--all] [--json]
+                                    Check/install DALANG updates and/or update all connected CLIs
   dalang --version                  Print version
   dalang --help                     Show this help
 
@@ -161,16 +172,44 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
 
   if (cmd.kind === 'update') {
-    const report = await runUpdate(undefined, {
-      checkOnly: cmd.checkOnly,
-      onStatus: cmd.asJson ? undefined : (line) => console.log(line),
-    });
+    const onStatus = cmd.asJson ? undefined : (line: string) => console.log(line);
+    const dalangReport = cmd.clisOnly
+      ? null
+      : await runUpdate(undefined, { checkOnly: cmd.checkOnly, onStatus });
+    const clisReport = cmd.includeClis
+      ? await runConnectedClisUpdate(undefined, { onStatus })
+      : null;
+
     if (cmd.asJson) {
-      console.log(JSON.stringify(report, null, 2));
+      if (dalangReport && !clisReport) {
+        console.log(JSON.stringify(dalangReport, null, 2));
+      } else if (clisReport && !dalangReport) {
+        console.log(JSON.stringify(clisReport, null, 2));
+      } else {
+        console.log(
+          JSON.stringify(
+            {
+              ok: Boolean(dalangReport?.ok && clisReport?.ok),
+              dalang: dalangReport,
+              clis: clisReport,
+            },
+            null,
+            2,
+          ),
+        );
+      }
     } else {
-      console.log(formatUpdateReport(report));
+      if (dalangReport) {
+        console.log(formatUpdateReport(dalangReport));
+        if (dalangReport.updated) {
+          console.log('Restart any running DALANG session (/restart) to use the new version.');
+        }
+      }
+      if (clisReport) {
+        console.log(['Connected CLI updates:', ...formatConnectedClisUpdateLines(clisReport.results)].join('\n'));
+      }
     }
-    if (!report.ok) {
+    if ((dalangReport && !dalangReport.ok) || (clisReport && !clisReport.ok)) {
       process.exitCode = 1;
     }
     return;

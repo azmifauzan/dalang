@@ -400,10 +400,10 @@ describe('room screens (Ink, stub server)', () => {
     await ui.waitFor("Choose the Lead's model");
     await ui.waitFor('Active now: Claude · CLI default · medium (Lead profile)');
     await ui.press(DOWN, '\r'); // Claude · Sonnet
-    await ui.waitFor('Reasoning effort for Claude · sonnet');
+    await ui.waitFor('Reasoning effort for Claude · Sonnet');
     await ui.press(DOWN, '\r'); // medium (model default) -> high
 
-    await ui.waitFor('Lead model set to Claude · sonnet · high');
+    await ui.waitFor('Lead model set to Claude · Sonnet · high');
     await ui.waitFor('(chosen with /model)');
 
     await ui.press('hello', '\r');
@@ -506,5 +506,182 @@ describe('room screens (Ink, stub server)', () => {
     await ui.press('\x1b[6~');
     await ui.waitFor('below', mark);
     expect(below(ui.since(mark))).toBe((top as number) - 6);
+  });
+
+  it('stops all running work on Esc and clears input when idle', async () => {
+    let emit!: (event: ServerEvent) => void;
+    let running = true;
+    const stopCalls: Array<{ projectId: string; opts: unknown }> = [];
+    const { client } = roomClient({
+      getExecutionState: async () => ({
+        projectId: 'p1',
+        sessionId: 's1',
+        queueRunning: running,
+        runs: running
+          ? [{
+              id: 'r1',
+              taskId: 't1',
+              taskExternalId: 'db-v16',
+              profileName: 'coder-medium',
+              provider: 'antigravity',
+              model: 'gemini-4-neon',
+              kind: 'execute',
+              status: 'running',
+              startedAt: new Date().toISOString(),
+            }]
+          : [],
+        activeRuns: running
+          ? [{
+              id: 'r1',
+              taskId: 't1',
+              taskExternalId: 'db-v16',
+              profileName: 'coder-medium',
+              provider: 'antigravity',
+              model: 'gemini-4-neon',
+              kind: 'execute',
+              status: 'running',
+              startedAt: new Date().toISOString(),
+            }]
+          : [],
+      }),
+      stopExecution: async (projectId: string, opts: unknown) => {
+        stopCalls.push({ projectId, opts });
+        running = false;
+        return { stopped: true };
+      },
+      connectEvents: (listener: typeof emit) => { emit = listener; return () => {}; },
+    });
+
+    const ui = mountRoom(client);
+    await ui.waitFor('Lead Claude');
+    await ui.press('/resume 1', '\r');
+    await ui.waitFor('Working on db-v16');
+    await ui.waitFor('Esc to stop');
+
+    // Esc stops all running work even if the composer has text.
+    await ui.press('draft');
+    const stopMark = ui.mark();
+    await ui.press('\x1b');
+    await ui.waitFor('Stopped all running work.', stopMark);
+    expect(stopCalls).toEqual([{ projectId: 'p1', opts: {} }]);
+
+    // Once idle, Esc clears the composer without calling stopExecution again.
+    await ui.press('\x1b');
+    await sleep(60);
+    expect(stopCalls).toHaveLength(1);
+    void emit;
+  });
+
+  it('allows Esc and /stop while a Lead request is still in flight', async () => {
+    let rejectChat!: (err: Error) => void;
+    const stopCalls: Array<{ projectId: string; opts: unknown }> = [];
+    const { client } = roomClient({
+      sendChatMessage: () => new Promise((_resolve, reject) => { rejectChat = reject; }),
+      stopExecution: async (projectId: string, opts: unknown) => {
+        stopCalls.push({ projectId, opts });
+        rejectChat(new Error('Stopped by user'));
+        return { stopped: true };
+      },
+    });
+
+    const ui = mountRoom(client);
+    await ui.waitFor('Lead Claude');
+    await ui.press('hello lead', '\r');
+    await ui.waitFor('Waiting for a response');
+
+    const mark = ui.mark();
+    await ui.press('/stop', '\r');
+    await ui.waitFor('Stopped all running work.', mark);
+    expect(stopCalls).toEqual([{ projectId: 'p1', opts: {} }]);
+  });
+
+  it('checks updates, installs DALANG update with restart notice, and updates connected CLIs via /update', async () => {
+    let updateClisCalls = 0;
+    const dalangCalls: Array<{ checkOnly?: boolean }> = [];
+    const { client } = roomClient({
+      getUpdateStatus: async () => ({
+        currentVersion: '0.13.2',
+        latestVersion: '0.14.0',
+        updateAvailable: true,
+        checkedAt: '2026-11-25T05:00:00.000Z',
+        checkEnabled: true,
+        releaseNotesUrl: 'https://example.com',
+      }),
+      updateAllConnectedClis: async () => {
+        updateClisCalls += 1;
+        return {
+          providers: [claude],
+          results: [
+            {
+              provider: 'claude-code',
+              displayName: 'Claude Code',
+              binary: 'claude',
+              status: 'updated',
+              beforeVersion: '2.1.0',
+              afterVersion: '2.2.0',
+              message: '2.1.0 -> 2.2.0',
+            },
+            {
+              provider: 'codex',
+              displayName: 'Codex CLI',
+              binary: 'codex',
+              status: 'skipped',
+              beforeVersion: null,
+              afterVersion: null,
+              message: 'Not installed',
+            },
+          ],
+        };
+      },
+    });
+
+    const ui = mountRoom(client, {
+      onRunDalangUpdate: async (opts: { checkOnly?: boolean }) => {
+        dalangCalls.push({ checkOnly: opts.checkOnly });
+        if (opts.checkOnly) {
+          return {
+            ok: true,
+            status: 'update-available',
+            currentVersion: '0.13.2',
+            latestVersion: '0.14.0',
+            updateAvailable: true,
+            updated: false,
+            message: 'Update available: v0.13.2 -> v0.14.0.',
+          };
+        }
+        return {
+          ok: true,
+          status: 'updated',
+          currentVersion: '0.13.2',
+          latestVersion: '0.14.0',
+          updateAvailable: true,
+          updated: true,
+          message: 'Updated DALANG from v0.13.2 to v0.14.0.',
+        };
+      },
+    });
+
+    // Startup notice announces available update.
+    await ui.waitFor('Update available: DALANG v0.13.2 -> v0.14.0');
+
+    // /update check checks without installing.
+    const checkMark = ui.mark();
+    await ui.press('/update check', '\r');
+    await ui.waitFor('Update available: v0.13.2 -> v0.14.0.', checkMark);
+
+    // /update installs and notifies user to restart with persistent banner.
+    const installMark = ui.mark();
+    await ui.press('/update', '\r');
+    await ui.waitFor('Restart DALANG to load v0.14.0: run /restart', installMark);
+    await ui.waitFor('[UPDATE] DALANG v0.14.0 installed. Run /restart to apply the update.', installMark);
+
+    // /update clis updates all connected CLIs.
+    const clisMark = ui.mark();
+    await ui.press('/update clis', '\r');
+    await ui.waitFor('Connected CLI updates:', clisMark);
+    await ui.waitFor('Claude Code (claude): 2.1.0 -> 2.2.0', clisMark);
+    await ui.waitFor('Codex CLI (codex): skipped (Not installed)', clisMark);
+    expect(updateClisCalls).toBe(1);
+    expect(dalangCalls).toEqual([{ checkOnly: true }, { checkOnly: false }]);
   });
 });

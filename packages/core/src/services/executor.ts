@@ -1995,7 +1995,12 @@ export class ExecutionService {
       matchingQueue.controller.abort();
       matchingQueue.wake();
     }
+    const abortedSubs: ActiveTaskExecution[] = [];
     for (const active of activeList) {
+      abortedSubs.push(...this.abortSubtasksForParent(active.taskId));
+      if (active.turnControls) {
+        void active.turnControls.interrupt().catch(() => undefined);
+      }
       active.controller.abort();
     }
 
@@ -2005,6 +2010,7 @@ export class ExecutionService {
       await Promise.all([
         matchingQueue?.promise.catch(() => undefined),
         ...activeList.map((t) => t.promise.catch(() => undefined)),
+        ...abortedSubs.map((t) => t.promise.catch(() => undefined)),
       ]);
     }
     return { stopped: true };
@@ -2546,12 +2552,13 @@ export class ExecutionService {
         this.events?.emitEvent({
           type: 'run.finished',
           projectId: opts.projectId,
+          sessionId: opts.sessionId,
           taskId: opts.task.id,
           runId,
           status: 'stopped',
           error: 'Stopped by user',
         });
-        this.events?.emitEvent({ type: 'plan.updated', projectId: opts.projectId });
+        this.events?.emitEvent({ type: 'plan.updated', projectId: opts.projectId, sessionId: opts.sessionId });
         return {
           status: 'stopped',
           canFallback: false,
@@ -4055,11 +4062,13 @@ export class ExecutionService {
         this.events?.emitEvent({
           type: 'run.finished',
           projectId: opts.projectId,
+          sessionId: opts.sessionId,
           taskId: opts.task.id,
           runId: reviewRunId,
           status: 'stopped',
           error: 'Stopped by user',
         });
+        this.events?.emitEvent({ type: 'plan.updated', projectId: opts.projectId, sessionId: opts.sessionId });
         return {
           status: 'stopped',
           canFallback: false,

@@ -85,7 +85,7 @@ In an interactive terminal, `dalang` opens the team room and starts with the set
 | `dalang web --no-open` | Start the web server without opening a browser tab |
 | `dalang web --port 4180` | Use another loopback port if 4173 is busy |
 | `dalang doctor [--json]` | Check Node, Git, sandbox, data directory, TTY, and provider logins |
-| `dalang update [--check]` | Check for a newer version and install the latest global release via npm |
+| `dalang update [--check\|--clis\|--all] [--json]` | Check/install the latest Dalang release via npm and/or update all connected agent CLIs |
 | `dalang --version` | Check the installed version |
 
 Use `npx dalang-cli` in place of `dalang` without a global install. Passing `--port` or `--no-open` directly to `dalang` without `web` remains supported with a deprecation notice for one release. You can also set `DALANG_PORT` to choose a default port.
@@ -133,10 +133,12 @@ Let active tasks finish or stop them. Close the terminal room with `/exit` and s
 ```bash
 npx dalang-cli@latest
 dalang update
+dalang update --clis
+dalang update --all
 npm install -g dalang-cli@latest
 ```
 
-`dalang update --check` only reports whether a newer release exists. With a global installation, start the updated app with `dalang`. For Docker, update the source checkout and rerun `docker compose up --build -d`. Keep the `dalang-home` volume to retain app data, provider sign-ins, and CLI updates.
+`dalang update --check` only reports whether a newer release exists. `dalang update --clis` updates every connected agent CLI (`claude`, `codex`, `agy`), and `dalang update --all` updates both Dalang and all connected CLIs. Inside the terminal room, run `/update`, `/update check`, `/update clis`, or `/update all`; after a Dalang update installs, the room shows a restart notification banner so you can apply it with `/restart`. With a global installation, start the updated app with `dalang`. For Docker, update the source checkout and rerun `docker compose up --build -d`. Keep the `dalang-home` volume to retain app data, provider sign-ins, and CLI updates.
 
 If the npm registry does not have the newest release yet, install the tarball attached to its [GitHub release](https://github.com/azmifauzan/dalang/releases) (`npm install -g <tarball URL>`).
 

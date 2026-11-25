@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CliRunner, RunCommandOptions, RunCommandResult } from '@dalang/core';
-import { main } from '../cli.js';
-import { formatUpdateReport, runUpdate } from '../update.js';
+import { main, resolveCliCommand } from '../cli.js';
+import {
+  formatConnectedClisUpdateLines,
+  formatUpdateReport,
+  runConnectedClisUpdate,
+  runUpdate,
+} from '../update.js';
 
 interface RecordedRun {
   command: string;
@@ -208,5 +213,64 @@ describe('dalang update', () => {
     expect(parsed.ok).toBe(true);
     expect(parsed.status).toBe('up-to-date');
     expect(parsed.latestVersion).toBe('0.0.1');
+  });
+
+  it('resolves update flags for --clis and --all', () => {
+    expect(resolveCliCommand(['update', '--clis'])).toEqual({
+      kind: 'update',
+      asJson: false,
+      checkOnly: false,
+      clisOnly: true,
+      includeClis: true,
+    });
+    expect(resolveCliCommand(['update', '--all', '--json'])).toEqual({
+      kind: 'update',
+      asJson: true,
+      checkOnly: false,
+      clisOnly: false,
+      includeClis: true,
+    });
+  });
+
+  it('updates only connected CLIs, skips missing/logged-out ones, and isolates failures', async () => {
+    let claudeVersion = '2.1.0';
+    const runner = new FakeCliRunner(
+      { claude: '/usr/bin/claude', codex: '/usr/bin/codex' },
+      (command, args) => {
+        if (command === '/usr/bin/claude') {
+          if (args[0] === '--version') return { exitCode: 0, stdout: claudeVersion, stderr: '', timedOut: false, idleTimedOut: false };
+          if (args[0] === 'auth') return { exitCode: 0, stdout: JSON.stringify({ loggedIn: true }), stderr: '', timedOut: false, idleTimedOut: false };
+          if (args[0] === 'update') {
+            claudeVersion = '2.2.0';
+            return { exitCode: 0, stdout: 'Updated to 2.2.0', stderr: '', timedOut: false, idleTimedOut: false };
+          }
+        }
+        if (command === '/usr/bin/codex') {
+          if (args[0] === '--version') return { exitCode: 0, stdout: '0.40.0', stderr: '', timedOut: false, idleTimedOut: false };
+          if (args[0] === 'login') return { exitCode: 1, stdout: '', stderr: 'Not logged in', timedOut: false, idleTimedOut: false };
+        }
+        return { exitCode: 0, stdout: '', stderr: '', timedOut: false, idleTimedOut: false };
+      },
+    );
+
+    const report = await runConnectedClisUpdate(runner);
+    expect(report.ok).toBe(true);
+    expect(report.updatedCount).toBe(1);
+    expect(report.failedCount).toBe(0);
+    expect(report.skippedCount).toBe(2);
+    expect(report.results.find((r) => r.provider === 'claude-code')).toMatchObject({
+      status: 'updated',
+      beforeVersion: '2.1.0',
+      afterVersion: '2.2.0',
+      message: '2.1.0 -> 2.2.0',
+    });
+    expect(report.results.find((r) => r.provider === 'codex')).toMatchObject({
+      status: 'skipped',
+    });
+    expect(report.results.find((r) => r.provider === 'antigravity')).toMatchObject({
+      status: 'skipped',
+      message: 'Not installed',
+    });
+    expect(formatConnectedClisUpdateLines(report.results).join('\n')).toContain('2.1.0 -> 2.2.0');
   });
 });

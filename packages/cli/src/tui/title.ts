@@ -43,7 +43,8 @@ export function useTerminalTitle(
     };
     draw();
     if (state !== 'working') return;
-    const timer = setInterval(draw, 250);
+    // Same pace as the WorkingStatus spinner, so the tab and the room move together.
+    const timer = setInterval(draw, 120);
     return () => clearInterval(timer);
   }, [stdout, project, state]);
 }

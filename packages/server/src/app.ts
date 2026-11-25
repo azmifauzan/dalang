@@ -321,7 +321,10 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
   }));
 
   app.delete<{ Params: { id: string } }>('/api/projects/:id', async (req) => {
-    await executionService.stopExecution(req.params.id);
+    await Promise.all([
+      executionService.stopExecution(req.params.id),
+      leadService.stopTurns(req.params.id),
+    ]);
     projectService.deleteProject(req.params.id);
     return { ok: true };
   });
@@ -576,11 +579,15 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
 
   app.post<{ Params: { id: string } }>('/api/projects/:id/execution/stop', async (req) => {
     const body = StopExecutionInputSchema.parse(req.body ?? {});
-    return executionService.stopExecution(
-      req.params.id,
-      body.taskId,
-      body.sessionId ?? readSessionId(req),
-    );
+    const sid = body.sessionId ?? readSessionId(req);
+    if (body.taskId) {
+      return executionService.stopExecution(req.params.id, body.taskId, sid);
+    }
+    const [execRes, leadRes] = await Promise.all([
+      executionService.stopExecution(req.params.id, undefined, sid),
+      leadService.stopTurns(req.params.id, sid),
+    ]);
+    return { stopped: execRes.stopped || leadRes.stopped };
   });
 
   app.post<{ Params: { id: string; taskId: string } }>(
@@ -802,6 +809,24 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     };
   });
 
+  app.post('/api/providers/update-all', async () => {
+    const statuses = await getProviderStatuses(true);
+    const { results, providers } = await registry.updateConnectedClis({ statuses });
+    cachedProviderStatuses = null;
+    await statusRefreshInFlight?.catch(() => undefined);
+    const refreshed = providers.length > 0 ? providers : await getProviderStatuses(true);
+    for (const item of results) {
+      if (item.status === 'updated') {
+        events.emitEvent({ type: 'provider.updated', provider: item.provider });
+      }
+    }
+    return {
+      results,
+      providers: refreshed,
+      providerStates: executionService.getProviderRuntimeStates(),
+    };
+  });
+
   app.post<{ Params: { provider: string } }>('/api/providers/:provider/update', async (req) => {
     const provider = ProviderIdSchema.parse(req.params.provider);
     await registry.updateCli(provider);
@@ -908,7 +933,7 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     automationService,
     close: async () => {
       await automationService.stop();
-      await executionService.stopAll();
+      await Promise.all([executionService.stopAll(), leadService.stopAllTurns()]);
       for (const s of openSockets) {
         try {
           s.close(1001);

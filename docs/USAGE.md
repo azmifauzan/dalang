@@ -18,7 +18,7 @@ Run `dalang` in an interactive terminal to open the team room. If a Dalang serve
 
 *Terminal room with demonstration data.*
 
-- **Auto:** Describe a question, plan, or implementation. The Lead decides how to proceed and can start approved task plans. Review changes before merging.
+- **Auto:** Describe a question, plan, or implementation. The Lead decides how to proceed, can start approved task plans, and can stop running tasks when asked. Review changes before merging.
 - **Ask:** Type a question for the Lead. Use `/model` to choose the provider, model, and reasoning effort for Lead messages.
 - **Quick:** Run `/mode quick`, then describe the change. Read the draft task, allowed files, and verification command. Press `y` and Enter at the run gate, or use `/run`. Inspect the review and `/diff`, then press `y` at the merge gate or use `/merge`.
 - **Full:** Run `/mode full`, discuss the scope, and use `/finish` to draft the brief. Approve the brief to generate a plan. Approve the plan to start work. Use `/diff T-001` and `/merge T-001` for an individual task, or `/web` to inspect the same session in the browser.
@@ -33,7 +33,7 @@ Run `dalang` in an interactive terminal to open the team room. If a Dalang serve
 - **Team timeline:** the Lead, coders, and reviewer post plans, task status, diff stats, verification, and review verdicts under their own profile names. Agent replies render headings, emphasis, lists, code, and link labels. The browser chat shows the same feed.
 - **Reply as it is written:** while the Lead, or a profile you asked with `@<profile>`, answers in Ask mode, the latest lines of the reply appear under the timeline with `writing...`, and the finished message replaces them. Claude Code, Codex, and Antigravity stream their text as they write it. A provider run without live output shows each finished message instead.
 - **Terminal title:** the title bar shows an animated spinner while a turn or task is running, and `*` when a gate or question needs input. Question detection for free-form replies uses punctuation. The previous terminal title is restored on exit in terminals that support title stacks.
-- **Working status:** the line above the composer shows an animated spinner, elapsed time, the agent and provider, and a short activity such as reading files, running a command, or writing a response. `+N` counts other active agents. When a provider has no recognized activity event, the line shows a general working status.
+- **Working status:** the line above the composer shows an animated spinner, elapsed time, the agent and provider, a short activity such as reading files, running a command, or writing a response, and an `Esc to stop` hint. `+N` counts other active agents. When a provider has no recognized activity event, the line shows a general working status.
 - **Mention routing (`@<profile>`):**
   - An untagged message, or `@lead`, goes to the Lead in the composer mode (`auto`, `ask`, `quick`, or `full`).
   - `@<profile>` for an idle profile (such as `@reviewer` or `@coder-small`) asks that profile in read-only Ask mode without changing the session mode.
@@ -53,19 +53,20 @@ Run `dalang` in an interactive terminal to open the team room. If a Dalang serve
 | `/wizard` | Open the setup wizard again |
 | `/new` | Start a new session |
 | `/resume [n\|id]` | Pick an earlier session of this project from a list, newest first, and continue it |
+| `/update [check\|clis\|all]` | Check for or install the latest Dalang release (prompting `/restart` when updated), update all connected agent CLIs (`clis`), or update both (`all`) |
 | `/restart` | Restart the room and return to the selected project, session, mode, and model. An embedded server refuses while an agent or task is active |
 | `/mouse` | Toggle mouse capture to allow ordinary text selection or wheel scrolling |
 | `/diff [taskId]` | Open the task diff in `$PAGER` (`less -R`, or `more` on Windows) |
 | `/merge [taskId]` | Merge a task that is waiting for merge |
 | `/reject [taskId] [note] [--requeue]` | Discard a task's work, or send it back to the queue |
-| `/stop [taskId]` | Stop running work |
+| `/stop [taskId]` | Stop all running agents, Lead turns, and tasks (or one task when `taskId` is given) |
 | `/run` | Approve the draft plan and start it |
 | `/finish` | End Discuss in Full mode and draft the brief |
 | `/web` | Open the browser on the same project and session |
 | `/help` | Show commands and shortcuts |
 | `/exit` | Leave the room (Ctrl+C works too) |
 
-Press `Shift+Tab` in the composer to cycle modes. Use `↑` and `↓` in the composer to recall prompts. Moving past the newest prompt with `↓` restores the current draft. `/resume` also makes the selected chat's saved prompts available. Press Enter to submit only after you have reviewed or edited the recalled text.
+Press `Esc` while any agent, coder, or Lead turn is running to stop all active work immediately (when idle, `Esc` clears the composer). Press `Shift+Tab` in the composer to cycle modes. Use `↑` and `↓` in the composer to recall prompts. Moving past the newest prompt with `↓` restores the current draft. `/resume` also makes the selected chat's saved prompts available. Press Enter to submit only after you have reviewed or edited the recalled text.
 
 Typing `/` or `@` opens a list. Move with `Up` and `Down`; `Enter` runs the highlighted command or fills in the highlighted `@<profile>`, and `Tab` fills either one in without running it. In `/config`, `/model`, and the wizard, `Up` and `Down` move, `Enter` chooses, and `Esc` goes back.
 

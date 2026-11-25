@@ -285,7 +285,7 @@ afterEach(() => {
   cleanupTempDirs();
 });
 
-async function setupProjectWithSeededBug(runner: SessionModesFakeRunner) {
+async function setupProjectWithSeededBug(runner: CliRunner) {
   const dbDir = makeTempDir('dalang-v07-db-');
   const projDir = path.join(makeTempDir('dalang-v07-repo-'), 'seeded-bug-app');
   initSeededBugRepo(projDir);
@@ -433,6 +433,69 @@ describe('Auto session mode', () => {
       expect(plan?.tasks).toHaveLength(2);
       expect(plan?.tasks[1].dependsOn).toEqual(['T-001']);
       expect(started).toEqual([result.session.id]);
+    } finally {
+      conn.close();
+    }
+  });
+
+  it('stops running execution when Lead returns auto_stop in Auto mode', async () => {
+    const runner = new SessionModesFakeRunner();
+    runner.autoResponse = {
+      answer: 'Stopping all running tasks now.',
+      auto_plan: null,
+      auto_stop: true,
+    };
+    const { conn, leadSvc, project } = await setupProjectWithSeededBug(runner);
+    const stoppedCalls: Array<{ projectId: string; taskId?: string; sessionId?: string }> = [];
+    leadSvc.setExecutionRouter({
+      listActiveRunsForSession: () => [{
+        taskId: 't1',
+        externalId: 'db-v16',
+        runId: 'r1',
+        profileId: 'profile-coder-medium',
+        profileName: 'coder-medium',
+        kind: 'execute',
+        canSteer: false,
+      }],
+      steerTask: async () => {},
+      stopExecution: async (pid, taskId, sid) => {
+        stoppedCalls.push({ projectId: pid, taskId, sessionId: sid });
+        return { stopped: true };
+      },
+    });
+    try {
+      const result = await leadSvc.sendChatMessage(project.id, { mode: 'auto', message: 'stop dulu semuanya' });
+      expect(stoppedCalls).toEqual([{ projectId: project.id, taskId: undefined, sessionId: result.session.id }]);
+      expect(result.messages.some((m) => String(m.content).includes('Stopped running execution.'))).toBe(true);
+      expect(runner.calls.find((c) => c.prompt.includes('Lead in DALANG Auto mode'))?.prompt).toContain('[db-v16]');
+    } finally {
+      conn.close();
+    }
+  });
+
+  it('aborts an in-flight Lead turn via stopTurns and releases the lock', async () => {
+    let startedResolve!: () => void;
+    const turnStarted = new Promise<void>((resolve) => { startedResolve = resolve; });
+    const runner: CliRunner = {
+      async which(bin) { return `/usr/bin/${bin}`; },
+      async run(_cmd, _args, opts) {
+        startedResolve();
+        return new Promise((resolve) => {
+          opts.signal?.addEventListener('abort', () => {
+            resolve({ exitCode: null, stdout: '', stderr: '', timedOut: false, idleTimedOut: false, aborted: true });
+          }, { once: true });
+        });
+      },
+    };
+    const { conn, leadSvc, project } = await setupProjectWithSeededBug(runner);
+    try {
+      const chatPromise = leadSvc.sendChatMessage(project.id, { mode: 'auto', message: 'analyze repo' });
+      await turnStarted;
+      const stopRes = await leadSvc.stopTurns(project.id);
+      expect(stopRes).toEqual({ stopped: true });
+      await expect(chatPromise).rejects.toThrow('Stopped by user');
+      // After stopTurns resolves, no active turn remains.
+      expect(await leadSvc.stopTurns(project.id)).toEqual({ stopped: false });
     } finally {
       conn.close();
     }
