@@ -1,6 +1,6 @@
 # PRD: DALANG
 
-Nov 18, 2026 · @Fauzan · Updated through v0.13.5, Nov 25, 2026
+Nov 18, 2026 · @Fauzan · Updated through v0.13.6, Nov 25, 2026
 
 ## Summary
 
@@ -761,7 +761,94 @@ Scripted runs cover handoff from each of the three providers, including recent c
 - Outside agents over MCP: Claude Code or Codex in a terminal can read projects, sessions, tasks, logs, and automations (`read-only`) or start/stop tasks, merge, reject, and trigger automations (`full-access`) through persistent hashed bearer tokens on the loopback-only `/mcp` endpoint, optionally scoped to one project.
 - Managed in **Config → Automation** and over REST (`/api/automations`, `/api/mcp-tokens`), on schema v14. Automated and MCP-started runs each create a Quick session, so they go through the worktree, verify, review, and Gate 2 steps and stay visible in the UI. A trigger that arrives while another session has unfinished work is recorded as skipped.
 
-### v0.12 to v0.15: terminal room, Auto, and chat apps
+### v0.14: general tasks (draft plan, 25 Nov 2026)
+
+Status: draft. Nothing in this section is implemented.
+
+#### Intent
+
+DALANG should run work that is not code: writing and editing documents, research written up as a report, data clean-up, or a plan for an event. The team flow stays the same (the Lead plans, executors do the tasks, a checker and the reviewer judge the result, the user accepts). Users who do not write code should not meet coding words in the room, the web UI, or the wizard.
+
+#### Where DALANG assumes code today
+
+Read from source on 25 Nov 2026:
+
+- Role names. The plan task role is `engineer` or `qa` (`PlanTaskRoleSchema`, `packages/shared/src/schemas.ts`). The seeded profiles are `coder-small`, `coder-medium`, and `coder-heavy`. The wizard, Config, and the terminal show "Coder, simple tasks (Bima)" and similar labels (`packages/web/src/i18n/*.ts`, `ROLE_LABEL` in `packages/cli/src/tui/team.ts`).
+- Prompts. The Lead is told it is the "Lead architect" in Ask, Quick, and Discuss, and in Auto it may "delegate coding tasks" (`packages/core/src/services/lead.ts`). The seeded Lead role prompt says "the architect and planner of this project, not its coder" and asks for "a verify command that fails when the work is wrong" (`DEFAULT_ROLE_PROMPTS`, `packages/core/src/db/client.ts`).
+- Verify is required. The plan task schema requires a non-empty `verify` command, and `tasks.verify` and `runs.verify_command` are `NOT NULL` in the database.
+- Git is required. A project folder must be a git repository, or DALANG runs `git init` when the user ticks "Initialize git if missing" (`packages/core/src/services/project.ts`).
+- Output is a diff. Every task runs in a git worktree, and the reviewer, the diff view, and Gate 2 all work on the task branch's diff.
+
+A task whose result is a file (a report in Markdown, an edited CSV) already fits this flow in a git folder, apart from the required verify command and the coding words. A task whose result is only an answer, such as "compare these three suppliers", has no file to diff and nothing to merge.
+
+#### Goals
+
+- Neutral names in every user-facing surface, with stored ids unchanged.
+- A plan task may have no verify command. The checker and the reviewer then judge the result against the acceptance criteria.
+- A plan task may produce an answer instead of files. The answer is shown in the room and the web chat and saved in the project, and accepting it replaces the merge.
+- Code projects behave as in v0.13: the same prompts for code work, the same verify, review, and merge.
+
+#### Non-goals
+
+- No project folder without git. DALANG keeps using git for checkpoints, rollback, and history of document work; "Initialize git if missing" stays the way in.
+- No new tools for agents (web search, browsers, office files). Agents use what their CLI already offers.
+- No renamed ids, profile names, routing keys, or API fields. Renaming stored values needs a migration and breaks saved automations and MCP clients for no user gain.
+- No separate "general" product mode. The Lead decides per task.
+
+#### Design
+
+1. **Names (display only).** Labels (decided 25 Nov 2026):
+
+   | Stored id | Label today | New label |
+   | --- | --- | --- |
+   | role `engineer`, profiles `coder-small`, `coder-medium`, `coder-heavy` | Coder (simple, medium, complex tasks) | Executor (light, medium, heavy tasks) |
+   | role `qa`, profile `qa` | QA | Checker |
+   | `lead`, `reviewer` | Lead, Reviewer | unchanged |
+
+   The wayang names (Semar, Bima, Gatotkaca, Kresna, Srikandi, Arjuna) stay. Labels change in the web dictionaries (English and Indonesian), the terminal room and wizard, room report lines, `/help`, and the docs. The word "code" stays only where the action is about code, for example the diff of a code change.
+
+2. **Neutral prompts.** The Lead prompts in `lead.ts` stop calling the Lead an architect and stop assuming a repository: Ask answers questions about "this project", Auto may "start tasks". The seeded role prompts are rewritten without coding words. `refreshDefaultRolePrompts` already replaces only prompts still equal to an earlier seed, so prompts the user edited are left alone.
+
+3. **Optional verify.** `verify` becomes optional in the plan task schema and nullable in `tasks.verify` and `runs.verify_command`. With no command, the verify step is recorded as skipped (not passed), and the review prompt tells the checker and the reviewer to judge every acceptance criterion from the result itself. The Lead prompt keeps asking for a verify command whenever the work can be checked by a command, so code tasks keep one.
+
+4. **Answer tasks.** A new plan task field `output`: `files` (default, today's behavior) or `answer`. An answer task:
+   - runs in a worktree as now, so it can read the project files;
+   - writes its answer to `.dalang/tasks/{id}/answer.md` and reports it in `task_result`;
+   - must leave project files unchanged; a change is reported as a scope violation, as for `files_allowed` today;
+   - is reviewed on `answer.md` instead of a diff;
+   - at Gate 2 asks "accept" instead of "merge". Accepting copies the answer into the session history and to `.dalang/answers/{task-id}.md` in the main checkout, and removes the worktree. Rejecting works as today.
+   The room, the web chat, and `/diff` show the answer text for answer tasks.
+
+5. **Data model (schema v16).** `tasks.output_kind` (`files` or `answer`, default `files`); `tasks.verify` and `runs.verify_command` become nullable. Upgrade from v15 keeps every row as a `files` task with its command.
+
+6. **Interfaces.** REST, MCP `start_task`, and automations accept the optional `verify` and `output` fields; omitting both keeps today's behavior.
+
+#### Phases
+
+| Phase | Name | Scope | Depends on | Size |
+| --- | --- | --- | --- | --- |
+| 1 | Names | Labels in web i18n (EN, ID), terminal room, wizard, Config, room reports, `/help`, docs | none | S |
+| 2 | Prompts | Neutral Lead prompts and seeded role prompts, seed refresh for untouched profiles | none | S |
+| 3 | Optional verify | Schema v16 nullable verify, skipped verify step, review prompt from acceptance criteria | none | M |
+| 4 | Answer tasks | `output` field, `answer.md`, scope check, review on the answer, accept gate, room and web display | 3 | L |
+| 5 | Proof and docs | Upgrade test v15 to v16, replay E2E for a no-verify files task and an answer task, live run, docs | 1 to 4 | M |
+
+Milestones: phases 1 and 2 can ship alone as a patch release (names and prompts, no schema change). Phases 3 to 5 complete v0.14.
+
+#### Done when
+
+- A non-code goal in a new git folder (for example "write a two-page summary of these three PDFs, with a short comparison table") runs from plan to accepted result in the terminal room, with at least one answer task and one files task without a verify command.
+- A code Quick task from plan to merge behaves as in v0.13, with verify and diff review.
+- A search of the web dictionaries and the terminal labels finds no "Coder" or "QA" label.
+- An app database upgraded from schema v15 keeps every task and run.
+
+#### Decisions (made with the owner, 25 Nov 2026)
+
+- Labels: Executor for the three task roles and Checker for QA, as in the table above. Lead and Reviewer keep their names.
+- Phases 1 and 2 (names and prompts) ship first as a patch release on v0.13, before the schema work.
+- Accepted answers live in `.dalang/answers/{task-id}.md` and in the session history, outside the user's files. A result the user wants as a project file is planned as a `files` task (for example `docs/report.md`), so it goes through review and merge like any other change.
+
+### v0.12, v0.13, v0.15, v0.16: terminal room, Auto, and chat apps
 
 The terminal team room shipped in v0.12.0. The Telegram and Slack bridges remain draft plans. [Terminal user guide](USAGE.md#terminal-team-room)
 
@@ -773,7 +860,7 @@ The terminal team room shipped in v0.12.0. The Telegram and Slack bridges remain
 
 - `dalang` with no subcommand starts the terminal room. The current web server becomes `dalang web`.
 - The room is a team discussion: the Lead, coders, and reviewer post their own messages (brief and plan, task start, task finish with diff stats, verify result, review verdict).
-- Chat apps: Telegram first (v0.14), Slack after it (v0.15), on one shared bridge core.
+- Chat apps: Telegram first (v0.15), Slack after it (v0.16), on one shared bridge core. Renumbered on 25 Nov 2026 when general tasks took v0.14.
 - One bot per role on each chat app. Group chats are supported.
 - Starting coders and merging are allowed from Telegram and Slack. The user accepted that an allowlisted chat account can run and merge code on the machine.
 
@@ -817,9 +904,10 @@ Review against this plan (24 Nov 2026):
 - v0.13.3 adds `Esc` in the terminal room to stop all running agents, tasks, subtasks, and Lead turns, enables `auto_stop` in Auto mode, allows `/stop` while a Lead turn is in flight, hardens process-exit settlement on abort/timeout, and adds `/update [check|clis|all]` (plus `dalang update --clis|--all` and `POST /api/providers/update-all`) with a persistent restart notification after Dalang updates. The terminal room header, running-agent row, `/model`, `/config`, and setup wizard show resolved model names (for example `Claude Opus 5.5`) instead of CLI aliases.
 - v0.13.4 runs the terminal title spinner at the room spinner's 120 ms pace and includes the v0.13.3 changes; v0.13.3 was published to npm without a GitHub release.
 - v0.13.5 sets the process name to `dalang`, so terminals that append the running command to the tab title no longer show the full `node` path.
+- v0.13.6 shows the chat title and project in the terminal title (`Fix login · shop`) without the `DALANG ·` prefix, since such terminals already append `dalang`.
 - This release does not add a database migration. Live provider behavior and non-Linux terminals still require separate verification.
 
-#### v0.14: Telegram bridge
+#### v0.15: Telegram bridge
 
 Checked against the Telegram Bot FAQ and Bot API pages on 24 Nov 2026 (Bot API changelog dated 22 Nov 2026). Items marked "not yet verified" need the probe phase.
 
@@ -833,7 +921,7 @@ Checked against the Telegram Bot FAQ and Bot API pages on 24 Nov 2026 (Bot API c
 - Limits (Bot FAQ): about one message per second per chat and 20 messages per minute per bot in a group. Each bot gets a send queue, and coder progress edits one status message instead of posting new ones. Long diffs go as a document (uploads up to 50 MB).
 - Not yet verified: whether typing `@` in a group suggests bot usernames.
 
-#### v0.15: Slack bridge
+#### v0.16: Slack bridge
 
 Checked against Slack developer docs and Slack help articles on 24 Nov 2026.
 
@@ -857,11 +945,11 @@ Checked against Slack developer docs and Slack help articles on 24 Nov 2026.
 | 6     | Slack adapter on the bridge core                                                                                 | 5          | M    |
 | 7     | Docs and release for each milestone                                                                              | 4, 5, 6    | S    |
 
-Milestones: v0.12 is phases 0 to 4 (the terminal room), v0.13 is Auto mode, v0.14 is phase 5 (Telegram), and v0.15 is phase 6 (Slack). Phases 3 and 5 can run in parallel after phase 2.
+Milestones: v0.12 is phases 0 to 4 (the terminal room), v0.13 is Auto mode, v0.15 is phase 5 (Telegram), and v0.16 is phase 6 (Slack). Phases 3 and 5 can run in parallel after phase 2.
 
 ### Not planned
 
-Remote access, relays, and companion phone apps require a separate deployment and authentication design. The optional DALANG password covers the local instance. The Telegram and Slack bridges (v0.14, v0.15) are outbound connections from the local server, not inbound access.
+Remote access, relays, and companion phone apps require a separate deployment and authentication design. The optional DALANG password covers the local instance. The Telegram and Slack bridges (v0.15, v0.16) are outbound connections from the local server, not inbound access.
 
 ## Risks, mitigations, and decisions
 

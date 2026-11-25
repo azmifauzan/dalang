@@ -2,6 +2,11 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
+## 0.13.6 (Chat title in the terminal tab), 25 Nov
+
+- The terminal title now shows the chat title and the project, for example `Fix login · shop`, or `new chat · shop` before the first message. The `DALANG ·` prefix is gone, because terminals such as Ptyxis already append the process name `dalang`. The spinner and `*` markers are unchanged. No database migration is required.
+- The PRD adds a draft plan for general (non-code) tasks as v0.14. The Telegram and Slack bridges move to v0.15 and v0.16.
+
 ## 0.13.5 (Short process name in tab titles), 25 Nov
 
 - The `dalang` process now names itself `dalang`. Terminals that append the running command to the tab title (such as Ptyxis and GNOME Console) show `dalang` instead of `node /full/path/to/bin/dalang`. No database migration is required.

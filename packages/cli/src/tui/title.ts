@@ -24,6 +24,7 @@ export function waitingForReply(messages: DiscussMessageDTO[]): boolean {
 export function useTerminalTitle(
   stdout: NodeJS.WriteStream | undefined,
   project: string | undefined,
+  session: string,
   state: 'idle' | 'working' | 'waiting',
 ): void {
   useEffect(() => {
@@ -34,8 +35,12 @@ export function useTerminalTitle(
 
   useEffect(() => {
     if (!stdout?.isTTY) return;
-    const name = stripControl(project ?? '').replace(/\s+/g, ' ').trim().slice(0, 80);
-    const base = name ? `DALANG · ${name}` : 'DALANG';
+    // Like Claude Code: status and topic only. Terminals such as Ptyxis append the process name
+    // ("— dalang"), so an app name here would show twice.
+    const clean = (text: string, max: number) => stripControl(text).replace(/\s+/g, ' ').trim().slice(0, max);
+    const name = clean(project ?? '', 40);
+    const topic = clean(session, 60) || 'new chat';
+    const base = name ? `${topic} · ${name}` : topic;
     let frame = 0;
     const draw = () => {
       const prefix = state === 'waiting' ? '* ' : state === 'working' ? `${FRAMES[frame++ % FRAMES.length]} ` : '';
@@ -46,5 +51,5 @@ export function useTerminalTitle(
     // Same pace as the WorkingStatus spinner, so the tab and the room move together.
     const timer = setInterval(draw, 120);
     return () => clearInterval(timer);
-  }, [stdout, project, state]);
+  }, [stdout, project, session, state]);
 }

@@ -180,23 +180,23 @@ describe('room screens (Ink, stub server)', () => {
     const started = ui.mark();
     turn = { phase: 'ask', provider: 'claude-code', startedAt: new Date().toISOString() };
     emit({ type: 'lead.turn_started', projectId: 'p1', sessionId: 's1' });
-    await ui.waitFor('\x1b]0;⠋ DALANG · demo\x07', started);
-    await ui.waitFor('\x1b]0;⠙ DALANG · demo\x07', started);
+    await ui.waitFor('\x1b]0;⠋ Earlier chat · demo\x07', started);
+    await ui.waitFor('\x1b]0;⠙ Earlier chat · demo\x07', started);
 
     const asked = ui.mark();
     turn = null;
     messages = [{ id: 'q', role: 'lead', type: 'ask', content: { text: 'Which file should I change?' }, createdAt: session.updatedAt }];
     emit({ type: 'lead.turn_finished', projectId: 'p1', sessionId: 's1' });
-    await ui.waitFor('\x1b]0;* DALANG · demo\x07', asked);
+    await ui.waitFor('\x1b]0;* Earlier chat · demo\x07', asked);
 
     const answered = ui.mark();
     messages = [...messages, { id: 'a', role: 'user', type: 'text', content: 'Use app.ts', createdAt: session.updatedAt }];
     emit({ type: 'discuss.updated', projectId: 'p1', sessionId: 's1' });
-    await ui.waitFor('\x1b]0;DALANG · demo\x07', answered);
+    await ui.waitFor('\x1b]0;Earlier chat · demo\x07', answered);
     const gate = ui.mark();
     waitingToMerge = true;
     emit({ type: 'plan.updated', projectId: 'p1', sessionId: 's1' });
-    await ui.waitFor('\x1b]0;* DALANG · demo\x07', gate);
+    await ui.waitFor('\x1b]0;* Earlier chat · demo\x07', gate);
     const exiting = ui.mark();
     ui.unmount();
     await ui.waitFor('\x1b[23;0t', exiting);

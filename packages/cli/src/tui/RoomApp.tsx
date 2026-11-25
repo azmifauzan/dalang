@@ -554,7 +554,7 @@ export function RoomApp({
     ? detail.messages : [];
   const titleWaiting = authNeeded || Boolean(pendingUnconfinedAction) || Boolean(pendingGate && titleSession?.id === detail?.session.id) ||
     (!titleWorking && waitingForReply(titleMessages));
-  useTerminalTitle(ttyOut, activeProject?.name, titleWaiting && !sending ? 'waiting' : titleWorking ? 'working' : 'idle');
+  useTerminalTitle(ttyOut, activeProject?.name, titleSession?.title ?? '', titleWaiting && !sending ? 'waiting' : titleWorking ? 'working' : 'idle');
 
   const handleExit = useCallback(() => {
     onRequestExit?.();
