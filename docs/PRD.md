@@ -815,7 +815,7 @@ Review against this plan (24 Nov 2026):
 - Shift+Tab cycles composer modes, `/restart` restores the selected room, and `/mouse` toggles mouse capture. Team fallback targets are editable per role in terminal Config. The terminal and browser render streamed JSON answers as readable text.
 - v0.13.2 adds terminal title status: a spinner while the selected session works and `*` while input is needed. Free-form question detection is heuristic; restoration of the previous title depends on terminal support.
 - v0.13.3 adds `Esc` in the terminal room to stop all running agents, tasks, subtasks, and Lead turns, enables `auto_stop` in Auto mode, allows `/stop` while a Lead turn is in flight, hardens process-exit settlement on abort/timeout, and adds `/update [check|clis|all]` (plus `dalang update --clis|--all` and `POST /api/providers/update-all`) with a persistent restart notification after Dalang updates. The terminal room header, running-agent row, `/model`, `/config`, and setup wizard show resolved model names (for example `Claude Opus 5.5`) instead of CLI aliases.
-- v0.13.4 runs the terminal title spinner at the room spinner's 120 ms pace and is the first published release of the v0.13.3 changes; v0.13.3 was tagged but not published.
+- v0.13.4 runs the terminal title spinner at the room spinner's 120 ms pace and includes the v0.13.3 changes; v0.13.3 was published to npm without a GitHub release.
 - This release does not add a database migration. Live provider behavior and non-Linux terminals still require separate verification.
 
 #### v0.14: Telegram bridge

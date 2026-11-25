@@ -5,7 +5,7 @@ Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 ## 0.13.4 (Smoother terminal title spinner), 25 Nov
 
 - The terminal title spinner now advances every 120 ms, the same pace as the status-line spinner in the room, instead of every 250 ms. Terminals that throttle title updates can still show it less smoothly.
-- First published release of the 0.13.3 changes (`Esc` stop-all, `/update`, readable model labels). Version 0.13.3 was tagged but not published to npm or GitHub Releases. No database migration is required.
+- Includes the 0.13.3 changes (`Esc` stop-all, `/update`, readable model labels). Version 0.13.3 was published to npm without a GitHub release. No database migration is required.
 
 ## 0.13.3 (Stop all with Esc and /update command), 25 Nov
 
