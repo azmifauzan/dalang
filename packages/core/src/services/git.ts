@@ -735,8 +735,16 @@ export async function mergeTargetIntoTaskWorktree(
   targetBranch: string,
   message: string,
   excludePaths?: string[],
+  expectedBranch?: string,
 ): Promise<{ targetSha: string; conflicted: string[] }> {
-  await assertRepoConfigSafe(mainRepoPath);
+  // The worktree was written by a sandboxed agent: check its .git link and config before any git runs there.
+  await assertWorktreeSafe(mainRepoPath, worktreePath);
+  if (expectedBranch) {
+    const currentBranch = await getCurrentBranch(worktreePath, mainRepoPath);
+    if (currentBranch !== expectedBranch) {
+      throw new Error(`Task worktree is on "${currentBranch ?? 'detached'}" instead of expected branch "${expectedBranch}".`);
+    }
+  }
   const targetSha = (await openSafeGit(mainRepoPath).raw(['rev-parse', '--verify', `${targetBranch}^{commit}`])).trim();
   const git = openSafeGit(worktreePath);
   const identityArgs = await ensureGitIdentityArgs(git);

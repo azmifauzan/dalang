@@ -2,6 +2,14 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
+## 0.14.8 (Security fixes for 0.14.7), 26 Nov
+
+- **Use 0.14.8, not 0.14.7.** A security review of 0.14.7 found two problems in its new features, both fixed here.
+- **High: a merge conflict could run a command outside the sandbox.** When a merge conflicted, DALANG ran git in the task worktree without checking it first. A sandboxed agent can write in its worktree, so it could point the `.git` file at a repository of its own whose configuration runs a command, and DALANG's git would run it on your computer. The worktree's `.git` link, its configuration, and its branch are now checked before any git command, as subtask merges already did.
+- **Medium: a scope request could open the whole repository.** An executor could ask for a pattern such as `**`, and allowing it added that pattern to the task's allowed files. A request can now name only literal repository-relative files; patterns, absolute paths, `..`, `.git`, and `.dalang` are dropped.
+- **Upgrade.** No database migration. Restart a running `dalang web` or room after updating.
+- **Verified:** typecheck, tests, and build. A test with a planted repository behind the worktree's `.git` file fails without the first fix and passes with it; the scope request test now sends patterns and outside paths, which are dropped. Not run: live providers, macOS, and Windows.
+
 ## 0.14.7 (Plans wait for approval; conflicts, scope, and restarts no longer stop a run), 26 Nov
 
 Fixes for the problems that stopped the first run of v0.15 inside DALANG, each following how T3 Code handles the same problem. The rest of v0.15 stays for DALANG to build.

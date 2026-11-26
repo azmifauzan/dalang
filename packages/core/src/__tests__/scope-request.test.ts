@@ -51,7 +51,8 @@ describe('scope requests (B13, R10)', () => {
                   notes: [],
                   blockers: ['The review finding needs lib/runner.ts'],
                   // src/feature.ts is already allowed, so only lib/runner.ts is asked for.
-                  needs_files: ['lib/runner.ts', 'src/feature.ts'],
+                  // Patterns and paths outside the repository are dropped: only literal files can be asked for.
+                  needs_files: ['lib/runner.ts', 'src/feature.ts', '**', 'lib/*.ts', '../outside.ts', '/etc/passwd', '.git/config'],
                 },
           ),
         );

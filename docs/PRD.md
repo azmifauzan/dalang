@@ -1,6 +1,6 @@
 # PRD: DALANG
 
-Nov 18, 2026 · @Fauzan · Updated through v0.14.7, Nov 26, 2026
+Nov 18, 2026 · @Fauzan · Updated through v0.14.8, Nov 26, 2026
 
 ## Summary
 
@@ -314,6 +314,7 @@ Each phase must be useful on its own before the next one starts.
 | v0.14.5 | Closing note when a run stops, terminal room layout fixes, schema v17 | A run that finishes, or stops because failed tasks block the rest of the plan, ends with one note that names what is done, what failed, and what to do next | Released in v0.14.5. Also ships two v0.15 tasks that DALANG merged while running v0.15 itself: R8 (progress separated from the streamed JSON answer) and the schema v17 part of R7. |
 | v0.14.6 | Clearer approval prompts | A merge or Auto replace question says what it needs, why the task is ready, and what y and n each do | Released in v0.14.6. Also ships `replay-matching`, a v0.15 task DALANG merged while running v0.15. |
 | v0.14.7 | Plans wait for approval, merge conflicts and scope requests go back to the task, restarts continue work | A phase asked for in one Auto message shows its plan and executors before anything runs, and a conflict, a missing file, or a restart no longer stops the run | Released in v0.14.7. Closes B2, B9, B10, B13 (R3, R9, R10) before the v0.15 run continues; the v0.15 section names the T3 Code design to follow for each remaining item. |
+| v0.14.8 | Security fixes for the 0.14.7 merge conflict and scope request paths | A tampered task worktree runs no git outside the sandbox, and a scope request can add only the literal files it names | Released in v0.14.8. Use it instead of v0.14.7. |
 | v0.15 | Reliability and parity: fatal provider errors fail fast, restart recovery, session protocol replay, waiting view, room and web parity, merge conflicts handled, structured questions | B1, B6 to B8, and B12 are closed with tests that failed before the fix, R1 follows the T3 Code design, and typecheck, tests, and build pass | Planned |
 | v0.16 | Speed: per-project events, output hub, paged history, block-wise streaming | Recordings show improvement over the baseline; render and payload budgets pass | Planned |
 | v0.17 | Agent tools: DALANG browser, browser evidence at the gate, per-project MCP allowlist | An executor tests a dev server in the browser on all three providers, and Gate 2 shows the evidence | Planned |

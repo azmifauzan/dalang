@@ -244,6 +244,16 @@ function globToRegex(pattern: string): RegExp {
   return new RegExp(regexStr);
 }
 
+/**
+ * A file a task may ask to add to its scope: a literal repository-relative path. Glob characters,
+ * absolute paths, and `..` are refused, so a request cannot widen the scope beyond the named files.
+ */
+export function isLiteralRepoFile(file: string): boolean {
+  if (!file || /[*?[\]{}!\\]/.test(file) || file.startsWith('/') || /^[A-Za-z]:/.test(file)) return false;
+  const parts = file.split('/');
+  return parts.every((part) => part !== '' && part !== '.' && part !== '..') && parts[0] !== '.git' && parts[0] !== '.dalang';
+}
+
 export function findScopeViolations(
   changedFiles: string[],
   filesAllowed: string[],
@@ -2234,6 +2244,7 @@ export class ExecutionService {
         repo.baseBranch,
         `dalang: merge ${repo.baseBranch} into ${task.externalId} (conflicts to resolve)`,
         this.getNestedRepoNames(this.getTaskRepos(task.id, project.path)),
+        repo.branchName,
       ),
     );
     const files = conflicted.length > 0 ? conflicted.join(', ') : 'no files (the merge applied cleanly)';
@@ -2298,7 +2309,7 @@ export class ExecutionService {
       throw new Error(`Task ${task.externalId} has no open scope request.`);
     }
     const asked = new Set(request.needsFiles);
-    const files = input.files.filter((f) => asked.has(f));
+    const files = input.files.filter((f) => asked.has(f) && isLiteralRepoFile(f));
     if (files.length === 0) throw new Error('None of these files were requested by the task.');
     const filesAllowed = [...new Set([...task.filesAllowed, ...files])];
     const now = new Date().toISOString();
@@ -3524,7 +3535,7 @@ export class ExecutionService {
       // Files the task needs beyond its scope become a question for the user (R10), not a dead end.
       const neededFiles = succeeded || opts.task.output === 'answer'
         ? []
-        : findScopeViolations(resultData.needs_files ?? [], opts.task.filesAllowed, 'files')
+        : findScopeViolations((resultData.needs_files ?? []).filter(isLiteralRepoFile), opts.task.filesAllowed, 'files')
           .map((w) => w.replace(/^Modified outside files_allowed: /, ''));
       if (neededFiles.length > 0 && opts.task.delegationDepth === 0) {
         this.postRoomReport(opts.projectId, opts.sessionId, profile.id, 'status', {
