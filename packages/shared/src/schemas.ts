@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const DALANG_VERSION = '0.14.4';
+export const DALANG_VERSION = '0.14.5';
 
 export const MAX_DELEGATION_DEPTH = 1;
 export const DEFAULT_MAX_SUBTASKS_PER_TASK = 6;
@@ -571,6 +571,8 @@ export type SessionMessageType =
 
 export type RoomReportEvent =
   | 'auto_resume_failed'
+  | 'run_finished'
+  | 'run_stopped'
   | 'task_started'
   | 'task_finished'
   | 'task_failed'
@@ -606,6 +608,8 @@ export interface RoomReportContent {
   findingsCount?: number;
   findings?: Array<{ severity: ReviewFindingSeverity; file: string; note: string }>;
   mergeCommitSha?: string;
+  /** For `run_finished` and `run_stopped`: task counts and the external IDs of tasks left behind. */
+  outcome?: { done: number; total: number; reviewFailed: string[]; failed: string[]; waiting: string[] };
 }
 
 export interface RoomRouteInfo {

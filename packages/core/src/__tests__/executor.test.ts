@@ -77,7 +77,7 @@ describe('ExecutionService (v0.2 Jalan + v0.3 Kawal)', () => {
       },
     };
 
-    const { conn, events, project, plan, execSvc, projDir } = await setupApprovedProject(runner, [
+    const { conn, events, project, plan, execSvc, projDir, leadSvc } = await setupApprovedProject(runner, [
       { id: 'T-001', title: 'Item model', complexity: 'low', depends_on: [], files_allowed: ['src/**'] },
       { id: 'T-002', title: 'Item routes', complexity: 'low', depends_on: ['T-001'], files_allowed: ['src/**'] },
     ]);
@@ -110,6 +110,15 @@ describe('ExecutionService (v0.2 Jalan + v0.3 Kawal)', () => {
       state = await execSvc.getExecutionState(project.id);
       expect(state.activeRun).toBeNull();
       expect(state.dispatchPreviews[1].status).toBe('review_failed');
+
+      // The room is told why the run stopped and what to do next, instead of going quiet.
+      const closing = leadSvc
+        .getSessionDetail(project.id, plan.sessionId)
+        .messages.filter((m) => m.type === 'report')
+        .map((m) => m.content as { event: string; summary: string })
+        .filter((c) => c.event === 'run_stopped');
+      expect(closing).toHaveLength(1);
+      expect(closing[0].summary).toContain('Review failed after the last round: T-002');
 
       const t2Run = state.runs.find((r) => r.taskExternalId === 'T-002' && r.kind === 'execute')!;
       expect(t2Run.status).toBe('completed');

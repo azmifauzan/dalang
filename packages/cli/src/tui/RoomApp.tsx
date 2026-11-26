@@ -1407,6 +1407,15 @@ export function RoomApp({
         scrollBy(-6);
         return;
       }
+      // End jumps back to the newest message, Home to the oldest.
+      if (key.end) {
+        setScrollOffset(0);
+        return;
+      }
+      if (key.home) {
+        setScrollOffset(maxScrollRef.current);
+        return;
+      }
 
       // Completion navigation
       if (completions.length > 0) {
@@ -1723,7 +1732,7 @@ export function RoomApp({
   return (
     <Box flexDirection="column" width={termSize.cols} height={rootHeight}>
       {/* Header: icon, title row, and the provider quick stats */}
-      <Box borderStyle="round" borderColor="yellow" paddingX={1}>
+      <Box borderStyle="round" borderColor="yellow" paddingX={1} flexShrink={0}>
         <Box flexDirection="column" marginRight={2} flexShrink={0}>
           {KAYON_ICON.map((row, i) => (
             <Text key={i} bold color={ICON_COLOR}>
@@ -1927,11 +1936,11 @@ export function RoomApp({
         </Text>
         {clampedOffset > 0 ? (
           <Text color="yellow" wrap="truncate-end">
-            {`↑${startIdx} above · ↓${clampedOffset} below · wheel or PgUp/PgDn`}
+            {`↑${startIdx} above · ↓${clampedOffset} below · End: back to latest`}
           </Text>
         ) : startIdx > 0 ? (
           <Text dimColor wrap="truncate-end">
-            {`↑${startIdx} above · wheel or PgUp`}
+            {`↑${startIdx} above · wheel, PgUp or Home`}
           </Text>
         ) : null}
       </Box>

@@ -531,6 +531,8 @@ describe('team room mention routing and feed (v0.12)', () => {
       'verify_result',
       'review_verdict',
       'task_merged',
+      // The plan's only task is merged, so the room gets one closing note.
+      'run_finished',
     ]);
 
     const finishedReport = reports.find((r) => r.content.event === 'task_finished')!;

@@ -306,7 +306,7 @@ export function formatRoomMessage(msg: DiscussMessageDTO): FormattedRoomMessage 
   } else if (msg.type === 'report' && msg.content && typeof msg.content === 'object') {
     const rep = msg.content as RoomReportContent;
     badge = rep.event.replace(/_/g, ' ').toUpperCase();
-    lines.push(rep.summary);
+    lines.push(...rep.summary.split('\n'));
     if (rep.diffStats) {
       lines.push(
         `  Diff: ${rep.diffStats.filesChanged} file(s), +${rep.diffStats.insertions} -${rep.diffStats.deletions}`,
@@ -344,7 +344,9 @@ export function formatRoomMessage(msg: DiscussMessageDTO): FormattedRoomMessage 
     authorColor,
     badge: badge === null ? null : stripControl(badge),
     time,
-    lines: lines.length > 0 ? lines.map(stripControl) : [''],
+    // A tab is zero columns wide to Ink but up to eight in the terminal, so the row would wrap and shift
+    // every row under it. Incremental rendering then keeps the shifted leftovers on screen.
+    lines: lines.length > 0 ? lines.map((line) => stripControl(line).replace(/\t/g, '    ')) : [''],
     isError: msg.type === 'error',
     markdown: msg.role !== 'user' && msg.role !== 'system' &&
       (msg.type === 'ask' || (msg.type !== 'error' && typeof msg.content === 'string')),

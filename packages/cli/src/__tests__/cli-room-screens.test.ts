@@ -485,7 +485,7 @@ describe('room screens (Ink, stub server)', () => {
     await ui.press('\r');
     await ui.waitFor('Resumed');
     await ui.waitFor('message number 69'); // the end of the conversation
-    await ui.waitFor('above · wheel or PgUp'); // there is more above
+    await ui.waitFor('above · wheel, PgUp or Home'); // there is more above
 
     // Two wheel notches up: 3 rows each.
     let mark = ui.mark();
@@ -500,7 +500,7 @@ describe('room screens (Ink, stub server)', () => {
     // Wheel down returns to the end.
     mark = ui.mark();
     await ui.press('\x1b[<65;20;10M', '\x1b[<65;20;10M', '\x1b[<65;20;10M', '\x1b[<65;20;10M');
-    await ui.waitFor('above · wheel or PgUp', mark);
+    await ui.waitFor('above · wheel, PgUp or Home', mark);
 
     // A burst of 60 notches in one chunk stops at the top; one notch down then moves exactly 3 rows.
     const below = (text: string): number | null => {
@@ -523,6 +523,13 @@ describe('room screens (Ink, stub server)', () => {
     await ui.press('\x1b[6~');
     await ui.waitFor('below', mark);
     expect(below(ui.since(mark))).toBe((top as number) - 6);
+    await ui.waitFor('End: back to latest');
+
+    // End jumps straight back to the newest message.
+    mark = ui.mark();
+    await ui.press('\x1b[F');
+    await ui.waitFor('above · wheel, PgUp or Home', mark);
+    expect(ui.since(mark)).toContain('message number 69');
   });
 
   it('stops all running work on Esc and clears input when idle', async () => {

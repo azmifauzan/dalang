@@ -8,7 +8,7 @@ DALANG is a local-only developer workbench that orchestrates official coding CLI
 - The header puts the project, chat, mode, quota, and active models alongside a 5-column by 4-row Braille Kayon Gapuran. Its silhouette includes the tree, gate, and handle. [Museum Wayang reference](https://artsandculture.google.com/story/eAWB3fIM41Ytkg?hl=id) · [Museum of International Folk Art reference](https://collection.moifa.org/objects/25167/gunugan-gapuran)
 - The timeline uses role names, colors, and text badges for reports and approvals. Markdown headings, emphasis, code, and lists remain readable when a reply wraps across rows.
 - The active turn uses one status line above the composer. It shows activity and elapsed time, omits the spinner in screen-reader mode, and disappears when work ends. The activity labels summarize provider events without printing their raw payloads.
-- The composer uses arrows for prompt history and for navigating an open suggestions list. `PageUp` and `PageDown` scroll the timeline, including on terminals where mouse reporting is disabled.
+- The composer uses arrows for prompt history and for navigating an open suggestions list. `PageUp` and `PageDown` scroll the timeline and `End` returns to the newest message, including on terminals where mouse reporting is disabled.
 
 The remaining visual specifications apply to the browser workspace.
 

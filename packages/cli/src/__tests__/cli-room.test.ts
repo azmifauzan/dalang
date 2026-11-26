@@ -434,6 +434,19 @@ describe('TUI commands, completions, and formatting', () => {
     expect(msg.lines.join('')).not.toContain('\x1b');
   });
 
+  it('expands tabs and splits multi-line report summaries into timeline rows', () => {
+    const msg = formatRoomMessage({
+      id: 'm',
+      sessionId: 's',
+      role: 'system',
+      type: 'report',
+      content: { event: 'run_stopped', summary: 'Run stopped: 1 of 2 task(s) done.\n\tWaiting: b.' },
+      createdAt: '2026-11-26T07:00:00.000Z',
+    } as never);
+    expect(msg.badge).toBe('RUN STOPPED');
+    expect(msg.lines).toEqual(['Run stopped: 1 of 2 task(s) done.', '    Waiting: b.']);
+  });
+
   it('has /exit and no /quit', () => {
     expect(SLASH_COMMANDS.map((c) => c.name)).toContain('exit');
     expect(SLASH_COMMANDS.map((c) => c.name)).not.toContain('quit');

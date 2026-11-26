@@ -1,6 +1,6 @@
 # PRD: DALANG
 
-Nov 18, 2026 · @Fauzan · Updated through v0.14.4, Nov 26, 2026
+Nov 18, 2026 · @Fauzan · Updated through v0.14.5, Nov 26, 2026
 
 ## Summary
 
@@ -310,7 +310,8 @@ Each phase must be useful on its own before the next one starts.
 | v0.14.0 | General tasks: Executor and Checker names, neutral prompts, optional verify, answer tasks, schema v16 | A non-code goal runs from plan to an accepted answer and a merged file without verify commands; a code Quick task behaves as in v0.13 | Released in v0.14.0. Schema v16 adds `output_kind` on tasks and automations and makes verify nullable. Two live terminal-room runs on 25 Nov 2026 (Claude Lead and reviewer, Antigravity executor) on a copy of real v15 app data. See [v0.14](#v014-general-tasks-released-in-v0140). |
 | v0.14.1 | Security fix for the `/tmp` git mount in the Linux sandbox | A forged `.git` link no longer mounts a host `/tmp` path | Released in v0.14.1. A git directory is mounted back only when git's worktree back-link matches; a regression test fails on 0.14.0. |
 | v0.14.2 | Second security fix for the `/tmp` git mount | A worktree admin folder planted inside the workspace no longer mounts another `/tmp` repository | Released in v0.14.2. The admin folder must be git's own `<repository>/worktrees/<name>` outside the workspace; a regression test fails on 0.14.1. |
-| v0.14.4 | Dependencies installed in task worktrees, provider CLI recording | A JavaScript project's verify command finds its tools in a fresh task worktree without the agent installing anything | Released in v0.14.4 (the `v0.14.3` tag was not released). Next: [v0.15 to v0.17](#v015-to-v017-reliability-speed-and-agent-tools-planned-26-nov-2026). |
+| v0.14.4 | Dependencies installed in task worktrees, provider CLI recording | A JavaScript project's verify command finds its tools in a fresh task worktree without the agent installing anything | Released in v0.14.4 (the `v0.14.3` tag was not released). |
+| v0.14.5 | Closing note when a run stops, terminal room layout fixes, schema v17 | A run that finishes, or stops because failed tasks block the rest of the plan, ends with one note that names what is done, what failed, and what to do next | Released in v0.14.5. Also ships two v0.15 tasks that DALANG merged while running v0.15 itself: R8 (progress separated from the streamed JSON answer) and the schema v17 part of R7. |
 | v0.15 | Reliability and parity: fatal provider errors fail fast, restart recovery, session protocol replay, waiting view, room and web parity | B1, B2, and B6 to B8 are closed with tests that failed before the fix, and typecheck, tests, and build pass | Planned |
 | v0.16 | Speed: per-project events, output hub, paged history, block-wise streaming | Recordings show improvement over the baseline; render and payload budgets pass | Planned |
 | v0.17 | Agent tools: DALANG browser, browser evidence at the gate, per-project MCP allowlist | An executor tests a dev server in the browser on all three providers, and Gate 2 shows the evidence | Planned |

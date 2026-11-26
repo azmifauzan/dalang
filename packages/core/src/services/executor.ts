@@ -81,6 +81,7 @@ import {
 import { formatZodError } from './contract.js';
 import { localizeVerifyCommand } from './verify-command.js';
 import { detectWorktreeSetup, isNodeModulesIgnored } from './worktree-setup.js';
+import { describeRunOutcome } from './run-outcome.js';
 import type { DalangEventBus } from './events.js';
 import {
   assertRepoConfigSafe,
@@ -1949,6 +1950,7 @@ export class ExecutionService {
         }
         const stillActive = [...this.activeTasks.values()].some((a) => a.sessionId === sessionId);
         this.leadService.reconcileSessionWorkState(sessionId, stillActive);
+        await this.reportRunOutcome(projectId, sessionId);
       }
     })();
 
@@ -2027,6 +2029,30 @@ export class ExecutionService {
       });
     }
     return active;
+  }
+
+  /** Last closing note posted per session, so a repeated check does not post the same note twice. */
+  private readonly lastRunOutcome = new Map<string, string>();
+
+  /**
+   * Posts one closing note when a session's run has come to rest: nothing runs, nothing waits for an
+   * Auto merge, and no task can start. Without it the room simply goes quiet when a run finishes or
+   * when failed tasks block the rest of the plan.
+   */
+  private async reportRunOutcome(projectId: string, sessionId: string): Promise<void> {
+    try {
+      if (this.projectQueues.has(projectId)) return;
+      if ([...this.activeTasks.values()].some((a) => a.sessionId === sessionId)) return;
+      const plan = this.leadService.getPlan(projectId, sessionId);
+      if (!plan || plan.status !== 'approved') return;
+      if (this.buildDispatchPreviews(plan, await this.registry.isSandboxReady()).some((p) => p.eligible)) return;
+      const outcome = describeRunOutcome(plan.tasks);
+      if (!outcome || this.lastRunOutcome.get(sessionId) === outcome.summary) return;
+      this.lastRunOutcome.set(sessionId, outcome.summary);
+      this.postRoomReport(projectId, sessionId, null, 'status', outcome);
+    } catch {
+      // The closing note is informational; it must never break execution or merge flows.
+    }
   }
 
   private postRoomReport(
@@ -5971,6 +5997,7 @@ export class ExecutionService {
           }
         }
       }
+      await this.reportRunOutcome(projectId, sid);
       return {
         task: updatedTask,
         mergeCommitSha: '',
@@ -6192,6 +6219,7 @@ export class ExecutionService {
         }
       }
     }
+    await this.reportRunOutcome(projectId, sid);
     return { task: updatedTask, mergeCommitSha, integrationRun, pushPrResult };
   }
 

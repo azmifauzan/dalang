@@ -2,6 +2,15 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
+## 0.14.5 (Closing note when a run stops), 26 Nov
+
+- **A run no longer goes quiet when it stops.** When nothing is running and no task can start, the room and the web UI get one closing note. "Run finished" means every task is done. "Run stopped" says how many tasks are done, which ones failed review after the last round or failed, and which ones wait on them, with the next step (Retry, or ask the Lead to split a failed task into smaller ones). The Lead reads the note in its transcript on your next message. Before this, a plan whose failed tasks blocked the rest simply stopped, with no message.
+- **Terminal room: rows no longer overlap and the header no longer loses its title line.** A tab in agent text counted as zero columns but took up to eight in the terminal, so a row wrapped and shifted every row below it, and incremental rendering kept the shifted leftovers on screen. Tabs now become spaces, and the header keeps its height when the screen is full.
+- **Terminal room: `End` jumps back to the newest message**, and `Home` jumps to the oldest. The footer says so while you are scrolled up.
+- **From the v0.15 run inside DALANG:** two tasks that DALANG merged while running v0.15 on this repository ship here. The streamed reply now keeps an agent's progress text apart from its JSON answer (R8), and schema v17 (part of R7) adds foreign-key indexes, `busy_timeout`, and storage for delegation and webhook idempotency.
+- **Upgrade.** The database moves to schema v17 the first time 0.14.5 starts. The migration only adds columns, a table, and indexes. Back up `~/.dalang` first if you want to be able to go back, and restart a running `dalang web` or room after updating.
+- **Verified:** typecheck, tests, and build. A test where a failed review blocks the next task fails without the closing note and passes with it, and a tab test fails on 0.14.4. Not run: live providers, macOS, and Windows.
+
 ## 0.14.4 (Dependencies in task worktrees), 26 Nov
 
 - **Use 0.14.4, not 0.14.3.** The `v0.14.3` tag was pushed but never released: a security review found that its worktree install could write to your global package stores and that its `node_modules` check ran unhardened git. A shared cache path that a later review flagged on macOS is also replaced with a fresh folder per install. Both are fixed here.

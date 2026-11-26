@@ -136,6 +136,17 @@ export function ChatTranscript({
               return t('room.msg.task_rejected', { task, title });
             case 'task_steered':
               return t('room.msg.task_steered', { task });
+            case 'run_finished':
+            case 'run_stopped': {
+              const o = rep.outcome;
+              if (!o) return rep.summary;
+              if (rep.event === 'run_finished') return t('room.msg.run_finished', { total: o.total });
+              const lines = [t('room.msg.run_stopped', { done: o.done, total: o.total })];
+              if (o.reviewFailed.length > 0) lines.push(t('room.msg.run_reviewFailed', { tasks: o.reviewFailed.join(', ') }));
+              if (o.failed.length > 0) lines.push(t('room.msg.run_failed', { tasks: o.failed.join(', ') }));
+              if (o.waiting.length > 0) lines.push(t('room.msg.run_waiting', { tasks: o.waiting.join(', ') }));
+              return lines.join('\n');
+            }
             default:
               return rep.summary;
           }
@@ -165,19 +176,21 @@ export function ChatTranscript({
                     className="rounded-[4px] border px-1.5 py-0.5 font-mono text-[10px] uppercase"
                     style={{
                       borderColor:
-                        report?.reviewStatus === 'fail' || report?.event === 'task_failed'
+                        report?.reviewStatus === 'fail' || report?.event === 'task_failed' || report?.event === 'run_stopped'
                           ? 'var(--error)'
                           : report?.reviewStatus === 'pass' ||
                               report?.event === 'task_merged' ||
-                              report?.event === 'task_accepted'
+                              report?.event === 'task_accepted' ||
+                              report?.event === 'run_finished'
                             ? 'var(--pass)'
                             : 'var(--border-subtle)',
                       color:
-                        report?.reviewStatus === 'fail' || report?.event === 'task_failed'
+                        report?.reviewStatus === 'fail' || report?.event === 'task_failed' || report?.event === 'run_stopped'
                           ? 'var(--error)'
                           : report?.reviewStatus === 'pass' ||
                               report?.event === 'task_merged' ||
-                              report?.event === 'task_accepted'
+                              report?.event === 'task_accepted' ||
+                              report?.event === 'run_finished'
                             ? 'var(--pass)'
                             : 'var(--text-secondary)',
                     }}
