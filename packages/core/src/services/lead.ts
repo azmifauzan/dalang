@@ -98,9 +98,9 @@ const MODE_RANK: Record<SessionMode, number> = {
   full: 2,
 };
 
-const UNFINISHED_TASK_STATUSES = new Set<string>([
-  'running',
-  'reviewing',
+const LIVE_TASK_STATUSES = new Set<string>(['running', 'reviewing']);
+
+const PENDING_APPROVAL_TASK_STATUSES = new Set<string>([
   'awaiting_merge',
   'review_failed',
 ]);
@@ -424,7 +424,7 @@ export class LeadService {
     input: UpdateSessionInput,
   ): SessionSummaryDTO {
     const row = this.getSessionRow(projectId, sessionId);
-    if (input.archived === true && row.workState === 'working') {
+    if (input.archived === true && (row.workState === 'working' || this.hasSessionUnfinishedWork(row.id))) {
       throw conflictError(
         `Cannot archive session "${row.title || 'Untitled session'}" while it has unfinished work. Merge or discard its work first.`,
       );
@@ -489,7 +489,7 @@ export class LeadService {
     }
 
     if (MODE_RANK[targetMode] < MODE_RANK[currentMode]) {
-      if (row.workState === 'working') {
+      if (row.workState === 'working' || this.hasSessionUnfinishedWork(row.id)) {
         throw conflictError(
           `Cannot switch a working session back to ${targetMode}: unfinished work has modified files. Merge or discard the work first.`,
         );
@@ -546,14 +546,18 @@ export class LeadService {
     return this.getSession(projectId, row.id);
   }
 
-  hasSessionUnfinishedWork(sessionId: string): boolean {
+  private listSessionTaskStates(sessionId: string): Array<{
+    status: string;
+    branchName: string | null;
+    delegationDepth: number;
+  }> {
     const sessionPlans = this.db
       .select({ id: plans.id })
       .from(plans)
       .where(eq(plans.sessionId, sessionId))
       .all();
-    if (sessionPlans.length === 0) return false;
-    const taskRows = this.db
+    if (sessionPlans.length === 0) return [];
+    return this.db
       .select({
         status: tasks.status,
         branchName: tasks.branchName,
@@ -562,12 +566,31 @@ export class LeadService {
       .from(tasks)
       .where(inArray(tasks.planId, sessionPlans.map((p) => p.id)))
       .all();
-    return taskRows.some((t) => {
-      if ((t.delegationDepth ?? 0) > 0) {
-        return t.status === 'running' || t.status === 'reviewing';
-      }
+  }
+
+  /** Live activity only: active execution, in-flight Lead turn, or running/reviewing tasks. */
+  hasSessionLiveActivity(sessionId: string, hasActiveExecution = false): boolean {
+    if (hasActiveExecution || this.runningTurn(sessionId) !== null) return true;
+    return this.listSessionTaskStates(sessionId).some((t) => LIVE_TASK_STATUSES.has(t.status));
+  }
+
+  /** Saved non-live work: pending approval gates (`awaiting_merge`/`review_failed`) or unmerged task branches. */
+  hasSessionPendingApprovalOrBranch(sessionId: string): boolean {
+    return this.listSessionTaskStates(sessionId).some((t) => {
+      if ((t.delegationDepth ?? 0) > 0) return false;
       return (
-        UNFINISHED_TASK_STATUSES.has(t.status) ||
+        PENDING_APPROVAL_TASK_STATUSES.has(t.status) ||
+        (Boolean(t.branchName && t.branchName.trim()) && t.status !== 'done')
+      );
+    });
+  }
+
+  hasSessionUnfinishedWork(sessionId: string): boolean {
+    return this.listSessionTaskStates(sessionId).some((t) => {
+      if (LIVE_TASK_STATUSES.has(t.status)) return true;
+      if ((t.delegationDepth ?? 0) > 0) return false;
+      return (
+        PENDING_APPROVAL_TASK_STATUSES.has(t.status) ||
         (Boolean(t.branchName && t.branchName.trim()) && t.status !== 'done')
       );
     });
@@ -641,24 +664,60 @@ export class LeadService {
     this.events?.emitEvent({ type: 'sessions.updated', projectId, sessionId });
   }
 
-  reconcileSessionWorkState(sessionId: string, hasActiveExecution = false): SessionWorkState {
+  reconcileSessionWorkState(
+    sessionId: string,
+    hasActiveExecution = false,
+    opts: { liveOnly?: boolean } = {},
+  ): SessionWorkState {
     const row = this.db.select().from(sessions).where(eq(sessions.id, sessionId)).get();
     if (!row) return 'idle';
-    const nextState: SessionWorkState =
-      hasActiveExecution || this.hasSessionUnfinishedWork(sessionId) ? 'working' : 'idle';
+    const nextState: SessionWorkState = opts.liveOnly
+      ? this.hasSessionLiveActivity(sessionId, hasActiveExecution)
+        ? 'working'
+        : 'idle'
+      : hasActiveExecution
+        ? 'working'
+        : row.workState === 'working' && this.hasSessionUnfinishedWork(sessionId)
+          ? 'working'
+          : 'idle';
     if (row.workState !== nextState) {
-      this.db
+      const res = this.db
         .update(sessions)
         .set({ workState: nextState, updatedAt: new Date().toISOString() })
-        .where(eq(sessions.id, sessionId))
+        .where(and(eq(sessions.id, sessionId), eq(sessions.workState, row.workState)))
         .run();
-      this.events?.emitEvent({
-        type: 'sessions.updated',
-        projectId: row.projectId,
-        sessionId: row.id,
-      });
+      if (res.changes > 0) {
+        this.events?.emitEvent({
+          type: 'sessions.updated',
+          projectId: row.projectId,
+          sessionId: row.id,
+        });
+      }
     }
     return nextState;
+  }
+
+  /**
+   * Startup recovery: transitions a `working` session back to `idle` when it has no live activity,
+   * even if pending gates (`awaiting_merge`/`review_failed`) or saved task branches remain.
+   * Returns true only when this call changed the session from `working` to `idle`.
+   */
+  recoverSessionToIdleIfInactive(sessionId: string, hasActiveExecution = false): boolean {
+    const row = this.db.select().from(sessions).where(eq(sessions.id, sessionId)).get();
+    if (!row || row.workState !== 'working') return false;
+    if (this.hasSessionLiveActivity(sessionId, hasActiveExecution)) return false;
+    const res = this.db
+      .update(sessions)
+      .set({ workState: 'idle', updatedAt: new Date().toISOString() })
+      .where(and(eq(sessions.id, sessionId), eq(sessions.workState, 'working')))
+      .run();
+    if (res.changes === 0) return false;
+    this.events?.emitEvent({
+      type: 'sessions.updated',
+      projectId: row.projectId,
+      sessionId: row.id,
+    });
+    return true;
   }
 
   resolveSessionIdForRead(projectId: string, explicitSessionId?: string): string | null {
@@ -1130,7 +1189,7 @@ export class LeadService {
       } else if (requestedMode === 'ask') {
         // A question is read-only, so it can be asked in any session, at any time, without changing its mode.
       } else if (MODE_RANK[requestedMode] < MODE_RANK[currentMode]) {
-        if (sessionRow.workState === 'working') {
+        if (sessionRow.workState === 'working' || this.hasSessionUnfinishedWork(sessionRow.id)) {
           throw conflictError(
             `Cannot switch a working session back to ${requestedMode}: unfinished work has modified files. Merge or discard the work first.`,
           );
@@ -1179,7 +1238,9 @@ export class LeadService {
           this.events?.emitEvent({ type: 'sessions.updated', projectId, sessionId: sessionRow.id });
           return { session: this.getSession(projectId, sessionRow.id), mode: requestedMode, askReply, messages: this.getDiscussState(projectId, sessionRow.id).messages };
         }
-        const blocker = this.getWorkingSession(projectId);
+        const blocker =
+          this.getWorkingSession(projectId) ??
+          (this.hasSessionUnfinishedWork(sessionRow.id) ? this.getSession(projectId, sessionRow.id) : null);
         if (blocker && (blocker.id !== pending.sessionId || this.unfinishedWorkSnapshot(blocker.id) !== pending.snapshot)) {
           const askReply = this.autoWorkApproval(blocker, PlanContractSchema.parse(pending.plan));
           askReply.text = `The blocking work changed since the previous request. ${askReply.text}`;
