@@ -530,6 +530,70 @@ describe('Auto session mode', () => {
     }
   });
 
+  it('separates live activity from saved approval/branch work and lets Auto discard recovered idle session work on yes', async () => {
+    const runner = new SessionModesFakeRunner();
+    runner.autoResponse = {
+      answer: 'I will implement this.',
+      auto_plan: {
+        milestones: [{ id: 'M1', title: 'Fix' }],
+        tasks: [{
+          id: 'T-001', title: 'Fix', milestone: 'M1', role: 'engineer', complexity: 'low',
+          depends_on: [], goal: 'Fix code', files_allowed: ['src/math.mjs'], files_reference: [],
+          acceptance_criteria: ['Tests pass'], verify: 'node --test', needs_split: false,
+        }],
+      },
+    };
+    const { conn, leadSvc, project } = await setupProjectWithSeededBug(runner);
+    const started: string[] = [];
+    const discarded: string[] = [];
+    leadSvc.setExecutionRouter({
+      listActiveRunsForSession: () => [],
+      steerTask: async () => {},
+      startExecution: async (_projectId, input) => { started.push(input.sessionId); },
+      discardSessionWork: async (_projectId, sessionId) => {
+        discarded.push(sessionId);
+        conn.sqlite.prepare("update tasks set status = 'failed', branch_name = null where plan_id in (select id from plans where session_id = ?)").run(sessionId);
+        conn.sqlite.prepare("update sessions set work_state = 'idle' where id = ?").run(sessionId);
+      },
+    });
+    try {
+      const work = leadSvc.createDirectApprovedTask(project.id, {
+        sessionTitle: 'Recovered chat', userMessage: 'Previous task', title: 'Previous task', goal: 'Fix code',
+        filesAllowed: ['src/math.mjs'], acceptanceCriteria: ['Tests pass'], verify: 'node --test',
+      });
+      conn.sqlite.prepare("update tasks set status = 'awaiting_merge', branch_name = 'dalang/T-001' where id = ?").run(work.task.id);
+      leadSvc.markSessionWorking(project.id, work.session.id);
+
+      expect(leadSvc.hasSessionLiveActivity(work.session.id)).toBe(false);
+      expect(leadSvc.hasSessionPendingApprovalOrBranch(work.session.id)).toBe(true);
+      expect(leadSvc.recoverSessionToIdleIfInactive(work.session.id)).toBe(true);
+      expect(leadSvc.recoverSessionToIdleIfInactive(work.session.id)).toBe(false);
+      expect(leadSvc.getSession(project.id, work.session.id).workState).toBe('idle');
+      expect(leadSvc.hasSessionUnfinishedWork(work.session.id)).toBe(true);
+      expect(() => leadSvc.updateSession(project.id, work.session.id, { archived: true })).toThrow(/unfinished work/i);
+
+      const ask = await leadSvc.sendChatMessage(project.id, {
+        sessionId: work.session.id,
+        mode: 'auto',
+        message: 'Start a fresh fix',
+      });
+      // Same chat, so the question offers to replace its own unfinished tasks.
+      expect(ask.askReply?.text).toContain('This chat already has a plan');
+      expect(started).toEqual([]);
+
+      const confirmed = await leadSvc.sendChatMessage(project.id, {
+        sessionId: work.session.id,
+        mode: 'auto',
+        message: 'yes',
+      });
+      expect(discarded).toEqual([work.session.id]);
+      expect(started).toEqual([work.session.id]);
+      expect(confirmed.askReply?.text).toContain('started the requested work');
+    } finally {
+      conn.close();
+    }
+  });
+
   it("asks to replace this chat's own unfinished plan, not to discard another session", async () => {
     const runner = new SessionModesFakeRunner();
     runner.autoResponse = {

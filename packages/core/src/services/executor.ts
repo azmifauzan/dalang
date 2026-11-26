@@ -364,10 +364,21 @@ export class ExecutionService {
   }
 
   /**
-   * Reconcile any runs/tasks left in `running` or `reviewing` state from an unexpected exit/restart.
+   * Reconcile any runs/tasks left in `running` or `reviewing` state from an unexpected exit/restart,
+   * and return `working` sessions with no live activity to `idle` with one status note while keeping
+   * pending gates, review results, saved branches, and worktrees untouched.
    */
   private reconcileInterruptedRuns(): void {
     const staleRuns = this.db.select().from(runs).where(eq(runs.status, 'running')).all();
+    const staleTasks = this.db
+      .select({
+        id: tasks.id,
+        externalId: tasks.externalId,
+        delegationDepth: tasks.delegationDepth,
+      })
+      .from(tasks)
+      .where(inArray(tasks.status, ['running', 'reviewing']))
+      .all();
     const now = new Date().toISOString();
     if (staleRuns.length > 0) {
       this.db
@@ -380,16 +391,95 @@ export class ExecutionService {
         .where(eq(runs.status, 'running'))
         .run();
     }
-    this.db
-      .update(tasks)
-      .set({ status: 'stopped', updatedAt: now })
-      .where(inArray(tasks.status, ['running', 'reviewing']))
-      .run();
-
-    const allSessions = this.db.select({ id: sessions.id }).from(sessions).all();
-    for (const s of allSessions) {
-      this.leadService.reconcileSessionWorkState(s.id, false);
+    if (staleTasks.length > 0) {
+      this.db
+        .update(tasks)
+        .set({ status: 'stopped', updatedAt: now })
+        .where(inArray(tasks.status, ['running', 'reviewing']))
+        .run();
     }
+
+    const interruptedTaskIds = new Set(staleTasks.map((t) => t.id));
+    const workingSessions = this.db
+      .select({ id: sessions.id, projectId: sessions.projectId })
+      .from(sessions)
+      .where(eq(sessions.workState, 'working'))
+      .all();
+    for (const s of workingSessions) {
+      if (!this.leadService.recoverSessionToIdleIfInactive(s.id, false)) continue;
+      this.leadService.postRoomMessage(s.projectId, s.id, {
+        role: 'system',
+        type: 'text',
+        kind: 'status',
+        content: this.buildStartupRecoveryNote(s.id, interruptedTaskIds),
+      });
+    }
+  }
+
+  private buildStartupRecoveryNote(sessionId: string, interruptedTaskIds: Set<string>): string {
+    const sessionPlans = this.db
+      .select({ id: plans.id })
+      .from(plans)
+      .where(eq(plans.sessionId, sessionId))
+      .all();
+    const sessionTasks =
+      sessionPlans.length === 0
+        ? []
+        : this.db
+            .select({
+              id: tasks.id,
+              externalId: tasks.externalId,
+              status: tasks.status,
+              branchName: tasks.branchName,
+              delegationDepth: tasks.delegationDepth,
+            })
+            .from(tasks)
+            .where(inArray(tasks.planId, sessionPlans.map((p) => p.id)))
+            .all();
+
+    const topLevel = sessionTasks.filter((t) => (t.delegationDepth ?? 0) === 0);
+    const interruptedTop = topLevel
+      .filter((t) => interruptedTaskIds.has(t.id))
+      .map((t) => t.externalId);
+    const interrupted =
+      interruptedTop.length > 0
+        ? interruptedTop
+        : sessionTasks
+            .filter((t) => (t.delegationDepth ?? 0) > 0 && interruptedTaskIds.has(t.id))
+            .map((t) => t.externalId);
+    const awaitingMerge = topLevel
+      .filter((t) => t.status === 'awaiting_merge')
+      .map((t) => t.externalId);
+    const reviewFailed = topLevel
+      .filter((t) => t.status === 'review_failed')
+      .map((t) => t.externalId);
+    const stoppedOrFailed = topLevel
+      .filter(
+        (t) =>
+          (t.status === 'stopped' || t.status === 'failed') && !interruptedTaskIds.has(t.id),
+      )
+      .map((t) => t.externalId);
+    const hasSavedBranch = topLevel.some(
+      (t) => Boolean(t.branchName && t.branchName.trim()) && t.status !== 'done',
+    );
+
+    const parts = ['Session returned to idle after server restart (no active run).'];
+    if (interrupted.length > 0) {
+      parts.push(`Interrupted task(s) marked stopped: ${interrupted.join(', ')}.`);
+    }
+    if (awaitingMerge.length > 0) {
+      parts.push(`Waiting for approval: ${awaitingMerge.join(', ')}.`);
+    }
+    if (reviewFailed.length > 0) {
+      parts.push(`Review failed: ${reviewFailed.join(', ')}.`);
+    }
+    if (stoppedOrFailed.length > 0) {
+      parts.push(`Stopped or failed: ${stoppedOrFailed.join(', ')}.`);
+    }
+    if (hasSavedBranch || awaitingMerge.length > 0 || reviewFailed.length > 0) {
+      parts.push('Saved branches, review results, and worktrees were kept.');
+    }
+    return parts.join(' ');
   }
 
   /**
@@ -433,7 +523,7 @@ export class ExecutionService {
   }
 
   async recoverEmptyFailedWork(projectId: string): Promise<void> {
-    const session = this.leadService.getWorkingSession(projectId);
+    const session = this.leadService.getBlockingWorkSession(projectId);
     if (!session || this.listActiveRunsForSession(projectId, session.id).length || this.projectQueues.has(projectId)) return;
     const project = this.getProjectRow(projectId);
     const sessionPlans = this.db.select({ id: plans.id }).from(plans).where(eq(plans.sessionId, session.id)).all();
@@ -2284,6 +2374,86 @@ export class ExecutionService {
     );
   }
 
+  /**
+   * Guards against another task reusing or resetting a preserved branch or worktree owned by an
+   * unfinished task in the same project (for example, two sessions that both generated `T-001`).
+   */
+  private assertTaskWorktreeAndBranchAvailable(
+    projectId: string,
+    taskId: string,
+    branchName: string,
+    worktreePath: string,
+  ): void {
+    const projectPlans = this.db
+      .select({ id: plans.id })
+      .from(plans)
+      .where(eq(plans.projectId, projectId))
+      .all();
+    if (projectPlans.length === 0) return;
+
+    const otherTasks = this.db
+      .select({
+        id: tasks.id,
+        externalId: tasks.externalId,
+        status: tasks.status,
+        branchName: tasks.branchName,
+        delegationDepth: tasks.delegationDepth,
+      })
+      .from(tasks)
+      .where(inArray(tasks.planId, projectPlans.map((p) => p.id)))
+      .all()
+      .filter((t) => {
+        if (t.id === taskId || t.status === 'done') return false;
+        if (t.status === 'running' || t.status === 'reviewing') return true;
+        if ((t.delegationDepth ?? 0) > 0) return false;
+        return (
+          t.status === 'awaiting_merge' ||
+          t.status === 'review_failed' ||
+          Boolean(t.branchName && t.branchName.trim())
+        );
+      });
+    if (otherTasks.length === 0) return;
+
+    const resolvedTargetWt = path.resolve(worktreePath);
+    const otherTaskIds = otherTasks.map((t) => t.id);
+    const repoRows = this.db
+      .select({
+        taskId: taskRepos.taskId,
+        branchName: taskRepos.branchName,
+        worktreePath: taskRepos.worktreePath,
+      })
+      .from(taskRepos)
+      .where(inArray(taskRepos.taskId, otherTaskIds))
+      .all();
+    const reposByTask = new Map<string, typeof repoRows>();
+    for (const r of repoRows) {
+      const list = reposByTask.get(r.taskId) ?? [];
+      list.push(r);
+      reposByTask.set(r.taskId, list);
+    }
+
+    for (const owner of otherTasks) {
+      const ownerDefaultWt = path.resolve(
+        getTaskWorktreeDir(this.worktreesRoot, projectId, owner.externalId),
+      );
+      const ownerRepos = reposByTask.get(owner.id) ?? [];
+      const sharesBranch =
+        owner.branchName === branchName ||
+        ownerRepos.some((r) => r.branchName === branchName);
+      const sharesWorktree =
+        ownerDefaultWt === resolvedTargetWt ||
+        ownerRepos.some((r) => path.resolve(r.worktreePath) === resolvedTargetWt);
+      if (sharesBranch || sharesWorktree) {
+        throw Object.assign(
+          new Error(
+            `Cannot start ${branchName}: preserved branch or worktree is still owned by unfinished task ${owner.externalId} (${owner.status}). Merge, reject, or discard that work first.`,
+          ),
+          { statusCode: 409 },
+        );
+      }
+    }
+  }
+
   private async prepareTaskExecution(
     projectId: string,
     sessionId: string,
@@ -2304,6 +2474,7 @@ export class ExecutionService {
 
     const branchName = `dalang/${task.externalId}`;
     const worktreePath = getTaskWorktreeDir(this.worktreesRoot, projectId, task.externalId);
+    this.assertTaskWorktreeAndBranchAvailable(projectId, task.id, branchName, worktreePath);
     const resetToBase = !resumeSessionId || !(await branchExists(project.path, branchName));
 
     const { repos: taskRepoList, baseMainSha, baselineCheckpointRef, baselineRefsByRepo } =
