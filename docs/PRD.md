@@ -310,7 +310,11 @@ Each phase must be useful on its own before the next one starts.
 | v0.14.0 | General tasks: Executor and Checker names, neutral prompts, optional verify, answer tasks, schema v16 | A non-code goal runs from plan to an accepted answer and a merged file without verify commands; a code Quick task behaves as in v0.13 | Released in v0.14.0. Schema v16 adds `output_kind` on tasks and automations and makes verify nullable. Two live terminal-room runs on 25 Nov 2026 (Claude Lead and reviewer, Antigravity executor) on a copy of real v15 app data. See [v0.14](#v014-general-tasks-released-in-v0140). |
 | v0.14.1 | Security fix for the `/tmp` git mount in the Linux sandbox | A forged `.git` link no longer mounts a host `/tmp` path | Released in v0.14.1. A git directory is mounted back only when git's worktree back-link matches; a regression test fails on 0.14.0. |
 | v0.14.2 | Second security fix for the `/tmp` git mount | A worktree admin folder planted inside the workspace no longer mounts another `/tmp` repository | Released in v0.14.2. The admin folder must be git's own `<repository>/worktrees/<name>` outside the workspace; a regression test fails on 0.14.1. |
-| v0.14.4 | Dependencies installed in task worktrees, provider CLI recording | A JavaScript project's verify command finds its tools in a fresh task worktree without the agent installing anything | Released in v0.14.4 (the `v0.14.3` tag was not released). The planned v0.15 to v0.17 hardening phases are in `docs/plans/2026-11-26-t3code-improvement-plan.md`. |
+| v0.14.4 | Dependencies installed in task worktrees, provider CLI recording | A JavaScript project's verify command finds its tools in a fresh task worktree without the agent installing anything | Released in v0.14.4 (the `v0.14.3` tag was not released). Next: [v0.15 to v0.17](#v015-to-v017-reliability-speed-and-agent-tools-planned-26-nov-2026). |
+| v0.15 | Reliability and parity: fatal provider errors fail fast, restart recovery, session protocol replay, waiting view, room and web parity | The v0.15 matrix passes on three real repositories without manual intervention, and v0.16 runs from one prompt | Planned |
+| v0.16 | Speed: per-project events, output hub, paged history, block-wise streaming | Recordings show improvement over the baseline; render and payload budgets pass | Planned |
+| v0.17 | Agent tools: DALANG browser, browser evidence at the gate, per-project MCP allowlist | An executor tests a dev server in the browser on all three providers, and Gate 2 shows the evidence | Planned |
+| v0.18, v0.19 | Telegram bridge, then Slack bridge | See [the chat app plan](#v012-v013-v018-v019-terminal-room-auto-and-chat-apps) | Planned |
 
 See [Roadmap after v0.4](#roadmap-after-v04) for the detail and the research behind it.
 
@@ -873,7 +877,7 @@ Gate after the fixes below: typecheck, tests, and build pass. Two live runs on 2
 | Done when: database upgraded from v15 keeps every task and run | Met. Unit upgrade test, plus a copy of a real v15 app database opened by the live run: tasks 15, runs 4, sessions 13, messages 62 equal before and after, task rows identical, all `files`. The original database stayed on v15 with an unchanged hash. |
 | Outside this plan | Kept and tested (`v07-sessions.test.ts`): an Auto approval that discards a blocking session's unfinished work only after the user replies yes, and asks again when that work changed (`lead.ts`); and `recoverEmptyFailedWork`, which unlocks a failed task whose branch is gone and whose runs changed nothing (`executor.ts`). Fixed: the empty-work check allowed only `result.json`, so a failed answer task (which also writes `answer.md`) stayed locked; it now allows any file in the task's own artifact folder, with a test case that fails on the old rule. |
 
-### v0.12, v0.13, v0.15, v0.16: terminal room, Auto, and chat apps
+### v0.12, v0.13, v0.18, v0.19: terminal room, Auto, and chat apps
 
 The terminal team room shipped in v0.12.0. The Telegram and Slack bridges remain draft plans. [Terminal user guide](USAGE.md#terminal-team-room)
 
@@ -885,7 +889,7 @@ The terminal team room shipped in v0.12.0. The Telegram and Slack bridges remain
 
 - `dalang` with no subcommand starts the terminal room. The current web server becomes `dalang web`.
 - The room is a team discussion: the Lead, coders, and reviewer post their own messages (brief and plan, task start, task finish with diff stats, verify result, review verdict).
-- Chat apps: Telegram first (v0.15), Slack after it (v0.16), on one shared bridge core. Renumbered on 25 Nov 2026 when general tasks took v0.14.
+- Chat apps: Telegram first (v0.18), Slack after it (v0.19), on one shared bridge core. Renumbered on 25 Nov 2026 when general tasks took v0.14, and again on 26 Nov 2026 when the v0.15 to v0.17 hardening phases came first.
 - One bot per role on each chat app. Group chats are supported.
 - Starting coders and merging are allowed from Telegram and Slack. The user accepted that an allowlisted chat account can run and merge code on the machine.
 
@@ -932,7 +936,7 @@ Review against this plan (24 Nov 2026):
 - v0.13.6 shows the chat title and project in the terminal title (`Fix login · shop`) without the `DALANG ·` prefix, since such terminals already append `dalang`.
 - This release does not add a database migration. Live provider behavior and non-Linux terminals still require separate verification.
 
-#### v0.15: Telegram bridge
+#### v0.18: Telegram bridge
 
 Checked against the Telegram Bot FAQ and Bot API pages on 24 Nov 2026 (Bot API changelog dated 22 Nov 2026). Items marked "not yet verified" need the probe phase.
 
@@ -946,7 +950,7 @@ Checked against the Telegram Bot FAQ and Bot API pages on 24 Nov 2026 (Bot API c
 - Limits (Bot FAQ): about one message per second per chat and 20 messages per minute per bot in a group. Each bot gets a send queue, and coder progress edits one status message instead of posting new ones. Long diffs go as a document (uploads up to 50 MB).
 - Not yet verified: whether typing `@` in a group suggests bot usernames.
 
-#### v0.16: Slack bridge
+#### v0.19: Slack bridge
 
 Checked against Slack developer docs and Slack help articles on 24 Nov 2026.
 
@@ -970,11 +974,119 @@ Checked against Slack developer docs and Slack help articles on 24 Nov 2026.
 | 6     | Slack adapter on the bridge core                                                                                 | 5          | M    |
 | 7     | Docs and release for each milestone                                                                              | 4, 5, 6    | S    |
 
-Milestones: v0.12 is phases 0 to 4 (the terminal room), v0.13 is Auto mode, v0.15 is phase 5 (Telegram), and v0.16 is phase 6 (Slack). Phases 3 and 5 can run in parallel after phase 2.
+Milestones: v0.12 is phases 0 to 4 (the terminal room), v0.13 is Auto mode, v0.18 is phase 5 (Telegram), and v0.19 is phase 6 (Slack). Phases 3 and 5 can run in parallel after phase 2.
+
+### v0.15 to v0.17: reliability, speed, and agent tools (planned 26 Nov 2026)
+
+Status: planned with the user on 26 Nov 2026, not started. These phases come before the chat app bridges, which move to v0.18 and v0.19.
+
+#### Intent
+
+DALANG must be reliable and fast before other people use it, with the same experience in the terminal room (developers) and the web UI (less technical users). Bugs should be found by tests and recordings, not by user reports. Priority order: reliability, then speed, then new tools for agents (browser and connectors).
+
+Not a goal: copying T3 Code as a whole (its workflow engine, remote access, phone apps, HTML visual replies, per-thread permission modes). See "Taken from T3 Code, and not" below.
+
+#### Research: T3 Code, second pass (26 Nov 2026)
+
+The 19 Nov research (above) compared features; most of them shipped in v0.8 to v0.14. This pass read the code at commit `be5b14d8` for performance patterns, per-CLI streaming, and cross-provider work.
+
+| Area | T3 Code | DALANG today |
+| --- | --- | --- |
+| Live output | Command output bypasses the event store through a hub; clients subscribe only while a row is open, frames are coalesced every 100 ms, and a subscriber that falls behind gets the tail (`CommandOutputHub.ts`) | Every log line is broadcast to every socket for every project (`server/src/app.ts` `/ws`) |
+| Payloads | Cold opens, history pages, and resumes are bounded in bytes and rows; raw tool bodies are left out; a CI test enforces budgets | Session detail returns the whole message history and is refetched on every `room.message` |
+| Logs | Asynchronous, serialized writes | Run log lines are opened, written synchronously, and closed one line at a time (`executor.ts` `appendDalangLog`) |
+| Database | Cursors and recovery queries must use indexes | No indexes on `messages.session_id`, `sessions.project_id`, `tasks.plan_id`, `runs.task_id`, or `reviews.task_id`; the session summary loads every message id to count them |
+| Connections | A 20 s heartbeat (proxies close idle sockets at 60 s); clients reconnect | No heartbeat; the web UI does not reconnect after a server restart |
+| Rendering | Fast-changing state lives outside large components; React Compiler everywhere; Markdown is split into blocks and only the last block re-parses while streaming; virtual lists | Web `App` calls `setState` per log line, so the whole tree re-renders; the room's `RoomApp` does the same for activity previews; the web Markdown re-parses the whole reply |
+| Provider processes | One long-lived process per session: Claude Agent SDK, `codex app-server`, ACP; text and reasoning deltas coalesced at 50 ms; startup phase shown from protocol signals | A new CLI process per turn, resumed with `--resume` or `thread/resume`; Ask and Lead text batched at 50 ms (`lead.text`), but the web UI ignores it and shows whole messages; no streamed text for coder runs; no startup phase |
+| Cross-provider work | Durable TypeScript workflows (Labs) with typed step results through `t3_submit_output` and two correction prompts; thread tools (`t3_thread_launch`, `send`, `wait`, `read`, `transfer`) with a permission ceiling and `clientRequestId`; child questions routed to the parent; a 16k-token portable handoff | The built-in brief → plan → executor → checker → gate pipeline already covers multi-stage work across providers; `delegate_task` is stricter (depth 1, `files_allowed` subset, review, merge into the parent branch) but has no idempotency key, and Antigravity executors get no MCP (`mcpServers: []` over ACP) |
+| Browser | A Playwright Chromium run by the server outside the agent sandbox; agents get `preview_open`, `preview_snapshot` (accessibility tree with refs), `preview_act`, `preview_evaluate`, `preview_wait_for`, recordings; dev server ports are detected; private network addresses are blocked | None |
+| Skills and MCP | The user's own skills, plugins, and MCP servers pass through to every provider | Claude runs with `--setting-sources project --strict-mcp-config`; Codex reads the user's `CODEX_HOME`; Antigravity reads its saved config, so access differs by provider |
+
+Outside research on browser testing for coding agents (Nov 2026): Playwright drives flows and tests; Chrome DevTools MCP diagnoses performance and network; snapshot-and-ref CLIs such as Vercel's agent-browser use far fewer tokens than MCP servers (vendor figures, not verified).
+
+#### Evidence from early use
+
+Read from a copy of a maintainer's local database and logs.
+
+| # | Problem | Evidence |
+| --- | --- | --- |
+| B1 | Codex Ask hangs for three minutes, then fails | 2 of 10 Codex turns ended with `Provider session timed out` after about 187 s; the only log line was `Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces`, a fatal error DALANG did not recognize |
+| B2 | Sessions left `working` | Two sessions stayed `working` after their runs failed or were stopped by a server restart; queued tasks do not resume after a restart |
+| B3 | Verify fails in task worktrees | `tsc: not found`; the agent's `pnpm install` hit `EROFS` in the sandbox. Fixed in v0.14.4 |
+| B4 | Nested repositories missing from a worktree | One run in a workspace with nested repositories; probably fixed in v0.9, to confirm in R6 |
+| B5 | Slow Lead turns | Mean Claude 39 s (max 168), Codex 19 s, Antigravity 38 s |
+| B6 | Tests do not catch B1 to B3 | `ReplayCliRunner` has no interactive stdin, so session protocols are never replayed; sandbox, real worktrees, and restarts are not covered |
+| B7 | Raw JSON in streamed replies | The agent writes a progress message, then the JSON answer; the joined text does not start with `{`, so `liveReplyText` returns it raw (reproduced; four turns in the logs). Affects the room and the web UI |
+| B8 | Waiting gives no feedback | The room shows only `Working`, `Thinking`, or `Running a command`: no target, elapsed time, step history, or startup phase |
+
+#### Decisions
+
+| # | Decision | Reason |
+| --- | --- | --- |
+| D1 | Reliability (v0.15), speed (v0.16), agent tools (v0.17); Telegram and Slack bridges move to v0.18 and v0.19 | A bridge adds an entry point that inherits every core bug; fixing the core once serves the room, the web UI, and the bridges |
+| D2 | Every bug is fixed with a replay test that fails before the fix | T3 Code's practice: real transcripts through the real server, adapters, and database |
+| D3 | Room and web parity through one scenario list tested in both | Developers use the room, other users the web UI |
+| D4 | Browser for agents: a DALANG-managed browser daemon outside the sandbox, called through a CLI with snapshots and refs, plus browser evidence at the merge gate | Works for all three providers through the shell, uses the fewest tokens, and keeps Chromium out of nested user namespaces; evidence at the gate fits DALANG's pipeline |
+| D5 | Third-party connectors: a per-project MCP allowlist passed the same way to all three providers; Claude's isolation stays | Results must not change when fallback switches provider, and unapproved MCP servers must not run |
+| D6 | Internet access: no new feature; verify per provider in R6 (shell network, Claude WebSearch, Codex `web_search`) | The sandbox does not cut the network |
+| D7 | WebSocket: subscribe per project and per run through messages on one socket | The room and the web UI switch projects often |
+| D8 | SQLite `synchronous = NORMAL` and `busy_timeout = 5000` | Safe with WAL; important state is also in git |
+| D9 | Long-lived CLI processes (K5) only if the K1 baseline shows cold starts above about 1.5 s per turn | Large and risky; decide with numbers |
+| D10 | Deferred: prompt links, a cheap model for titles and commit messages, compaction hints, subtask questions to the parent, and readable handoff remainders | Not reliability or speed work; revisit after v0.19 |
+
+#### v0.15: reliability and parity
+
+Done when: Ask, Quick, and Full × Claude, Codex, and Antigravity × room and web pass on three real repositories without manual intervention; B1 to B8 are closed, each with a replay or unit test that failed before the fix; and the next phase (v0.16) runs from one prompt to merge with no intervention other than answering gates.
+
+| Order | Item | Scope |
+| --- | --- | --- |
+| 1 | R8 | Raw JSON fix (B7): `liveReplyText` finds the JSON answer anywhere in the text (after a progress message or inside a fence); text before it is a progress message, not the answer |
+| 2 | R2 | Fatal provider errors fail fast (B1): per-adapter fatal stderr patterns end the turn with a message and a fix. Find the cause of B1 (Codex's own sandbox in `app-server`, Ask running without DALANG's bwrap, or AppArmor blocking unprivileged user namespaces) |
+| 3 | R3 | Startup recovery (B2): a `working` session with no live run returns to idle with a chat note; tasks stopped by a restart resume automatically |
+| 4 | R1 | Session protocol replay: `ReplayCliRunner` supports interactive stdin and replays recorded `stdinWrites` and stdout as a conversation (B6) |
+| 5 | U1 | Waiting view (B8), the same in the room and the web UI: header (role, provider, model, elapsed time), start and resume phases from protocol signals, steps with targets (file, search pattern, command) and durations, agent progress messages as dimmed rows, the streamed answer below; finished steps fold into one expandable summary |
+| 6 | U2 | Token streaming in the web UI from `lead.text` |
+| 7 | R5 | Room and web parity: one scenario list used by `browser-replay.test.ts` and a room test in a pseudo-terminal, with the same transcripts |
+| 8 | R7 | Small reliability items: asynchronous run logs; foreign-key indexes, `busy_timeout`, and `synchronous = NORMAL` (schema v17); WebSocket heartbeat and reconnect; `client_request_id` for `delegate_task`; webhook dedupe by delivery id |
+| 9 | F6 | `/triage` in the room and "Report a problem" in the web UI: an Ask session with the version, OS, `dalang doctor`, recent redacted server logs, and a recording summary if any; the agent asks before opening an issue |
+| Ongoing | R6 | Structured dogfooding of the matrix above on scratch copies of three real repositories, with `DALANG_RECORD_DIR`, including internet access per provider (D6); every failure becomes a fix and a replay transcript |
+
+#### v0.16: speed
+
+Done when: recordings (not estimates) show improvement over the K1 baseline, `tui-bench` budgets pass, and payload tests pass (a 2,000-message session opens under 200 KB; a socket for another project receives no log bytes).
+
+| Order | Item | Scope |
+| --- | --- | --- |
+| 1 | K1 | Baseline from R6 recordings: time to first output, first token, and total, per provider and path, for first and resumed turns |
+| 2 | K2 | Traffic and rendering: per-project events and a per-run output hub coalesced at 100 ms (D7); live state out of root components in the web UI and the room; event-driven invalidation instead of 3 s polling; paged session history |
+| 3 | K3 | Stream view: Markdown rendered per block with only the last block re-parsed; live text for executor runs; live Codex command output; Stop held until the turn has started |
+| 4 | K4 | Composer: a paste of 32 KiB or more becomes an attachment; drafts saved per session |
+| 5 | K5 | Long-lived CLI processes for Ask and Lead turns, only if K1 meets D9 |
+
+#### v0.17: agent tools
+
+Done when: in a web project an executor opens the dev server, interacts, and checks the result through the browser on all three providers; the checker attaches a screenshot and console log to Gate 2; and one allowlisted third-party MCP server works the same on all three providers.
+
+| Order | Item | Scope |
+| --- | --- | --- |
+| 1 | A1 | DALANG browser (D4): a headless Chromium (`playwright-core`) run by the server outside the sandbox, one context per run; shell commands `dalang browser open|snapshot|click|type|wait|console|screenshot` with accessibility snapshots and refs; only `localhost` and the public internet, private network addresses blocked; downloaded on first use; prompt instructions only for web projects, used only when a task needs it |
+| 2 | A2 | Dev server detection: ports opened by a run's processes are recognized, so the agent and the user see the URL under test |
+| 3 | A3 | Browser evidence at the gate: the checker opens the changed pages and saves a screenshot and console log; the web UI shows them at Gate 2, the room shows the path and a console summary |
+| 4 | A4 | Per-project MCP allowlist (D5) in Config → Tools, passed to Claude (`--mcp-config`), Codex (`-c mcp_servers.*`), and Antigravity (ACP `mcpServers`, which also gives Antigravity executors `delegate_task`) |
+| 5 | A5 | Gate reasons: rejecting at Gate 2 or plan approval can require a reason, which goes into the next fix or replan prompt |
+
+#### Taken from T3 Code, and not
+
+Taken: replay tests from real transcripts, wire and payload budgets, output hubs, heartbeat and reconnect, block-wise Markdown streaming, startup phases, grouped activity, a managed browser, `clientRequestId`, and a self-triage entry. Not taken: the durable workflow engine (overlaps Full mode and v0.11 automation), HTML visual replies (a 120 MB browser download and a new attack surface for a chat-only feature), per-thread permission modes (DALANG's safety model is the sandbox, `files_allowed`, review, and the merge gate), remote access and phone apps (see Not planned), and a move to Effect-TS event sourcing (the problems above are fixable in the current design).
+
+#### Running these phases from DALANG
+
+Each phase is run inside DALANG itself, with one prompt such as "implement phase v0.15 from docs/PRD.md", and no tasks split beforehand or fixes made outside DALANG. Every failure or manual step is a finding to fix in DALANG, with a replay test (D2). Run with `DALANG_RECORD_DIR` set so failures are recorded. This repository ignores `.dalang/`, so session artifacts stay local.
 
 ### Not planned
 
-Remote access, relays, and companion phone apps require a separate deployment and authentication design. The optional DALANG password covers the local instance. The Telegram and Slack bridges (v0.15, v0.16) are outbound connections from the local server, not inbound access.
+Remote access, relays, and companion phone apps require a separate deployment and authentication design. The optional DALANG password covers the local instance. The Telegram and Slack bridges (v0.18, v0.19) are outbound connections from the local server, not inbound access.
 
 ## Risks, mitigations, and decisions
 
