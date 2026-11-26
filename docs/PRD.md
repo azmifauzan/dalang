@@ -311,7 +311,7 @@ Each phase must be useful on its own before the next one starts.
 | v0.14.1 | Security fix for the `/tmp` git mount in the Linux sandbox | A forged `.git` link no longer mounts a host `/tmp` path | Released in v0.14.1. A git directory is mounted back only when git's worktree back-link matches; a regression test fails on 0.14.0. |
 | v0.14.2 | Second security fix for the `/tmp` git mount | A worktree admin folder planted inside the workspace no longer mounts another `/tmp` repository | Released in v0.14.2. The admin folder must be git's own `<repository>/worktrees/<name>` outside the workspace; a regression test fails on 0.14.1. |
 | v0.14.4 | Dependencies installed in task worktrees, provider CLI recording | A JavaScript project's verify command finds its tools in a fresh task worktree without the agent installing anything | Released in v0.14.4 (the `v0.14.3` tag was not released). Next: [v0.15 to v0.17](#v015-to-v017-reliability-speed-and-agent-tools-planned-26-nov-2026). |
-| v0.15 | Reliability and parity: fatal provider errors fail fast, restart recovery, session protocol replay, waiting view, room and web parity | The v0.15 matrix passes on three real repositories without manual intervention, and v0.16 runs from one prompt | Planned |
+| v0.15 | Reliability and parity: fatal provider errors fail fast, restart recovery, session protocol replay, waiting view, room and web parity | B1, B2, and B6 to B8 are closed with tests that failed before the fix, and typecheck, tests, and build pass | Planned |
 | v0.16 | Speed: per-project events, output hub, paged history, block-wise streaming | Recordings show improvement over the baseline; render and payload budgets pass | Planned |
 | v0.17 | Agent tools: DALANG browser, browser evidence at the gate, per-project MCP allowlist | An executor tests a dev server in the browser on all three providers, and Gate 2 shows the evidence | Planned |
 | v0.18, v0.19 | Telegram bridge, then Slack bridge | See [the chat app plan](#v012-v013-v018-v019-terminal-room-auto-and-chat-apps) | Planned |
@@ -1037,7 +1037,7 @@ Read from a copy of a maintainer's local database and logs.
 
 #### v0.15: reliability and parity
 
-Done when: Ask, Quick, and Full × Claude, Codex, and Antigravity × room and web pass on three real repositories without manual intervention; B1 to B8 are closed, each with a replay or unit test that failed before the fix; and the next phase (v0.16) runs from one prompt to merge with no intervention other than answering gates.
+Done when: B1, B2, and B6 to B8 are closed, each with a replay or unit test that failed before the fix; items R1 to R3, R5, R7, R8, U1, U2, and F6 are in place; and typecheck, tests, and build pass. B3 was fixed in v0.14.4, B5 belongs to v0.16, and B4 is confirmed in R6. Everything in this list can be done and checked inside the repository, without live providers. Live verification is R6 below and is not part of the implementation work.
 
 | Order | Item | Scope |
 | --- | --- | --- |
@@ -1050,7 +1050,10 @@ Done when: Ask, Quick, and Full × Claude, Codex, and Antigravity × room and we
 | 7 | R5 | Room and web parity: one scenario list used by `browser-replay.test.ts` and a room test in a pseudo-terminal, with the same transcripts |
 | 8 | R7 | Small reliability items: asynchronous run logs; foreign-key indexes, `busy_timeout`, and `synchronous = NORMAL` (schema v17); WebSocket heartbeat and reconnect; `client_request_id` for `delegate_task`; webhook dedupe by delivery id |
 | 9 | F6 | `/triage` in the room and "Report a problem" in the web UI: an Ask session with the version, OS, `dalang doctor`, recent redacted server logs, and a recording summary if any; the agent asks before opening an issue |
-| Ongoing | R6 | Structured dogfooding of the matrix above on scratch copies of three real repositories, with `DALANG_RECORD_DIR`, including internet access per provider (D6); every failure becomes a fix and a replay transcript |
+
+##### R6: manual verification by the operator
+
+Not a task for the Lead or the executors. After v0.15 is released, the user runs structured dogfooding: Ask, Quick, and Full × Claude, Codex, and Antigravity × room and web, on scratch copies of three real repositories (one of them this repository, one a workspace with nested repositories), with `DALANG_RECORD_DIR` set. It uses live providers and quota. It includes internet access per provider (D6) and confirms B4. Every failure becomes a fix and a replay transcript.
 
 #### v0.16: speed
 
@@ -1082,7 +1085,7 @@ Taken: replay tests from real transcripts, wire and payload budgets, output hubs
 
 #### Running these phases from DALANG
 
-Each phase is run inside DALANG itself, with one prompt such as "implement phase v0.15 from docs/PRD.md", and no tasks split beforehand or fixes made outside DALANG. Every failure or manual step is a finding to fix in DALANG, with a replay test (D2). Run with `DALANG_RECORD_DIR` set so failures are recorded. This repository ignores `.dalang/`, so session artifacts stay local.
+Each phase is run inside DALANG itself, with one prompt such as "implement phase v0.15 from docs/PRD.md", and no tasks split beforehand or fixes made outside DALANG. Every failure or manual step is a finding to fix in DALANG, with a replay test (D2). Running v0.16 from one prompt to merge, with no intervention other than answering gates, is the test of the v0.15 release; it is not a condition for finishing the v0.15 work. Run with `DALANG_RECORD_DIR` set so failures are recorded. This repository ignores `.dalang/`, so session artifacts stay local.
 
 ### Not planned
 
