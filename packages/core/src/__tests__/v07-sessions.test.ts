@@ -577,7 +577,8 @@ describe('Auto session mode', () => {
         mode: 'auto',
         message: 'Start a fresh fix',
       });
-      expect(ask.askReply?.text).toContain('Recovered chat');
+      // Same chat, so the question offers to replace its own unfinished tasks.
+      expect(ask.askReply?.text).toContain('This chat already has a plan');
       expect(started).toEqual([]);
 
       const confirmed = await leadSvc.sendChatMessage(project.id, {
@@ -588,6 +589,55 @@ describe('Auto session mode', () => {
       expect(discarded).toEqual([work.session.id]);
       expect(started).toEqual([work.session.id]);
       expect(confirmed.askReply?.text).toContain('started the requested work');
+    } finally {
+      conn.close();
+    }
+  });
+
+  it("asks to replace this chat's own unfinished plan, not to discard another session", async () => {
+    const runner = new SessionModesFakeRunner();
+    runner.autoResponse = {
+      answer: 'I will split the failed task.',
+      auto_plan: { milestones: [{ id: 'M1', title: 'Fix' }], tasks: [{
+        id: 'T-002', title: 'Smaller fix', milestone: 'M1', role: 'engineer', complexity: 'low',
+        depends_on: [], goal: 'Fix code', files_allowed: ['src/math.mjs'], files_reference: [],
+        acceptance_criteria: ['Tests pass'], verify: 'node --test', needs_split: false,
+      }] },
+    };
+    const { conn, leadSvc, project } = await setupProjectWithSeededBug(runner);
+    const started: string[] = [];
+    const discarded: string[] = [];
+    leadSvc.setExecutionRouter({
+      listActiveRunsForSession: () => [],
+      steerTask: async () => {},
+      startExecution: async (_projectId, input) => { started.push(input.sessionId); },
+      discardSessionWork: async (_projectId, sessionId) => {
+        discarded.push(sessionId);
+        conn.sqlite.prepare("update tasks set status = 'failed', branch_name = null where status = 'review_failed'").run();
+        conn.sqlite.prepare("update sessions set work_state = 'idle' where id = ?").run(sessionId);
+      },
+    });
+    try {
+      const own = leadSvc.createDirectApprovedTask(project.id, {
+        sessionTitle: 'Phase work', userMessage: 'Big task', title: 'Big task', goal: 'Fix code',
+        filesAllowed: ['src/math.mjs'], acceptanceCriteria: ['Tests pass'], verify: 'node --test',
+      });
+      conn.sqlite.prepare("update tasks set status = 'review_failed', branch_name = 'dalang/T-001' where id = ?").run(own.task.id);
+      leadSvc.markSessionWorking(project.id, own.session.id);
+
+      const result = await leadSvc.sendChatMessage(project.id, { sessionId: own.session.id, mode: 'auto', message: 'split it and continue' });
+      const text = result.askReply?.text ?? '';
+      expect(text).toContain('This chat already has a plan with unfinished tasks (1 failed review)');
+      expect(text).toContain('new plan of 1 task(s)');
+      expect(text).toContain('"Big task"');
+      expect(text).not.toContain('Session "Phase work"');
+      expect(started).toEqual([]);
+
+      const approved = await leadSvc.sendChatMessage(project.id, { sessionId: own.session.id, mode: 'auto', message: 'yes' });
+      expect(discarded).toEqual([own.session.id]);
+      expect(started).toEqual([own.session.id]);
+      expect(approved.askReply?.text).toContain('Replaced the unfinished tasks of this chat');
+      expect(leadSvc.getPlan(project.id, own.session.id)?.tasks.map((t) => t.externalId)).toEqual(['T-002']);
     } finally {
       conn.close();
     }

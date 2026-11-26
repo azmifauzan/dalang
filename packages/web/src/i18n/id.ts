@@ -211,6 +211,7 @@ export const id: Record<TranslationKey, string> = {
   'room.report.task_accepted': 'Diterima',
   'room.report.task_rejected': 'Ditolak',
   'room.report.task_steered': 'Diarahkan',
+  'room.badge.question': 'Pertanyaan',
   'room.report.run_finished': 'Semua selesai',
   'room.report.run_stopped': 'Berhenti',
   'room.report.auto_resume_failed': 'Auto berhenti',

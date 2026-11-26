@@ -444,6 +444,12 @@ describe('TUI commands, completions, and formatting', () => {
       createdAt: '2026-11-26T07:00:00.000Z',
     } as never);
     expect(msg.badge).toBe('RUN STOPPED');
+    const question = formatRoomMessage({
+      id: 'q', sessionId: 's', role: 'lead', type: 'ask',
+      content: { text: 'Replace the plan? Reply yes or no.', suggestion: null, pendingAutoWork: {} },
+      createdAt: '2026-11-26T07:00:00.000Z',
+    } as never);
+    expect(question.badge).toBe('QUESTION');
     expect(msg.lines).toEqual(['Run stopped: 1 of 2 task(s) done.', '    Waiting: b.']);
   });
 
@@ -688,6 +694,10 @@ describe('Ink terminal room E2E (Quick task from plan to merge with no browser)'
     // Answer y/n gate to run the Quick task
     await sendLine('y');
     await waitForText('Merge [T-001]');
+    // The merge gate says what it needs, why the task is ready, and what each key does.
+    await waitForText('NEEDS YOUR APPROVAL');
+    await waitForText('Review round 1 passed');
+    await waitForText('+ Enter: merge');
 
     // Inspect diff via /diff (opens $PAGER callback)
     await sendLine('/diff');
@@ -863,6 +873,52 @@ describe('Ink terminal room E2E (Quick task from plan to merge with no browser)'
     }
     expect(gate?.prompt).toContain('Accept answer [T-001]');
     expect(gate?.prompt).not.toContain('Merge [T-001]');
+    expect(gate?.yes).toBe('accept');
+    expect(gate?.no).toContain('/diff T-001');
+    expect(gate?.context).toBeUndefined();
+    expect(gate?.alsoWaiting).toBe(0);
+
+    // The finding count comes from the room's verdict report when the review file is not readable.
+    const counted = detectPendingGate(
+      {
+        session: { id: 's1', mode: 'auto' },
+        messages: [{
+          id: 'r', sessionId: 's1', role: 'agent', type: 'report', createdAt: '',
+          content: { event: 'review_verdict', taskId: 't1', reviewRound: 2, findingsCount: 1, summary: '' },
+        }],
+        briefs: [],
+        plan: null,
+      } as never,
+      {
+        mainBranch: 'main',
+        tasks: [{
+          task: { id: 't1', externalId: 'T-001', title: 'Fix', status: 'awaiting_merge', output: 'files' },
+          latestReview: {
+            round: 2, status: 'pass', reviewerProfileName: 'reviewer', verifyExitCode: 0, scopeWarnings: [],
+            contract: { findings: [] },
+          },
+          canApproveMerge: true,
+        }],
+      } as never,
+    );
+    expect(counted?.context).toBe('Review round 2 passed (1 finding(s), reviewer) · verify passed');
+
+    // The Lead's own yes/no question about replacing this chat's plan gets the same gate box.
+    const leadQuestion = detectPendingGate(
+      {
+        session: { id: 's1', mode: 'auto' },
+        messages: [{
+          id: 'q', sessionId: 's1', role: 'lead', type: 'ask', createdAt: '',
+          content: { text: 'This chat already has a plan...', suggestion: null, pendingAutoWork: { sessionId: 's1' } },
+        }],
+        briefs: [],
+        plan: null,
+      } as never,
+      null,
+    );
+    expect(leadQuestion?.kind).toBe('auto_work');
+    expect(leadQuestion?.yes).toBe('replace and start');
+    expect(leadQuestion?.no).toBe('keep the current work');
 
     const skippedMsg = formatRoomMessage({
       id: 'm-skip',

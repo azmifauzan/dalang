@@ -209,6 +209,7 @@ export const en = {
   'room.report.task_accepted': 'Accepted',
   'room.report.task_rejected': 'Rejected',
   'room.report.task_steered': 'Steered',
+  'room.badge.question': 'Question',
   'room.report.run_finished': 'Run finished',
   'room.report.run_stopped': 'Run stopped',
   'room.report.auto_resume_failed': 'Auto paused',

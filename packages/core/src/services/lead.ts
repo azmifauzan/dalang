@@ -620,14 +620,35 @@ export class LeadService {
     return JSON.stringify(rows.sort((a, b) => a.id.localeCompare(b.id)));
   }
 
-  private autoWorkApproval(blocker: SessionSummaryDTO, plan: PlanContract): AskMessageContent & { pendingAutoWork: PendingAutoWork } {
+  /**
+   * The yes/no question asked before Auto work that needs earlier unfinished work to go. When that work
+   * is this chat's own plan, the question is about replacing that plan, not about another session.
+   * It names counts and only the tasks whose branches would be deleted, so it stays short.
+   */
+  private autoWorkApproval(
+    blocker: SessionSummaryDTO,
+    plan: PlanContract,
+    currentSessionId: string,
+  ): AskMessageContent & { pendingAutoWork: PendingAutoWork } {
     const snapshot = this.unfinishedWorkSnapshot(blocker.id);
-    const list = (JSON.parse(snapshot) as Array<{ title: string; status: string }>).map((task) => `${task.title} (${task.status})`).join(', ');
-    return {
-      text: `Work is blocked by session "${blocker.title || 'Untitled session'}"${list ? `: ${list}` : ''}. May I stop its running tasks and discard all its unfinished, unmerged work, including uncommitted files? This cannot be undone. If you approve, I will start your requested work. Reply yes or no.`,
-      suggestion: null,
-      pendingAutoWork: { sessionId: blocker.id, snapshot, plan },
-    };
+    const rows = JSON.parse(snapshot) as Array<{ title: string; status: string; branch: string | null }>;
+    const count = (...statuses: string[]) => rows.filter((t) => statuses.includes(t.status)).length;
+    const withBranch = rows.filter((t) => t.status !== 'done' && Boolean(t.branch?.trim())).map((t) => t.title);
+    const state = [
+      count('done') ? `${count('done')} done and merged` : '',
+      count('running', 'reviewing') ? `${count('running', 'reviewing')} running` : '',
+      count('awaiting_merge') ? `${count('awaiting_merge')} waiting for merge` : '',
+      count('review_failed') ? `${count('review_failed')} failed review` : '',
+      count('failed', 'stopped') ? `${count('failed', 'stopped')} failed or stopped` : '',
+      count('approved', 'ready', 'draft', 'needs_split') ? `${count('approved', 'ready', 'draft', 'needs_split')} not started` : '',
+    ].filter(Boolean).join(', ');
+    const deleted = withBranch.length > 0
+      ? ` The unmerged branches of ${withBranch.map((t) => `"${t}"`).join(', ')} are deleted, including uncommitted files; this cannot be undone.`
+      : '';
+    const text = blocker.id === currentSessionId
+      ? `This chat already has a plan with unfinished tasks (${state}). Replace the unfinished tasks with the new plan of ${plan.tasks.length} task(s)? Merged work stays.${deleted} Earlier review findings stay in this chat. Reply yes or no.`
+      : `Session "${blocker.title || 'Untitled session'}" still has unfinished work (${state}). To start this request, its running tasks are stopped and its unfinished, unmerged work is discarded, including uncommitted files. Merged work stays. This cannot be undone. Reply yes or no.`;
+    return { text, suggestion: null, pendingAutoWork: { sessionId: blocker.id, snapshot, plan } };
   }
 
   /**
@@ -1260,7 +1281,7 @@ export class LeadService {
           this.getBlockingWorkSession(projectId) ??
           (this.hasSessionUnfinishedWork(sessionRow.id) ? this.getSession(projectId, sessionRow.id) : null);
         if (blocker && (blocker.id !== pending.sessionId || this.unfinishedWorkSnapshot(blocker.id) !== pending.snapshot)) {
-          const askReply = this.autoWorkApproval(blocker, PlanContractSchema.parse(pending.plan));
+          const askReply = this.autoWorkApproval(blocker, PlanContractSchema.parse(pending.plan), sessionRow.id);
           askReply.text = `The blocking work changed since the previous request. ${askReply.text}`;
           this.appendMessage(sessionRow.id, 'lead', 'ask', askReply);
           this.touchSession(sessionRow.id);
@@ -1276,7 +1297,11 @@ export class LeadService {
             await this.executionRouter.discardSessionWork(projectId, blocker.id);
           }
           await this.startAutoPlan(project, sessionRow, plan);
-          text = blocker ? `Discarded unfinished work in "${blocker.title || 'Untitled session'}" and started the requested work.` : 'Started the requested work; the blocking session was already resolved.';
+          text = !blocker
+            ? 'Started the requested work; the blocking session was already resolved.'
+            : blocker.id === sessionRow.id
+              ? 'Replaced the unfinished tasks of this chat with the new plan and started the requested work.'
+              : `Discarded unfinished work in "${blocker.title || 'Untitled session'}" and started the requested work.`;
         } catch (error) {
           text = `Could not continue Auto work: ${error instanceof Error ? error.message : String(error)}`;
         }
@@ -1592,7 +1617,7 @@ export class LeadService {
           this.getBlockingWorkSession(project.id) ??
           (this.hasSessionUnfinishedWork(sessionRow.id) ? this.getSession(project.id, sessionRow.id) : null);
         if (blocker) {
-          parsedReply = this.autoWorkApproval(blocker, autoPlan);
+          parsedReply = this.autoWorkApproval(blocker, autoPlan, sessionRow.id);
           autoPlan = undefined;
         }
       }
