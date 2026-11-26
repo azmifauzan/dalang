@@ -172,6 +172,46 @@ describe('replay-matching interactive message comparator', () => {
     expect(claudePermResult.diagnosis).not.toContain('rm -rf');
   });
 
+  it('does not misclassify raw messages containing payload as sequence wrappers', () => {
+    const rawExpected = [
+      {
+        type: 'token_usage_record',
+        payload: { usage: { input_tokens: 100 } },
+        prompt: 'KEEP_THIS_PROMPT_STRICT',
+      },
+    ];
+    const rawChangedPrompt = [
+      {
+        type: 'token_usage_record',
+        payload: { usage: { input_tokens: 100 } },
+        prompt: 'ALTERED_PROMPT_MUST_FAIL',
+      },
+    ];
+    const rawResult = compareReplaySequence(rawExpected, rawChangedPrompt);
+    expect(rawResult.matched).toBe(false);
+    expect(rawResult.mismatches).toHaveLength(1);
+    expect(rawResult.mismatches[0]).toMatchObject({
+      kind: 'value_mismatch',
+      location: { messageIndex: 0, path: 'prompt' },
+    });
+    expect(rawResult.diagnosis).not.toContain('KEEP_THIS_PROMPT_STRICT');
+    expect(rawResult.diagnosis).not.toContain('ALTERED_PROMPT_MUST_FAIL');
+
+    // Even when `direction` and `payload` both exist alongside other interactive fields, treat as raw message.
+    const rawWithDirectionExpected = [
+      { direction: 'stdin', payload: { ok: true }, prompt: 'RAW_PROMPT_A' },
+    ];
+    const rawWithDirectionChanged = [
+      { direction: 'stdin', payload: { ok: true }, prompt: 'RAW_PROMPT_B' },
+    ];
+    const rawDirResult = compareReplaySequence(rawWithDirectionExpected, rawWithDirectionChanged);
+    expect(rawDirResult.matched).toBe(false);
+    expect(rawDirResult.mismatches[0]).toMatchObject({
+      kind: 'value_mismatch',
+      location: { messageIndex: 0, path: 'prompt' },
+    });
+  });
+
   it('maps only explicitly named dynamic fields and keeps all other fields strict', () => {
     const expected = {
       jsonrpc: '2.0',
@@ -184,12 +224,10 @@ describe('replay-matching interactive message comparator', () => {
       },
     };
 
-    // Without explicit dynamicFields, top-level id mismatch fails.
     const unmapped = compareReplayMessages(expected, { ...expected, id: 100 });
     expect(unmapped.matched).toBe(false);
     expect(unmapped.mismatches[0].location.path).toBe('id');
 
-    // Explicitly mapping top-level "id" allows top-level "id" to vary...
     const mappedTopIdOnly = compareReplayMessages(
       expected,
       { ...expected, id: 100 },
@@ -197,7 +235,6 @@ describe('replay-matching interactive message comparator', () => {
     );
     expect(mappedTopIdOnly.matched).toBe(true);
 
-    // ...but nested "params.id" and "params.threadId" remain strictly checked!
     const nestedIdChanged = compareReplayMessages(
       expected,
       {
@@ -210,7 +247,6 @@ describe('replay-matching interactive message comparator', () => {
     expect(nestedIdChanged.matched).toBe(false);
     expect(nestedIdChanged.mismatches.map((m) => m.location.path)).toEqual(['params.id']);
 
-    // Explicitly listing params.threadId maps it, while sibling params.id remains strict.
     const mappedSpecific = compareReplayMessages(
       expected,
       {
@@ -222,7 +258,6 @@ describe('replay-matching interactive message comparator', () => {
     );
     expect(mappedSpecific.matched).toBe(true);
 
-    // Explicit ignore mode only skips the explicitly named field and respects `when` filter.
     const matcher = new ReplayMessageMatcher({
       dynamicFields: [
         { path: 'timestamp', mode: 'ignore', when: { method: 'heartbeat' } },
@@ -240,6 +275,133 @@ describe('replay-matching interactive message comparator', () => {
     );
     expect(nonMatchingWhen.matched).toBe(false);
     expect(nonMatchingWhen.mismatches[0].location.path).toBe('timestamp');
+  });
+
+  it('still binds IDs when expected and actual share the same request object reference', () => {
+    const sharedReq = {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'session/prompt',
+      params: { prompt: [{ type: 'text', text: 'Check shared reference' }] },
+    };
+
+    const expected: ReplaySequenceMessage[] = [
+      { direction: 'stdin', payload: sharedReq },
+      { direction: 'stdout', payload: { jsonrpc: '2.0', id: 1, result: { stopReason: 'end_turn' } } },
+    ];
+    const mismatchedResponse: ReplaySequenceMessage[] = [
+      { direction: 'stdin', payload: sharedReq },
+      { direction: 'stdout', payload: { jsonrpc: '2.0', id: 2, result: { stopReason: 'end_turn' } } },
+    ];
+
+    const result = compareReplaySequence(expected, mismatchedResponse, { dynamicFields: ['id'] });
+    expect(result.matched).toBe(false);
+    expect(result.mismatches).toHaveLength(1);
+    expect(result.mismatches[0]).toMatchObject({
+      kind: 'id_correlation_mismatch',
+      location: { messageIndex: 1, direction: 'stdout', path: 'id' },
+    });
+  });
+
+  it('scopes bidirectional JSON-RPC request IDs by originating endpoint and associates responses with the opposite endpoint', () => {
+    const recorded: ReplaySequenceMessage[] = [
+      {
+        direction: 'stdin',
+        payload: {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'session/prompt',
+          params: { prompt: [{ type: 'text', text: 'Run task' }] },
+        },
+      },
+      {
+        direction: 'stdout',
+        payload: {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'session/request_permission',
+          params: { toolCall: { toolCallId: 'tc-1', title: 'Run test' } },
+        },
+      },
+      {
+        direction: 'stdin',
+        payload: {
+          jsonrpc: '2.0',
+          id: 1,
+          result: { outcome: { outcome: 'selected', optionId: 'allow_once' } },
+        },
+      },
+      {
+        direction: 'stdout',
+        payload: {
+          jsonrpc: '2.0',
+          id: 1,
+          result: { stopReason: 'end_turn' },
+        },
+      },
+    ];
+
+    // Live run uses id 101 for client -> server request and id 500 for server -> client permission request.
+    const validLive: ReplaySequenceMessage[] = [
+      {
+        direction: 'stdin',
+        payload: {
+          jsonrpc: '2.0',
+          id: 101,
+          method: 'session/prompt',
+          params: { prompt: [{ type: 'text', text: 'Run task' }] },
+        },
+      },
+      {
+        direction: 'stdout',
+        payload: {
+          jsonrpc: '2.0',
+          id: 500,
+          method: 'session/request_permission',
+          params: { toolCall: { toolCallId: 'tc-1', title: 'Run test' } },
+        },
+      },
+      {
+        direction: 'stdin',
+        payload: {
+          jsonrpc: '2.0',
+          id: 500,
+          result: { outcome: { outcome: 'selected', optionId: 'allow_once' } },
+        },
+      },
+      {
+        direction: 'stdout',
+        payload: {
+          jsonrpc: '2.0',
+          id: 101,
+          result: { stopReason: 'end_turn' },
+        },
+      },
+    ];
+
+    expect(compareReplaySequence(recorded, validLive, { dynamicFields: ['id'] }).matched).toBe(true);
+
+    // If the client's permission response echoes the client's own request ID (101) instead of the server's (500), it must fail.
+    const swappedClientResp = structuredClone(validLive);
+    (swappedClientResp[2].payload as Record<string, unknown>).id = 101;
+    const swappedClientRes = compareReplaySequence(recorded, swappedClientResp, { dynamicFields: ['id'] });
+    expect(swappedClientRes.matched).toBe(false);
+    expect(swappedClientRes.mismatches).toHaveLength(1);
+    expect(swappedClientRes.mismatches[0]).toMatchObject({
+      kind: 'id_correlation_mismatch',
+      location: { messageIndex: 2, direction: 'stdin', path: 'id' },
+    });
+
+    // If the server's prompt response echoes the server's request ID (500) instead of the client's (101), it must fail.
+    const swappedServerResp = structuredClone(validLive);
+    (swappedServerResp[3].payload as Record<string, unknown>).id = 500;
+    const swappedServerRes = compareReplaySequence(recorded, swappedServerResp, { dynamicFields: ['id'] });
+    expect(swappedServerRes.matched).toBe(false);
+    expect(swappedServerRes.mismatches).toHaveLength(1);
+    expect(swappedServerRes.mismatches[0]).toMatchObject({
+      kind: 'id_correlation_mismatch',
+      location: { messageIndex: 3, direction: 'stdout', path: 'id' },
+    });
   });
 
   it('keeps IDs correlated between requests and responses and across cross-path fields', () => {
@@ -290,7 +452,6 @@ describe('replay-matching interactive message comparator', () => {
       { path: 'result.turn.id', correlateAs: 'turnId' },
     ];
 
-    // Valid re-numbered IDs and thread/turn IDs correlate 1-to-1.
     const validActual: ReplaySequenceMessage[] = [
       {
         direction: 'request',
@@ -332,7 +493,6 @@ describe('replay-matching interactive message comparator', () => {
     ];
     expect(compareReplaySequence(expectedExchange, validActual, { dynamicFields }).matched).toBe(true);
 
-    // Broken response ID correlation (response uses 999 instead of 101).
     const brokenResponseId = structuredClone(validActual);
     (brokenResponseId[1].payload as Record<string, unknown>).id = 999;
     const brokenResResult = compareReplaySequence(expectedExchange, brokenResponseId, { dynamicFields });
@@ -347,7 +507,6 @@ describe('replay-matching interactive message comparator', () => {
     expect(brokenResResult.diagnosis).not.toContain('999');
     expect(brokenResResult.diagnosis).not.toContain('101');
 
-    // Broken cross-path threadId correlation (turn/start sends a different threadId than thread/start returned).
     const brokenThreadId = structuredClone(validActual);
     ((brokenThreadId[2].payload as Record<string, unknown>).params as Record<string, unknown>).threadId =
       'thread-wrong-Z';
@@ -361,7 +520,6 @@ describe('replay-matching interactive message comparator', () => {
     expect(brokenThreadResult.diagnosis).not.toContain('thread-wrong-Z');
     expect(brokenThreadResult.diagnosis).not.toContain('thread-live-A');
 
-    // Reusing an already-bound actual request ID for a distinct expected request ID also fails.
     const reusedActualId = structuredClone(validActual);
     (reusedActualId[2].payload as Record<string, unknown>).id = 101;
     const reusedResult = compareReplaySequence(expectedExchange, reusedActualId, { dynamicFields });
@@ -383,7 +541,6 @@ describe('replay-matching interactive message comparator', () => {
       request: { subtype: 'can_use_tool', tool_name: 'Bash', input: { command: 'git status' } },
     };
 
-    // Failed candidate probe (different command) must not lock rec-perm-1 -> wrong-probe-id.
     const failedProbe = matcher.tryMatchMessage(expectedReq, {
       type: 'control_request',
       request_id: 'wrong-probe-id',
@@ -391,7 +548,6 @@ describe('replay-matching interactive message comparator', () => {
     });
     expect(failedProbe.matched).toBe(false);
 
-    // Real matching request binds rec-perm-1 <-> live-perm-1.
     const realReqMatch = matcher.tryMatchMessage(expectedReq, {
       type: 'control_request',
       request_id: 'live-perm-1',
@@ -399,7 +555,6 @@ describe('replay-matching interactive message comparator', () => {
     });
     expect(realReqMatch.matched).toBe(true);
 
-    // Matching control_response with correlated request_id passes.
     const expectedResp = {
       type: 'control_response',
       response: {
@@ -420,7 +575,62 @@ describe('replay-matching interactive message comparator', () => {
     ).toBe(true);
   });
 
-  it('reports structural diagnosis (missing/unexpected keys, array lengths, directions, invalid JSON) without raw payloads', () => {
+  it('redacts untrusted payload keys and values from mismatch locations and diagnosis', () => {
+    const result = compareReplaySequence(
+      [
+        {
+          direction: 'stdin',
+          payload: {
+            params: {
+              input: {
+                'secret-api-token': 'SECRET_TOKEN_VALUE',
+                'nested-private-obj': { 'inner-secret-key': 'INNER_VAL_A' },
+              },
+            },
+          },
+        },
+      ],
+      [
+        {
+          direction: 'stdin',
+          payload: {
+            params: {
+              input: {
+                'nested-private-obj': { 'inner-secret-key': 'INNER_VAL_B' },
+                'unexpected-auth-header': 'UNEXPECTED_VAL',
+              },
+            },
+          },
+        },
+      ],
+    );
+
+    expect(result.matched).toBe(false);
+    expect(result.mismatches.map((m) => [m.kind, m.location.path])).toEqual([
+      ['value_mismatch', 'params.input[key#0][key#0]'],
+      ['missing_key', 'params.input[key#1]'],
+      ['unexpected_key', 'params.input[extra-key#0]'],
+    ]);
+    expect(result.diagnosis).toContain('params.input[key#0][key#0]');
+    expect(result.diagnosis).toContain('params.input[key#1]');
+    expect(result.diagnosis).toContain('params.input[extra-key#0]');
+
+    const serialized = JSON.stringify(result);
+    for (const secret of [
+      'secret-api-token',
+      'SECRET_TOKEN_VALUE',
+      'nested-private-obj',
+      'inner-secret-key',
+      'INNER_VAL_A',
+      'INNER_VAL_B',
+      'unexpected-auth-header',
+      'UNEXPECTED_VAL',
+    ]) {
+      expect(serialized).not.toContain(secret);
+    }
+  });
+
+  it('reports structural diagnosis (array lengths, directions, unexpected messages, invalid JSON) without raw payloads', () => {
     const secretLine = '{"secretPrompt":"DO_NOT_LEAK_THIS_RAW_TEXT"';
     const invalidRes = compareReplayMessages('{"type":"user"}', secretLine, {
       direction: 'stdin',
@@ -437,28 +647,24 @@ describe('replay-matching interactive message comparator', () => {
 
     const structuralRes = compareReplaySequence(
       [
-        { direction: 'stdin', payload: { params: { items: ['SECRET_A', 'SECRET_B'], requiredKey: 'SECRET_VAL' } } },
-        { direction: 'stdout', payload: { ok: true } },
+        { direction: 'stdin', payload: { params: { prompt: ['SECRET_A', 'SECRET_B'] } } },
+        { direction: 'stdout', payload: { result: { status: 'ok' } } },
       ],
       [
-        { direction: 'stdin', payload: { params: { items: ['SECRET_A'], extraKey: 'LEAKY_EXTRA_VAL' } } },
-        { direction: 'stdin', payload: { ok: true } },
-        { direction: 'stdout', payload: { extra: 'EXTRA_MSG_SECRET' } },
+        { direction: 'stdin', payload: { params: { prompt: ['SECRET_A'] } } },
+        { direction: 'stdin', payload: { result: { status: 'ok' } } },
+        { direction: 'stdout', payload: { result: { status: 'EXTRA_MSG_SECRET' } } },
       ],
     );
     expect(structuralRes.matched).toBe(false);
     expect(structuralRes.mismatches.map((m) => [m.kind, m.location.messageIndex, m.location.path])).toEqual([
-      ['array_length_mismatch', 0, 'params.items'],
-      ['missing_key', 0, 'params.requiredKey'],
-      ['unexpected_key', 0, 'params.extraKey'],
+      ['array_length_mismatch', 0, 'params.prompt'],
       ['direction_mismatch', 1, '(root)'],
       ['unexpected_message', 2, '(root)'],
     ]);
     const serialized = JSON.stringify(structuralRes);
     expect(serialized).not.toContain('SECRET_A');
     expect(serialized).not.toContain('SECRET_B');
-    expect(serialized).not.toContain('SECRET_VAL');
-    expect(serialized).not.toContain('LEAKY_EXTRA_VAL');
     expect(serialized).not.toContain('EXTRA_MSG_SECRET');
 
     const parsed = parseInteractiveJsonLines(

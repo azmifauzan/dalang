@@ -2,6 +2,8 @@ export type MessageDirection = 'stdin' | 'stdout' | 'request' | 'response' | 'no
 
 export type DynamicFieldMode = 'correlate' | 'ignore';
 
+export type CorrelationScope = 'endpoint' | 'shared';
+
 export interface DynamicFieldRule {
   /**
    * Explicit path to the dynamic field inside a message, using dot/bracket notation
@@ -19,6 +21,13 @@ export interface DynamicFieldRule {
    * can share a group name to correlate with each other.
    */
   correlateAs?: string;
+  /**
+   * Correlation scoping for bidirectional transports (`stdin` / `stdout`):
+   * - `"endpoint"` scopes request IDs by originating endpoint and associates responses with the
+   *   opposite endpoint (default for `"id"`, `"request_id"`, `"response.request_id"`).
+   * - `"shared"` correlates across all directions (default for session/thread/turn entity IDs).
+   */
+  scope?: CorrelationScope;
   /** Optional filter limiting this rule to messages with a matching method, type, or direction. */
   when?: {
     method?: string;
@@ -30,6 +39,8 @@ export interface DynamicFieldRule {
 export interface ReplayMatchOptions {
   /** Explicitly named dynamic fields. Only listed paths are mapped; all other fields are compared strictly. */
   dynamicFields?: Array<string | DynamicFieldRule>;
+  /** Optional additional object key names considered structural and safe to display in mismatch paths. */
+  safeKeys?: string[];
   /** Optional message direction for sequence diagnostics and `when` rule filtering. */
   direction?: MessageDirection;
   /** Optional zero-based message index for diagnostics. */
@@ -37,7 +48,7 @@ export interface ReplayMatchOptions {
 }
 
 export interface ReplaySequenceMessage {
-  direction?: MessageDirection;
+  direction: MessageDirection;
   /** Raw JSON line or parsed JSON payload. */
   payload: unknown;
 }
@@ -73,7 +84,7 @@ export interface ReplayMismatchDetail {
 export interface ReplayMismatch {
   kind: ReplayMismatchKind;
   location: ReplayMismatchLocation;
-  /** Structural diagnosis without raw payload values. */
+  /** Structural diagnosis without raw payload values or untrusted key names. */
   summary: string;
   detail?: ReplayMismatchDetail;
 }
@@ -81,7 +92,7 @@ export interface ReplayMismatch {
 export interface ReplayMatchResult {
   matched: boolean;
   mismatches: ReplayMismatch[];
-  /** Human-readable diagnosis showing mismatch locations without raw payloads. */
+  /** Human-readable diagnosis showing mismatch locations without raw payloads or untrusted keys. */
   diagnosis: string;
 }
 
@@ -90,12 +101,15 @@ export type ParsedJsonLine =
   | { ok: false; lineIndex: number };
 
 type PathSegment = string | number;
+type DisplaySegment = string | number | { redacted: string };
 type RuleSegment = string | number | '*';
+type MessageRole = 'request' | 'response' | 'notification';
 
 interface NormalizedRule {
   segments: RuleSegment[];
   mode: DynamicFieldMode;
   correlateAs: string;
+  scope: CorrelationScope;
   when?: DynamicFieldRule['when'];
 }
 
@@ -103,7 +117,112 @@ interface MessageMeta {
   method?: string;
   type?: string;
   direction?: MessageDirection;
+  role: MessageRole;
 }
+
+const VALID_DIRECTIONS = new Set<MessageDirection>([
+  'stdin',
+  'stdout',
+  'request',
+  'response',
+  'notification',
+]);
+
+const REQUEST_ID_PATHS = new Set(['id', 'request_id', 'response.request_id']);
+
+/**
+ * Known interactive session protocol keys safe to display verbatim in mismatch paths.
+ * Untrusted keys outside this set (or `options.safeKeys`) are redacted to positional tags.
+ */
+const SAFE_PROTOCOL_KEYS = new Set([
+  // JSON-RPC 2.0
+  'jsonrpc',
+  'id',
+  'method',
+  'params',
+  'result',
+  'error',
+  'code',
+  'message',
+  'data',
+  // Claude stream-json
+  'type',
+  'subtype',
+  'request_id',
+  'request',
+  'response',
+  'session_id',
+  'uuid',
+  'parent_tool_use_id',
+  'priority',
+  'role',
+  'content',
+  'text',
+  'source',
+  'media_type',
+  'behavior',
+  'updatedInput',
+  'tool_name',
+  'is_error',
+  'user_message_uuid',
+  'user_message_uuids',
+  'models',
+  // Codex app-server
+  'threadId',
+  'turnId',
+  'expectedTurnId',
+  'excludeTurns',
+  'cwd',
+  'model',
+  'effort',
+  'approvalPolicy',
+  'sandbox',
+  'input',
+  'text_elements',
+  'url',
+  'mimeType',
+  'thread',
+  'turn',
+  'item',
+  'itemId',
+  'status',
+  'delta',
+  'decision',
+  'approved',
+  'clientInfo',
+  'name',
+  'version',
+  // Antigravity ACP
+  'protocolVersion',
+  'clientCapabilities',
+  'agentCapabilities',
+  'sessionCapabilities',
+  'loadSession',
+  'sessionId',
+  'mcpServers',
+  'configOptions',
+  'configId',
+  'currentValue',
+  'category',
+  'value',
+  'modeId',
+  'modelId',
+  'modes',
+  'prompt',
+  'stopReason',
+  'update',
+  'sessionUpdate',
+  'toolCall',
+  'toolCallId',
+  'title',
+  'kind',
+  'options',
+  'optionId',
+  'outcome',
+  'command',
+  'timestamp',
+  'payload',
+]);
 
 class CorrelationStore {
   private readonly expectedToActual = new Map<string, Map<string, string>>();
@@ -136,11 +255,11 @@ class CorrelationStore {
     this.actualToExpected.clear();
   }
 
-  correlate(group: string, expected: string | number, actual: string | number): boolean {
+  correlate(groupKey: string, expected: string | number, actual: string | number): boolean {
     const expKey = scalarKey(expected);
     const actKey = scalarKey(actual);
-    let expMap = this.expectedToActual.get(group);
-    let actMap = this.actualToExpected.get(group);
+    let expMap = this.expectedToActual.get(groupKey);
+    let actMap = this.actualToExpected.get(groupKey);
 
     const boundActual = expMap?.get(expKey);
     if (boundActual !== undefined && boundActual !== actKey) {
@@ -154,11 +273,11 @@ class CorrelationStore {
 
     if (!expMap) {
       expMap = new Map();
-      this.expectedToActual.set(group, expMap);
+      this.expectedToActual.set(groupKey, expMap);
     }
     if (!actMap) {
       actMap = new Map();
-      this.actualToExpected.set(group, actMap);
+      this.actualToExpected.set(groupKey, actMap);
     }
     expMap.set(expKey, actKey);
     actMap.set(actKey, expKey);
@@ -202,17 +321,32 @@ function normalizeRules(rules?: Array<string | DynamicFieldRule>): NormalizedRul
       segments: parseRulePath(rule.path),
       mode: rule.mode ?? 'correlate',
       correlateAs: rule.correlateAs ?? rule.path,
+      scope: rule.scope ?? (REQUEST_ID_PATHS.has(rule.path) ? 'endpoint' : 'shared'),
       when: rule.when,
     };
   });
 }
 
-function formatPath(segments: PathSegment[]): string {
+function toDisplayKeySegment(
+  key: string,
+  index: number,
+  prefix: 'key' | 'extra-key',
+  safeKeys?: Set<string>,
+): DisplaySegment {
+  if (SAFE_PROTOCOL_KEYS.has(key) || safeKeys?.has(key)) {
+    return key;
+  }
+  return { redacted: `${prefix}#${index}` };
+}
+
+function formatPath(segments: DisplaySegment[]): string {
   if (segments.length === 0) return '(root)';
   let out = '';
   for (const seg of segments) {
     if (typeof seg === 'number') {
       out += `[${seg}]`;
+    } else if (typeof seg === 'object') {
+      out += `[${seg.redacted}]`;
     } else if (/^[A-Za-z_$][A-Za-z0-9_$-]*$/.test(seg)) {
       out += out ? `.${seg}` : seg;
     } else {
@@ -248,24 +382,55 @@ function isCorrelatableId(value: unknown): value is string | number {
   return typeof value === 'string' || (typeof value === 'number' && Number.isFinite(value));
 }
 
+function classifyMessageRole(value: unknown): MessageRole {
+  if (!isPlainObject(value)) return 'notification';
+  if (value.type === 'control_request') return 'request';
+  if (value.type === 'control_response') return 'response';
+
+  const hasMethod = typeof value.method === 'string';
+  const hasId = Object.hasOwn(value, 'id') && value.id !== undefined;
+  if (hasMethod && hasId) return 'request';
+  if (!hasMethod && hasId) return 'response';
+  return 'notification';
+}
+
 function extractMessageMeta(value: unknown, direction?: MessageDirection): MessageMeta {
-  if (!isPlainObject(value)) return { direction };
+  if (!isPlainObject(value)) return { direction, role: 'notification' };
   return {
     method: typeof value.method === 'string' ? value.method : undefined,
     type: typeof value.type === 'string' ? value.type : undefined,
     direction,
+    role: classifyMessageRole(value),
   };
 }
 
-function ruleMatches(rule: NormalizedRule, segments: PathSegment[], meta: MessageMeta): boolean {
-  if (rule.when) {
-    if (rule.when.method !== undefined && rule.when.method !== meta.method) return false;
-    if (rule.when.type !== undefined && rule.when.type !== meta.type) return false;
-    if (rule.when.direction !== undefined && rule.when.direction !== meta.direction) return false;
+function resolveCorrelationKey(rule: NormalizedRule, meta: MessageMeta): string {
+  if (rule.scope === 'shared') {
+    return `shared:${rule.correlateAs}`;
   }
-  if (rule.segments.length === 0 || rule.segments.length !== segments.length) return false;
-  for (let i = 0; i < rule.segments.length; i++) {
-    const pattern = rule.segments[i];
+  if (meta.direction === 'stdin' || meta.direction === 'stdout') {
+    const endpoint =
+      meta.role === 'response'
+        ? meta.direction === 'stdin'
+          ? 'stdout'
+          : 'stdin'
+        : meta.direction;
+    return `endpoint:${endpoint}:${rule.correlateAs}`;
+  }
+  return `endpoint:default:${rule.correlateAs}`;
+}
+
+function whenMatches(rule: NormalizedRule, meta: MessageMeta): boolean {
+  if (!rule.when) return true;
+  if (rule.when.method !== undefined && rule.when.method !== meta.method) return false;
+  if (rule.when.type !== undefined && rule.when.type !== meta.type) return false;
+  if (rule.when.direction !== undefined && rule.when.direction !== meta.direction) return false;
+  return true;
+}
+
+function segmentsMatchPrefix(ruleSegments: RuleSegment[], segments: PathSegment[]): boolean {
+  for (let i = 0; i < segments.length; i++) {
+    const pattern = ruleSegments[i];
     const actual = segments[i];
     if (pattern === '*') {
       if (typeof actual !== 'number') return false;
@@ -274,6 +439,26 @@ function ruleMatches(rule: NormalizedRule, segments: PathSegment[], meta: Messag
     if (pattern !== actual) return false;
   }
   return true;
+}
+
+function ruleMatches(rule: NormalizedRule, segments: PathSegment[], meta: MessageMeta): boolean {
+  if (!whenMatches(rule, meta)) return false;
+  if (rule.segments.length === 0 || rule.segments.length !== segments.length) return false;
+  return segmentsMatchPrefix(rule.segments, segments);
+}
+
+function hasPotentialDescendantRule(
+  rules: NormalizedRule[],
+  segments: PathSegment[],
+  meta: MessageMeta,
+): boolean {
+  return rules.some(
+    (rule) =>
+      rule.mode === 'correlate' &&
+      whenMatches(rule, meta) &&
+      rule.segments.length > segments.length &&
+      segmentsMatchPrefix(rule.segments, segments),
+  );
 }
 
 function parseJsonPayload(input: unknown): { ok: true; value: unknown } | { ok: false } {
@@ -313,12 +498,17 @@ export function formatReplayDiagnosis(mismatches: ReplayMismatch[]): string {
 }
 
 function isSequenceMessage(entry: unknown): entry is ReplaySequenceMessage {
-  return isPlainObject(entry) && Object.hasOwn(entry, 'payload') && (
-    entry.direction === undefined || typeof entry.direction === 'string'
+  if (!isPlainObject(entry)) return false;
+  const keys = Object.keys(entry);
+  if (keys.length !== 2) return false;
+  return (
+    Object.hasOwn(entry, 'payload') &&
+    typeof entry.direction === 'string' &&
+    VALID_DIRECTIONS.has(entry.direction as MessageDirection)
   );
 }
 
-function toSequenceMessage(entry: unknown): ReplaySequenceMessage {
+function toSequenceMessage(entry: unknown): { direction?: MessageDirection; payload: unknown } {
   return isSequenceMessage(entry) ? entry : { payload: entry };
 }
 
@@ -329,10 +519,12 @@ function toSequenceMessage(entry: unknown): ReplaySequenceMessage {
  */
 export class ReplayMessageMatcher {
   private readonly defaultRules: NormalizedRule[];
+  private readonly defaultSafeKeys: Set<string>;
   private readonly correlations = new CorrelationStore();
 
-  constructor(options: { dynamicFields?: Array<string | DynamicFieldRule> } = {}) {
+  constructor(options: { dynamicFields?: Array<string | DynamicFieldRule>; safeKeys?: string[] } = {}) {
     this.defaultRules = normalizeRules(options.dynamicFields);
+    this.defaultSafeKeys = new Set(options.safeKeys ?? []);
   }
 
   reset(): void {
@@ -384,6 +576,7 @@ export class ReplayMessageMatcher {
         actItem.payload,
         {
           dynamicFields: options?.dynamicFields,
+          safeKeys: options?.safeKeys,
           direction,
           messageIndex: i,
         },
@@ -460,6 +653,9 @@ export class ReplayMessageMatcher {
     const rules = options?.dynamicFields
       ? [...this.defaultRules, ...normalizeRules(options.dynamicFields)]
       : this.defaultRules;
+    const safeKeys = options?.safeKeys
+      ? new Set([...this.defaultSafeKeys, ...options.safeKeys])
+      : this.defaultSafeKeys;
     const workingStore = this.correlations.clone();
     const meta = extractMessageMeta(parsedExp.value, options?.direction);
 
@@ -467,7 +663,9 @@ export class ReplayMessageMatcher {
       parsedExp.value,
       parsedAct.value,
       [],
+      [],
       rules,
+      safeKeys,
       meta,
       workingStore,
       baseLocation,
@@ -489,13 +687,15 @@ export class ReplayMessageMatcher {
     expected: unknown,
     actual: unknown,
     segments: PathSegment[],
+    displaySegments: DisplaySegment[],
     rules: NormalizedRule[],
+    safeKeys: Set<string>,
     meta: MessageMeta,
     store: CorrelationStore,
     makeLocation: (path: string) => ReplayMismatchLocation,
     mismatches: ReplayMismatch[],
   ): void {
-    const path = formatPath(segments);
+    const path = formatPath(displaySegments);
     const matchingRule = rules.find((rule) => ruleMatches(rule, segments, meta));
 
     if (matchingRule) {
@@ -525,7 +725,8 @@ export class ReplayMessageMatcher {
         });
         return;
       }
-      if (!store.correlate(matchingRule.correlateAs, expected, actual)) {
+      const groupKey = resolveCorrelationKey(matchingRule, meta);
+      if (!store.correlate(groupKey, expected, actual)) {
         mismatches.push({
           kind: 'id_correlation_mismatch',
           location: makeLocation(path),
@@ -536,7 +737,11 @@ export class ReplayMessageMatcher {
       return;
     }
 
-    if (expected === actual || (Number.isNaN(expected) && Number.isNaN(actual))) {
+    const isContainer = Array.isArray(expected) || isPlainObject(expected);
+    if (
+      (expected === actual && (!isContainer || !hasPotentialDescendantRule(rules, segments, meta))) ||
+      (Number.isNaN(expected) && Number.isNaN(actual))
+    ) {
       return;
     }
 
@@ -555,7 +760,18 @@ export class ReplayMessageMatcher {
     if (Array.isArray(expected) && Array.isArray(actual)) {
       const common = Math.min(expected.length, actual.length);
       for (let i = 0; i < common; i++) {
-        this.diffValue(expected[i], actual[i], [...segments, i], rules, meta, store, makeLocation, mismatches);
+        this.diffValue(
+          expected[i],
+          actual[i],
+          [...segments, i],
+          [...displaySegments, i],
+          rules,
+          safeKeys,
+          meta,
+          store,
+          makeLocation,
+          mismatches,
+        );
       }
       if (expected.length !== actual.length) {
         mismatches.push({
@@ -569,31 +785,48 @@ export class ReplayMessageMatcher {
     }
 
     if (isPlainObject(expected) && isPlainObject(actual)) {
-      for (const key of Object.keys(expected)) {
-        const expVal = expected[key];
-        if (expVal === undefined) continue;
+      const expectedKeys = Object.keys(expected)
+        .filter((key) => expected[key] !== undefined)
+        .sort();
+      for (let i = 0; i < expectedKeys.length; i++) {
+        const key = expectedKeys[i];
         const nextSegments = [...segments, key];
-        const nextPath = formatPath(nextSegments);
+        const nextDisplaySegments = [...displaySegments, toDisplayKeySegment(key, i, 'key', safeKeys)];
+        const nextPath = formatPath(nextDisplaySegments);
         if (!Object.hasOwn(actual, key) || actual[key] === undefined) {
           mismatches.push({
             kind: 'missing_key',
             location: makeLocation(nextPath),
-            summary: `Missing expected key`,
+            summary: 'Missing expected key',
           });
           continue;
         }
-        this.diffValue(expVal, actual[key], nextSegments, rules, meta, store, makeLocation, mismatches);
+        this.diffValue(
+          expected[key],
+          actual[key],
+          nextSegments,
+          nextDisplaySegments,
+          rules,
+          safeKeys,
+          meta,
+          store,
+          makeLocation,
+          mismatches,
+        );
       }
 
-      for (const key of Object.keys(actual)) {
-        if (actual[key] === undefined) continue;
-        if (!Object.hasOwn(expected, key) || expected[key] === undefined) {
-          mismatches.push({
-            kind: 'unexpected_key',
-            location: makeLocation(formatPath([...segments, key])),
-            summary: `Unexpected key`,
-          });
-        }
+      const extraKeys = Object.keys(actual)
+        .filter((key) => actual[key] !== undefined && (!Object.hasOwn(expected, key) || expected[key] === undefined))
+        .sort();
+      for (let i = 0; i < extraKeys.length; i++) {
+        const key = extraKeys[i];
+        mismatches.push({
+          kind: 'unexpected_key',
+          location: makeLocation(
+            formatPath([...displaySegments, toDisplayKeySegment(key, i, 'extra-key', safeKeys)]),
+          ),
+          summary: 'Unexpected key',
+        });
       }
       return;
     }
