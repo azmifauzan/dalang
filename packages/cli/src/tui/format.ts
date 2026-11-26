@@ -51,10 +51,16 @@ export type PendingGate = GateText &
   );
 
 /** The review and verify facts behind a merge question, in one line. */
-function mergeContext(entry: GuardTaskEntryDTO): string | undefined {
+function mergeContext(entry: GuardTaskEntryDTO, messages: DiscussMessageDTO[]): string | undefined {
   const review = entry.latestReview;
   if (!review) return undefined;
-  const findings = review.contract.findings?.length ?? 0;
+  // The review file lives in the task worktree and is often unreadable from the main checkout, which
+  // leaves the contract's findings empty. The room's own verdict report keeps the real count.
+  const verdict = messages
+    .map((m) => (m.type === 'report' && m.content && typeof m.content === 'object' ? (m.content as RoomReportContent) : null))
+    .filter((c) => c?.event === 'review_verdict' && c.taskId === entry.task.id && c.reviewRound === review.round)
+    .at(-1);
+  const findings = verdict?.findingsCount ?? review.contract.findings?.length ?? 0;
   const parts = [
     `Review round ${review.round} ${review.status === 'pass' ? 'passed' : 'failed'} (${findings} finding(s), ${review.reviewerProfileName})`,
     review.verifyExitCode === null
@@ -94,7 +100,7 @@ export function detectPendingGate(
         output === 'answer'
           ? `Accept answer [${id}] "${mergeCandidate.task.title}"?`
           : `Merge [${id}] "${mergeCandidate.task.title}" into ${mainBranch}?`,
-      context: mergeContext(mergeCandidate),
+      context: mergeContext(mergeCandidate, detail.messages),
       yes: output === 'answer' ? 'accept' : 'merge',
       no: `keep waiting · /diff ${id} to see the ${output === 'answer' ? 'answer' : 'changes'}`,
       alsoWaiting: mergeCandidates.length - 1,

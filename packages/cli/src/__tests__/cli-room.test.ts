@@ -878,6 +878,31 @@ describe('Ink terminal room E2E (Quick task from plan to merge with no browser)'
     expect(gate?.context).toBeUndefined();
     expect(gate?.alsoWaiting).toBe(0);
 
+    // The finding count comes from the room's verdict report when the review file is not readable.
+    const counted = detectPendingGate(
+      {
+        session: { id: 's1', mode: 'auto' },
+        messages: [{
+          id: 'r', sessionId: 's1', role: 'agent', type: 'report', createdAt: '',
+          content: { event: 'review_verdict', taskId: 't1', reviewRound: 2, findingsCount: 1, summary: '' },
+        }],
+        briefs: [],
+        plan: null,
+      } as never,
+      {
+        mainBranch: 'main',
+        tasks: [{
+          task: { id: 't1', externalId: 'T-001', title: 'Fix', status: 'awaiting_merge', output: 'files' },
+          latestReview: {
+            round: 2, status: 'pass', reviewerProfileName: 'reviewer', verifyExitCode: 0, scopeWarnings: [],
+            contract: { findings: [] },
+          },
+          canApproveMerge: true,
+        }],
+      } as never,
+    );
+    expect(counted?.context).toBe('Review round 2 passed (1 finding(s), reviewer) · verify passed');
+
     // The Lead's own yes/no question about replacing this chat's plan gets the same gate box.
     const leadQuestion = detectPendingGate(
       {
