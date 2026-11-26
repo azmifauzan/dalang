@@ -39,6 +39,8 @@ export type PendingGate = GateText &
     | { kind: 'approve_plan'; version: number; taskCount: number }
     // The Lead's yes/no question before Auto work replaces unfinished work; the answer goes to the Lead.
     | { kind: 'auto_work' }
+    // A task asked for files outside its files_allowed (R10).
+    | { kind: 'scope_request'; taskId: string; externalId: string; files: string[] }
     | {
         kind: 'approve_merge';
         taskId: string;
@@ -107,6 +109,27 @@ export function detectPendingGate(
     };
   }
 
+  // 2a. A failed task whose latest report asks for files outside its scope.
+  const reports = detail.messages
+    .filter((m) => m.type === 'report' && m.content && typeof m.content === 'object')
+    .map((m) => m.content as RoomReportContent);
+  for (const task of detail.plan?.tasks ?? []) {
+    if (task.status !== 'failed') continue;
+    const latest = reports.filter((r) => r.taskId === task.id).at(-1);
+    if (latest?.event === 'scope_request' && latest.needsFiles?.length) {
+      return {
+        kind: 'scope_request',
+        taskId: task.id,
+        externalId: task.externalId,
+        files: latest.needsFiles,
+        prompt: `Allow [${task.externalId}] to also change ${latest.needsFiles.join(', ')}?`,
+        context: latest.summary,
+        yes: 'allow and continue the task',
+        no: 'leave it failed · or ask the Lead to replan it',
+      };
+    }
+  }
+
   // 2. The Lead asked whether Auto work may replace unfinished work. Its text is in the timeline above.
   const last = detail.messages.at(-1);
   if (detail.session.mode === 'auto' && last?.role === 'lead' && last.type === 'ask' &&
@@ -151,17 +174,19 @@ export function detectPendingGate(
     };
   }
 
-  // 5. Full mode plan draft gate
-  if (detail.session.mode === 'full' && detail.plan?.status === 'draft') {
+  // 5. A draft plan waits for approval: Full mode's plan, or an Auto plan of two or more tasks.
+  if ((detail.session.mode === 'full' || detail.session.mode === 'auto') && detail.plan?.status === 'draft') {
     const hasNeedsSplit = detail.plan.tasks.some((t) => t.needsSplit);
     if (!hasNeedsSplit && detail.plan.tasks.length > 0) {
+      const auto = detail.session.mode === 'auto';
       return {
         kind: 'approve_plan',
         version: detail.plan.version,
         taskCount: detail.plan.tasks.length,
         prompt: `Approve Plan v${detail.plan.version} (${detail.plan.tasks.length} task(s)) and start work?`,
+        context: auto ? 'The tasks, their order, and their executors are in the plan above.' : undefined,
         yes: 'approve and start',
-        no: 'keep the plan as a draft',
+        no: auto ? 'keep it as a draft · or send a message to change it' : 'keep the plan as a draft',
       };
     }
   }
@@ -344,15 +369,29 @@ export function formatRoomMessage(msg: DiscussMessageDTO): FormattedRoomMessage 
       version?: number;
       milestoneCount?: number;
       taskCount?: number;
-      tasks?: Array<{ id: string; title: string; role: string; complexity: string; output?: TaskOutputKind }>;
+      awaitingApproval?: boolean;
+      tasks?: Array<{
+        id: string;
+        title: string;
+        role: string;
+        complexity: string;
+        output?: TaskOutputKind;
+        dependsOn?: string[];
+        executor?: string | null;
+      }>;
     };
     badge = `PLAN v${p.version ?? 1}`;
     lines.push(
-      `Plan ready: ${p.taskCount ?? p.tasks?.length ?? 0} task(s) across ${p.milestoneCount ?? 1} milestone(s).`,
+      p.awaitingApproval
+        ? `Proposed plan: ${p.taskCount ?? p.tasks?.length ?? 0} task(s). Nothing runs until you approve it.`
+        : `Plan ready: ${p.taskCount ?? p.tasks?.length ?? 0} task(s) across ${p.milestoneCount ?? 1} milestone(s).`,
     );
-    for (const t of (p.tasks ?? []).slice(0, 8)) {
+    // A plan waiting for approval lists every task with its order and executor; an older plan only the first eight.
+    for (const t of p.awaitingApproval ? (p.tasks ?? []) : (p.tasks ?? []).slice(0, 8)) {
       const outputTag = t.output === 'answer' ? ' · answer' : '';
       lines.push(`  [${t.id}] ${t.title} (${displayTaskRole(t.role)} · ${t.complexity}${outputTag})`);
+      if (t.executor) lines.push(`      executor: ${t.executor}`);
+      if (t.dependsOn && t.dependsOn.length > 0) lines.push(`      after: ${t.dependsOn.join(', ')}`);
     }
   } else if (msg.type === 'report' && msg.content && typeof msg.content === 'object') {
     const rep = msg.content as RoomReportContent;

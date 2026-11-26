@@ -284,7 +284,7 @@ export function buildFixPrompt(opts: {
 
   const scopeSection = isAnswer
     ? `Answer task rule: leave all project files unchanged (revert any accidental edits outside .dalang/) and write the revised answer to "${opts.relAnswerPath ?? '.dalang/tasks/' + opts.task.externalId + '/answer.md'}".`
-    : `Allowed files:\n${opts.task.filesAllowed.length > 0 ? opts.task.filesAllowed.map((f) => `- ${f}`).join('\n') : '- (project workspace)'}`;
+    : `Allowed files:\n${opts.task.filesAllowed.length > 0 ? opts.task.filesAllowed.map((f) => `- ${f}`).join('\n') : '- (project workspace)'}${opts.task.filesAllowed.length > 0 ? '\nIf the task cannot be finished without changing a file outside these patterns, do not change it: set \"status\" to \"blocked\", list the files in \"needs_files\", and explain why in \"blockers\". DALANG asks the user to allow them.' : ''}`;
 
   const finishLine = isAnswer
     ? `Update "${opts.relAnswerPath ?? '.dalang/tasks/' + opts.task.externalId + '/answer.md'}"${hasVerify ? ` and run "${opts.task.verify}"` : ''}, then write the updated result JSON to "${opts.relResultPath}" (including "answer") matching:`

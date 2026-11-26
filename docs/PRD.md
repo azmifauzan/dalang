@@ -1,6 +1,6 @@
 # PRD: DALANG
 
-Nov 18, 2026 · @Fauzan · Updated through v0.14.6, Nov 26, 2026
+Nov 18, 2026 · @Fauzan · Updated through v0.14.7, Nov 26, 2026
 
 ## Summary
 
@@ -313,7 +313,8 @@ Each phase must be useful on its own before the next one starts.
 | v0.14.4 | Dependencies installed in task worktrees, provider CLI recording | A JavaScript project's verify command finds its tools in a fresh task worktree without the agent installing anything | Released in v0.14.4 (the `v0.14.3` tag was not released). |
 | v0.14.5 | Closing note when a run stops, terminal room layout fixes, schema v17 | A run that finishes, or stops because failed tasks block the rest of the plan, ends with one note that names what is done, what failed, and what to do next | Released in v0.14.5. Also ships two v0.15 tasks that DALANG merged while running v0.15 itself: R8 (progress separated from the streamed JSON answer) and the schema v17 part of R7. |
 | v0.14.6 | Clearer approval prompts | A merge or Auto replace question says what it needs, why the task is ready, and what y and n each do | Released in v0.14.6. Also ships `replay-matching`, a v0.15 task DALANG merged while running v0.15. |
-| v0.15 | Reliability and parity: fatal provider errors fail fast, restart recovery, session protocol replay, waiting view, room and web parity, merge conflicts handled | B1, B2, and B6 to B9 are closed with tests that failed before the fix, and typecheck, tests, and build pass | Planned |
+| v0.14.7 | Plans wait for approval, merge conflicts and scope requests go back to the task, restarts continue work | A phase asked for in one Auto message shows its plan and executors before anything runs, and a conflict, a missing file, or a restart no longer stops the run | Released in v0.14.7. Closes B2, B9, B10, B13 (R3, R9, R10) before the v0.15 run continues; the v0.15 section names the T3 Code design to follow for each remaining item. |
+| v0.15 | Reliability and parity: fatal provider errors fail fast, restart recovery, session protocol replay, waiting view, room and web parity, merge conflicts handled, structured questions | B1, B6 to B8, and B12 are closed with tests that failed before the fix, R1 follows the T3 Code design, and typecheck, tests, and build pass | Planned |
 | v0.16 | Speed: per-project events, output hub, paged history, block-wise streaming | Recordings show improvement over the baseline; render and payload budgets pass | Planned |
 | v0.17 | Agent tools: DALANG browser, browser evidence at the gate, per-project MCP allowlist | An executor tests a dev server in the browser on all three providers, and Gate 2 shows the evidence | Planned |
 | v0.18, v0.19 | Telegram bridge, then Slack bridge | See [the chat app plan](#v012-v013-v018-v019-terminal-room-auto-and-chat-apps) | Planned |
@@ -1007,6 +1008,25 @@ The 19 Nov research (above) compared features; most of them shipped in v0.8 to v
 
 Outside research on browser testing for coding agents (Nov 2026): Playwright drives flows and tests; Chrome DevTools MCP diagnoses performance and network; snapshot-and-ref CLIs such as Vercel's agent-browser use far fewer tokens than MCP servers (vendor figures, not verified).
 
+#### Research: T3 Code, third pass, against the bugs of the v0.15 run (26 Nov 2026)
+
+The first run of v0.15 from one prompt inside DALANG found more bugs. This pass read T3 Code at commit `b5592c60` for how it handles each one. Rule for v0.15 work: where T3 Code has a tested design for the same problem, follow it and cite the file in the task, instead of designing from scratch. In the run, the two task groups that failed review again and again (restart recovery and protocol replay) had each grown to thousands of lines on designs much larger than T3 Code's.
+
+| # | Problem in DALANG | T3 Code | DALANG change |
+| --- | --- | --- | --- |
+| B10 | Auto started a 16-task phase, and later a 21-task replacement, without showing the plan or the executors first | Plan interaction mode: the agent proposes a plan (`proposed_plan`, `apps/web/src/components/chat/ProposedPlanCard.tsx`); nothing runs until the user chooses to implement it | Shipped in v0.14.7: an Auto plan with two or more tasks is saved as a draft and shown with the executor of each task; `y` starts it, a message revises it |
+| B11 | A run that finished or stopped said nothing | Every thread has one status (working, needs approval, needs your input, done, failed) that drives the sidebar, the window title, and notifications (`docs/user/activity-log.md`, `thread-sidebar.md`) | Closing note in v0.14.5; the same status in the room title and the web tab is part of U1 |
+| B12 | Questions and approvals were unclear: one line, no context, free-text "Reply yes or no" | Structured questions (`UserInputQuestion` in `packages/contracts/src/providerRuntime.ts`: `header`, `question`, options with label and description, `allowCustomAnswer`, `multiSelect`); a pending approval row names the action and says "Waiting for approval"; approvals, questions, and errors are always shown | Approval box in v0.14.6; Lead questions as structured choices (U3) |
+| B2, R3 | Restart recovery tasks failed review four times, adding recovery intent tables and schema v18 | On startup, interrupted runs are ended, then continued in the same provider session with one fixed prompt: continue where you left off, and confirm an action that changes state did not take effect before repeating it. The continuation message id is derived from the run, so it is sent once; at most three continuations in five minutes; nothing continues while an approval is pending or the thread is archived (`apps/server/src/orchestration-v2/RestartContinuation.ts`, `ProviderRuntimeRecoveryService.ts`) | Shipped in v0.14.7 on this design |
+| B6, R1 | Replay tasks grew to thousands of lines with timestamp ordering and causal inference | A replay transcript is a linear script: `expect_outbound` (the frame the client must send), `emit_inbound` (a frame from the provider, with `afterMs`), and `runtime_exit` (`packages/effect-codex-app-server/src/replay.ts`, `packages/provider-testing/src/replayTranscript.ts`) | R1 follows this format (below) |
+| B1 | Codex Ask hung three minutes, and the fatal error was only in stderr | The last stderr lines are kept and attached to the error when the process exits (`packages/effect-codex-app-server/src/_internal/stdio.ts`, `makeStderrTail`) | Part of R2 |
+| B7 | Raw JSON in streamed replies | No JSON answer inside the text: structured results go through a tool call (`t3_submit_output`) with two correction prompts | R8 fixed the parser; a submit tool is deferred |
+| B8 | Waiting gives no feedback | Tool calls grouped into expandable summaries with command, status, and exit code; a "starting" phase from provider signals until the first output (`packages/client-runtime/src/state/threadExecution.ts`) | U1 as planned |
+| B9 | A merge conflict stopped the run | Each thread works in its own worktree and lands through a pull request; parallel work is not merged automatically | Shipped in v0.14.7 (R9) |
+| B13 | A fix round failed because the review asked for a file outside `files_allowed` | No file scope per task | Shipped in v0.14.7 (R10) |
+| B14 | A new Auto plan in the same chat asked to discard "another session" that was this chat | One thread per task; a new message while it works is queued or steers it (`docs/user/composer.md`) | Fixed in v0.14.6 |
+| B15 | Rows of the terminal room overlapped and the header lost its title line | No terminal UI | Fixed in v0.14.5 (tabs counted as zero columns) |
+
 #### Evidence from early use
 
 Read from a copy of a maintainer's local database and logs.
@@ -1040,20 +1060,22 @@ Read from a copy of a maintainer's local database and logs.
 
 #### v0.15: reliability and parity
 
-Done when: B1, B2, and B6 to B9 are closed, each with a replay or unit test that failed before the fix; items R1 to R3, R5, R7 to R9, U1, U2, and F6 are in place; and typecheck, tests, and build pass. B3 was fixed in v0.14.4, B5 belongs to v0.16, and B4 is confirmed in R6. Everything in this list can be done and checked inside the repository, without live providers. Live verification is R6 below and is not part of the implementation work.
+Done when: B1, B6 to B8, and B12 are closed, each with a replay or unit test that failed before the fix; items R1, R2, R5, R7, R8, U1 to U3, and F6 are in place (R3, R9, and R10 shipped in v0.14.7), and R1 follows the T3 Code design named in its row; and typecheck, tests, and build pass. B3 was fixed in v0.14.4, B5 belongs to v0.16, and B4 is confirmed in R6. Everything in this list can be done and checked inside the repository, without live providers. Live verification is R6 below and is not part of the implementation work.
 
 | Order | Item | Scope |
 | --- | --- | --- |
 | 1 | R8 | Raw JSON fix (B7): `liveReplyText` finds the JSON answer anywhere in the text (after a progress message or inside a fence); text before it is a progress message, not the answer |
-| 2 | R2 | Fatal provider errors fail fast (B1): per-adapter fatal stderr patterns end the turn with a message and a fix. Find the cause of B1 (Codex's own sandbox in `app-server`, Ask running without DALANG's bwrap, or AppArmor blocking unprivileged user namespaces) |
-| 3 | R3 | Startup recovery (B2): a `working` session with no live run returns to idle with a chat note; tasks stopped by a restart resume automatically |
-| 4 | R1 | Session protocol replay: `ReplayCliRunner` supports interactive stdin and replays recorded `stdinWrites` and stdout as a conversation (B6) |
+| 2 | R2 | Fatal provider errors fail fast (B1): per-adapter fatal stderr patterns end the turn with a message and a fix, and every failed or timed-out turn shows the last stderr lines, as T3 Code's `makeStderrTail` does. Find the cause of B1 (Codex's own sandbox in `app-server`, Ask running without DALANG's bwrap, or AppArmor blocking unprivileged user namespaces) |
+| 3 | R3 | Startup recovery (B2), following T3 Code's `RestartContinuation.ts`. **Shipped in v0.14.7** (outside the v0.15 run): a `working` session with no live run returns to idle with one chat note (`restart-idle`), and a task a restart cut short continues on its branch, in the same CLI session when there is one, with one fixed continue prompt; at most three continuations in five minutes. Nothing left for v0.15 |
+| 4 | R1 | Session protocol replay (B6), in T3 Code's format (`effect-codex-app-server/src/replay.ts`): a transcript is a linear list of `expect_outbound` (what DALANG must write to stdin, compared after removing ids listed per provider), `emit_inbound` (a stdout line, with an optional delay), and `exit`. `recordings.mjs` converts a recording into this list once; the runner does not reorder or infer. Already merged: `replay-matching` |
 | 5 | U1 | Waiting view (B8), the same in the room and the web UI: header (role, provider, model, elapsed time), start and resume phases from protocol signals, steps with targets (file, search pattern, command) and durations, agent progress messages as dimmed rows, the streamed answer below; finished steps fold into one expandable summary |
 | 6 | U2 | Token streaming in the web UI from `lead.text` |
 | 7 | R5 | Room and web parity: one scenario list used by `browser-replay.test.ts` and a room test in a pseudo-terminal, with the same transcripts |
 | 8 | R7 | Small reliability items: asynchronous run logs; foreign-key indexes, `busy_timeout`, and `synchronous = NORMAL` (schema v17); WebSocket heartbeat and reconnect; `client_request_id` for `delegate_task`; webhook dedupe by delivery id |
 | 9 | F6 | `/triage` in the room and "Report a problem" in the web UI: an Ask session with the version, OS, `dalang doctor`, recent redacted server logs, and a recording summary if any; the agent asks before opening an issue |
-| 10 | R9 | Merge conflicts (B9): when merging a passed task into the main branch conflicts, DALANG does not stop at an error. It merges the main branch into the task branch in the task worktree and runs a fix round in which the executor resolves the conflict, then verify and review run again and the merge gate returns. The PRD already promised that conflicts go to an integration task. A replay test covers a conflict from a change made on the main branch while the task ran |
+| 10 | R9 | Merge conflicts (B9). **Shipped in v0.14.7**: a conflicting merge into the main branch goes back to the task. DALANG merges the main branch into the task branch, commits the conflict markers, moves the task's base, and continues the task with a note naming the files; verify, review, and the merge gate run again. Nested repositories still stop at the git error |
+| 11 | R10 | Scope requests (B13). **Shipped in v0.14.7**: an executor that needs files outside `files_allowed` reports them in `needs_files` with status `blocked`; the room and the web UI ask the user to allow them, and on yes they join the task's scope and the task continues on its branch |
+| 12 | U3 | Structured questions (B12), in the shape of T3 Code's `UserInputQuestion`: the Lead can return `question` with a header, the question, and options (label and description), plus whether a custom answer or several choices are allowed. The room shows a numbered choice list in the approval box, the web UI shows buttons, and the answer goes back to the Lead |
 
 ##### R6: manual verification by the operator
 

@@ -105,6 +105,7 @@ import {
   isAncestorCommit,
   mergeTaskBranchIntoWorktree,
   mergeTaskBranchToMain,
+  mergeTargetIntoTaskWorktree,
   openSafeGit,
   pushRefToRemote,
   removeTaskWorktree,
@@ -208,6 +209,11 @@ function prefixRepoFile(repoPath: string, filePath: string): string {
 }
 
 const DEFAULT_QUOTA_COOLDOWN_MS = 5 * 60_000;
+/** T3 Code's continue prompt for a run a restart cut short (RestartContinuation.ts). */
+const RESTART_CONTINUE_NOTE =
+  'Continue where you left off. Your last run was cut short by a DALANG restart, so a command or other action it started may have finished or may still be running. Before you repeat one that changes state, confirm it did not take effect; if you cannot tell, say so instead of repeating it. Then finish the task and write the result file.';
+const RESTART_CONTINUATION_MAX = 3;
+const RESTART_CONTINUATION_WINDOW_MS = 5 * 60_000;
 const RATE_LIMIT_RE = /rate[_ ]?limit|usage limit|hit your limit|quota exceeded|too many requests|\b429\b/i;
 const LOGIN_EXPIRED_RE = /not logged in|unauthorized|authentication required|please log in|token expired/i;
 
@@ -368,6 +374,68 @@ export class ExecutionService {
    * and return `working` sessions with no live activity to `idle` with one status note while keeping
    * pending gates, review results, saved branches, and worktrees untouched.
    */
+  /** Top-level tasks a restart cut short; continueInterruptedWork picks them up once the server listens. */
+  private interruptedAtStartup: string[] = [];
+
+  /**
+   * Continues the tasks a restart cut short, as T3 Code's RestartContinuation does: each resumes on its
+   * branch (in the same CLI session when there is one) with one fixed prompt, and an Auto session's
+   * queue starts again. A task cut short more than three times within five minutes is left stopped, so
+   * a task that keeps crashing the server does not loop.
+   */
+  async continueInterruptedWork(): Promise<void> {
+    const taskIds = this.interruptedAtStartup;
+    this.interruptedAtStartup = [];
+    if (taskIds.length === 0) return;
+    const windowStart = new Date(Date.now() - RESTART_CONTINUATION_WINDOW_MS).toISOString();
+    const sessionsToQueue = new Map<string, string>();
+    for (const taskId of taskIds) {
+      const row = this.db
+        .select({ externalId: tasks.externalId, status: tasks.status, projectId: plans.projectId, sessionId: plans.sessionId })
+        .from(tasks)
+        .innerJoin(plans, eq(plans.id, tasks.planId))
+        .where(eq(tasks.id, taskId))
+        .get();
+      if (!row?.sessionId || row.status !== 'stopped') continue;
+      const session = this.db.select().from(sessions).where(eq(sessions.id, row.sessionId)).get();
+      if (!session || session.archivedAt) continue;
+      const recentCuts = this.db
+        .select({ id: runs.id })
+        .from(runs)
+        .where(and(eq(runs.taskId, taskId), eq(runs.failureReason, 'Interrupted by server restart'), gte(runs.finishedAt, windowStart)))
+        .all().length;
+      if (recentCuts > RESTART_CONTINUATION_MAX) {
+        this.leadService.postRoomMessage(row.projectId, row.sessionId, {
+          role: 'system', type: 'text', kind: 'status',
+          content: `[${row.externalId}] was cut short by ${recentCuts} restarts within five minutes, so it was not continued again. Resume it when the cause is fixed.`,
+        });
+        continue;
+      }
+      this.db.update(tasks).set({ rejectionNote: RESTART_CONTINUE_NOTE }).where(eq(tasks.id, taskId)).run();
+      try {
+        await this.startExecution(row.projectId, {
+          sessionId: row.sessionId,
+          taskId,
+          resumeSession: true,
+          continueBranch: true,
+        } as Partial<StartExecutionInput>);
+        this.leadService.postRoomMessage(row.projectId, row.sessionId, {
+          role: 'system', type: 'text', kind: 'status',
+          content: `Continuing [${row.externalId}] after the restart.`,
+        });
+      } catch (error) {
+        this.leadService.postRoomMessage(row.projectId, row.sessionId, {
+          role: 'system', type: 'error',
+          content: `Could not continue [${row.externalId}] after the restart: ${error instanceof Error ? error.message : String(error)}. Resume it yourself.`,
+        });
+      }
+      if (session.mode === 'auto') sessionsToQueue.set(row.sessionId, row.projectId);
+    }
+    for (const [sessionId, projectId] of sessionsToQueue) {
+      await this.startExecution(projectId, { sessionId }).catch(() => undefined);
+    }
+  }
+
   private reconcileInterruptedRuns(): void {
     const staleRuns = this.db.select().from(runs).where(eq(runs.status, 'running')).all();
     const staleTasks = this.db
@@ -400,6 +468,7 @@ export class ExecutionService {
     }
 
     const interruptedTaskIds = new Set(staleTasks.map((t) => t.id));
+    this.interruptedAtStartup = staleTasks.filter((t) => (t.delegationDepth ?? 0) === 0).map((t) => t.id);
     const workingSessions = this.db
       .select({ id: sessions.id, projectId: sessions.projectId })
       .from(sessions)
@@ -1752,6 +1821,8 @@ export class ExecutionService {
   ): Promise<{ started: boolean; run: TaskRunDTO | null; runs?: TaskRunDTO[]; queueMode: boolean }> {
     const allowUnconfined = Boolean(input.allowUnconfined);
     const resumeSession = Boolean(input.resumeSession);
+    // Internal: keep the branch even when no CLI session can be resumed (merge conflicts, restarts).
+    const continueBranch = Boolean((input as { continueBranch?: boolean }).continueBranch);
     const sandboxReady = await this.registry.isSandboxReady();
     if (!sandboxReady && !allowUnconfined) {
       throw new Error(
@@ -1817,7 +1888,9 @@ export class ExecutionService {
       const sameProviderRun = prevRuns.find(
         (r) => Boolean(r.cliSessionId) && r.provider === routing.primary.provider,
       );
-      if (!sameProviderRun) {
+      if (!sameProviderRun && continueBranch) {
+        // No session to resume on this CLI: a fresh session continues the work on the kept branch.
+      } else if (!sameProviderRun) {
         const otherSession = prevRuns.find((r) => Boolean(r.cliSessionId));
         if (otherSession) {
           throw new Error(
@@ -1825,13 +1898,15 @@ export class ExecutionService {
           );
         }
         throw new Error(`No previous CLI session ID found to resume ${target.externalId}.`);
+      } else {
+        resumeSessionId = sameProviderRun.cliSessionId!;
       }
-      resumeSessionId = sameProviderRun.cliSessionId!;
     }
 
     const launched = await this.launchTaskExecution(projectId, sessionId, target, reservation, {
       resumeSessionId,
       preAcquiredLease: null,
+      continueBranch,
     });
     return { started: true, run: launched.initialRun, runs: [launched.initialRun], queueMode: false };
   }
@@ -2121,6 +2196,133 @@ export class ExecutionService {
     return active;
   }
 
+  async previewExecutors(
+    projectId: string,
+    sessionId: string,
+  ): Promise<Map<string, { profileName: string; provider: string; model: string }>> {
+    const plan = this.leadService.getPlan(projectId, sessionId);
+    const result = new Map<string, { profileName: string; provider: string; model: string }>();
+    if (!plan) return result;
+    for (const preview of this.buildDispatchPreviews(plan, await this.registry.isSandboxReady())) {
+      result.set(preview.externalId, {
+        profileName: preview.resolvedProfileName,
+        provider: preview.resolvedProvider,
+        model: preview.resolvedModel,
+      });
+    }
+    return result;
+  }
+
+  /**
+   * A passed task whose merge into the main branch conflicts goes back to its executor instead of
+   * stopping at a git error (B9, R9). DALANG merges the main branch into the task branch and commits
+   * the conflict markers, moves the task's base to that main commit so review and scope checks see
+   * only the task's own changes, and continues the task on its branch with a note naming the
+   * conflicted files. Verify, review, and the merge gate then run again.
+   */
+  private async sendMergeConflictBack(
+    project: typeof projects.$inferSelect,
+    sessionId: string,
+    task: TaskDTO,
+    repo: TaskRepoContext,
+    allowUnconfined?: boolean,
+  ): Promise<{ task: TaskDTO; mergeCommitSha: string; integrationRun: null; pushPrResult: null; mergeConflict: true }> {
+    const { targetSha, conflicted } = await this.withProjectGitLock(project.id, () =>
+      mergeTargetIntoTaskWorktree(
+        repo.mainRepoPath,
+        repo.worktreePath,
+        repo.baseBranch,
+        `dalang: merge ${repo.baseBranch} into ${task.externalId} (conflicts to resolve)`,
+        this.getNestedRepoNames(this.getTaskRepos(task.id, project.path)),
+      ),
+    );
+    const files = conflicted.length > 0 ? conflicted.join(', ') : 'no files (the merge applied cleanly)';
+    const note = [
+      `Merging this task into ${repo.baseBranch} conflicted with changes made there while the task ran.`,
+      `DALANG merged ${repo.baseBranch} into this branch and committed the files with their conflict markers: ${files}.`,
+      'Resolve every conflict marker (<<<<<<<, =======, >>>>>>>) in those files so both sides keep their intent, change nothing else, and run the verify command.',
+    ].join('\n');
+    const now = new Date().toISOString();
+    this.db
+      .update(taskRepos)
+      .set({ baseSha: targetSha, updatedAt: now })
+      .where(and(eq(taskRepos.taskId, task.id), eq(taskRepos.repoPath, repo.repoPath)))
+      .run();
+    this.db
+      .update(reviews)
+      .set({ humanDecision: 'rejected', humanNote: 'Merge conflict sent back to the executor', decidedAt: now })
+      .where(and(eq(reviews.taskId, task.id), eq(reviews.humanDecision, 'pending')))
+      .run();
+    this.db.update(tasks).set({ status: 'stopped', rejectionNote: note, updatedAt: now }).where(eq(tasks.id, task.id)).run();
+    this.postRoomReport(project.id, sessionId, null, 'status', {
+      event: 'merge_conflict',
+      taskId: task.id,
+      externalId: task.externalId,
+      taskTitle: task.title,
+      summary: `Merging [${task.externalId}] into ${repo.baseBranch} conflicted in ${files}. Sent back to the executor to resolve; verify, review, and the merge gate run again.`,
+    });
+    this.events?.emitEvent({ type: 'plan.updated', projectId: project.id, sessionId });
+    await this.startExecution(project.id, {
+      sessionId,
+      taskId: task.id,
+      resumeSession: true,
+      allowUnconfined: Boolean(allowUnconfined),
+      continueBranch: true,
+    } as Partial<StartExecutionInput>);
+    const updated = this.leadService.getPlan(project.id, sessionId)!.tasks.find((t) => t.id === task.id)!;
+    return { task: updated, mergeCommitSha: '', integrationRun: null, pushPrResult: null, mergeConflict: true };
+  }
+
+  /**
+   * Answers a task's scope request (R10): the user allows the files it asked for, so they join its
+   * files_allowed and the task continues on its branch with a note; verify, review, and the merge gate
+   * run as usual. Only files the task asked for in its latest scope request can be added.
+   */
+  async allowTaskScope(
+    projectId: string,
+    taskId: string,
+    input: { files: string[]; allowUnconfined?: boolean },
+  ): Promise<{ task: TaskDTO }> {
+    const sid = this.leadService.resolveSessionIdForTask(projectId, taskId);
+    const plan = sid ? this.leadService.getPlan(projectId, sid) : null;
+    const task = plan?.tasks.find((t) => t.id === taskId || t.externalId === taskId);
+    if (!plan || !sid || !task) throw new Error(`Task not found: ${taskId}`);
+    if (task.status !== 'failed') throw new Error(`Task ${task.externalId} is ${task.status}, not waiting for a scope decision.`);
+    const request = this.leadService
+      .getSessionDetail(projectId, sid)
+      .messages.filter((m) => m.type === 'report')
+      .map((m) => m.content as RoomReportContent)
+      .filter((c) => c.taskId === task.id)
+      .at(-1);
+    if (request?.event !== 'scope_request' || !request.needsFiles?.length) {
+      throw new Error(`Task ${task.externalId} has no open scope request.`);
+    }
+    const asked = new Set(request.needsFiles);
+    const files = input.files.filter((f) => asked.has(f));
+    if (files.length === 0) throw new Error('None of these files were requested by the task.');
+    const filesAllowed = [...new Set([...task.filesAllowed, ...files])];
+    const now = new Date().toISOString();
+    this.db
+      .update(tasks)
+      .set({
+        filesAllowedJson: JSON.stringify(filesAllowed),
+        status: 'stopped',
+        rejectionNote: `The user allowed these files for this task: ${files.join(', ')}. Continue the task, changing them only as needed.`,
+        updatedAt: now,
+      })
+      .where(eq(tasks.id, task.id))
+      .run();
+    this.events?.emitEvent({ type: 'plan.updated', projectId, sessionId: sid });
+    await this.startExecution(projectId, {
+      sessionId: sid,
+      taskId: task.id,
+      resumeSession: true,
+      allowUnconfined: Boolean(input.allowUnconfined),
+      continueBranch: true,
+    } as Partial<StartExecutionInput>);
+    return { task: this.leadService.getPlan(projectId, sid)!.tasks.find((t) => t.id === task.id)! };
+  }
+
   /** Last closing note posted per session, so a repeated check does not post the same note twice. */
   private readonly lastRunOutcome = new Map<string, string>();
 
@@ -2260,7 +2462,7 @@ export class ExecutionService {
     sessionId: string,
     task: TaskDTO,
     execHandle: ActiveTaskExecution,
-    opts: { resumeSessionId: string | null; preAcquiredLease: SlotLease | null },
+    opts: { resumeSessionId: string | null; preAcquiredLease: SlotLease | null; continueBranch?: boolean },
   ): Promise<{ initialRun: TaskRunDTO; completionPromise: Promise<RunStatus> }> {
     const { runId, initialRun, executeFn } = await this.prepareTaskExecution(
       projectId,
@@ -2269,6 +2471,7 @@ export class ExecutionService {
       execHandle,
       opts.resumeSessionId,
       opts.preAcquiredLease,
+      opts.continueBranch ?? false,
     );
     execHandle.runId = runId;
     execHandle.taskId = task.id;
@@ -2461,6 +2664,8 @@ export class ExecutionService {
     execHandle: ActiveTaskExecution,
     resumeSessionId: string | null,
     preAcquiredLease: SlotLease | null,
+    /** Keep the task branch and its work even without a CLI session to resume (a fresh session continues it). */
+    continueBranch = false,
   ): Promise<{
     runId: string;
     initialRun: TaskRunDTO;
@@ -2475,7 +2680,7 @@ export class ExecutionService {
     const branchName = `dalang/${task.externalId}`;
     const worktreePath = getTaskWorktreeDir(this.worktreesRoot, projectId, task.externalId);
     this.assertTaskWorktreeAndBranchAvailable(projectId, task.id, branchName, worktreePath);
-    const resetToBase = !resumeSessionId || !(await branchExists(project.path, branchName));
+    const resetToBase = !(resumeSessionId || continueBranch) || !(await branchExists(project.path, branchName));
 
     const { repos: taskRepoList, baseMainSha, baselineCheckpointRef, baselineRefsByRepo } =
       await this.withProjectGitLock(projectId, async () => {
@@ -2569,7 +2774,7 @@ export class ExecutionService {
         status: 'running',
         branchName,
         mergeCommitSha: null,
-        ...(resumeSessionId ? {} : { reviewRounds: 0, rejectionNote: null }),
+        ...(resumeSessionId || continueBranch ? {} : { reviewRounds: 0, rejectionNote: null }),
         updatedAt: now,
       })
       .where(eq(tasks.id, task.id))
@@ -3316,7 +3521,24 @@ export class ExecutionService {
           .run();
       }
 
-      if (!succeeded && opts.task.delegationDepth === 0) {
+      // Files the task needs beyond its scope become a question for the user (R10), not a dead end.
+      const neededFiles = succeeded || opts.task.output === 'answer'
+        ? []
+        : findScopeViolations(resultData.needs_files ?? [], opts.task.filesAllowed, 'files')
+          .map((w) => w.replace(/^Modified outside files_allowed: /, ''));
+      if (neededFiles.length > 0 && opts.task.delegationDepth === 0) {
+        this.postRoomReport(opts.projectId, opts.sessionId, profile.id, 'status', {
+          event: 'scope_request',
+          taskId: opts.task.id,
+          externalId: opts.task.externalId,
+          taskTitle: opts.task.title,
+          profileName: profile.name,
+          provider: profile.provider,
+          model: profile.model || null,
+          needsFiles: neededFiles,
+          summary: `[${opts.task.externalId}] needs files outside its scope: ${neededFiles.join(', ')}. ${failureReason ?? ''}`.trim(),
+        });
+      } else if (!succeeded && opts.task.delegationDepth === 0) {
         this.postRoomReport(opts.projectId, opts.sessionId, profile.id, 'status', {
           event: 'task_failed',
           taskId: opts.task.id,
@@ -4917,7 +5139,8 @@ export class ExecutionService {
       : [
           `Allowed files (stay within these patterns; do not modify unrelated files):`,
           task.filesAllowed.length > 0 ? task.filesAllowed.map((f) => `- ${f}`).join('\n') : '- (project workspace)',
-        ].join('\n');
+          task.filesAllowed.length > 0 ? `If the task cannot be finished without changing a file outside these patterns, do not change it: set \"status\" to \"blocked\", list the files in \"needs_files\", and explain why in \"blockers\". DALANG asks the user to allow them.` : '',
+        ].filter(Boolean).join('\n');
 
     const verifyBlock = hasVerify
       ? [`Verify command (must be run before finishing):`, task.verify!].join('\n')
@@ -4926,7 +5149,7 @@ export class ExecutionService {
     return [
       `You are executing task ${task.externalId}: "${task.title}" (milestone ${task.milestone}) for a project managed by DALANG.`,
       profile.rolePrompt ? `Role instructions: ${profile.rolePrompt}` : '',
-      rejectionNote ? `Previous Guard rejection feedback (must be addressed):\n${rejectionNote}` : '',
+      rejectionNote ? `Note for this run (must be addressed):\n${rejectionNote}` : '',
       ``,
       `Read PROJECT.md first for project context and conventions.`,
       ``,
@@ -4963,7 +5186,7 @@ export class ExecutionService {
     const effectiveAnswerPath = relAnswerPath || path.posix.join('.dalang', 'tasks', task.externalId, 'answer.md');
     return [
       `Resume work on task ${task.externalId}: "${task.title}".`,
-      rejectionNote ? `Previous Guard rejection feedback:\n${rejectionNote}` : '',
+      rejectionNote ? `Note for this run (must be addressed):\n${rejectionNote}` : '',
       isAnswer
         ? `Output mode: answer. Leave project files unchanged and write your complete answer to "${effectiveAnswerPath}".`
         : '',
@@ -6051,6 +6274,8 @@ export class ExecutionService {
     integrationRun: IntegrationRunDTO | null;
     pushPrResult?: PushPrResultDTO | null;
     answerPath?: string | null;
+    /** True when the merge conflicted and the task went back to its executor instead of merging. */
+    mergeConflict?: boolean;
   }> {
     const project = this.getProjectRow(projectId);
     const sid = this.leadService.resolveSessionIdForTask(projectId, taskId, explicitSessionId);
@@ -6180,7 +6405,9 @@ export class ExecutionService {
 
     const nestedNames = this.getNestedRepoNames(repos);
 
-    const { mergeCommitSha, mergedRepos } = await this.withProjectGitLock(projectId, async () => {
+    let merged: { mergeCommitSha: string; mergedRepos: Array<{ repo: TaskRepoContext; beforeMergeSha: string; mergeCommitSha: string }> };
+    try {
+    merged = await this.withProjectGitLock(projectId, async () => {
       const changedRepos: TaskRepoContext[] = [];
       for (const repo of repos) {
         const changed = await hasBranchChanges(
@@ -6281,6 +6508,10 @@ export class ExecutionService {
               : ` Earlier merges (${mergedSoFar.map((m) => formatRepoLabel(m.repo.repoPath)).join(', ')}) were rolled back with git reset --keep.`;
           throw new Error(`${baseMsg}${suffix}`);
         }
+        // A conflict in the project's own repository goes back to the task (see sendMergeConflictBack).
+        if (changedRepos.length === 1 && changedRepos[0].repoPath === '.' && /^Merge conflict/.test(baseMsg)) {
+          throw Object.assign(new Error(baseMsg), { mergeConflictRepo: changedRepos[0] });
+        }
         throw err;
       }
 
@@ -6298,6 +6529,14 @@ export class ExecutionService {
         mergedRepos: mergedSoFar,
       };
     });
+    } catch (err) {
+      const conflictRepo = (err as { mergeConflictRepo?: TaskRepoContext }).mergeConflictRepo;
+      if (conflictRepo) {
+        return this.sendMergeConflictBack(project, sid, task, conflictRepo, input.allowUnconfined);
+      }
+      throw err;
+    }
+    const { mergeCommitSha, mergedRepos } = merged;
 
     const now = new Date().toISOString();
     for (const m of mergedRepos) {

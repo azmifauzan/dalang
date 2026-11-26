@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const DALANG_VERSION = '0.14.6';
+export const DALANG_VERSION = '0.14.7';
 
 export const MAX_DELEGATION_DEPTH = 1;
 export const DEFAULT_MAX_SUBTASKS_PER_TASK = 6;
@@ -149,6 +149,8 @@ export const PlanTaskContractSchema = z.object({
   acceptance_criteria: z.array(z.string()).min(1),
   verify: z.string().nullable().optional(),
   needs_split: z.boolean().default(false),
+  /** Executor profile name for this task; omitted means the routing rules pick one by complexity. */
+  profile: z.string().trim().min(1).nullable().optional(),
 });
 export type PlanTaskContract = z.infer<typeof PlanTaskContractSchema>;
 
@@ -213,6 +215,8 @@ export const TaskResultContractSchema = z.object({
   blockers: z.array(z.string()).default([]),
   verify_command: z.string().nullable().optional(),
   verify_exit_code: z.number().int().nullable().optional(),
+  /** Files outside files_allowed the task cannot finish without; set with status "blocked". */
+  needs_files: z.array(z.string()).optional(),
 });
 export type TaskResultContract = z.infer<typeof TaskResultContractSchema>;
 
@@ -573,6 +577,8 @@ export type RoomReportEvent =
   | 'auto_resume_failed'
   | 'run_finished'
   | 'run_stopped'
+  | 'merge_conflict'
+  | 'scope_request'
   | 'task_started'
   | 'task_finished'
   | 'task_failed'
@@ -608,6 +614,8 @@ export interface RoomReportContent {
   findingsCount?: number;
   findings?: Array<{ severity: ReviewFindingSeverity; file: string; note: string }>;
   mergeCommitSha?: string;
+  /** For `scope_request`: files outside the task's files_allowed that it needs. */
+  needsFiles?: string[];
   /** For `run_finished` and `run_stopped`: task counts and the external IDs of tasks left behind. */
   outcome?: { done: number; total: number; reviewFailed: string[]; failed: string[]; waiting: string[] };
 }
@@ -817,6 +825,12 @@ export const ReorderRoutingRulesInputSchema = z.object({
   ruleIds: z.array(z.string().min(1)).min(1),
 });
 export type ReorderRoutingRulesInput = z.infer<typeof ReorderRoutingRulesInputSchema>;
+
+export const AllowTaskScopeInputSchema = z.object({
+  files: z.array(z.string().trim().min(1)).min(1),
+  allowUnconfined: z.boolean().default(false),
+});
+export type AllowTaskScopeInput = z.infer<typeof AllowTaskScopeInputSchema>;
 
 export const StartExecutionInputSchema = z.object({
   sessionId: z.string().min(1).optional(),

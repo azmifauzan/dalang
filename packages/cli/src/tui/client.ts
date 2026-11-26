@@ -290,6 +290,17 @@ export class RoomApiClient {
     );
   }
 
+  allowTaskScope(
+    projectId: string,
+    taskId: string,
+    opts: { files: string[]; allowUnconfined?: boolean },
+  ): Promise<{ task: TaskDTO }> {
+    return this.request(
+      `/api/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/allow-scope`,
+      { method: 'POST', body: JSON.stringify(opts) },
+    );
+  }
+
   async rejectTask(
     projectId: string,
     taskId: string,

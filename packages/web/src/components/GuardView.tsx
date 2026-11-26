@@ -220,7 +220,9 @@ export function GuardView({ project, sessionId, onGoToWork }: GuardViewProps) {
       if (data.integrationRun) {
         setExpandedIntegrationId(data.integrationRun.id);
       }
-      if (data.task.output === 'answer' || !data.mergeCommitSha) {
+      if (data.mergeConflict) {
+        setActionMessage({ kind: 'err', text: t('guard.mergeConflictSentBack', { task: data.task.externalId }) });
+      } else if (data.task.output === 'answer' || !data.mergeCommitSha) {
         const answerPath = data.answerPath ?? `.dalang/answers/${data.task.id}.md`;
         setActionMessage({
           kind: 'ok',

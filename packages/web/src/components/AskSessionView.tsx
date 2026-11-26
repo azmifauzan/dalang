@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { ChatImage, ProjectSummary, ProviderId, SessionMode, SessionSummaryDTO } from '@dalang/shared';
+import type { ChatImage, ProjectSummary, ProviderId, RoomReportContent, SessionMode, SessionSummaryDTO } from '@dalang/shared';
 import { useI18n } from '../i18n/index.js';
 import { api } from '../lib/api.js';
 import { ChatTranscript } from './chat/ChatTranscript.js';
@@ -56,6 +56,48 @@ export function AskSessionView({
     queryKey: ['discuss', project.id, session?.id ?? 'new'],
     queryFn: () => api.getDiscussState(project.id, session!.id),
     enabled: Boolean(session),
+  });
+
+  // An Auto plan of two or more tasks waits as a draft until it is approved here or in the room.
+  const planQuery = useQuery({
+    queryKey: ['plan', project.id, session?.id ?? 'new'],
+    queryFn: () => api.getPlan(project.id, session!.id),
+    enabled: Boolean(session && session.mode === 'auto'),
+  });
+  const approvePlanMutation = useMutation({
+    mutationFn: async () => {
+      await api.approvePlan(project.id, session!.id);
+      await api.startExecution(project.id, { sessionId: session!.id });
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ['plan', project.id, session?.id] });
+      qc.invalidateQueries({ queryKey: ['discuss', project.id, session?.id] });
+      qc.invalidateQueries({ queryKey: ['sessions', project.id] });
+    },
+  });
+  const draftPlan = planQuery.data?.plan?.status === 'draft' ? planQuery.data.plan : null;
+  // A failed task whose latest report asks for files outside its scope (R10).
+  const scopeAsk = (() => {
+    const failed = new Set((planQuery.data?.plan?.tasks ?? []).filter((task) => task.status === 'failed').map((task) => task.id));
+    const latestByTask = new Map<string, { id: string; content: RoomReportContent }>();
+    for (const m of discussQuery.data?.messages ?? []) {
+      if (m.type !== 'report' || !m.content || typeof m.content !== 'object') continue;
+      const c = m.content as RoomReportContent;
+      if (c.taskId) latestByTask.set(c.taskId, { id: m.id, content: c });
+    }
+    for (const [taskId, latest] of latestByTask) {
+      if (failed.has(taskId) && latest.content.event === 'scope_request' && latest.content.needsFiles?.length) {
+        return { taskId, messageId: latest.id, files: latest.content.needsFiles };
+      }
+    }
+    return null;
+  })();
+  const allowScopeMutation = useMutation({
+    mutationFn: (ask: { taskId: string; files: string[] }) => api.allowTaskScope(project.id, ask.taskId, ask.files),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ['plan', project.id, session?.id] });
+      qc.invalidateQueries({ queryKey: ['discuss', project.id, session?.id] });
+    },
   });
 
   const sendMutation = useMutation({
@@ -166,6 +208,26 @@ export function AskSessionView({
                 session={session}
                 lastReplyRef={lastReplyRef}
                 onPromote={session ? (mode) => onPromoteSession(session.id, mode) : undefined}
+                scopeRequest={
+                  scopeAsk
+                    ? {
+                        messageId: scopeAsk.messageId,
+                        pending: allowScopeMutation.isPending,
+                        error: allowScopeMutation.isError ? (allowScopeMutation.error as Error).message : null,
+                        onAllow: () => allowScopeMutation.mutate({ taskId: scopeAsk.taskId, files: scopeAsk.files }),
+                      }
+                    : undefined
+                }
+                planApproval={
+                  draftPlan
+                    ? {
+                        version: draftPlan.version,
+                        pending: approvePlanMutation.isPending,
+                        error: approvePlanMutation.isError ? (approvePlanMutation.error as Error).message : null,
+                        onApprove: () => approvePlanMutation.mutate(),
+                      }
+                    : undefined
+                }
               />
 
               {turnRunning && (

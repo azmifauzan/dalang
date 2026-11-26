@@ -18,7 +18,7 @@ Run `dalang` in an interactive terminal to open the team room. If a Dalang serve
 
 *Terminal room with demonstration data.*
 
-- **Auto:** Describe a question, plan, or task (code or non-code). The Lead decides how to proceed, can start approved task plans, and can stop running tasks when asked. Review diffs or answers before merging or accepting.
+- **Auto:** Describe a question, plan, or task (code or non-code). The Lead decides how to proceed, shows a plan of two or more tasks with its executors for your approval before it starts, and can stop running tasks when asked. Review diffs or answers before merging or accepting.
 - **Ask:** Type a question for the Lead. Use `/model` to choose the provider, model, and reasoning effort for Lead messages.
 - **Quick:** Run `/mode quick`, then describe the work. Read the draft task, output kind (`files` or `answer`), allowed files, and optional verification command. Press `y` and Enter at the run gate, or use `/run`. Inspect the review and `/diff`, then press `y` at the gate or use `/merge` (for file tasks) or `/accept` (for answer tasks).
 - **Full:** Run `/mode full`, discuss the scope, and use `/finish` to draft the brief. Approve the brief to generate a plan. Approve the plan to start work. Use `/diff T-001` and `/merge T-001` (or `/accept T-001` for answer tasks) for an individual task, or `/web` to inspect the same session in the browser.
@@ -103,7 +103,7 @@ A project opens into a chat with the Lead. Pick a mode beside the send button. D
 
 | Mode | Use it for | What happens |
 | --- | --- | --- |
-| **Auto** (default) | Questions, brainstorming, plans, and implementation | Lead responds or creates and starts a task plan. Independent tasks can run in parallel; dependent tasks wait for their prerequisites and merge approval. |
+| **Auto** (default) | Questions, brainstorming, plans, and implementation | Lead responds or proposes a task plan. A plan of one task starts at once; a plan of two or more tasks is shown first, with each task's order and executor, and starts only when you approve it (`y` in the room, **Approve and start** in the web UI). Send a message instead to change tasks, order, or executors; the Lead returns a revised plan. Independent tasks can run in parallel; dependent tasks wait for their prerequisites and merge approval. |
 | **Ask** | Questions about the repository | The Lead reads the repository and answers in chat. Dalang saves the transcript and keeps technical logs in an ignored directory. |
 | **Quick** | A small fix, feature, document edit, or question that needs one task | The Lead drafts a single task with its output (project files or a standalone answer), allowed files, acceptance criteria, and a verify command when a command can check the work. You run, review, and merge or accept it from the chat. |
 | **Full** | A larger change | You discuss scope, approve a brief and plan, then use the Work and Review views to run and merge tasks. |
@@ -179,11 +179,13 @@ Click **Start work** to run the approved queue. Dalang uses a separate Git workt
 
 ## 5. Review and merge
 
+When an executor needs a file outside the task's allowed files, it asks instead of changing it, and Dalang shows the request: allow the files (`y` in the room, **Allow these files and continue** in the web UI) and the task continues with them. A task that a Dalang restart cut short continues by itself after the restart.
+
 After an executor finishes, Dalang runs the task’s verification (or records it as skipped when the task has no verify command) and an automated review. Open **Review & merge** and select a task. Read the review findings, open **Show verify output**, and inspect the **Branch diff** before deciding. An answer task shows **Task answer** instead of a diff.
 
 ![Full Review and merge view showing a merged task and pull request controls](images/review.webp)
 
-- **Approve and merge** adds the task changes to the project’s target branch. Dalang refuses a merge only when an uncommitted file in the target repository is also changed by the task, leaving unrelated uncommitted edits intact. Dalang asks for a separate override if automated review failed.
+- **Approve and merge** adds the task changes to the project’s target branch. If the merge conflicts with changes made on that branch while the task ran, the task goes back to its executor: Dalang merges the target branch into the task branch, the executor resolves the conflicted files, and verify, review, and the merge question run again. Dalang refuses a merge only when an uncommitted file in the target repository is also changed by the task, leaving unrelated uncommitted edits intact. Dalang asks for a separate override if automated review failed.
 - **Accept answer** (answer tasks) saves the answer to `.dalang/answers/<task-id>.md` and the session history and removes the task worktree. Nothing is merged, and an answer task cannot be pushed.
 - **Reject and send back** lets you leave feedback and optionally requeue the task for another attempt.
 - Set the **Integration command** for project-wide checks, such as `npm test`. Run it after a merge using the checkbox, or manually with **Run integration suite**.

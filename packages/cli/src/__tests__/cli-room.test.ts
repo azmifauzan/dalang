@@ -903,6 +903,55 @@ describe('Ink terminal room E2E (Quick task from plan to merge with no browser)'
     );
     expect(counted?.context).toBe('Review round 2 passed (1 finding(s), reviewer) · verify passed');
 
+    // An Auto plan of two or more tasks is listed with order and executors, and waits for approval.
+    const proposed = formatRoomMessage({
+      id: 'p', sessionId: 's1', role: 'lead', type: 'plan', createdAt: '',
+      content: {
+        version: 2, taskCount: 2, awaitingApproval: true,
+        tasks: [
+          { id: 'a', title: 'First', role: 'engineer', complexity: 'low', dependsOn: [], executor: 'coder-small · antigravity · gemini-4-hydrogen' },
+          { id: 'b', title: 'Second', role: 'engineer', complexity: 'high', dependsOn: ['a'], executor: 'coder-heavy · claude-code · opus' },
+        ],
+      },
+    } as never);
+    expect(proposed.lines).toEqual([
+      'Proposed plan: 2 task(s). Nothing runs until you approve it.',
+      '  [a] First (executor · low)',
+      '      executor: coder-small · antigravity · gemini-4-hydrogen',
+      '  [b] Second (executor · high)',
+      '      executor: coder-heavy · claude-code · opus',
+      '      after: a',
+    ]);
+    const planGate = detectPendingGate(
+      {
+        session: { id: 's1', mode: 'auto' },
+        messages: [],
+        briefs: [],
+        plan: { version: 2, status: 'draft', tasks: [{ needsSplit: false }, { needsSplit: false }] },
+      } as never,
+      null,
+    );
+    expect(planGate?.kind).toBe('approve_plan');
+    expect(planGate?.prompt).toBe('Approve Plan v2 (2 task(s)) and start work?');
+    expect(planGate?.no).toContain('send a message to change it');
+
+    // A failed task that asked for files outside its scope gets an Allow gate.
+    const scopeGate = detectPendingGate(
+      {
+        session: { id: 's1', mode: 'auto' },
+        messages: [{
+          id: 'sr', sessionId: 's1', role: 'agent', type: 'report', createdAt: '',
+          content: { event: 'scope_request', taskId: 't9', needsFiles: ['lib/runner.ts'], summary: '[T-009] needs files outside its scope: lib/runner.ts.' },
+        }],
+        briefs: [],
+        plan: { version: 1, status: 'approved', tasks: [{ id: 't9', externalId: 'T-009', status: 'failed', needsSplit: false }] },
+      } as never,
+      null,
+    );
+    expect(scopeGate?.kind).toBe('scope_request');
+    expect(scopeGate?.prompt).toBe('Allow [T-009] to also change lib/runner.ts?');
+    expect(scopeGate?.yes).toBe('allow and continue the task');
+
     // The Lead's own yes/no question about replacing this chat's plan gets the same gate box.
     const leadQuestion = detectPendingGate(
       {

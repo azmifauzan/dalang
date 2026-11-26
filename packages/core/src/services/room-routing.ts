@@ -14,6 +14,8 @@ export interface RoomExecutionRouter {
   recoverEmptyFailedWork?(projectId: string): Promise<void>;
   discardSessionWork?(projectId: string, sessionId: string): Promise<unknown>;
   startExecution?(projectId: string, input: { sessionId: string }): Promise<unknown>;
+  /** The executor each task of the session's latest plan would run on, by external task id. */
+  previewExecutors?(projectId: string, sessionId: string): Promise<Map<string, { profileName: string; provider: string; model: string }>>;
   stopExecution?(projectId: string, taskId?: string, sessionId?: string): Promise<{ stopped: boolean }>;
   commitWorkspace?(projectId: string, input: { paths: string[]; message: string }): Promise<string>;
   listActiveRunsForSession(projectId: string, sessionId: string): ActiveCoderRunInfo[];

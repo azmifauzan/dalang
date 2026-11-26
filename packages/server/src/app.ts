@@ -5,6 +5,7 @@ import fastifyWebsocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
+  AllowTaskScopeInputSchema,
   ApproveMergeInputSchema,
   AssignTaskProfileInputSchema,
   BriefContentSchema,
@@ -159,6 +160,8 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     if (options.enableScheduler !== false) {
       automationService.start();
     }
+    // Tasks a restart cut short continue once the server and its MCP endpoint are up.
+    void executionService.continueInterruptedWork().catch(() => undefined);
   });
 
   // Binding to 127.0.0.1 is not enough: a web page can still reach it through DNS rebinding,
@@ -669,6 +672,15 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     async (req) => {
       const body = ApproveMergeInputSchema.parse(req.body ?? {});
       return executionService.approveMergeTask(req.params.id, req.params.taskId, body);
+    },
+  );
+
+  // A task asked for files outside its scope (R10): the user allows some of them and the task continues.
+  app.post<{ Params: { id: string; taskId: string } }>(
+    '/api/projects/:id/tasks/:taskId/allow-scope',
+    async (req) => {
+      const body = AllowTaskScopeInputSchema.parse(req.body ?? {});
+      return executionService.allowTaskScope(req.params.id, req.params.taskId, body);
     },
   );
 

@@ -341,6 +341,11 @@ export const api = {
     request<{ guard: GuardStateDTO }>(withSessionQuery(`/api/projects/${id}/guard`, sessionId)),
   getTaskDiff: (id: string, taskId: string) =>
     request<{ diff: TaskDiffDTO }>(`/api/projects/${id}/tasks/${taskId}/diff`),
+  allowTaskScope: (id: string, taskId: string, files: string[]) =>
+    request<{ task: TaskDTO }>(`/api/projects/${id}/tasks/${taskId}/allow-scope`, {
+      method: 'POST',
+      body: JSON.stringify({ files }),
+    }),
   approveMergeTask: (id: string, taskId: string, body: Partial<ApproveMergeInput> = {}) =>
     request<{
       task: TaskDTO;
@@ -349,6 +354,8 @@ export const api = {
       answerPath?: string | null;
       integrationRun: IntegrationRunDTO | null;
       pushPrResult?: PushPrResultDTO | null;
+      /** The merge conflicted and the task went back to its executor to resolve it. */
+      mergeConflict?: boolean;
     }>(`/api/projects/${id}/tasks/${taskId}/approve-merge`, {
       method: 'POST',
       body: JSON.stringify(body),

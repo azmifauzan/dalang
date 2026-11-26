@@ -395,7 +395,7 @@ describe('v0.3 Kawal: Reviewer, Fix Loop, Guard Diff/Merge, Integration, Profile
     }
   });
 
-  it('aborts cleanly on merge conflict and leaves the repository clean', async () => {
+  it('aborts cleanly on merge conflict, leaves the repository clean, and sends the task back', async () => {
     const runner: CliRunner = {
       async which(bin) {
         return `/usr/bin/${bin}`;
@@ -453,9 +453,13 @@ describe('v0.3 Kawal: Reviewer, Fix Loop, Guard Diff/Merge, Integration, Profile
       execFileSync('git', ['add', '-A'], { cwd: projDir });
       execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@x', 'commit', '-m', 'main-conflict'], { cwd: projDir });
 
-      await expect(execSvc.approveMergeTask(project.id, plan.tasks[0].id)).rejects.toThrow(/Merge conflict/);
+      // A conflict no longer stops at an error: the task goes back to its executor (R9).
+      const result = await execSvc.approveMergeTask(project.id, plan.tasks[0].id);
+      expect(result.mergeConflict).toBe(true);
       // Repo must not be left in MERGING state.
       expect(fs.existsSync(path.join(projDir, '.git', 'MERGE_HEAD'))).toBe(false);
+      expect(fs.readFileSync(path.join(projDir, 'src', 'conflict.ts'), 'utf8')).toContain('from-main');
+      await execSvc.waitForTaskExecution(plan.tasks[0].id);
     } finally {
       conn.close();
     }

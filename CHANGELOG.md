@@ -2,6 +2,20 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
+## 0.14.7 (Plans wait for approval; conflicts, scope, and restarts no longer stop a run), 26 Nov
+
+Fixes for the problems that stopped the first run of v0.15 inside DALANG, each following how T3 Code handles the same problem. The rest of v0.15 stays for DALANG to build.
+
+- **Auto shows a plan before it runs it** (B10). When the Lead plans two or more tasks in Auto, the plan is saved as a draft and shown in the room and the web UI with every task, the tasks it waits for, and the executor that will run it (profile, CLI, and model). Nothing runs until you approve it: `y` + Enter in the room, or **Approve and start** in the web UI. To change tasks, order, or executors, send a message; the Lead returns a revised plan. A plan of one task still starts at once. This follows T3 Code's proposed plans. A plan task can name its executor (`profile`), and the Lead is told which executor profiles exist.
+- **A merge conflict goes back to the task** (B9, R9). When merging a passed task into the main branch conflicts, DALANG merges the main branch into the task branch, commits the conflict markers, and continues the task with a note naming the conflicted files. Verify, review, and the merge gate run again. The main checkout is left untouched. Conflicts in nested repositories still stop at the git error.
+- **A task that needs a file outside its scope asks instead of failing** (B13, R10). The executor reports the files in `needs_files`; the room and the web UI ask whether to allow them (only the files it asked for). On yes they join the task's `files_allowed` and the task continues on its branch.
+- **Tasks cut short by a restart continue** (B2, R3). On start, a task the restart interrupted resumes on its branch, in the same CLI session when there is one, with T3 Code's continue prompt: finish the task, but confirm an action that changes state did not happen before repeating it. A task cut short more than three times in five minutes is left stopped with a note. An Auto session's queue starts again.
+- **The approval box shows the review's real finding count.**
+- **PRD: T3 Code, third pass.** Every bug found while running v0.15 inside DALANG is compared with how T3 Code handles it, and each remaining v0.15 item names the design to follow.
+- **From the v0.15 run inside DALANG:** `restart-idle` (startup recovery keeps saved gates, reviews, and worktrees) ships here.
+- **Upgrade.** No database migration. Restart a running `dalang web` or room after updating; a task that was running continues by itself.
+- **Verified:** typecheck, tests, and build (core 199, server 17, cli 67). New tests: Auto with two tasks stays a draft (fails on 0.14.6), a conflicting merge is sent back and then merges (fails with the conflict handling off), a scope request is asked and continued, and a restarted task continues while a fourth restart in five minutes does not. Not run: live providers, a PTY check, macOS, and Windows.
+
 ## 0.14.6 (Clearer approval prompts), 26 Nov
 
 - **Approval prompts in the terminal room say what they need.** Each gate is now its own box headed "NEEDS YOUR APPROVAL": the question, a line on why the task is ready (review round, findings, reviewer, verify result, scope warnings), and what `y` + Enter and `n` + Enter each do. When several tasks wait for a merge, the heading says how many more are waiting. Approval stays required in every mode.

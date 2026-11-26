@@ -105,6 +105,9 @@ const PENDING_APPROVAL_TASK_STATUSES = new Set<string>([
   'review_failed',
 ]);
 
+/** An Auto plan with at least this many tasks waits for the user's approval before it runs. */
+const AUTO_PLAN_APPROVAL_MIN_TASKS = 2;
+
 type ChatTurnImage = TurnImage & { name: string };
 
 type PendingAutoWork = { sessionId: string; snapshot: string; plan: PlanContract };
@@ -1296,12 +1299,15 @@ export class LeadService {
             if (!this.executionRouter?.discardSessionWork) throw new Error('Automatic discard is unavailable.');
             await this.executionRouter.discardSessionWork(projectId, blocker.id);
           }
-          await this.startAutoPlan(project, sessionRow, plan);
+          const outcome = await this.startAutoPlan(project, sessionRow, plan);
+          const next = outcome === 'draft'
+            ? 'The new plan is above: approve it to start, or tell me what to change.'
+            : 'Started the requested work.';
           text = !blocker
-            ? 'Started the requested work; the blocking session was already resolved.'
+            ? `The blocking session was already resolved. ${next}`
             : blocker.id === sessionRow.id
-              ? 'Replaced the unfinished tasks of this chat with the new plan and started the requested work.'
-              : `Discarded unfinished work in "${blocker.title || 'Untitled session'}" and started the requested work.`;
+              ? `Replaced the unfinished tasks of this chat. ${next}`
+              : `Discarded unfinished work in "${blocker.title || 'Untitled session'}". ${next}`;
         } catch (error) {
           text = `Could not continue Auto work: ${error instanceof Error ? error.message : String(error)}`;
         }
@@ -1441,6 +1447,13 @@ export class LeadService {
     const activeRuns = auto && this.executionRouter
       ? this.executionRouter.listActiveRunsForSession(project.id, sessionRow.id)
       : [];
+    // The executors the Lead can assign per task with `profile`. The reviewer and Lead profiles are not executors.
+    const executorList = auto
+      ? this.profiles.listProfiles()
+        .filter((p) => p.name !== 'lead' && p.name !== 'reviewer')
+        .map((p) => `${p.name} (${p.provider} · ${p.model})`)
+        .join(', ')
+      : '';
     const activeRunsBlock = activeRuns.length > 0
       ? `\nCurrently running tasks in this session:\n${activeRuns.map((r) => `- [${r.externalId}] @${r.profileName} (${r.kind})`).join('\n')}\n`
       : '';
@@ -1464,6 +1477,7 @@ export class LeadService {
         `Response instructions:`,
         `- Answer clearly and directly based on the project and conversation context.`,
         auto ? `- If the user explicitly asks to execute work, output JSON with answer and auto_plan containing a complete validated task plan. Delegate only the work requested; never modify files yourself. Use independent tasks for parallel work and depends_on for serial work. Each task must be small with concrete acceptance criteria and needs_split false. Set output to "files" (with explicit files_allowed) when the task creates or edits project files, or "answer" (with files_allowed: []) when the task produces a standalone answer or report without changing project files. Include a verify command whenever the work can be checked by a command; omit verify (or set null) only when no command applies. Schema for auto_plan: ${JSON.stringify(z.toJSONSchema(PlanContractSchema))}` : `- If the user is asking for project changes or tasks to run, do NOT make edits; explain what would be needed and optionally suggest switching to "quick" (for a small single-task job) or "full" (for a larger multi-task plan).`,
+        auto ? `- A plan with two or more tasks is shown to the user for approval before any task runs, so say that you are proposing the plan, not that work has started. If the user asks to change a proposed plan (tasks, order, files, or executors), return the whole revised plan as auto_plan. Each task may set "profile" to an executor profile name when the user asks for one or the task needs a stronger executor; otherwise omit it and routing picks by complexity. Executor profiles: ${executorList || 'none configured'}.` : '',
         auto ? `- Questions, brainstorming, planning-only requests, and ambiguous requests must never have auto_plan. Answer in JSON {"answer": string, "auto_plan": null} and ask a specific question when necessary.` : '',
         auto ? `- Ask for explicit informed approval before any action involving production, deployments, live services, production or user data, destructive data changes, risky database migrations, access or secret changes, external communications, billing, or other irreversible effects. Explain the exact action and impact, output no auto_plan, and wait for a subsequent user reply explicitly approving that action. A general work request or plan approval is not approval for these actions. If uncertain, ask. Preserve these requirements in every delegated task.` : '',
         auto ? `- If the user explicitly asks to stop running tasks or executors, return "auto_stop": true (to stop all running tasks in this session) or "auto_stop": {"taskId": "<externalId>"} (for one specific task). DALANG stops those running tasks immediately after your response; your read-only CLI does not prevent this.` : '',
@@ -1726,11 +1740,16 @@ export class LeadService {
     };
   }
 
+  /**
+   * Saves an Auto plan. A plan of one task starts at once. A larger plan is saved as a draft and shown
+   * with the executor of each task, so the user approves it (or asks the Lead to change it) before any
+   * task runs, as T3 Code's proposed plans wait for "implement".
+   */
   private async startAutoPlan(
     project: typeof projects.$inferSelect,
     session: typeof sessions.$inferSelect,
     contract: PlanContract,
-  ): Promise<void> {
+  ): Promise<'started' | 'draft'> {
     this.assertCanStartWorkInSession(project.id, session.id);
     if (this.hasSessionUnfinishedWork(session.id)) {
       throw conflictError('Finish or discard the existing work before starting a new Auto plan.');
@@ -1753,8 +1772,43 @@ export class LeadService {
       }).run();
       this.persistPlanTasks(planId, plan.tasks.map((task) => ({ task, splitDepth: 0, parentExternalId: null })));
     });
+    if (plan.tasks.length >= AUTO_PLAN_APPROVAL_MIN_TASKS) {
+      await this.postAutoPlanForApproval(project.id, session.id, plan);
+      return 'draft';
+    }
     this.approvePlan(project.id, session.id);
     await this.executionRouter.startExecution(project.id, { sessionId: session.id });
+    return 'started';
+  }
+
+  /** The plan message the room and the web UI show for approval: tasks, order, and who runs them. */
+  private async postAutoPlanForApproval(projectId: string, sessionId: string, plan: PlanContract): Promise<void> {
+    const executors = await this.executionRouter?.previewExecutors?.(projectId, sessionId).catch(() => null);
+    this.postRoomMessage(projectId, sessionId, {
+      role: 'lead',
+      type: 'plan',
+      kind: 'gate',
+      authorProfileId: this.getLeadProfileId(),
+      content: {
+        version: plan.version,
+        milestoneCount: plan.milestones.length,
+        taskCount: plan.tasks.length,
+        awaitingApproval: true,
+        tasks: plan.tasks.map((t) => {
+          const executor = executors?.get(t.id);
+          return {
+            id: t.id,
+            title: t.title,
+            role: t.role,
+            complexity: t.complexity,
+            output: t.output,
+            dependsOn: t.depends_on,
+            executor: executor ? `${executor.profileName} · ${executor.provider} · ${executor.model}` : null,
+          };
+        }),
+      },
+    });
+    this.events?.emitEvent({ type: 'plan.updated', projectId, sessionId });
   }
 
   private async runQuickTurnInner(
@@ -3504,6 +3558,19 @@ export class LeadService {
       };
     });
 
+    // A plan may name the executor profile of a task; it is stored as the task's profile override.
+    const profileRows = items.some((item) => item.task.profile) ? this.profiles.listProfiles() : [];
+    const profileIdFor = (task: PlanTaskContract): string | null => {
+      if (!task.profile) return null;
+      const match = profileRows.find((p) => p.name === task.profile || p.id === task.profile);
+      if (!match) {
+        throw new Error(
+          `Task ${task.id} names an unknown executor profile "${task.profile}". Use one of: ${profileRows.map((p) => p.name).join(', ')}.`,
+        );
+      }
+      return match.id;
+    };
+
     for (const entry of prepared) {
       const { task, splitDepth, parentExternalId } = entry.item;
       const status: TaskStatus = task.needs_split ? 'needs_split' : 'ready';
@@ -3528,7 +3595,7 @@ export class LeadService {
           needsSplit: task.needs_split,
           splitDepth,
           parentTaskId: parentExternalId,
-          profileOverride: null,
+          profileOverride: profileIdFor(task),
           reviewRounds: 0,
           createdAt: now,
           updatedAt: now,

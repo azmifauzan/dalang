@@ -23,6 +23,8 @@ export function ChatTranscript({
   onPromote,
   renderCard,
   renderBody,
+  planApproval,
+  scopeRequest,
 }: {
   messages: DiscussMessageDTO[];
   session: SessionSummaryDTO | null;
@@ -31,6 +33,10 @@ export function ChatTranscript({
   onPromote?: (mode: SessionMode) => void;
   renderCard?: (msg: DiscussMessageDTO) => ReactNode | null;
   renderBody?: (msg: DiscussMessageDTO) => ReactNode | null;
+  /** A draft plan that waits for approval: its version gets an Approve button under its message. */
+  planApproval?: { version: number; pending: boolean; error: string | null; onApprove: () => void };
+  /** A failed task that asked for more files: its latest scope request gets an Allow button. */
+  scopeRequest?: { messageId: string; pending: boolean; error: string | null; onAllow: () => void };
 }) {
   const { t, formatTime } = useI18n();
 
@@ -69,7 +75,15 @@ export function ChatTranscript({
                 version?: number;
                 milestoneCount?: number;
                 taskCount?: number;
-                tasks?: Array<{ id: string; title: string; role: string; complexity: string }>;
+                awaitingApproval?: boolean;
+                tasks?: Array<{
+                  id: string;
+                  title: string;
+                  role: string;
+                  complexity: string;
+                  dependsOn?: string[];
+                  executor?: string | null;
+                }>;
               })
             : null;
         const custom = renderBody?.(msg) ?? null;
@@ -216,6 +230,16 @@ export function ChatTranscript({
               ) : report ? (
                 <div className="space-y-1.5 text-sm">
                   <p className="whitespace-pre-wrap">{formatReportSummary(report)}</p>
+                  {scopeRequest && report.event === 'scope_request' && msg.id === scopeRequest.messageId && (
+                    <div className="flex flex-wrap items-center gap-3">
+                      <Button type="button" onClick={scopeRequest.onAllow} disabled={scopeRequest.pending}>
+                        {t('room.scopeAllow')}
+                      </Button>
+                      {scopeRequest.error && (
+                        <span className="text-xs" style={{ color: 'var(--error)' }}>{scopeRequest.error}</span>
+                      )}
+                    </div>
+                  )}
                   {report.diffStats && (
                     <p className="font-mono text-xs" style={{ color: 'var(--text-secondary)' }}>
                       {t('room.report.diffStats', {
@@ -261,9 +285,29 @@ export function ChatTranscript({
                       {planMsg.tasks.map((task) => (
                         <li key={task.id}>
                           [{task.id}] {task.title}
+                          {task.executor && (
+                            <div className="pl-4">{t('room.planExecutor', { executor: task.executor })}</div>
+                          )}
+                          {task.dependsOn && task.dependsOn.length > 0 && (
+                            <div className="pl-4">{t('room.planAfter', { tasks: task.dependsOn.join(', ') })}</div>
+                          )}
                         </li>
                       ))}
                     </ul>
+                  )}
+                  {planApproval && planMsg.awaitingApproval && planMsg.version === planApproval.version && (
+                    <div
+                      className="flex flex-wrap items-center justify-between gap-3 rounded-[6px] border px-3 py-2.5"
+                      style={{ backgroundColor: 'var(--accent-tint)', borderColor: 'var(--accent)' }}
+                    >
+                      <p className="min-w-0 flex-1 text-xs">{t('room.planAwaiting')}</p>
+                      <Button type="button" onClick={planApproval.onApprove} disabled={planApproval.pending}>
+                        {planApproval.pending ? t('plan.approving') : t('room.planApproveStart')}
+                      </Button>
+                      {planApproval.error && (
+                        <p className="w-full text-xs" style={{ color: 'var(--error)' }}>{planApproval.error}</p>
+                      )}
+                    </div>
                   )}
                 </div>
               ) : ask ? (

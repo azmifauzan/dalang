@@ -723,6 +723,37 @@ export async function getTaskDiff(
   };
 }
 
+/**
+ * Merges the target branch into a task worktree so a task whose merge conflicted can resolve the
+ * conflict on its own branch. Conflicted files are committed with their conflict markers, so the
+ * worktree is clean and the executor's next checkpoint records the resolution. Returns the conflicted
+ * files and the target commit the task now builds on.
+ */
+export async function mergeTargetIntoTaskWorktree(
+  mainRepoPath: string,
+  worktreePath: string,
+  targetBranch: string,
+  message: string,
+  excludePaths?: string[],
+): Promise<{ targetSha: string; conflicted: string[] }> {
+  await assertRepoConfigSafe(mainRepoPath);
+  const targetSha = (await openSafeGit(mainRepoPath).raw(['rev-parse', '--verify', `${targetBranch}^{commit}`])).trim();
+  const git = openSafeGit(worktreePath);
+  const identityArgs = await ensureGitIdentityArgs(git);
+  try {
+    await git.raw([...identityArgs, 'merge', '--no-ff', '--no-verify', '--no-edit', '-m', message, targetSha]);
+  } catch {
+    // A conflicted merge exits non-zero and leaves MERGE_HEAD; it is handled below.
+  }
+  const conflicted = (await git.status()).conflicted;
+  if (await hasMergeInProgress(git)) {
+    const excludeSpecs = buildExcludePathspecs(await filterUnignoredPaths(git, excludePaths));
+    await git.raw(['add', '-A', '--', '.', ...excludeSpecs]);
+    await git.raw([...identityArgs, 'commit', '--no-verify', '-m', message]);
+  }
+  return { targetSha, conflicted };
+}
+
 async function hasMergeInProgress(git: SimpleGit): Promise<boolean> {
   try {
     await git.raw(['rev-parse', '--verify', 'MERGE_HEAD']);

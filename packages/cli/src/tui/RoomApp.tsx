@@ -681,6 +681,17 @@ export function RoomApp({
             await client.startExecution(activeProjectId, sid, allowUnconfined);
             pushNotice(`Approved Plan v${pendingGate.version} and started work.`, { badge: 'PLAN' });
           });
+        } else if (pendingGate.kind === 'scope_request') {
+          if (!accept) {
+            pushNotice(
+              `[${pendingGate.externalId}] stays failed. Ask the Lead to replan it, or Retry it as it is.`,
+              { badge: 'SCOPE' },
+            );
+            return;
+          }
+          await runWithUnconfinedSupport(`[${pendingGate.externalId}] with more files`, async (allowUnconfined) => {
+            await client.allowTaskScope(activeProjectId, pendingGate.taskId, { files: pendingGate.files, allowUnconfined });
+          });
         } else if (pendingGate.kind === 'approve_merge') {
           const isAnswer = pendingGate.output === 'answer';
           if (!accept) {

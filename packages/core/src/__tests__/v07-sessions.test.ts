@@ -464,12 +464,46 @@ describe('Auto session mode', () => {
       startExecution: async (_projectId, input) => { started.push(input.sessionId); },
     });
     try {
+      // Two or more tasks wait for approval, as T3 Code's proposed plans wait for "implement".
       const result = await leadSvc.sendChatMessage(project.id, { mode: 'auto', message: 'Fix the math code' });
-      const plan = leadSvc.getPlan(project.id, result.session.id);
-      expect(plan?.status).toBe('approved');
+      let plan = leadSvc.getPlan(project.id, result.session.id);
+      expect(plan?.status).toBe('draft');
       expect(plan?.tasks).toHaveLength(2);
       expect(plan?.tasks[1].dependsOn).toEqual(['T-001']);
-      expect(started).toEqual([result.session.id]);
+      expect(started).toEqual([]);
+      const planMessage = result.messages.filter((m) => m.type === 'plan').at(-1)?.content as {
+        awaitingApproval?: boolean; tasks: Array<{ id: string; dependsOn: string[]; executor: string | null }>;
+      };
+      expect(planMessage.awaitingApproval).toBe(true);
+      expect(planMessage.tasks.map((t) => [t.id, t.dependsOn])).toEqual([['T-001', []], ['T-002', ['T-001']]]);
+
+      // Asking for a change returns a revised plan, again as a draft; one task may name its executor.
+      runner.autoResponse = {
+        answer: 'Revised plan.',
+        auto_plan: { milestones: [{ id: 'M1', title: 'Fix' }], tasks: [
+          task('T-001', 'src/math.mjs', []), { ...task('T-002', 'src/math.test.mjs', ['T-001']), profile: 'coder-heavy' },
+        ] },
+      };
+      await leadSvc.sendChatMessage(project.id, { sessionId: result.session.id, mode: 'auto', message: 'run T-002 on the heavy executor' });
+      plan = leadSvc.getPlan(project.id, result.session.id);
+      expect(plan?.version).toBe(2);
+      expect(plan?.status).toBe('draft');
+      const heavy = conn.sqlite.prepare("select id from agent_profiles where name = 'coder-heavy'").get() as { id: string };
+      expect(plan?.tasks[1].profileOverride).toBe(heavy.id);
+      expect(plan?.tasks[0].profileOverride).toBeNull();
+      expect(started).toEqual([]);
+
+      leadSvc.approvePlan(project.id, result.session.id);
+      expect(leadSvc.getPlan(project.id, result.session.id)?.status).toBe('approved');
+
+      // An unknown executor name is refused with the names that exist.
+      runner.autoResponse = {
+        answer: 'Plan.',
+        auto_plan: { milestones: [{ id: 'M1', title: 'Fix' }], tasks: [{ ...task('T-009', 'src/x.mjs', []), profile: 'nobody' }] },
+      };
+      const other = await leadSvc.sendChatMessage(project.id, { mode: 'auto', message: 'Fix x' });
+      const error = other.messages.filter((m) => m.type === 'error').at(-1)?.content;
+      expect(String(error)).toContain('unknown executor profile "nobody"');
     } finally {
       conn.close();
     }
@@ -523,7 +557,7 @@ describe('Auto session mode', () => {
       const approved = await leadSvc.sendChatMessage(project.id, { sessionId: result.session.id, mode: 'auto', message: 'yes' });
       expect(discarded).toEqual([blocker.id]);
       expect(started).toEqual([result.session.id]);
-      expect(approved.askReply?.text).toContain('started the requested work');
+      expect(approved.askReply?.text).toMatch(/started the requested work/i);
       expect(leadSvc.getPlan(project.id, result.session.id)?.status).toBe('approved');
     } finally {
       conn.close();
@@ -588,7 +622,7 @@ describe('Auto session mode', () => {
       });
       expect(discarded).toEqual([work.session.id]);
       expect(started).toEqual([work.session.id]);
-      expect(confirmed.askReply?.text).toContain('started the requested work');
+      expect(confirmed.askReply?.text).toMatch(/started the requested work/i);
     } finally {
       conn.close();
     }
