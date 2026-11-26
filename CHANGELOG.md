@@ -2,6 +2,13 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
+## 0.14.3 (Dependencies in task worktrees), 26 Nov
+
+- **Verify commands find their tools in task worktrees.** A task worktree holds only tracked files, so a JavaScript project had no `node_modules` and verify failed with errors such as `tsc: not found`. Agents could not install dependencies themselves, because the sandbox keeps the package manager store read-only. DALANG now installs the locked dependencies once per worktree before the agent starts (`pnpm`, `npm`, `yarn`, or `bun`, picked from the lockfile), and builds a workspace that has a root `build` script, since workspace packages usually import each other's build output. The install runs in the same sandbox, with write access only to the package manager's cache folders. It is skipped when `node_modules` is not in `.gitignore`, so installed files never count as task changes. A failed install is logged and the agent continues.
+- **Record provider CLI sessions.** Start DALANG with `DALANG_RECORD_DIR=<folder>` to save every `claude`, `codex`, and `agy` invocation as JSON (arguments, timed stdout, stderr, stdin, exit code, timeouts), with secret environment values redacted. `packages/core/scripts/recordings.mjs` summarizes timings and failures or turns recordings into a replay transcript. [Troubleshooting](docs/TROUBLESHOOTING.md#record-provider-cli-sessions-for-a-bug-report-or-replay-test)
+- **Upgrade.** No database migration is required. Restart a running `dalang web` or room after updating.
+- **Verified:** typecheck, tests, and build. A replay test that installs dependencies before the first coder turn fails on 0.14.2 and passes on 0.14.3. On a fresh worktree of this repository, setup took about 5 seconds and `pnpm -r typecheck` passed inside the sandbox. Not run: live providers, macOS, and Windows.
+
 ## 0.14.2 (Sandbox git mount hardening), 25 Nov
 
 - **Second security fix for the `/tmp` git mount.** In 0.14.1 a task run could still plant a fake worktree admin folder inside its own workspace, with a back-link and a `commondir` naming another git repository under the host `/tmp`, and a later run mounted that repository read-only. A git directory is now mounted only when its admin folder is git's own `<repository>/worktrees/<name>` in the host `/tmp`, and neither folder is inside the workspace. A run cannot write there, because its `/tmp` is a throwaway tmpfs. Use 0.14.2 instead of 0.14.0 or 0.14.1. No database migration is required.

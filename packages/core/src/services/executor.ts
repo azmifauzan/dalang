@@ -80,6 +80,7 @@ import {
 } from '../safe-fs.js';
 import { formatZodError } from './contract.js';
 import { localizeVerifyCommand } from './verify-command.js';
+import { detectWorktreeSetup, isNodeModulesIgnored, packageManagerCacheDirs } from './worktree-setup.js';
 import type { DalangEventBus } from './events.js';
 import {
   assertRepoConfigSafe,
@@ -387,6 +388,48 @@ export class ExecutionService {
     const allSessions = this.db.select({ id: sessions.id }).from(sessions).all();
     for (const s of allSessions) {
       this.leadService.reconcileSessionWorkState(s.id, false);
+    }
+  }
+
+  /**
+   * Installs locked dependencies in a fresh task worktree and its nested repositories before the
+   * agent starts, so verify commands find their tools. A failure is logged and the run goes on.
+   */
+  private async prepareWorktreeDependencies(
+    repoDirs: string[],
+    log: (line: string) => void,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const cacheDirs = packageManagerCacheDirs();
+    for (const dir of repoDirs) {
+      const steps = detectWorktreeSetup(dir);
+      if (steps.length && !isNodeModulesIgnored(dir)) {
+        log(`[dalang] Skipping dependency install${dir === repoDirs[0] ? '' : ` in ${path.basename(dir)}/`}: node_modules is not in .gitignore, so installed files would count as task changes.`);
+        continue;
+      }
+      // ponytail: an existing node_modules marks the worktree as set up, so a failed install is tried
+      // once per worktree, not on every fix round. A reset worktree is recreated and set up again.
+      if (steps.length) fs.mkdirSync(path.join(dir, 'node_modules'), { recursive: true });
+      for (const step of steps) {
+        if (signal.aborted) return;
+        log(`[dalang] Preparing worktree: ${step.command}${dir === repoDirs[0] ? '' : ` (in ${path.basename(dir)}/)`}`);
+        const tail: string[] = [];
+        const res = await this.registry.runShellCommand(step.cwd, step.command, {
+          signal,
+          timeoutMs: 900_000,
+          idleTimeoutMs: 300_000,
+          writablePaths: cacheDirs,
+          onLogLine: (line) => {
+            tail.push(line);
+            if (tail.length > 15) tail.shift();
+          },
+        });
+        if (res.exitCode !== 0) {
+          for (const line of tail) log(`[dalang]   ${line}`);
+          log(`[dalang] Worktree setup failed (exit ${res.exitCode ?? 'timeout'}); the agent continues without it.`);
+          break;
+        }
+      }
     }
   }
 
@@ -2741,6 +2784,11 @@ export class ExecutionService {
           `[dalang] Starting ${opts.kind} for ${opts.task.externalId} (${opts.task.title}) in worktree (${opts.branchName}) with profile "${profile.name}" (${profile.provider}${profile.model ? `/${profile.model}` : ''})`,
         );
         if (opts.routeNote) emitDalangLine(`[dalang] ${opts.routeNote}`);
+        await this.prepareWorktreeDependencies(
+          getReposForCoder().map((r) => r.worktreePath),
+          emitDalangLine,
+          opts.execHandle.controller.signal,
+        );
 
         const turn = await adapter.runTurn({
           projectPath: opts.worktreePath,

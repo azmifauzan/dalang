@@ -27,3 +27,4 @@ export * from './services/automation.js';
 export * from './services/external-mcp.js';
 export * from './services/executor.js';
 export * from './testing/replay-runner.js';
+export * from './testing/recording-runner.js';

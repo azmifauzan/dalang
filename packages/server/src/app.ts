@@ -47,6 +47,7 @@ import {
   ExternalMcpTokenService,
   LeadService,
   NodeCliRunner,
+  RecordingCliRunner,
   ProfileService,
   ProjectService,
   ProviderRegistry,
@@ -85,7 +86,9 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
   close: () => Promise<void>;
 }> {
   const conn = openDatabase(options.dbPath);
-  const runner = options.runner ?? new NodeCliRunner();
+  // DALANG_RECORD_DIR saves every provider CLI invocation for replay tests and timing (docs/TROUBLESHOOTING.md).
+  const recordDir = process.env.DALANG_RECORD_DIR?.trim();
+  const runner = options.runner ?? (recordDir ? new RecordingCliRunner(new NodeCliRunner(), recordDir) : new NodeCliRunner());
   const settingsService = new SettingsService(conn.db);
   const updateCheckService = new UpdateCheckService(settingsService, {
     currentVersion: options.currentVersion ?? DALANG_VERSION,

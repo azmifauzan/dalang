@@ -59,7 +59,7 @@ export interface RecordedInvocation {
   matchedTurnId?: string;
 }
 
-function unwrapSandboxArgs(command: string, args: string[]): { innerCommand: string; innerArgs: string[] } {
+export function unwrapSandboxArgs(command: string, args: string[]): { innerCommand: string; innerArgs: string[] } {
   const base = path.basename(command);
   if (base === 'bwrap') {
     const sep = args.indexOf('--');
@@ -76,7 +76,7 @@ function unwrapSandboxArgs(command: string, args: string[]): { innerCommand: str
   return { innerCommand: command, innerArgs: args };
 }
 
-function detectProviderFromCommand(innerCommand: string): ProviderId | null {
+export function detectProviderFromCommand(innerCommand: string): ProviderId | null {
   const base = path.basename(innerCommand);
   if (base === 'claude') return 'claude-code';
   if (base === 'codex') return 'codex';
@@ -84,7 +84,7 @@ function detectProviderFromCommand(innerCommand: string): ProviderId | null {
   return null;
 }
 
-function extractPromptAndModel(provider: ProviderId, innerArgs: string[]): { prompt: string; model: string | null } {
+export function extractPromptAndModel(provider: ProviderId, innerArgs: string[]): { prompt: string; model: string | null } {
   let model: string | null = null;
   let prompt = innerArgs.join(' ');
   for (let i = 0; i < innerArgs.length; i++) {

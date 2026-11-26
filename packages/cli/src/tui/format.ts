@@ -390,6 +390,7 @@ function toolActivity(name: unknown): string {
 export function extractActivityPreview(rawLine: string): string | null {
   const trimmed = rawLine.trim();
   if (trimmed.startsWith('[dalang] Running verify command:')) return 'Running verification';
+  if (trimmed.startsWith('[dalang] Preparing worktree:')) return 'Installing dependencies';
   if (trimmed.startsWith('[dalang] Waiting for parallel slot')) return 'Waiting for an agent slot';
   if (trimmed.startsWith('[dalang] Waiting for in-flight delegated subtasks')) return 'Waiting for delegated tasks';
   if (!trimmed.startsWith('{')) return null;

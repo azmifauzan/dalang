@@ -276,6 +276,44 @@ describe('v0.5 Replay runner scenarios (process-only replacement)', () => {
     }
   }, process.platform === 'win32' ? 60_000 : 20_000);
 
+  it('Scenario 4: a locked JavaScript project gets its dependencies installed in the task worktree before the coder starts', async () => {
+    const transcript = loadReplayTranscript(path.join(FIXTURES_DIR, 'review-fix-round.json'));
+    const ctx = await seedProjectWithTasks(transcript, [
+      {
+        title: 'Slugify helper',
+        complexity: 'low',
+        filesAllowed: ['src/slug.mjs', 'src/slug.test.mjs'],
+        verify: 'node --test src/slug.test.mjs',
+      },
+    ]);
+
+    try {
+      const pkg = { name: 'app', version: '1.0.0', private: true };
+      fs.writeFileSync(path.join(ctx.projDir, 'package.json'), JSON.stringify(pkg));
+      fs.writeFileSync(
+        path.join(ctx.projDir, 'package-lock.json'),
+        JSON.stringify({ ...pkg, lockfileVersion: 3, requires: true, packages: { '': pkg } }),
+      );
+      fs.writeFileSync(path.join(ctx.projDir, '.gitignore'), 'node_modules/\n');
+      await simpleGit(ctx.projDir).add(['package.json', 'package-lock.json', '.gitignore']);
+      await simpleGit(ctx.projDir).commit('add package manifest');
+
+      await ctx.execSvc.startExecution(ctx.project.id, { allowUnconfined: true });
+      await ctx.execSvc.waitForProjectExecution(ctx.project.id);
+
+      const setupIdx = ctx.runner.invocations.findIndex((i) => i.innerArgs.join(' ').includes('npm ci --prefer-offline'));
+      const firstCoderIdx = ctx.runner.invocations.findIndex((i) => i.matchedTurnId !== undefined);
+      expect(setupIdx).toBeGreaterThanOrEqual(0);
+      expect(setupIdx).toBeLessThan(firstCoderIdx);
+      expect(ctx.runner.invocations[setupIdx].cwd).toContain(path.join('T-001'));
+      // Once installed, later rounds in the same worktree do not install again.
+      expect(ctx.runner.invocations.filter((i) => i.innerArgs.join(' ').includes('npm ci')).length).toBe(1);
+      expect(ctx.leadSvc.getPlan(ctx.project.id)!.tasks[0].status).toBe('awaiting_merge');
+    } finally {
+      ctx.conn.close();
+    }
+  }, process.platform === 'win32' ? 60_000 : 30_000);
+
   it('Scenario 3: two parallel tasks in isolated worktrees merge cleanly with hidden baseline checkpoints', async () => {
     const transcript = loadReplayTranscript(path.join(FIXTURES_DIR, 'parallel-merge.json'));
     const ctx = await seedProjectWithTasks(transcript, [

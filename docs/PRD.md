@@ -1,6 +1,6 @@
 # PRD: DALANG
 
-Nov 18, 2026 · @Fauzan · Updated through v0.14.2, Nov 25, 2026
+Nov 18, 2026 · @Fauzan · Updated through v0.14.3, Nov 26, 2026
 
 ## Summary
 
@@ -310,6 +310,7 @@ Each phase must be useful on its own before the next one starts.
 | v0.14.0 | General tasks: Executor and Checker names, neutral prompts, optional verify, answer tasks, schema v16 | A non-code goal runs from plan to an accepted answer and a merged file without verify commands; a code Quick task behaves as in v0.13 | Released in v0.14.0. Schema v16 adds `output_kind` on tasks and automations and makes verify nullable. Two live terminal-room runs on 25 Nov 2026 (Claude Lead and reviewer, Antigravity executor) on a copy of real v15 app data. See [v0.14](#v014-general-tasks-released-in-v0140). |
 | v0.14.1 | Security fix for the `/tmp` git mount in the Linux sandbox | A forged `.git` link no longer mounts a host `/tmp` path | Released in v0.14.1. A git directory is mounted back only when git's worktree back-link matches; a regression test fails on 0.14.0. |
 | v0.14.2 | Second security fix for the `/tmp` git mount | A worktree admin folder planted inside the workspace no longer mounts another `/tmp` repository | Released in v0.14.2. The admin folder must be git's own `<repository>/worktrees/<name>` outside the workspace; a regression test fails on 0.14.1. |
+| v0.14.3 | Dependencies installed in task worktrees, provider CLI recording | A JavaScript project's verify command finds its tools in a fresh task worktree without the agent installing anything | Released in v0.14.3. The planned v0.15 to v0.17 hardening phases are in `docs/plans/2026-11-26-t3code-improvement-plan.md`. |
 
 See [Roadmap after v0.4](#roadmap-after-v04) for the detail and the research behind it.
 

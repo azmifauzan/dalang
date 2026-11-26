@@ -170,6 +170,10 @@ CLIs periodically retire or rename model ids. Click **Refresh CLI status** to re
 
 The terminal room opens a new chat. Use `/resume` to find an earlier session for the project. In the browser, the sidebar lists saved sessions. For a v0.6 upgrade, open the saved **Full** session to find the original conversation, brief, and tasks. [Work with saved chats](USAGE.md#continue-or-manage-a-chat)
 
+### Verify fails with `command not found` in a task worktree
+
+A task worktree holds only the files tracked by git. For a JavaScript project with a lockfile, DALANG installs dependencies in the worktree before the agent starts, and builds a workspace that has a root `build` script. The run log shows `[dalang] Preparing worktree: ...`. If it shows `Skipping dependency install`, add `node_modules/` to `.gitignore`. If the install failed, the lines above the failure say why; a lockfile that no longer matches `package.json` is the usual cause. Other ecosystems (Python, Ruby, Go modules) are not set up automatically yet.
+
 ### Another session has unfinished work
 
 Open the session named in the message and finish reviewing its remaining tasks, or use **Discard work** in that session's header. Archiving is available after you finish or discard the work. You can keep using Ask in other sessions while you decide. [Work with saved chats](USAGE.md#continue-or-manage-a-chat)
@@ -186,3 +190,22 @@ A webhook call that returns `401` has a missing or wrong signature or timestamp.
 - `403 Forbidden: /mcp is loopback-only`: the request did not come from the same machine. In Docker, run the agent inside the container with `docker compose exec`.
 - The agent lists only read tools: the token is `read-only`. Create a `full-access` token to start or merge tasks.
 - Codex reports a timeout while `start_task` runs: set `tool_timeout_sec` in its `[mcp_servers.dalang]` block (the generated snippet uses 3600), or call `start_task` with `mode: "async"` and check progress with `get_task`.
+
+### Record provider CLI sessions for a bug report or replay test
+
+Start Dalang with `DALANG_RECORD_DIR` set. The terminal room and the browser both use it:
+
+```bash
+DALANG_RECORD_DIR=~/.dalang/recordings dalang
+```
+
+Every `claude`, `codex`, and `agy` invocation is saved as one JSON file: its arguments, stdout lines with the time each arrived, stderr, stdin writes, exit code, and whether it timed out. Values of environment variables whose names contain `TOKEN`, `SECRET`, `PASSWORD`, `API_KEY`, or `AUTH` are replaced with `[REDACTED]`. Prompts and code are kept, so the files are readable only by you; review them before sharing.
+
+From a source checkout, summarize timings and failures, or turn recordings into a replay transcript for `ReplayCliRunner`:
+
+```bash
+node packages/core/scripts/recordings.mjs summary ~/.dalang/recordings
+node packages/core/scripts/recordings.mjs transcript ~/.dalang/recordings my-case > transcript.json
+```
+
+Replay does not yet drive session protocols (`codex app-server`, `agy acp`, Claude stream-json input), so a transcript of those runs replays only through the one-shot path.
