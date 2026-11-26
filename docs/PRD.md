@@ -313,7 +313,7 @@ Each phase must be useful on its own before the next one starts.
 | v0.14.4 | Dependencies installed in task worktrees, provider CLI recording | A JavaScript project's verify command finds its tools in a fresh task worktree without the agent installing anything | Released in v0.14.4 (the `v0.14.3` tag was not released). |
 | v0.14.5 | Closing note when a run stops, terminal room layout fixes, schema v17 | A run that finishes, or stops because failed tasks block the rest of the plan, ends with one note that names what is done, what failed, and what to do next | Released in v0.14.5. Also ships two v0.15 tasks that DALANG merged while running v0.15 itself: R8 (progress separated from the streamed JSON answer) and the schema v17 part of R7. |
 | v0.14.6 | Clearer approval prompts | A merge or Auto replace question says what it needs, why the task is ready, and what y and n each do | Released in v0.14.6. Also ships `replay-matching`, a v0.15 task DALANG merged while running v0.15. |
-| v0.15 | Reliability and parity: fatal provider errors fail fast, restart recovery, session protocol replay, waiting view, room and web parity | B1, B2, and B6 to B8 are closed with tests that failed before the fix, and typecheck, tests, and build pass | Planned |
+| v0.15 | Reliability and parity: fatal provider errors fail fast, restart recovery, session protocol replay, waiting view, room and web parity, merge conflicts handled | B1, B2, and B6 to B9 are closed with tests that failed before the fix, and typecheck, tests, and build pass | Planned |
 | v0.16 | Speed: per-project events, output hub, paged history, block-wise streaming | Recordings show improvement over the baseline; render and payload budgets pass | Planned |
 | v0.17 | Agent tools: DALANG browser, browser evidence at the gate, per-project MCP allowlist | An executor tests a dev server in the browser on all three providers, and Gate 2 shows the evidence | Planned |
 | v0.18, v0.19 | Telegram bridge, then Slack bridge | See [the chat app plan](#v012-v013-v018-v019-terminal-room-auto-and-chat-apps) | Planned |
@@ -1021,6 +1021,7 @@ Read from a copy of a maintainer's local database and logs.
 | B6 | Tests do not catch B1 to B3 | `ReplayCliRunner` has no interactive stdin, so session protocols are never replayed; sandbox, real worktrees, and restarts are not covered |
 | B7 | Raw JSON in streamed replies | The agent writes a progress message, then the JSON answer; the joined text does not start with `{`, so `liveReplyText` returns it raw (reproduced; four turns in the logs). Affects the room and the web UI |
 | B8 | Waiting gives no feedback | The room shows only `Working`, `Thinking`, or `Running a command`: no target, elapsed time, step history, or startup phase |
+| B9 | A merge conflict stops the run | During the v0.15 run, a change merged into the main branch while `restart-idle` ran touched the same test file. Merging the passed task failed with a conflict, the gate only showed the git error, and answering yes again failed the same way |
 
 #### Decisions
 
@@ -1039,7 +1040,7 @@ Read from a copy of a maintainer's local database and logs.
 
 #### v0.15: reliability and parity
 
-Done when: B1, B2, and B6 to B8 are closed, each with a replay or unit test that failed before the fix; items R1 to R3, R5, R7, R8, U1, U2, and F6 are in place; and typecheck, tests, and build pass. B3 was fixed in v0.14.4, B5 belongs to v0.16, and B4 is confirmed in R6. Everything in this list can be done and checked inside the repository, without live providers. Live verification is R6 below and is not part of the implementation work.
+Done when: B1, B2, and B6 to B9 are closed, each with a replay or unit test that failed before the fix; items R1 to R3, R5, R7 to R9, U1, U2, and F6 are in place; and typecheck, tests, and build pass. B3 was fixed in v0.14.4, B5 belongs to v0.16, and B4 is confirmed in R6. Everything in this list can be done and checked inside the repository, without live providers. Live verification is R6 below and is not part of the implementation work.
 
 | Order | Item | Scope |
 | --- | --- | --- |
@@ -1052,6 +1053,7 @@ Done when: B1, B2, and B6 to B8 are closed, each with a replay or unit test that
 | 7 | R5 | Room and web parity: one scenario list used by `browser-replay.test.ts` and a room test in a pseudo-terminal, with the same transcripts |
 | 8 | R7 | Small reliability items: asynchronous run logs; foreign-key indexes, `busy_timeout`, and `synchronous = NORMAL` (schema v17); WebSocket heartbeat and reconnect; `client_request_id` for `delegate_task`; webhook dedupe by delivery id |
 | 9 | F6 | `/triage` in the room and "Report a problem" in the web UI: an Ask session with the version, OS, `dalang doctor`, recent redacted server logs, and a recording summary if any; the agent asks before opening an issue |
+| 10 | R9 | Merge conflicts (B9): when merging a passed task into the main branch conflicts, DALANG does not stop at an error. It merges the main branch into the task branch in the task worktree and runs a fix round in which the executor resolves the conflict, then verify and review run again and the merge gate returns. The PRD already promised that conflicts go to an integration task. A replay test covers a conflict from a change made on the main branch while the task ran |
 
 ##### R6: manual verification by the operator
 
