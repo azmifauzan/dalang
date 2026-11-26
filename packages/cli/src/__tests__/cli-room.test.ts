@@ -6,7 +6,7 @@ import React from 'react';
 import { render } from 'ink';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { CliRunner, RunCommandOptions, RunCommandResult } from '@dalang/core';
-import { liveReplyText } from '@dalang/shared';
+import { liveReplyText, parseLiveReply } from '@dalang/shared';
 import { startDalangServer } from '@dalang/server';
 import { resolveCliCommand } from '../cli.js';
 import { RoomApiClient, probeServerHealth } from '../tui/client.js';
@@ -110,6 +110,98 @@ describe('TUI commands, completions, and formatting', () => {
     expect(liveReplyText('{"answer": "a\\')).toBe('a');
     expect(liveReplyText('{"answer": "a\\u00')).toBe('a');
     expect(liveReplyText('{"answer": "done", "suggested_mode": "quick"}')).toBe('done');
+  });
+
+  it('separates progress from plain and fenced JSON replies (R8/B7)', () => {
+    // Regression: progress before plain JSON must not cause liveReplyText to dump raw JSON.
+    const plainJsonIncomplete = 'Saya cek dulu isi repositori.\n\n{"suggested_mode": null, "ans';
+    expect(parseLiveReply(plainJsonIncomplete)).toEqual({
+      progress: 'Saya cek dulu isi repositori.',
+      answer: '',
+    });
+    expect(liveReplyText(plainJsonIncomplete)).toBe('');
+
+    const plainJsonStreaming =
+      'Saya cek dulu isi repositori.\n\n{"auto_plan": {"summary": "Ignore \\"answer\\": \\"fake\\""}, "answer": "Baris **satu**\\nBaris \\"dua\\" \\u00e9';
+    expect(parseLiveReply(plainJsonStreaming)).toEqual({
+      progress: 'Saya cek dulu isi repositori.',
+      answer: 'Baris **satu**\nBaris "dua" é',
+    });
+    expect(liveReplyText(plainJsonStreaming)).toBe('Baris **satu**\nBaris "dua" é');
+
+    // Same-line progress before plain JSON.
+    expect(parseLiveReply('Checking files... {"answer": "All good"}')).toEqual({
+      progress: 'Checking files...',
+      answer: 'All good',
+    });
+    expect(liveReplyText('Checking files... {"answer": "All good"}')).toBe('All good');
+
+    // Regression: progress before fenced JSON (incomplete fence markers and incomplete JSON stay hidden).
+    for (const prefix of ['```', '```j', '```js', '```json', '```json\n', '```json\n{', '```json\n{"suggested_mode": null, "ans']) {
+      const sample = `Membaca berkas...\n\n${prefix}`;
+      expect(parseLiveReply(sample)).toEqual({
+        progress: 'Membaca berkas...',
+        answer: '',
+      });
+      expect(liveReplyText(sample)).toBe('');
+    }
+
+    const fencedJsonComplete =
+      'Membaca berkas...\n\n```json\n{"answer": "Selesai **cek**\\n```ts\\nconst ok = true;\\n```", "suggested_mode": "quick"}\n```';
+    expect(parseLiveReply(fencedJsonComplete)).toEqual({
+      progress: 'Membaca berkas...',
+      answer: 'Selesai **cek**\n```ts\nconst ok = true;\n```',
+    });
+    expect(liveReplyText(fencedJsonComplete)).toBe('Selesai **cek**\n```ts\nconst ok = true;\n```');
+
+    // Bare fence after progress.
+    expect(parseLiveReply('Membaca berkas...\n```\n{"answer": "Siap"}\n```')).toEqual({
+      progress: 'Membaca berkas...',
+      answer: 'Siap',
+    });
+
+    // Plain Markdown and escapes stay untouched when there is no reply JSON contract.
+    const markdownWithEscapes =
+      'Ringkasan \\*penting\\* dan \\\\backslash\\\\\n\nGunakan `{"answer": "inline"}` atau:\n```ts\nconst sample = {"answer": "not a reply"};\n```';
+    expect(parseLiveReply(markdownWithEscapes)).toEqual({
+      progress: '',
+      answer: markdownWithEscapes,
+    });
+    expect(liveReplyText(markdownWithEscapes)).toBe(markdownWithEscapes);
+
+    // A complete non-contract JSON snippet in Markdown is preserved as plain Markdown.
+    const markdownJsonSnippet = 'Contoh package.json:\n\n```json\n{"name": "dalang"}\n```\n\nSelesai.';
+    expect(parseLiveReply(markdownJsonSnippet)).toEqual({
+      progress: '',
+      answer: markdownJsonSnippet,
+    });
+
+    // Incremental streaming fixture: incomplete JSON never leaks into `answer`.
+    const chunks = [
+      'Cek repo...\n\n',
+      '```j',
+      'son\n',
+      '{"auto_plan": ',
+      'null, "ans',
+      'wer": "Halo\\',
+      'n**dunia**',
+      ' \\u00e9',
+      '"}\n```',
+    ];
+    let joined = '';
+    const snapshots = chunks.map((chunk) => {
+      joined += chunk;
+      return parseLiveReply(joined);
+    });
+    expect(snapshots[0]).toEqual({ progress: '', answer: 'Cek repo...\n\n' });
+    expect(snapshots[1]).toEqual({ progress: 'Cek repo...', answer: '' });
+    expect(snapshots[2]).toEqual({ progress: 'Cek repo...', answer: '' });
+    expect(snapshots[3]).toEqual({ progress: 'Cek repo...', answer: '' });
+    expect(snapshots[4]).toEqual({ progress: 'Cek repo...', answer: '' });
+    expect(snapshots[5]).toEqual({ progress: 'Cek repo...', answer: 'Halo' });
+    expect(snapshots[6]).toEqual({ progress: 'Cek repo...', answer: 'Halo\n**dunia**' });
+    expect(snapshots[7]).toEqual({ progress: 'Cek repo...', answer: 'Halo\n**dunia** é' });
+    expect(snapshots[8]).toEqual({ progress: 'Cek repo...', answer: 'Halo\n**dunia** é' });
   });
 
   it('parses slash commands and provides @profile and /command completions', () => {
