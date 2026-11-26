@@ -638,24 +638,346 @@ describe('Startup session recovery and worktree preservation', () => {
       expect(failedReviewEntry?.latestReview?.status).toBe('fail');
       expect(failedReviewEntry?.latestReview?.contract.findings[0]?.note).toBe('Missing validation');
 
-      // Even while another session is working, approving the preserved merge gate succeeds without
-      // flipping this idle session back to working.
+      // Starting work in another session is blocked while this recovered session still holds saved work.
       const otherSession = boot2.leadSvc.createSession(project.id, { mode: 'quick', title: 'Other active session' });
-      boot2.leadSvc.markSessionWorking(project.id, otherSession.id);
+      expect(() => boot2.leadSvc.assertCanStartWorkInSession(project.id, otherSession.id)).toThrow(
+        /Multi-task session/,
+      );
 
+      // Approving the preserved merge gate succeeds and keeps this idle session idle.
       const merged = await boot2.execSvc.approveMergeTask(project.id, work.task.id, {
         runIntegration: false,
       });
       expect(merged.task.status).toBe('done');
       expect(fs.readFileSync(path.join(repoDir, 'src', 'a.mjs'), 'utf8')).toContain('export const a = 42;');
       expect(boot2.leadSvc.getSession(project.id, sessionId).workState).toBe('idle');
-      expect(boot2.leadSvc.getSession(project.id, otherSession.id).workState).toBe('working');
 
       // Failed worktree and its git-ignored file are still preserved after merging T-001.
       expect(fs.existsSync(failedWt)).toBe(true);
       expect(fs.readFileSync(failedIgnoredFile, 'utf8')).toBe('module.exports = "preserved";\n');
     } finally {
       boot2.conn.close();
+    }
+  });
+
+  it('prevents a second task from reusing a recovered session worktree or dalang/T-001 branch until the saved work is merged', async () => {
+    const dbDir = makeTempDir('dalang-restart-collision-db-');
+    const dbPath = path.join(dbDir, 'dalang.db');
+    const worktreesRoot = makeTempDir('dalang-restart-collision-wt-');
+    const repoDir = path.join(makeTempDir('dalang-restart-collision-repo-'), 'app');
+    initTempRepo(repoDir);
+
+    const boot0 = startupServices(dbPath, worktreesRoot);
+    const project = await boot0.projectSvc.createOrOpen({
+      mode: 'open',
+      name: 'Collision Guard App',
+      path: repoDir,
+      initGitIfMissing: false,
+      leadProvider: 'claude-code',
+    });
+    execFileSync('git', ['add', '-A'], { cwd: repoDir, stdio: 'pipe' });
+    execFileSync('git', ['commit', '-m', 'Add DALANG files'], { cwd: repoDir, stdio: 'pipe' });
+    const baseSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoDir, encoding: 'utf8' }).trim();
+
+    const work = boot0.leadSvc.createDirectApprovedTask(project.id, {
+      sessionTitle: 'Recovered Gate Session',
+      userMessage: 'Update value to 99',
+      title: 'Update value',
+      goal: 'Export value = 99',
+      filesAllowed: ['src/index.mjs'],
+      acceptanceCriteria: ['value is 99'],
+      verify: 'node -e "process.exit(0)"',
+    });
+
+    const branchName = `dalang/${work.task.externalId}`;
+    const worktreePath = getTaskWorktreeDir(worktreesRoot, project.id, work.task.externalId);
+    const commitAfter = createRealWorktree(repoDir, worktreePath, branchName, {
+      relPath: 'src/index.mjs',
+      content: 'export const value = 99;\n',
+    });
+
+    const uncommittedFile = path.join(worktreePath, 'src', 'uncommitted-notes.txt');
+    const ignoredMarker = path.join(worktreePath, 'node_modules', '.preserved');
+    const ignoredEnv = path.join(worktreePath, '.env.local');
+    fs.mkdirSync(path.dirname(ignoredMarker), { recursive: true });
+    fs.writeFileSync(uncommittedFile, 'keep uncommitted scratch\n');
+    fs.writeFileSync(ignoredMarker, 'keep ignored dep\n');
+    fs.writeFileSync(ignoredEnv, 'SECRET=preserve\n');
+
+    const now = new Date().toISOString();
+    boot0.conn.sqlite
+      .prepare('UPDATE tasks SET status = ?, branch_name = ?, review_rounds = 1, updated_at = ? WHERE id = ?')
+      .run('awaiting_merge', branchName, now, work.task.id);
+    boot0.conn.db
+      .insert(taskRepos)
+      .values({
+        id: 'tr-col-1',
+        taskId: work.task.id,
+        repoPath: '.',
+        baseBranch: 'main',
+        baseSha,
+        branchName,
+        worktreePath,
+        mergeCommitSha: null,
+        prUrl: null,
+        pushedAt: null,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .run();
+    boot0.conn.db
+      .insert(runs)
+      .values({
+        id: 'run-col-1',
+        projectId: project.id,
+        taskId: work.task.id,
+        profileId: 'profile-coder-small',
+        provider: 'claude-code',
+        accountKey: 'claude-code',
+        model: 'sonnet',
+        kind: 'execute',
+        branchName,
+        worktreePath,
+        status: 'completed',
+        cliSessionId: null,
+        attempt: 1,
+        usedFallback: false,
+        startedAt: now,
+        finishedAt: now,
+        exitCode: 0,
+        failureReason: null,
+        commitBefore: baseSha,
+        commitAfter,
+        logPath: `.dalang/sessions/${work.session.id}/logs/run-col-1.log`,
+        resultPath: null,
+        scopeWarningsJson: '[]',
+      })
+      .run();
+
+    const revDir = getSessionTaskArtifactDir(repoDir, work.session.id, work.task.externalId);
+    fs.mkdirSync(revDir, { recursive: true });
+    const revAbs = path.join(revDir, 'review.round-1.json');
+    const revRel = path.relative(repoDir, revAbs).split(path.sep).join('/');
+    fs.writeFileSync(
+      revAbs,
+      JSON.stringify({
+        task_id: work.task.externalId,
+        status: 'pass',
+        verify_exit_code: 0,
+        summary: 'Ready to merge',
+        findings: [],
+      }),
+    );
+    boot0.conn.db
+      .insert(reviews)
+      .values({
+        id: 'rev-col-1',
+        projectId: project.id,
+        taskId: work.task.id,
+        runId: 'run-col-1',
+        round: 1,
+        status: 'pass',
+        humanDecision: 'pending',
+        humanNote: null,
+        reviewerProfileId: 'profile-reviewer',
+        reviewerProvider: 'codex',
+        reviewerModel: 'gpt-5',
+        verifyCommand: 'node -e "process.exit(0)"',
+        verifyExitCode: 0,
+        verifyOutput: 'ok',
+        filePath: revRel,
+        commitSha: commitAfter,
+        scopeWarningsJson: '[]',
+        createdAt: now,
+        decidedAt: null,
+      })
+      .run();
+
+    // Also pre-create a second session with an approved T-001 plan (simulating another session ready to run)
+    // and a newer approved plan in the SAME session with T-001 (to exercise the executor branch/worktree guard).
+    const secondSession = boot0.leadSvc.createSession(project.id, { mode: 'quick', title: 'Second Session' });
+    const secondPlanId = 'plan-second-session';
+    const secondTaskId = 'task-second-t001';
+    const secondPlanRel = `.dalang/sessions/${secondSession.id}/plan.json`;
+    const secondPlanAbs = path.join(repoDir, secondPlanRel);
+    fs.mkdirSync(path.dirname(secondPlanAbs), { recursive: true });
+    fs.writeFileSync(
+      secondPlanAbs,
+      JSON.stringify({ version: 1, milestones: [{ id: 'M1', title: 'M1' }], tasks: [] }),
+    );
+    boot0.conn.sqlite
+      .prepare(
+        `INSERT INTO plans (id, project_id, session_id, brief_id, version, status, file_path, created_at, approved_at)
+         VALUES (?, ?, ?, NULL, 1, 'approved', ?, ?, ?)`,
+      )
+      .run(secondPlanId, project.id, secondSession.id, secondPlanRel, now, now);
+    boot0.conn.db
+      .insert(tasks)
+      .values({
+        id: secondTaskId,
+        planId: secondPlanId,
+        externalId: 'T-001',
+        title: 'Conflicting T-001 in session 2',
+        milestone: 'M1',
+        role: 'engineer',
+        complexity: 'low',
+        outputKind: 'files',
+        status: 'approved',
+        position: 0,
+        goal: 'Should not clobber session 1 worktree',
+        filesAllowedJson: JSON.stringify(['src/index.mjs']),
+        filesReferenceJson: '[]',
+        acceptanceCriteriaJson: JSON.stringify(['works']),
+        verify: 'node -e "process.exit(0)"',
+        needsSplit: false,
+        splitDepth: 0,
+        parentTaskId: null,
+        delegatedByRunId: null,
+        clientRequestId: null,
+        delegationDepth: 0,
+        mergeTargetBranch: null,
+        profileOverride: null,
+        reviewRounds: 0,
+        branchName: null,
+        mergeCommitSha: null,
+        rejectionNote: null,
+        prUrl: null,
+        pushedAt: null,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .run();
+
+    const sameSessionPlanId = 'plan-same-session-v2';
+    const sameSessionTaskId = 'task-same-session-t001';
+    const samePlanRel = `.dalang/sessions/${work.session.id}/plan.v2.json`;
+    const samePlanAbs = path.join(repoDir, samePlanRel);
+    fs.mkdirSync(path.dirname(samePlanAbs), { recursive: true });
+    fs.writeFileSync(
+      samePlanAbs,
+      JSON.stringify({ version: 2, milestones: [{ id: 'M1', title: 'M1' }], tasks: [] }),
+    );
+    boot0.conn.sqlite
+      .prepare(
+        `INSERT INTO plans (id, project_id, session_id, brief_id, version, status, file_path, created_at, approved_at)
+         VALUES (?, ?, ?, NULL, 2, 'approved', ?, ?, ?)`,
+      )
+      .run(sameSessionPlanId, project.id, work.session.id, samePlanRel, now, now);
+    boot0.conn.db
+      .insert(tasks)
+      .values({
+        id: sameSessionTaskId,
+        planId: sameSessionPlanId,
+        externalId: 'T-001',
+        title: 'Duplicate T-001 in same session v2 plan',
+        milestone: 'M1',
+        role: 'engineer',
+        complexity: 'low',
+        outputKind: 'files',
+        status: 'approved',
+        position: 0,
+        goal: 'Must not clobber preserved v1 T-001 worktree',
+        filesAllowedJson: JSON.stringify(['src/index.mjs']),
+        filesReferenceJson: '[]',
+        acceptanceCriteriaJson: JSON.stringify(['works']),
+        verify: 'node -e "process.exit(0)"',
+        needsSplit: false,
+        splitDepth: 0,
+        parentTaskId: null,
+        delegatedByRunId: null,
+        clientRequestId: null,
+        delegationDepth: 0,
+        mergeTargetBranch: null,
+        profileOverride: null,
+        reviewRounds: 0,
+        branchName: null,
+        mergeCommitSha: null,
+        rejectionNote: null,
+        prUrl: null,
+        pushedAt: null,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .run();
+
+    boot0.leadSvc.markSessionWorking(project.id, work.session.id);
+    boot0.conn.close();
+
+    // Restart: Session 1 returns to idle, keeping its gate, branch, and worktree.
+    const boot1 = startupServices(dbPath, worktreesRoot);
+    try {
+      expect(boot1.leadSvc.getSession(project.id, work.session.id).workState).toBe('idle');
+      expect(recoveryStatusMessages(boot1.leadSvc, project.id, work.session.id)).toHaveLength(1);
+
+      // 1. Creating or starting work in another session is rejected while Session 1 holds a saved branch/gate.
+      expect(() =>
+        boot1.leadSvc.createDirectApprovedTask(project.id, {
+          sessionTitle: 'Another Quick Task',
+          userMessage: 'Do something else',
+          title: 'Other task',
+          goal: 'Change index',
+          filesAllowed: ['src/index.mjs'],
+          acceptanceCriteria: ['ok'],
+          verify: null,
+        }),
+      ).toThrow(/Recovered Gate Session/);
+
+      await expect(
+        boot1.execSvc.startExecution(project.id, {
+          sessionId: secondSession.id,
+          allowUnconfined: true,
+        }),
+      ).rejects.toThrow(/Recovered Gate Session/);
+
+      await expect(
+        boot1.execSvc.startExecution(project.id, {
+          sessionId: secondSession.id,
+          taskId: secondTaskId,
+          allowUnconfined: true,
+        }),
+      ).rejects.toThrow(/Recovered Gate Session/);
+
+      // 2. Even inside the same session, another task reusing dalang/T-001 or its worktree is rejected.
+      await expect(
+        boot1.execSvc.startExecution(project.id, {
+          sessionId: work.session.id,
+          taskId: sameSessionTaskId,
+          allowUnconfined: true,
+        }),
+      ).rejects.toThrow(/preserved branch or worktree is still owned by unfinished task T-001/i);
+      // Remove the synthetic v2 plan so Session 1's active plan resolves back to v1 for merging.
+      boot1.conn.sqlite.prepare('DELETE FROM plans WHERE id = ?').run(sameSessionPlanId);
+
+      // 3. The preserved worktree, uncommitted file, git-ignored files, branch SHA, and merge gate are untouched.
+      expect(fs.existsSync(worktreePath)).toBe(true);
+      expect(fs.readFileSync(uncommittedFile, 'utf8')).toBe('keep uncommitted scratch\n');
+      expect(fs.readFileSync(ignoredMarker, 'utf8')).toBe('keep ignored dep\n');
+      expect(fs.readFileSync(ignoredEnv, 'utf8')).toBe('SECRET=preserve\n');
+      expect(
+        execFileSync('git', ['rev-parse', '--verify', `refs/heads/${branchName}`], {
+          cwd: repoDir,
+          encoding: 'utf8',
+        }).trim(),
+      ).toBe(commitAfter);
+
+      // 4. Merging the preserved gate from Session 1 still works cleanly.
+      const merged = await boot1.execSvc.approveMergeTask(project.id, work.task.id, {
+        runIntegration: false,
+      });
+      expect(merged.task.status).toBe('done');
+      expect(fs.readFileSync(path.join(repoDir, 'src', 'index.mjs'), 'utf8')).toContain('export const value = 99;');
+
+      // 5. Once Session 1's saved work is merged, another session can start its own T-001 cleanly.
+      expect(() => boot1.leadSvc.assertCanStartWorkInSession(project.id, secondSession.id)).not.toThrow();
+      const started = await boot1.execSvc.startExecution(project.id, {
+        sessionId: secondSession.id,
+        taskId: secondTaskId,
+        allowUnconfined: true,
+      });
+      expect(started.started).toBe(true);
+      await boot1.execSvc.waitForProjectExecution(project.id);
+    } finally {
+      boot1.conn.close();
     }
   });
 

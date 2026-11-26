@@ -630,13 +630,31 @@ export class LeadService {
     };
   }
 
-  assertCanStartWorkInSession(projectId: string, sessionId: string): void {
-    const other = this.db
+  /**
+   * Returns any session in `projectId` (other than `excludeSessionId`) that blocks starting new
+   * work in another session: either an actively `working` session or a recovered `idle` session
+   * that still holds pending approval gates or unmerged task branches.
+   */
+  getBlockingWorkSession(projectId: string, excludeSessionId?: string): SessionSummaryDTO | null {
+    const projectSessions = this.db
       .select()
       .from(sessions)
-      .where(and(eq(sessions.projectId, projectId), eq(sessions.workState, 'working')))
-      .get();
-    if (other && other.id !== sessionId) {
+      .where(eq(sessions.projectId, projectId))
+      .orderBy(desc(sessions.updatedAt))
+      .all();
+    const working = projectSessions.find(
+      (s) => s.workState === 'working' && s.id !== excludeSessionId,
+    );
+    if (working) return this.toSessionSummary(working);
+    const withSavedWork = projectSessions.find(
+      (s) => s.id !== excludeSessionId && this.hasSessionUnfinishedWork(s.id),
+    );
+    return withSavedWork ? this.toSessionSummary(withSavedWork) : null;
+  }
+
+  assertCanStartWorkInSession(projectId: string, sessionId: string): void {
+    const other = this.getBlockingWorkSession(projectId, sessionId || undefined);
+    if (other) {
       const name = other.title?.trim() || 'Untitled session';
       throw conflictError(
         `Cannot start work while session "${name}" has unfinished work. Merge or discard its work first.`,
@@ -1239,7 +1257,7 @@ export class LeadService {
           return { session: this.getSession(projectId, sessionRow.id), mode: requestedMode, askReply, messages: this.getDiscussState(projectId, sessionRow.id).messages };
         }
         const blocker =
-          this.getWorkingSession(projectId) ??
+          this.getBlockingWorkSession(projectId) ??
           (this.hasSessionUnfinishedWork(sessionRow.id) ? this.getSession(projectId, sessionRow.id) : null);
         if (blocker && (blocker.id !== pending.sessionId || this.unfinishedWorkSnapshot(blocker.id) !== pending.snapshot)) {
           const askReply = this.autoWorkApproval(blocker, PlanContractSchema.parse(pending.plan));
@@ -1389,9 +1407,9 @@ export class LeadService {
       : '';
 
     const completedWorkSummary = this.buildCompletedWorkContext(sessionRow.id);
-    const workingSession = auto ? this.getWorkingSession(project.id) : null;
-    const workBlocked = auto && (workingSession?.id !== sessionRow.id && workingSession
-      ? `Session "${workingSession.title?.trim() || 'Untitled session'}" has unfinished work. Merge or discard its work first.`
+    const blockingSession = auto ? this.getBlockingWorkSession(project.id, sessionRow.id) : null;
+    const workBlocked = auto && (blockingSession
+      ? `Session "${blockingSession.title?.trim() || 'Untitled session'}" has unfinished work. Merge or discard its work first.`
       : this.hasSessionUnfinishedWork(sessionRow.id)
         ? 'This session has unfinished work. Finish or discard it before starting a new Auto plan.'
         : null);
@@ -1570,8 +1588,9 @@ export class LeadService {
       if (autoPlan && autoCommit) throw new Error('A turn cannot both start tasks and commit the checkout.');
       if (autoPlan && autoStop) throw new Error('A turn cannot both start and stop tasks.');
       if (autoPlan) {
-        const currentWorking = this.getWorkingSession(project.id);
-        const blocker = currentWorking ?? (this.hasSessionUnfinishedWork(sessionRow.id) ? this.getSession(project.id, sessionRow.id) : null);
+        const blocker =
+          this.getBlockingWorkSession(project.id) ??
+          (this.hasSessionUnfinishedWork(sessionRow.id) ? this.getSession(project.id, sessionRow.id) : null);
         if (blocker) {
           parsedReply = this.autoWorkApproval(blocker, autoPlan);
           autoPlan = undefined;
@@ -1993,9 +2012,9 @@ export class LeadService {
     },
   ): { session: SessionSummaryDTO; plan: PlanDTO; task: TaskDTO } {
     const project = this.getProjectRow(projectId);
-    const working = this.getWorkingSession(projectId);
-    if (working) {
-      const name = working.title?.trim() || 'Untitled session';
+    const blocker = this.getBlockingWorkSession(projectId);
+    if (blocker) {
+      const name = blocker.title?.trim() || 'Untitled session';
       throw conflictError(
         `Cannot start work while session "${name}" has unfinished work. Merge or discard its work first.`,
       );

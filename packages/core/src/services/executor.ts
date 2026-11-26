@@ -523,7 +523,7 @@ export class ExecutionService {
   }
 
   async recoverEmptyFailedWork(projectId: string): Promise<void> {
-    const session = this.leadService.getWorkingSession(projectId);
+    const session = this.leadService.getBlockingWorkSession(projectId);
     if (!session || this.listActiveRunsForSession(projectId, session.id).length || this.projectQueues.has(projectId)) return;
     const project = this.getProjectRow(projectId);
     const sessionPlans = this.db.select({ id: plans.id }).from(plans).where(eq(plans.sessionId, session.id)).all();
@@ -2374,6 +2374,86 @@ export class ExecutionService {
     );
   }
 
+  /**
+   * Guards against another task reusing or resetting a preserved branch or worktree owned by an
+   * unfinished task in the same project (for example, two sessions that both generated `T-001`).
+   */
+  private assertTaskWorktreeAndBranchAvailable(
+    projectId: string,
+    taskId: string,
+    branchName: string,
+    worktreePath: string,
+  ): void {
+    const projectPlans = this.db
+      .select({ id: plans.id })
+      .from(plans)
+      .where(eq(plans.projectId, projectId))
+      .all();
+    if (projectPlans.length === 0) return;
+
+    const otherTasks = this.db
+      .select({
+        id: tasks.id,
+        externalId: tasks.externalId,
+        status: tasks.status,
+        branchName: tasks.branchName,
+        delegationDepth: tasks.delegationDepth,
+      })
+      .from(tasks)
+      .where(inArray(tasks.planId, projectPlans.map((p) => p.id)))
+      .all()
+      .filter((t) => {
+        if (t.id === taskId || t.status === 'done') return false;
+        if (t.status === 'running' || t.status === 'reviewing') return true;
+        if ((t.delegationDepth ?? 0) > 0) return false;
+        return (
+          t.status === 'awaiting_merge' ||
+          t.status === 'review_failed' ||
+          Boolean(t.branchName && t.branchName.trim())
+        );
+      });
+    if (otherTasks.length === 0) return;
+
+    const resolvedTargetWt = path.resolve(worktreePath);
+    const otherTaskIds = otherTasks.map((t) => t.id);
+    const repoRows = this.db
+      .select({
+        taskId: taskRepos.taskId,
+        branchName: taskRepos.branchName,
+        worktreePath: taskRepos.worktreePath,
+      })
+      .from(taskRepos)
+      .where(inArray(taskRepos.taskId, otherTaskIds))
+      .all();
+    const reposByTask = new Map<string, typeof repoRows>();
+    for (const r of repoRows) {
+      const list = reposByTask.get(r.taskId) ?? [];
+      list.push(r);
+      reposByTask.set(r.taskId, list);
+    }
+
+    for (const owner of otherTasks) {
+      const ownerDefaultWt = path.resolve(
+        getTaskWorktreeDir(this.worktreesRoot, projectId, owner.externalId),
+      );
+      const ownerRepos = reposByTask.get(owner.id) ?? [];
+      const sharesBranch =
+        owner.branchName === branchName ||
+        ownerRepos.some((r) => r.branchName === branchName);
+      const sharesWorktree =
+        ownerDefaultWt === resolvedTargetWt ||
+        ownerRepos.some((r) => path.resolve(r.worktreePath) === resolvedTargetWt);
+      if (sharesBranch || sharesWorktree) {
+        throw Object.assign(
+          new Error(
+            `Cannot start ${branchName}: preserved branch or worktree is still owned by unfinished task ${owner.externalId} (${owner.status}). Merge, reject, or discard that work first.`,
+          ),
+          { statusCode: 409 },
+        );
+      }
+    }
+  }
+
   private async prepareTaskExecution(
     projectId: string,
     sessionId: string,
@@ -2394,6 +2474,7 @@ export class ExecutionService {
 
     const branchName = `dalang/${task.externalId}`;
     const worktreePath = getTaskWorktreeDir(this.worktreesRoot, projectId, task.externalId);
+    this.assertTaskWorktreeAndBranchAvailable(projectId, task.id, branchName, worktreePath);
     const resetToBase = !resumeSessionId || !(await branchExists(project.path, branchName));
 
     const { repos: taskRepoList, baseMainSha, baselineCheckpointRef, baselineRefsByRepo } =
