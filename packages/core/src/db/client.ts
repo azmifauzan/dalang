@@ -29,10 +29,12 @@ export function getDbDataDir(db: DalangDb): string | null {
   return dbDataDirs.get(db) ?? null;
 }
 
-const SCHEMA_VERSION = 16;
+const SCHEMA_VERSION = 17;
 
 const BOOTSTRAP_SQL = `
 PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL;
+PRAGMA busy_timeout = 5000;
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS projects (
@@ -119,6 +121,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   split_depth INTEGER NOT NULL DEFAULT 0,
   parent_task_id TEXT,
   delegated_by_run_id TEXT,
+  client_request_id TEXT,
   delegation_depth INTEGER NOT NULL DEFAULT 0,
   merge_target_branch TEXT,
   profile_override TEXT,
@@ -336,6 +339,7 @@ CREATE TABLE IF NOT EXISTS automation_runs (
   automation_id TEXT NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   trigger_source TEXT NOT NULL,
+  delivery_id TEXT,
   session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
   task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
   status TEXT NOT NULL,
@@ -343,6 +347,15 @@ CREATE TABLE IF NOT EXISTS automation_runs (
   payload_excerpt TEXT,
   triggered_at TEXT NOT NULL,
   finished_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+  automation_id TEXT NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
+  delivery_id TEXT NOT NULL,
+  automation_run_id TEXT REFERENCES automation_runs(id) ON DELETE SET NULL,
+  received_at TEXT NOT NULL,
+  expires_at TEXT,
+  PRIMARY KEY (automation_id, delivery_id)
 );
 
 CREATE TABLE IF NOT EXISTS mcp_tokens (
@@ -1335,6 +1348,7 @@ export function openDatabase(dbFilePath: string = getDbPath()): DbConnection {
     ensureDir(dataDir);
   }
   const sqlite = new Database(dbFilePath);
+  sqlite.pragma('busy_timeout = 5000');
   const storedVersion = Number(sqlite.pragma('user_version', { simple: true }));
   if (storedVersion > SCHEMA_VERSION) {
     sqlite.close();
@@ -1356,12 +1370,27 @@ export function openDatabase(dbFilePath: string = getDbPath()): DbConnection {
   if (upgrading && storedVersion < 14) migrateToV14(sqlite);
   if (upgrading && storedVersion < 15) migrateToV15(sqlite);
   if (upgrading && storedVersion < 16) migrateToV16(sqlite);
+  if (upgrading && storedVersion < 17) migrateToV17(sqlite);
   sqlite.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_task_repos_task_repo ON task_repos(task_id, repo_path);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_run_repo_checkpoints_run_repo ON run_repo_checkpoints(run_id, repo_path);
     CREATE INDEX IF NOT EXISTS idx_automations_project_id ON automations(project_id);
     CREATE INDEX IF NOT EXISTS idx_automation_runs_automation_id ON automation_runs(automation_id, triggered_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_automation_runs_automation_delivery
+      ON automation_runs(automation_id, delivery_id)
+      WHERE delivery_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_expires_at
+      ON webhook_deliveries(expires_at)
+      WHERE expires_at IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_mcp_tokens_project_id ON mcp_tokens(project_id);
+    CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id);
+    CREATE INDEX IF NOT EXISTS idx_sessions_project_id ON sessions(project_id);
+    CREATE INDEX IF NOT EXISTS idx_tasks_plan_id ON tasks(plan_id);
+    CREATE INDEX IF NOT EXISTS idx_runs_task_id ON runs(task_id);
+    CREATE INDEX IF NOT EXISTS idx_reviews_task_id ON reviews(task_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_parent_client_request
+      ON tasks(parent_task_id, client_request_id)
+      WHERE parent_task_id IS NOT NULL AND client_request_id IS NOT NULL;
   `);
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS message_images (
@@ -1399,6 +1428,41 @@ export function openDatabase(dbFilePath: string = getDbPath()): DbConnection {
     dataDir,
     close: () => sqlite.close(),
   };
+}
+
+/**
+ * v17: R7 reliability — foreign-key indexes (`messages.session_id`, `sessions.project_id`,
+ * `tasks.plan_id`, `runs.task_id`, `reviews.task_id`) and additive idempotency storage for
+ * delegation (`tasks.client_request_id`) and webhooks (`automation_runs.delivery_id`,
+ * `webhook_deliveries`).
+ */
+function migrateToV17(sqlite: Database.Database): void {
+  addColumnIfMissing(sqlite, 'tasks', 'client_request_id', 'TEXT');
+  addColumnIfMissing(sqlite, 'automation_runs', 'delivery_id', 'TEXT');
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS webhook_deliveries (
+      automation_id TEXT NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
+      delivery_id TEXT NOT NULL,
+      automation_run_id TEXT REFERENCES automation_runs(id) ON DELETE SET NULL,
+      received_at TEXT NOT NULL,
+      expires_at TEXT,
+      PRIMARY KEY (automation_id, delivery_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id);
+    CREATE INDEX IF NOT EXISTS idx_sessions_project_id ON sessions(project_id);
+    CREATE INDEX IF NOT EXISTS idx_tasks_plan_id ON tasks(plan_id);
+    CREATE INDEX IF NOT EXISTS idx_runs_task_id ON runs(task_id);
+    CREATE INDEX IF NOT EXISTS idx_reviews_task_id ON reviews(task_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_parent_client_request
+      ON tasks(parent_task_id, client_request_id)
+      WHERE parent_task_id IS NOT NULL AND client_request_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_automation_runs_automation_delivery
+      ON automation_runs(automation_id, delivery_id)
+      WHERE delivery_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_expires_at
+      ON webhook_deliveries(expires_at)
+      WHERE expires_at IS NOT NULL;
+  `);
 }
 
 /**
@@ -1804,6 +1868,7 @@ function migrateToV11(db: DalangDb): void {
  */
 export function resetDatabaseToDefaults(db: DalangDb, sqlite: Database.Database): void {
   sqlite.transaction(() => {
+    db.delete(schema.webhookDeliveries).run();
     db.delete(schema.automationRuns).run();
     db.delete(schema.automations).run();
     db.delete(schema.mcpTokens).run();

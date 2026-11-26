@@ -101,6 +101,7 @@ export const tasks = sqliteTable('tasks', {
   splitDepth: integer('split_depth').notNull().default(0),
   parentTaskId: text('parent_task_id'),
   delegatedByRunId: text('delegated_by_run_id'),
+  clientRequestId: text('client_request_id'),
   delegationDepth: integer('delegation_depth').notNull().default(0),
   mergeTargetBranch: text('merge_target_branch'),
   profileOverride: text('profile_override'),
@@ -351,6 +352,7 @@ export const automationRuns = sqliteTable('automation_runs', {
     .notNull()
     .references(() => projects.id, { onDelete: 'cascade' }),
   triggerSource: text('trigger_source').notNull(),
+  deliveryId: text('delivery_id'),
   sessionId: text('session_id').references(() => sessions.id, { onDelete: 'set null' }),
   taskId: text('task_id').references(() => tasks.id, { onDelete: 'set null' }),
   status: text('status').notNull(),
@@ -359,6 +361,22 @@ export const automationRuns = sqliteTable('automation_runs', {
   triggeredAt: text('triggered_at').notNull(),
   finishedAt: text('finished_at'),
 });
+
+export const webhookDeliveries = sqliteTable(
+  'webhook_deliveries',
+  {
+    automationId: text('automation_id')
+      .notNull()
+      .references(() => automations.id, { onDelete: 'cascade' }),
+    deliveryId: text('delivery_id').notNull(),
+    automationRunId: text('automation_run_id').references(() => automationRuns.id, {
+      onDelete: 'set null',
+    }),
+    receivedAt: text('received_at').notNull(),
+    expiresAt: text('expires_at'),
+  },
+  (table) => [primaryKey({ columns: [table.automationId, table.deliveryId] })],
+);
 
 export const mcpTokens = sqliteTable('mcp_tokens', {
   id: text('id').primaryKey(),
