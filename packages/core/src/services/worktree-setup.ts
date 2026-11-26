@@ -10,8 +10,8 @@ import { openSafeGit } from './git.js';
  *
  * The install runs the repository's lifecycle and build scripts, so it never gets write access to
  * the user's package stores (a script could poison packages that other projects use outside the
- * sandbox). Every package manager downloads into a throwaway cache in the sandbox's private /tmp,
- * which needs network access and costs some seconds per worktree.
+ * sandbox). Every package manager downloads into a fresh throwaway cache, which needs network
+ * access and costs some seconds per worktree.
  */
 export interface WorktreeSetupStep {
   /** Directory the command runs in (a worktree root or a nested repository inside it). */
@@ -20,36 +20,39 @@ export interface WorktreeSetupStep {
 }
 
 // ponytail: JavaScript lockfiles only; add other ecosystems (uv, poetry, bundler) when a project needs them.
-// The /tmp caches are private to each sandboxed command and vanish with it. Windows (cmd.exe) gets the
-// plain commands: its sandbox has no private /tmp, so a cache write there may fail and is only logged.
-function lockfileInstall(dir: string, posix: boolean): { file: string; manager: string; command: string } | null {
+// Each install gets a fresh `mktemp -d` cache that is removed when the command exits. A fixed path would
+// be shared on macOS, where the sandbox /tmp is the host /tmp, and a task could plant packages there.
+// Windows (cmd.exe) gets the plain commands; a cache write that fails there is only logged.
+const FRESH_CACHE = `D=$(mktemp -d) && trap 'rm -rf "$D"' EXIT && `;
+
+function lockfileInstall(dir: string, posix: boolean): { manager: string; command: string } | null {
   const has = (file: string) => fs.existsSync(path.join(dir, file));
+  let manager: string;
+  let plain: string;
+  let cached: string;
   if (has('pnpm-lock.yaml')) {
-    return {
-      file: 'pnpm-lock.yaml',
-      manager: 'pnpm',
-      // pnpm registers every project inside its store, so even --offline writes there; the user's
-      // store cannot be used read-only and the install downloads into a sandbox-private store.
-      command: `pnpm install --frozen-lockfile${posix ? ' --store-dir /tmp/dalang-pnpm-store' : ''}`,
-    };
-  }
-  if (has('bun.lock') || has('bun.lockb')) {
-    return { file: 'bun.lock', manager: 'bun', command: `${posix ? 'BUN_INSTALL_CACHE_DIR=/tmp/dalang-bun-cache ' : ''}bun install --frozen-lockfile` };
-  }
-  if (has('yarn.lock')) {
+    // pnpm registers every project inside its store, so even --offline writes there; the user's
+    // store cannot be used read-only.
+    manager = 'pnpm';
+    plain = 'pnpm install --frozen-lockfile';
+    cached = `${plain} --store-dir "$D"`;
+  } else if (has('bun.lock') || has('bun.lockb')) {
+    manager = 'bun';
+    plain = 'bun install --frozen-lockfile';
+    cached = `BUN_INSTALL_CACHE_DIR="$D" ${plain}`;
+  } else if (has('yarn.lock')) {
+    manager = 'yarn';
     // Yarn 2+ (a `.yarnrc.yml` next to the lockfile) renamed --frozen-lockfile to --immutable.
-    const args = has('.yarnrc.yml') ? 'install --immutable' : 'install --frozen-lockfile';
-    const env = posix ? 'YARN_CACHE_FOLDER=/tmp/dalang-yarn-cache YARN_ENABLE_GLOBAL_CACHE=false ' : '';
-    return { file: 'yarn.lock', manager: 'yarn', command: `${env}yarn ${args}` };
+    plain = has('.yarnrc.yml') ? 'yarn install --immutable' : 'yarn install --frozen-lockfile';
+    cached = `YARN_CACHE_FOLDER="$D" YARN_ENABLE_GLOBAL_CACHE=false ${plain}`;
+  } else if (has('package-lock.json')) {
+    manager = 'npm';
+    plain = 'npm ci --no-audit --no-fund';
+    cached = `${plain} --cache "$D"`;
+  } else {
+    return null;
   }
-  if (has('package-lock.json')) {
-    return {
-      file: 'package-lock.json',
-      manager: 'npm',
-      command: `npm ci --no-audit --no-fund${posix ? ' --cache /tmp/dalang-npm-cache' : ''}`,
-    };
-  }
-  return null;
+  return { manager, command: posix ? FRESH_CACHE + cached : plain };
 }
 
 function readPackageJson(dir: string): { scripts?: Record<string, unknown>; workspaces?: unknown } | null {

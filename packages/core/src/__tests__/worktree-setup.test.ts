@@ -20,6 +20,7 @@ afterEach(() => {
   for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
 });
 
+const FRESH = `D=$(mktemp -d) && trap 'rm -rf "$D"' EXIT && `;
 const commands = (dir: string, posix = true) => detectWorktreeSetup(dir, posix).map((s) => s.command);
 
 describe('detectWorktreeSetup', () => {
@@ -30,22 +31,22 @@ describe('detectWorktreeSetup', () => {
       'pnpm-workspace.yaml': 'packages:\n  - "packages/*"\n',
     });
     expect(commands(dir)).toEqual([
-      'pnpm install --frozen-lockfile --store-dir /tmp/dalang-pnpm-store',
+      `${FRESH}pnpm install --frozen-lockfile --store-dir "$D"`,
       'pnpm run build',
     ]);
   });
 
-  it('keeps every write cache inside the sandbox /tmp, never the user home', () => {
+  it('gives every install a fresh cache that is removed afterwards, never the user home or a fixed path', () => {
     const npm = project({ 'package.json': JSON.stringify({ scripts: { build: 'tsc' } }), 'package-lock.json': '{}' });
     const yarn = project({ 'package.json': JSON.stringify({ workspaces: ['packages/*'], scripts: { build: 'x' } }), 'yarn.lock': '', '.yarnrc.yml': '' });
     const bun = project({ 'package.json': '{}', 'bun.lock': '' });
     // A single package is not built; a workspace is.
-    expect(commands(npm)).toEqual(['npm ci --no-audit --no-fund --cache /tmp/dalang-npm-cache']);
+    expect(commands(npm)).toEqual([`${FRESH}npm ci --no-audit --no-fund --cache "$D"`]);
     expect(commands(yarn)).toEqual([
-      'YARN_CACHE_FOLDER=/tmp/dalang-yarn-cache YARN_ENABLE_GLOBAL_CACHE=false yarn install --immutable',
+      `${FRESH}YARN_CACHE_FOLDER="$D" YARN_ENABLE_GLOBAL_CACHE=false yarn install --immutable`,
       'yarn run build',
     ]);
-    expect(commands(bun)).toEqual(['BUN_INSTALL_CACHE_DIR=/tmp/dalang-bun-cache bun install --frozen-lockfile']);
+    expect(commands(bun)).toEqual([`${FRESH}BUN_INSTALL_CACHE_DIR="$D" bun install --frozen-lockfile`]);
   });
 
   it('uses plain commands on Windows', () => {
@@ -58,6 +59,19 @@ describe('detectWorktreeSetup', () => {
     expect(commands(project({ 'package.json': '{}' }))).toEqual([]);
     expect(commands(project({ 'README.md': 'hi', 'pnpm-lock.yaml': '' }))).toEqual([]);
   });
+});
+
+it('the fresh-cache prefix creates a private directory, keeps the exit code, and removes the directory', () => {
+  const out = execFileSync('/bin/sh', ['-c', `${FRESH}echo "$D"; test -d "$D" && [ "$(stat -c %a "$D" 2>/dev/null || stat -f %Lp "$D")" = 700 ] && echo private`]).toString().split('\n');
+  expect(out[1]).toBe('private');
+  expect(fs.existsSync(out[0])).toBe(false);
+  let code = 0;
+  try {
+    execFileSync('/bin/sh', ['-c', `${FRESH}exit 3`]);
+  } catch (err) {
+    code = (err as { status: number }).status;
+  }
+  expect(code).toBe(3);
 });
 
 describe('isNodeModulesIgnored', () => {
