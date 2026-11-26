@@ -327,6 +327,20 @@ function routeLabel(p: { provider: string; model: string }): string {
   return p.model ? `${p.provider} · ${p.model}` : p.provider;
 }
 
+function isUniqueConstraintError(err: unknown): boolean {
+  const candidates: unknown[] = [err];
+  if (err && typeof err === 'object' && 'cause' in err) {
+    candidates.push((err as { cause?: unknown }).cause);
+  }
+  return candidates.some((item) => {
+    if (!item || typeof item !== 'object') return false;
+    const code = 'code' in item ? String((item as { code?: unknown }).code ?? '') : '';
+    if (code === 'SQLITE_CONSTRAINT_UNIQUE') return true;
+    const message = item instanceof Error ? item.message : String(item);
+    return /UNIQUE constraint failed/i.test(message);
+  });
+}
+
 export class ExecutionService {
   private readonly profiles: ProfileService;
   private readonly worktreesRoot: string;
@@ -5368,6 +5382,36 @@ export class ExecutionService {
     return `${base.slice(0, 22)}-S${crypto.randomBytes(2).toString('hex')}`;
   }
 
+  private findExistingSubtaskByClientRequestId(parentTaskId: string, clientRequestId: string) {
+    return this.db
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(and(eq(tasks.parentTaskId, parentTaskId), eq(tasks.clientRequestId, clientRequestId)))
+      .get();
+  }
+
+  private async waitForExistingDelegatedSubtask(
+    scope: DelegationTokenScope,
+    parentTaskId: string,
+    subtaskId: string,
+    mode: DelegateTaskInput['mode'],
+  ): Promise<DelegatedSubtaskStatusDTO> {
+    if (mode === 'wait') {
+      const active = this.activeTasks.get(subtaskId);
+      if (active) {
+        const restoreSlot = scope.yieldParentSlot
+          ? await scope.yieldParentSlot()
+          : async () => {};
+        try {
+          await active.promise;
+        } finally {
+          await restoreSlot().catch(() => undefined);
+        }
+      }
+    }
+    return this.buildSubtaskStatusDTO(scope.projectId, parentTaskId, subtaskId);
+  }
+
   private async delegateSubtask(
     scope: DelegationTokenScope,
     input: DelegateTaskInput,
@@ -5398,17 +5442,6 @@ export class ExecutionService {
       );
     }
 
-    const existingSubtasks = this.db
-      .select({ id: tasks.id })
-      .from(tasks)
-      .where(and(eq(tasks.planId, plan.id), eq(tasks.parentTaskId, parentTask.id)))
-      .all();
-    if (existingSubtasks.length >= this.maxSubtasksPerTask) {
-      throw new Error(
-        `Subtask cap (${this.maxSubtasksPerTask}) reached for task ${parentTask.externalId}.`,
-      );
-    }
-
     let subtaskFilesAllowed: string[];
     if (input.files_allowed === undefined) {
       subtaskFilesAllowed = [...parentTask.filesAllowed];
@@ -5420,6 +5453,25 @@ export class ExecutionService {
         );
       }
       subtaskFilesAllowed = input.files_allowed;
+    }
+
+    const clientRequestId = input.client_request_id?.trim() || null;
+    if (clientRequestId) {
+      const existing = this.findExistingSubtaskByClientRequestId(parentTask.id, clientRequestId);
+      if (existing) {
+        return this.waitForExistingDelegatedSubtask(scope, parentTask.id, existing.id, input.mode);
+      }
+    }
+
+    const existingSubtasks = this.db
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(and(eq(tasks.planId, plan.id), eq(tasks.parentTaskId, parentTask.id)))
+      .all();
+    if (existingSubtasks.length >= this.maxSubtasksPerTask) {
+      throw new Error(
+        `Subtask cap (${this.maxSubtasksPerTask}) reached for task ${parentTask.externalId}.`,
+      );
     }
 
     const sandboxReady = scope.sandboxReady;
@@ -5441,40 +5493,51 @@ export class ExecutionService {
     const maxPos = plan.tasks.reduce((max, t) => Math.max(max, t.position), -1);
     const now = new Date().toISOString();
 
-    this.db
-      .insert(tasks)
-      .values({
-        id: subtaskId,
-        planId: plan.id,
-        externalId,
-        title,
-        milestone: parentTask.milestone,
-        role: 'engineer',
-        complexity: 'low',
-        status: 'running',
-        position: maxPos + 1,
-        goal: input.prompt,
-        filesAllowedJson: JSON.stringify(subtaskFilesAllowed),
-        filesReferenceJson: JSON.stringify(parentTask.filesReference),
-        acceptanceCriteriaJson: JSON.stringify(acceptanceCriteria),
-        verify: verifyCmd,
-        needsSplit: false,
-        splitDepth: parentTask.splitDepth,
-        parentTaskId: parentTask.id,
-        delegatedByRunId: scope.runId,
-        delegationDepth: parentTask.delegationDepth + 1,
-        mergeTargetBranch: scope.branchName,
-        profileOverride: routing.primary.id,
-        reviewRounds: 0,
-        branchName: subtaskBranch,
-        mergeCommitSha: null,
-        rejectionNote: null,
-        prUrl: null,
-        pushedAt: null,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .run();
+    try {
+      this.db
+        .insert(tasks)
+        .values({
+          id: subtaskId,
+          planId: plan.id,
+          externalId,
+          title,
+          milestone: parentTask.milestone,
+          role: 'engineer',
+          complexity: 'low',
+          status: 'running',
+          position: maxPos + 1,
+          goal: input.prompt,
+          filesAllowedJson: JSON.stringify(subtaskFilesAllowed),
+          filesReferenceJson: JSON.stringify(parentTask.filesReference),
+          acceptanceCriteriaJson: JSON.stringify(acceptanceCriteria),
+          verify: verifyCmd,
+          needsSplit: false,
+          splitDepth: parentTask.splitDepth,
+          parentTaskId: parentTask.id,
+          delegatedByRunId: scope.runId,
+          clientRequestId,
+          delegationDepth: parentTask.delegationDepth + 1,
+          mergeTargetBranch: scope.branchName,
+          profileOverride: routing.primary.id,
+          reviewRounds: 0,
+          branchName: subtaskBranch,
+          mergeCommitSha: null,
+          rejectionNote: null,
+          prUrl: null,
+          pushedAt: null,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .run();
+    } catch (err) {
+      if (clientRequestId && isUniqueConstraintError(err)) {
+        const existing = this.findExistingSubtaskByClientRequestId(parentTask.id, clientRequestId);
+        if (existing) {
+          return this.waitForExistingDelegatedSubtask(scope, parentTask.id, existing.id, input.mode);
+        }
+      }
+      throw err;
+    }
 
     const subtaskDto = this.leadService
       .getPlan(scope.projectId, scope.sessionId)!
@@ -5982,6 +6045,7 @@ export class ExecutionService {
       task_id: row.id,
       external_id: row.externalId,
       parent_task_id: parentTaskId,
+      client_request_id: row.clientRequestId ?? null,
       title: row.title,
       status: row.status as TaskDTO['status'],
       provider: (latestCoderRun?.provider ?? latestProfile?.provider ?? 'codex') as ProviderId,

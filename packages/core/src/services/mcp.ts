@@ -153,6 +153,13 @@ export const MCP_TOOL_DEFINITIONS = [
           description:
             'wait (default): block until the subtask finishes review and merges into your branch. async: start the subtask in the background and return its task_id immediately.',
         },
+        client_request_id: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 128,
+          description:
+            'Optional idempotency key scoped to your parent task. Retrying delegate_task with the same client_request_id returns the existing subtask instead of creating a duplicate.',
+        },
       },
       required: ['prompt'],
       additionalProperties: false,
