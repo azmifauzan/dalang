@@ -314,6 +314,42 @@ describe('v0.5 Replay runner scenarios (process-only replacement)', () => {
     }
   }, process.platform === 'win32' ? 60_000 : 30_000);
 
+  it('Scenario 5: a repository that ignores .dalang/ still runs, reviews, and merges a task without committing DALANG artifacts', async () => {
+    const transcript = loadReplayTranscript(path.join(FIXTURES_DIR, 'review-fix-round.json'));
+    const ctx = await seedProjectWithTasks(transcript, [
+      {
+        title: 'Slugify helper',
+        complexity: 'low',
+        filesAllowed: ['src/slug.mjs', 'src/slug.test.mjs'],
+        verify: 'node --test src/slug.test.mjs',
+      },
+    ]);
+
+    try {
+      const git = simpleGit(ctx.projDir);
+      fs.writeFileSync(path.join(ctx.projDir, '.gitignore'), '.dalang/\n');
+      await git.rm(['-r', '--cached', '-q', '.dalang']).catch(() => undefined);
+      await git.add(['.gitignore']);
+      await git.commit('ignore dalang artifacts');
+
+      await ctx.execSvc.startExecution(ctx.project.id, { allowUnconfined: true });
+      await ctx.execSvc.waitForProjectExecution(ctx.project.id);
+
+      const guard = await ctx.execSvc.getGuardState(ctx.project.id);
+      const entry = guard.tasks[0];
+      expect(entry.task.status).toBe('awaiting_merge');
+      expect(entry.reviews.find((r) => r.round === 2)?.status).toBe('pass');
+
+      const merged = await ctx.execSvc.approveMergeTask(ctx.project.id, entry.task.id, { allowUnconfined: true });
+      expect(merged.task.status).toBe('done');
+      const tracked = (await git.raw(['ls-files'])).split('\n');
+      expect(tracked).toContain('src/slug.mjs');
+      expect(tracked.some((f) => f.startsWith('.dalang/'))).toBe(false);
+    } finally {
+      ctx.conn.close();
+    }
+  }, process.platform === 'win32' ? 60_000 : 30_000);
+
   it('Scenario 3: two parallel tasks in isolated worktrees merge cleanly with hidden baseline checkpoints', async () => {
     const transcript = loadReplayTranscript(path.join(FIXTURES_DIR, 'parallel-merge.json'));
     const ctx = await seedProjectWithTasks(transcript, [

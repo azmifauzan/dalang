@@ -13,3 +13,6 @@ packages/cli/LICENSE
 packages/cli/bundle/
 
 /video*/
+
+# DALANG session artifacts (briefs, plans, chats, task results) stay local in this public repository.
+.dalang/
