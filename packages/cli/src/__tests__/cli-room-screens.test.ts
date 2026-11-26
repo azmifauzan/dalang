@@ -448,6 +448,23 @@ describe('room screens (Ink, stub server)', () => {
     await ui.waitFor('Welcome to DALANG', mark);
   });
 
+  it('shows the Lead saved in /config in the header of a new chat after closing the screen', async () => {
+    let lead = { provider: 'claude-code', model: '' };
+    const { client } = roomClient({
+      listProjects: async () => [{ ...project, leadProvider: lead.provider, leadModel: lead.model || null }],
+      listProfiles: async () => [{ ...leadProfile, provider: lead.provider, model: lead.model }],
+      listSessions: async () => ({ sessions: [], workingSessionId: null }),
+    });
+    const ui = mountRoom(client);
+    await ui.waitFor('Lead Claude');
+    await ui.press('/config', '\r');
+    await ui.waitFor('Setup wizard');
+    lead = { provider: 'codex', model: 'gpt-6.2-sol' }; // saved from the Agent team screen
+    const mark = ui.mark();
+    await ui.press('\x1b');
+    await ui.waitFor('Lead Codex', mark);
+  });
+
   it('scrolls older messages with the mouse wheel and PageUp, and a click never types into the composer', async () => {
     const many = Array.from({ length: 70 }, (_, i) => ({
       id: `m${i}`,

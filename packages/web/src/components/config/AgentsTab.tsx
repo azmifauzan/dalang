@@ -115,6 +115,8 @@ export function AgentsTab({
     qc.invalidateQueries({ queryKey: ['routing'] });
     qc.invalidateQueries({ queryKey: ['execution'] });
     qc.invalidateQueries({ queryKey: ['guard'] });
+    // Each project's Lead is resolved from the Lead profile, and a new chat starts from it.
+    qc.invalidateQueries({ queryKey: ['projects'] });
   };
 
   const refreshMutation = useMutation({

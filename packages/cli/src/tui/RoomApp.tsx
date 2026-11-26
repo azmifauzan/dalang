@@ -716,12 +716,20 @@ export function RoomApp({
     ],
   );
 
-  /** After the wizard or /config changed profiles or providers, read them again. */
+  /**
+   * After the wizard or /config changed profiles or providers, read them again. Projects too: the
+   * server resolves each project's Lead from the Lead profile, and a new chat's header shows it.
+   */
   const reloadAfterSetup = useCallback(async () => {
     try {
-      const [profList, status] = await Promise.all([client.listProfiles(), client.getProvidersStatus()]);
+      const [profList, status, projList] = await Promise.all([
+        client.listProfiles(),
+        client.getProvidersStatus(),
+        client.listProjects(),
+      ]);
       setProfiles(profList);
       setProviderStatus(status);
+      setProjects(projList);
     } catch {
       // keep what is shown
     }
