@@ -1286,6 +1286,7 @@ export const DelegateTaskInputSchema = z.object({
   acceptance_criteria: z.array(z.string().trim().min(1)).min(1).max(20).optional(),
   verify: z.string().trim().min(1).max(500).nullable().optional(),
   mode: z.enum(['wait', 'async']).default('wait'),
+  client_request_id: z.string().trim().min(1).max(128).optional(),
 });
 export type DelegateTaskInput = z.infer<typeof DelegateTaskInputSchema>;
 
@@ -1303,6 +1304,7 @@ export interface DelegatedSubtaskStatusDTO {
   task_id: string;
   external_id: string;
   parent_task_id: string;
+  client_request_id?: string | null;
   title: string;
   status: TaskStatus;
   provider: ProviderId;
