@@ -1,8 +1,54 @@
+import type Database from 'better-sqlite3';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { openDatabase } from '../db/client.js';
+import { openDatabase, resetDatabaseToDefaults } from '../db/client.js';
+
+function getTableIndexColumns(sqlite: Database.Database, table: string): Map<string, string[]> {
+  const list = sqlite.pragma(`index_list(${table})`) as Array<{ name: string }>;
+  const map = new Map<string, string[]>();
+  for (const idx of list) {
+    const cols = (sqlite.pragma(`index_info(${idx.name})`) as Array<{ name: string | null }>)
+      .map((c) => c.name)
+      .filter((name): name is string => typeof name === 'string');
+    map.set(idx.name, cols);
+  }
+  return map;
+}
+
+function expectV17PragmasAndFkIndexes(sqlite: Database.Database): void {
+  expect(sqlite.pragma('user_version', { simple: true })).toBe(17);
+  expect(sqlite.pragma('busy_timeout', { simple: true })).toBe(5000);
+  expect(sqlite.pragma('synchronous', { simple: true })).toBe(1); // NORMAL
+  expect(sqlite.pragma('journal_mode', { simple: true })).toBe('wal');
+  expect(sqlite.pragma('foreign_keys', { simple: true })).toBe(1);
+  expect(sqlite.pragma('foreign_key_check')).toEqual([]);
+
+  expect(getTableIndexColumns(sqlite, 'messages').get('idx_messages_session_id')).toEqual(['session_id']);
+  expect(getTableIndexColumns(sqlite, 'sessions').get('idx_sessions_project_id')).toEqual(['project_id']);
+  expect(getTableIndexColumns(sqlite, 'tasks').get('idx_tasks_plan_id')).toEqual(['plan_id']);
+  expect(getTableIndexColumns(sqlite, 'runs').get('idx_runs_task_id')).toEqual(['task_id']);
+  expect(getTableIndexColumns(sqlite, 'reviews').get('idx_reviews_task_id')).toEqual(['task_id']);
+  expect(getTableIndexColumns(sqlite, 'tasks').get('idx_tasks_parent_client_request')).toEqual([
+    'parent_task_id',
+    'client_request_id',
+  ]);
+  expect(getTableIndexColumns(sqlite, 'automation_runs').get('idx_automation_runs_automation_delivery')).toEqual([
+    'automation_id',
+    'delivery_id',
+  ]);
+
+  const planDetail = (sql: string) =>
+    (sqlite.prepare(`EXPLAIN QUERY PLAN ${sql}`).all('sample-id') as Array<{ detail: string }>)
+      .map((r) => r.detail)
+      .join(' ');
+  expect(planDetail('SELECT id FROM messages WHERE session_id = ?')).toContain('idx_messages_session_id');
+  expect(planDetail('SELECT id FROM sessions WHERE project_id = ?')).toContain('idx_sessions_project_id');
+  expect(planDetail('SELECT id FROM tasks WHERE plan_id = ?')).toContain('idx_tasks_plan_id');
+  expect(planDetail('SELECT id FROM runs WHERE task_id = ?')).toContain('idx_runs_task_id');
+  expect(planDetail('SELECT id FROM reviews WHERE task_id = ?')).toContain('idx_reviews_task_id');
+}
 
 describe('database upgrade', () => {
   it('opens a v3 database that lacks the v4 to v7 columns', () => {
@@ -42,7 +88,7 @@ describe('database upgrade', () => {
     fresh.close();
 
     const upgraded = openDatabase(file);
-    expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(16);
+    expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(17);
     const runCols = (upgraded.sqlite.pragma('table_info(runs)') as Array<{ name: string }>).map((c) => c.name);
     expect(runCols).toContain('worktree_path');
     expect(runCols).toContain('input_tokens');
@@ -247,7 +293,7 @@ describe('database upgrade', () => {
     // Open and trigger v8 -> v9 upgrade
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(16);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(17);
 
       // Project A: 1 Full working session preserving brief, plan, tasks, messages, and moved artifacts
       const sessionsA = upgraded.sqlite
@@ -351,7 +397,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(16);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(17);
       const names = (
         upgraded.sqlite.prepare('SELECT name FROM agent_profiles ORDER BY name').all() as Array<{ name: string }>
       ).map((r) => r.name);
@@ -386,7 +432,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(16);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(17);
       const taskCols = (upgraded.sqlite.pragma('table_info(tasks)') as Array<{ name: string }>).map((c) => c.name);
       expect(taskCols).toContain('delegated_by_run_id');
       expect(taskCols).toContain('delegation_depth');
@@ -410,7 +456,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(16);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(17);
       const taskRepoCols = (
         upgraded.sqlite.pragma('table_info(task_repos)') as Array<{ name: string }>
       ).map((c) => c.name);
@@ -453,6 +499,7 @@ describe('database upgrade', () => {
     const file = path.join(dir, 'dalang.db');
     const fresh = openDatabase(file);
     fresh.sqlite.exec(`
+      DROP TABLE IF EXISTS webhook_deliveries;
       DROP TABLE IF EXISTS automation_runs;
       DROP TABLE IF EXISTS automations;
       DROP TABLE IF EXISTS mcp_tokens;
@@ -462,7 +509,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(16);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(17);
       const autoCols = (
         upgraded.sqlite.pragma('table_info(automations)') as Array<{ name: string }>
       ).map((c) => c.name);
@@ -519,7 +566,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(16);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(17);
       const msgCols = (
         upgraded.sqlite.pragma('table_info(messages)') as Array<{ name: string }>
       ).map((c) => c.name);
@@ -692,7 +739,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(16);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(17);
 
       const oldTask = upgraded.sqlite
         .prepare(`SELECT external_id, output_kind, verify FROM tasks WHERE id = 't-old'`)
@@ -760,6 +807,267 @@ describe('database upgrade', () => {
       expect(revPrompt).toBe('Custom reviewer rules stay.');
     } finally {
       upgraded.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('creates a fresh v17 database with pragmas, foreign-key indexes, and idempotency storage', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dalang-fresh17-'));
+    const file = path.join(dir, 'dalang.db');
+    const now = '2026-11-26T00:00:00.000Z';
+
+    const fresh = openDatabase(file);
+    try {
+      expectV17PragmasAndFkIndexes(fresh.sqlite);
+
+      const taskCols = (fresh.sqlite.pragma('table_info(tasks)') as Array<{ name: string }>).map((c) => c.name);
+      expect(taskCols).toContain('client_request_id');
+      const autoRunCols = (fresh.sqlite.pragma('table_info(automation_runs)') as Array<{ name: string }>).map(
+        (c) => c.name,
+      );
+      expect(autoRunCols).toContain('delivery_id');
+      const deliveryCols = (fresh.sqlite.pragma('table_info(webhook_deliveries)') as Array<{ name: string }>).map(
+        (c) => c.name,
+      );
+      expect(deliveryCols).toEqual(['automation_id', 'delivery_id', 'automation_run_id', 'received_at', 'expires_at']);
+
+      // Seed synthetic data to exercise delegation & webhook idempotency constraints and resetDatabaseToDefaults.
+      fresh.sqlite
+        .prepare(
+          `INSERT INTO projects (id, name, path, main_branch, lead_provider, created_at, updated_at)
+           VALUES ('p17-fresh', 'Fresh17', ?, 'main', 'claude-code', ?, ?)`,
+        )
+        .run(path.join(dir, 'repo'), now, now);
+      fresh.sqlite
+        .prepare(
+          `INSERT INTO sessions (id, project_id, title, mode, work_state, phase, provider, created_at, updated_at)
+           VALUES ('s17-fresh', 'p17-fresh', 'Chat', 'quick', 'idle', 'work', 'claude-code', ?, ?)`,
+        )
+        .run(now, now);
+      fresh.sqlite
+        .prepare(
+          `INSERT INTO plans (id, project_id, session_id, brief_id, version, status, file_path, created_at)
+           VALUES ('plan17-fresh', 'p17-fresh', 's17-fresh', NULL, 1, 'approved', '.dalang/sessions/s17-fresh/plan.json', ?)`,
+        )
+        .run(now);
+      fresh.sqlite
+        .prepare(
+          `INSERT INTO tasks (id, plan_id, external_id, title, milestone, role, complexity, output_kind, status, position, goal, files_allowed_json, files_reference_json, acceptance_criteria_json, verify, created_at, updated_at)
+           VALUES
+             ('parent-1', 'plan17-fresh', 'T-001', 'Parent 1', 'M1', 'engineer', 'medium', 'files', 'running', 0, 'Goal', '[]', '[]', '[]', NULL, ?, ?),
+             ('parent-2', 'plan17-fresh', 'T-002', 'Parent 2', 'M1', 'engineer', 'medium', 'files', 'running', 1, 'Goal', '[]', '[]', '[]', NULL, ?, ?)`,
+        )
+        .run(now, now, now, now);
+
+      const insertSubtask = fresh.sqlite.prepare(
+        `INSERT INTO tasks (id, plan_id, external_id, title, milestone, role, complexity, output_kind, status, position, goal, files_allowed_json, files_reference_json, acceptance_criteria_json, verify, parent_task_id, client_request_id, delegation_depth, created_at, updated_at)
+         VALUES (?, 'plan17-fresh', ?, 'Sub', 'M1', 'engineer', 'low', 'files', 'ready', 2, 'Sub goal', '[]', '[]', '[]', NULL, ?, ?, 1, ?, ?)`,
+      );
+      // Multiple NULL client_request_id under the same parent are allowed.
+      insertSubtask.run('sub-null-1', 'T-001.1', 'parent-1', null, now, now);
+      insertSubtask.run('sub-null-2', 'T-001.2', 'parent-1', null, now, now);
+      // Same client_request_id under different parents is allowed.
+      insertSubtask.run('sub-req-a', 'T-001.3', 'parent-1', 'req-1', now, now);
+      insertSubtask.run('sub-req-b', 'T-002.1', 'parent-2', 'req-1', now, now);
+      // Duplicate (parent_task_id, client_request_id) is rejected.
+      expect(() => insertSubtask.run('sub-req-dup', 'T-001.4', 'parent-1', 'req-1', now, now)).toThrow(
+        /UNIQUE constraint failed/,
+      );
+
+      // Webhook deliveries primary key and foreign key actions.
+      fresh.sqlite
+        .prepare(
+          `INSERT INTO automations (id, project_id, name, kind, enabled, webhook_token, webhook_secret, title, prompt, role, complexity, output_kind, files_allowed_json, files_reference_json, acceptance_criteria_json, verify, created_at, updated_at)
+           VALUES
+             ('auto-1', 'p17-fresh', 'Hook 1', 'webhook', 1, 'tok-1', 'sec-1', 'T1', 'P1', 'engineer', 'low', 'files', '[]', '[]', '[]', NULL, ?, ?),
+             ('auto-2', 'p17-fresh', 'Hook 2', 'webhook', 1, 'tok-2', 'sec-2', 'T2', 'P2', 'engineer', 'low', 'files', '[]', '[]', '[]', NULL, ?, ?)`,
+        )
+        .run(now, now, now, now);
+      fresh.sqlite
+        .prepare(
+          `INSERT INTO automation_runs (id, automation_id, project_id, trigger_source, delivery_id, status, triggered_at)
+           VALUES ('arun-1', 'auto-1', 'p17-fresh', 'webhook', 'deliv-abc', 'running', ?)`,
+        )
+        .run(now);
+      const insertDelivery = fresh.sqlite.prepare(
+        `INSERT INTO webhook_deliveries (automation_id, delivery_id, automation_run_id, received_at, expires_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      );
+      insertDelivery.run('auto-1', 'deliv-abc', 'arun-1', now, null);
+      // Same delivery_id on a different automation is allowed.
+      insertDelivery.run('auto-2', 'deliv-abc', null, now, null);
+      // Duplicate (automation_id, delivery_id) is rejected.
+      expect(() => insertDelivery.run('auto-1', 'deliv-abc', null, now, null)).toThrow(/UNIQUE constraint failed/);
+
+      // Deleting the automation_run sets automation_run_id to NULL; deleting the automation cascades.
+      fresh.sqlite.prepare(`DELETE FROM automation_runs WHERE id = 'arun-1'`).run();
+      expect(
+        fresh.sqlite
+          .prepare(`SELECT automation_run_id FROM webhook_deliveries WHERE automation_id = 'auto-1' AND delivery_id = 'deliv-abc'`)
+          .get(),
+      ).toEqual({ automation_run_id: null });
+      fresh.sqlite.prepare(`DELETE FROM automations WHERE id = 'auto-1'`).run();
+      expect(
+        fresh.sqlite.prepare(`SELECT count(*) AS n FROM webhook_deliveries WHERE automation_id = 'auto-1'`).get(),
+      ).toEqual({ n: 0 });
+      expect(fresh.sqlite.pragma('foreign_key_check')).toEqual([]);
+
+      // resetDatabaseToDefaults clears webhook_deliveries cleanly.
+      resetDatabaseToDefaults(fresh.db, fresh.sqlite);
+      expect(fresh.sqlite.prepare(`SELECT count(*) AS n FROM webhook_deliveries`).get()).toEqual({ n: 0 });
+      expect(fresh.sqlite.pragma('foreign_key_check')).toEqual([]);
+    } finally {
+      fresh.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('upgrades a v16 database to v17: adds FK indexes, idempotency storage, pragmas, preserves data, passes FK checks, and reopens safely', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dalang-up17-'));
+    const file = path.join(dir, 'dalang.db');
+    const now = '2026-11-26T00:00:00.000Z';
+
+    // Build a genuine v16-shaped synthetic database (without v17 indexes, columns, or webhook_deliveries).
+    const v16 = openDatabase(file);
+    v16.sqlite.exec(`
+      DROP INDEX IF EXISTS idx_messages_session_id;
+      DROP INDEX IF EXISTS idx_sessions_project_id;
+      DROP INDEX IF EXISTS idx_tasks_plan_id;
+      DROP INDEX IF EXISTS idx_runs_task_id;
+      DROP INDEX IF EXISTS idx_reviews_task_id;
+      DROP INDEX IF EXISTS idx_tasks_parent_client_request;
+      DROP INDEX IF EXISTS idx_automation_runs_automation_delivery;
+      DROP INDEX IF EXISTS idx_webhook_deliveries_expires_at;
+      DROP TABLE IF EXISTS webhook_deliveries;
+      ALTER TABLE tasks DROP COLUMN client_request_id;
+      ALTER TABLE automation_runs DROP COLUMN delivery_id;
+    `);
+
+    v16.sqlite
+      .prepare(
+        `INSERT INTO projects (id, name, path, main_branch, lead_provider, created_at, updated_at)
+         VALUES ('p17', 'v16-proj', ?, 'main', 'claude-code', ?, ?)`,
+      )
+      .run(path.join(dir, 'repo'), now, now);
+    v16.sqlite
+      .prepare(
+        `INSERT INTO sessions (id, project_id, title, mode, work_state, phase, provider, created_at, updated_at)
+         VALUES ('s17', 'p17', 'Existing work', 'full', 'idle', 'run', 'claude-code', ?, ?)`,
+      )
+      .run(now, now);
+    v16.sqlite
+      .prepare(
+        `INSERT INTO messages (id, session_id, role, type, kind, content, created_at)
+         VALUES ('m17', 's17', 'user', 'text', 'chat', 'Keep this message', ?)`,
+      )
+      .run(now);
+    v16.sqlite
+      .prepare(
+        `INSERT INTO briefs (id, project_id, session_id, version, status, file_path, created_at, approved_at)
+         VALUES ('b17', 'p17', 's17', 1, 'approved', '.dalang/sessions/s17/brief.v1.json', ?, ?)`,
+      )
+      .run(now, now);
+    v16.sqlite
+      .prepare(
+        `INSERT INTO plans (id, project_id, session_id, brief_id, version, status, file_path, created_at, approved_at)
+         VALUES ('plan17', 'p17', 's17', 'b17', 1, 'approved', '.dalang/sessions/s17/plan.v1.json', ?, ?)`,
+      )
+      .run(now, now);
+    v16.sqlite
+      .prepare(
+        `INSERT INTO tasks (id, plan_id, external_id, title, milestone, role, complexity, output_kind, status, position, goal, files_allowed_json, files_reference_json, acceptance_criteria_json, verify, created_at, updated_at)
+         VALUES ('t17', 'plan17', 'T-001', 'Existing task', 'M1', 'engineer', 'low', 'files', 'done', 0, 'Keep me', '["src/a.ts"]', '[]', '["Passes"]', 'pnpm test', ?, ?)`,
+      )
+      .run(now, now);
+    v16.sqlite
+      .prepare(
+        `INSERT INTO runs (id, project_id, task_id, profile_id, provider, kind, status, log_path, started_at, finished_at)
+         VALUES ('run17', 'p17', 't17', 'profile-coder-small', 'codex', 'execute', 'completed', '.dalang/sessions/s17/logs/run17.log', ?, ?)`,
+      )
+      .run(now, now);
+    v16.sqlite
+      .prepare(
+        `INSERT INTO reviews (id, project_id, task_id, run_id, round, status, reviewer_profile_id, reviewer_provider, verify_command, verify_exit_code, verify_output, file_path, scope_warnings_json, created_at)
+         VALUES ('rev17', 'p17', 't17', 'run17', 1, 'pass', 'profile-reviewer', 'claude-code', 'pnpm test', 0, 'ok', '.dalang/sessions/s17/tasks/T-001/review-1.json', '[]', ?)`,
+      )
+      .run(now);
+    v16.sqlite
+      .prepare(
+        `INSERT INTO automations (id, project_id, name, kind, enabled, webhook_token, webhook_secret, title, prompt, role, complexity, output_kind, files_allowed_json, files_reference_json, acceptance_criteria_json, verify, created_at, updated_at)
+         VALUES ('auto17', 'p17', 'Deploy hook', 'webhook', 1, 'tok-v16', 'sec-v16', 'Handle hook', 'Run hook', 'engineer', 'low', 'files', '[]', '[]', '["OK"]', NULL, ?, ?)`,
+      )
+      .run(now, now);
+    v16.sqlite
+      .prepare(
+        `INSERT INTO automation_runs (id, automation_id, project_id, trigger_source, session_id, task_id, status, detail, triggered_at, finished_at)
+         VALUES ('arun17', 'auto17', 'p17', 'webhook', 's17', 't17', 'completed', 'delivery:legacy-1', ?, ?)`,
+      )
+      .run(now, now);
+    v16.sqlite.pragma('user_version = 16');
+    v16.close();
+
+    // First open: upgrades v16 -> v17.
+    const upgraded = openDatabase(file);
+    try {
+      expectV17PragmasAndFkIndexes(upgraded.sqlite);
+
+      // All synthetic v16 data is preserved with nullable additive columns defaulted to NULL.
+      expect(upgraded.sqlite.prepare(`SELECT id, content FROM messages WHERE session_id = 's17'`).all()).toEqual([
+        { id: 'm17', content: 'Keep this message' },
+      ]);
+      expect(upgraded.sqlite.prepare(`SELECT id, title FROM sessions WHERE project_id = 'p17'`).all()).toEqual([
+        { id: 's17', title: 'Existing work' },
+      ]);
+      expect(
+        upgraded.sqlite.prepare(`SELECT id, external_id, client_request_id FROM tasks WHERE plan_id = 'plan17'`).all(),
+      ).toEqual([{ id: 't17', external_id: 'T-001', client_request_id: null }]);
+      expect(upgraded.sqlite.prepare(`SELECT id, status FROM runs WHERE task_id = 't17'`).all()).toEqual([
+        { id: 'run17', status: 'completed' },
+      ]);
+      expect(upgraded.sqlite.prepare(`SELECT id, status FROM reviews WHERE task_id = 't17'`).all()).toEqual([
+        { id: 'rev17', status: 'pass' },
+      ]);
+      expect(
+        upgraded.sqlite.prepare(`SELECT id, detail, delivery_id FROM automation_runs WHERE id = 'arun17'`).get(),
+      ).toEqual({ id: 'arun17', detail: 'delivery:legacy-1', delivery_id: null });
+
+      // Idempotency storage is usable immediately after upgrade.
+      upgraded.sqlite
+        .prepare(
+          `INSERT INTO tasks (id, plan_id, external_id, title, milestone, role, complexity, output_kind, status, position, goal, files_allowed_json, files_reference_json, acceptance_criteria_json, verify, parent_task_id, client_request_id, delegation_depth, created_at, updated_at)
+           VALUES ('t17-sub', 'plan17', 'T-001.1', 'Delegated', 'M1', 'engineer', 'low', 'files', 'ready', 1, 'Sub', '[]', '[]', '[]', NULL, 't17', 'req-42', 1, ?, ?)`,
+        )
+        .run(now, now);
+      upgraded.sqlite
+        .prepare(
+          `INSERT INTO webhook_deliveries (automation_id, delivery_id, automation_run_id, received_at, expires_at)
+           VALUES ('auto17', 'deliv-v17', 'arun17', ?, NULL)`,
+        )
+        .run(now);
+      expect(upgraded.sqlite.pragma('foreign_key_check')).toEqual([]);
+    } finally {
+      upgraded.close();
+    }
+
+    // Reopen upgraded v17 database: idempotent, pragmas active, data and FK integrity intact.
+    const reopened = openDatabase(file);
+    try {
+      expectV17PragmasAndFkIndexes(reopened.sqlite);
+      expect(
+        reopened.sqlite
+          .prepare(`SELECT id, client_request_id FROM tasks WHERE parent_task_id = 't17' AND client_request_id = 'req-42'`)
+          .get(),
+      ).toEqual({ id: 't17-sub', client_request_id: 'req-42' });
+      expect(
+        reopened.sqlite
+          .prepare(`SELECT automation_run_id FROM webhook_deliveries WHERE automation_id = 'auto17' AND delivery_id = 'deliv-v17'`)
+          .get(),
+      ).toEqual({ automation_run_id: 'arun17' });
+      expect(reopened.sqlite.prepare(`SELECT count(*) AS n FROM messages WHERE session_id = 's17'`).get()).toEqual({
+        n: 1,
+      });
+    } finally {
+      reopened.close();
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
