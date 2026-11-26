@@ -1,13 +1,17 @@
-import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { openSafeGit } from './git.js';
 
 /**
  * A task worktree holds only tracked files, so a JavaScript project has no `node_modules` there and
  * its verify command fails (`tsc: not found`). Agents cannot fix that themselves: the sandbox keeps
  * the package manager's store read-only. DALANG installs the locked dependencies once per worktree,
- * before the agent starts.
+ * before the agent starts, in the same sandbox.
+ *
+ * The install runs the repository's lifecycle and build scripts, so it never gets write access to
+ * the user's package stores (a script could poison packages that other projects use outside the
+ * sandbox). Every package manager downloads into a throwaway cache in the sandbox's private /tmp,
+ * which needs network access and costs some seconds per worktree.
  */
 export interface WorktreeSetupStep {
   /** Directory the command runs in (a worktree root or a nested repository inside it). */
@@ -16,18 +20,37 @@ export interface WorktreeSetupStep {
 }
 
 // ponytail: JavaScript lockfiles only; add other ecosystems (uv, poetry, bundler) when a project needs them.
-const LOCKFILE_INSTALL: Array<{ file: string; manager: string; install: (dir: string) => string }> = [
-  { file: 'pnpm-lock.yaml', manager: 'pnpm', install: () => 'pnpm install --frozen-lockfile --prefer-offline' },
-  { file: 'bun.lock', manager: 'bun', install: () => 'bun install --frozen-lockfile' },
-  { file: 'bun.lockb', manager: 'bun', install: () => 'bun install --frozen-lockfile' },
-  {
-    file: 'yarn.lock',
-    manager: 'yarn',
+// The /tmp caches are private to each sandboxed command and vanish with it. Windows (cmd.exe) gets the
+// plain commands: its sandbox has no private /tmp, so a cache write there may fail and is only logged.
+function lockfileInstall(dir: string, posix: boolean): { file: string; manager: string; command: string } | null {
+  const has = (file: string) => fs.existsSync(path.join(dir, file));
+  if (has('pnpm-lock.yaml')) {
+    return {
+      file: 'pnpm-lock.yaml',
+      manager: 'pnpm',
+      // pnpm registers every project inside its store, so even --offline writes there; the user's
+      // store cannot be used read-only and the install downloads into a sandbox-private store.
+      command: `pnpm install --frozen-lockfile${posix ? ' --store-dir /tmp/dalang-pnpm-store' : ''}`,
+    };
+  }
+  if (has('bun.lock') || has('bun.lockb')) {
+    return { file: 'bun.lock', manager: 'bun', command: `${posix ? 'BUN_INSTALL_CACHE_DIR=/tmp/dalang-bun-cache ' : ''}bun install --frozen-lockfile` };
+  }
+  if (has('yarn.lock')) {
     // Yarn 2+ (a `.yarnrc.yml` next to the lockfile) renamed --frozen-lockfile to --immutable.
-    install: (dir) => (fs.existsSync(path.join(dir, '.yarnrc.yml')) ? 'yarn install --immutable' : 'yarn install --frozen-lockfile'),
-  },
-  { file: 'package-lock.json', manager: 'npm', install: () => 'npm ci --prefer-offline --no-audit --no-fund' },
-];
+    const args = has('.yarnrc.yml') ? 'install --immutable' : 'install --frozen-lockfile';
+    const env = posix ? 'YARN_CACHE_FOLDER=/tmp/dalang-yarn-cache YARN_ENABLE_GLOBAL_CACHE=false ' : '';
+    return { file: 'yarn.lock', manager: 'yarn', command: `${env}yarn ${args}` };
+  }
+  if (has('package-lock.json')) {
+    return {
+      file: 'package-lock.json',
+      manager: 'npm',
+      command: `npm ci --no-audit --no-fund${posix ? ' --cache /tmp/dalang-npm-cache' : ''}`,
+    };
+  }
+  return null;
+}
 
 function readPackageJson(dir: string): { scripts?: Record<string, unknown>; workspaces?: unknown } | null {
   try {
@@ -42,12 +65,12 @@ function readPackageJson(dir: string): { scripts?: Record<string, unknown>; work
  * installed. A workspace with a root `build` script is also built, because its packages usually
  * import each other's build output (`dist`), which a fresh checkout does not have.
  */
-export function detectWorktreeSetup(dir: string): WorktreeSetupStep[] {
+export function detectWorktreeSetup(dir: string, posix = process.platform !== 'win32'): WorktreeSetupStep[] {
   const pkg = readPackageJson(dir);
   if (!pkg || fs.existsSync(path.join(dir, 'node_modules'))) return [];
-  const lock = LOCKFILE_INSTALL.find((l) => fs.existsSync(path.join(dir, l.file)));
+  const lock = lockfileInstall(dir, posix);
   if (!lock) return [];
-  const steps: WorktreeSetupStep[] = [{ cwd: dir, command: lock.install(dir) }];
+  const steps: WorktreeSetupStep[] = [{ cwd: dir, command: lock.command }];
   const isWorkspace = fs.existsSync(path.join(dir, 'pnpm-workspace.yaml')) || pkg.workspaces !== undefined;
   if (isWorkspace && typeof pkg.scripts?.build === 'string') {
     steps.push({ cwd: dir, command: `${lock.manager} run build` });
@@ -55,32 +78,13 @@ export function detectWorktreeSetup(dir: string): WorktreeSetupStep[] {
   return steps;
 }
 
-/** Package manager stores and caches an install may write to; only those that exist are opened. */
-export function packageManagerCacheDirs(home = os.homedir()): string[] {
-  const dataHome = process.env.XDG_DATA_HOME || path.join(home, '.local', 'share');
-  const cacheHome = process.env.XDG_CACHE_HOME || path.join(home, '.cache');
-  return [
-    path.join(dataHome, 'pnpm'),
-    path.join(cacheHome, 'pnpm'),
-    path.join(home, '.npm'),
-    path.join(cacheHome, 'yarn'),
-    path.join(home, '.yarn', 'berry'),
-    path.join(home, '.bun', 'install', 'cache'),
-    path.join(home, 'Library', 'pnpm'),
-    path.join(home, 'Library', 'Caches', 'pnpm'),
-    path.join(home, 'Library', 'Caches', 'Yarn'),
-  ].filter((p) => fs.existsSync(p));
-}
-
 /**
  * Whether git ignores `node_modules/` in `dir`. When it does not, installed files would count as task
  * changes (failing the `files_allowed` check) and could land in checkpoint commits, so setup is skipped.
+ * Uses the hardened git invocation, so repository config such as `core.fsmonitor` cannot run commands.
  */
-export function isNodeModulesIgnored(dir: string): boolean {
-  try {
-    execFileSync('git', ['check-ignore', '-q', 'node_modules/.dalang-probe'], { cwd: dir, stdio: 'ignore' });
-    return true;
-  } catch {
-    return false;
-  }
+export async function isNodeModulesIgnored(dir: string): Promise<boolean> {
+  // check-ignore prints the path when it is ignored; simple-git does not reject on its exit code 1.
+  const out = await openSafeGit(dir).raw(['check-ignore', 'node_modules/.dalang-probe']).catch(() => '');
+  return out.trim() !== '';
 }

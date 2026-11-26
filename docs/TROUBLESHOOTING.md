@@ -172,7 +172,7 @@ The terminal room opens a new chat. Use `/resume` to find an earlier session for
 
 ### Verify fails with `command not found` in a task worktree
 
-A task worktree holds only the files tracked by git. For a JavaScript project with a lockfile, DALANG installs dependencies in the worktree before the agent starts, and builds a workspace that has a root `build` script. The run log shows `[dalang] Preparing worktree: ...`. If it shows `Skipping dependency install`, add `node_modules/` to `.gitignore`. If the install failed, the lines above the failure say why; a lockfile that no longer matches `package.json` is the usual cause. Other ecosystems (Python, Ruby, Go modules) are not set up automatically yet.
+A task worktree holds only the files tracked by git. For a JavaScript project with a lockfile, DALANG installs dependencies in the worktree before the agent starts, and builds a workspace that has a root `build` script. The run log shows `[dalang] Preparing worktree: ...`. The install downloads packages into a throwaway cache inside the sandbox, so it needs network access. If it shows `Skipping dependency install`, add `node_modules/` to `.gitignore`. If the install failed, the lines above the failure say why; a lockfile that no longer matches `package.json` is the usual cause. Other ecosystems (Python, Ruby, Go modules) are not set up automatically yet.
 
 ### Another session has unfinished work
 

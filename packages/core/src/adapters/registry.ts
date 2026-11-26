@@ -318,7 +318,6 @@ export class ProviderRegistry {
       idleTimeoutMs?: number;
       signal?: AbortSignal;
       onLogLine?: (line: string) => void;
-      writablePaths?: string[];
     } = {},
   ): Promise<RunCommandResult> {
     const invocation = await wrapWithSandbox(
@@ -327,7 +326,7 @@ export class ProviderRegistry {
       projectPath,
       process.platform === 'win32' ? (process.env.ComSpec || 'cmd.exe') : '/bin/sh',
       process.platform === 'win32' ? ['/d', '/s', '/c', `"${command}"`] : ['-c', command],
-      { bindProviderDirs: false, writablePaths: options.writablePaths },
+      { bindProviderDirs: false },
     );
     return this.runner.run(invocation.command, invocation.args, {
       cwd: projectPath,

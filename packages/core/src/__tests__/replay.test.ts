@@ -301,7 +301,7 @@ describe('v0.5 Replay runner scenarios (process-only replacement)', () => {
       await ctx.execSvc.startExecution(ctx.project.id, { allowUnconfined: true });
       await ctx.execSvc.waitForProjectExecution(ctx.project.id);
 
-      const setupIdx = ctx.runner.invocations.findIndex((i) => i.innerArgs.join(' ').includes('npm ci --prefer-offline'));
+      const setupIdx = ctx.runner.invocations.findIndex((i) => i.innerArgs.join(' ').includes('npm ci --no-audit'));
       const firstCoderIdx = ctx.runner.invocations.findIndex((i) => i.matchedTurnId !== undefined);
       expect(setupIdx).toBeGreaterThanOrEqual(0);
       expect(setupIdx).toBeLessThan(firstCoderIdx);

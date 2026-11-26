@@ -242,8 +242,6 @@ export interface SandboxWrapOptions {
   bindProviderDirs?: boolean;
   configDir?: string | null;
   platform?: NodeJS.Platform;
-  /** Extra directories the command may write, such as package manager caches during worktree setup. */
-  writablePaths?: string[];
 }
 
 const PROVIDER_STATE_DIRS: Record<ProviderId, string[]> = {
@@ -585,9 +583,6 @@ export function buildMacOsSeatbeltProfile(
     rules.push(`(allow file-write* (subpath "${escapeSbpl(tmpDir)}"))`);
   }
 
-  for (const dir of options.writablePaths ?? []) {
-    rules.push(`(allow file-write* (subpath "${escapeSbpl(dir)}"))`);
-  }
   if (!options.readOnly) {
     rules.push(`(allow file-write* (subpath "${escapeSbpl(resolvedProject)}"))`);
   }
@@ -753,10 +748,6 @@ export async function wrapWithBwrap(
         }
       }
     }
-  }
-
-  for (const dir of options.writablePaths ?? []) {
-    if (fs.existsSync(dir)) bwrapArgs.push('--bind', dir, dir);
   }
 
   bwrapArgs.push('--chdir', projectPath, '--', command, ...args);

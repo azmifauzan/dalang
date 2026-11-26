@@ -80,7 +80,7 @@ import {
 } from '../safe-fs.js';
 import { formatZodError } from './contract.js';
 import { localizeVerifyCommand } from './verify-command.js';
-import { detectWorktreeSetup, isNodeModulesIgnored, packageManagerCacheDirs } from './worktree-setup.js';
+import { detectWorktreeSetup, isNodeModulesIgnored } from './worktree-setup.js';
 import type { DalangEventBus } from './events.js';
 import {
   assertRepoConfigSafe,
@@ -400,10 +400,9 @@ export class ExecutionService {
     log: (line: string) => void,
     signal: AbortSignal,
   ): Promise<void> {
-    const cacheDirs = packageManagerCacheDirs();
     for (const dir of repoDirs) {
       const steps = detectWorktreeSetup(dir);
-      if (steps.length && !isNodeModulesIgnored(dir)) {
+      if (steps.length && !(await isNodeModulesIgnored(dir))) {
         log(`[dalang] Skipping dependency install${dir === repoDirs[0] ? '' : ` in ${path.basename(dir)}/`}: node_modules is not in .gitignore, so installed files would count as task changes.`);
         continue;
       }
@@ -418,7 +417,6 @@ export class ExecutionService {
           signal,
           timeoutMs: 900_000,
           idleTimeoutMs: 300_000,
-          writablePaths: cacheDirs,
           onLogLine: (line) => {
             tail.push(line);
             if (tail.length > 15) tail.shift();
