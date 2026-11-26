@@ -8,6 +8,7 @@ import type {
   DiscussMessageDTO,
   DiscussRound,
   GuardStateDTO,
+  GuardTaskEntryDTO,
   ProviderStatus,
   QuickPlanMessageContent,
   RoomReportContent,
@@ -21,37 +22,50 @@ function displayTaskRole(role: string): string {
   return role;
 }
 
-export type PendingGate =
-  | {
-      kind: 'quick_run';
-      planVersion: number;
-      taskId: string;
-      externalId: string;
-      title: string;
-      prompt: string;
-    }
-  | {
-      kind: 'approve_brief';
-      version: number;
-      title: string;
-      prompt: string;
-    }
-  | {
-      kind: 'approve_plan';
-      version: number;
-      taskCount: number;
-      prompt: string;
-    }
-  | {
-      kind: 'approve_merge';
-      taskId: string;
-      externalId: string;
-      title: string;
-      output: TaskOutputKind;
-      branch: string;
-      reviewFailed: boolean;
-      prompt: string;
-    };
+/** What every gate shows: the question, an optional line of context, and what y and n each do. */
+interface GateText {
+  prompt: string;
+  context?: string;
+  yes: string;
+  no: string;
+  /** Other tasks waiting for the same kind of approval after this one. */
+  alsoWaiting?: number;
+}
+
+export type PendingGate = GateText &
+  (
+    | { kind: 'quick_run'; planVersion: number; taskId: string; externalId: string; title: string }
+    | { kind: 'approve_brief'; version: number; title: string }
+    | { kind: 'approve_plan'; version: number; taskCount: number }
+    // The Lead's yes/no question before Auto work replaces unfinished work; the answer goes to the Lead.
+    | { kind: 'auto_work' }
+    | {
+        kind: 'approve_merge';
+        taskId: string;
+        externalId: string;
+        title: string;
+        output: TaskOutputKind;
+        branch: string;
+        reviewFailed: boolean;
+      }
+  );
+
+/** The review and verify facts behind a merge question, in one line. */
+function mergeContext(entry: GuardTaskEntryDTO): string | undefined {
+  const review = entry.latestReview;
+  if (!review) return undefined;
+  const findings = review.contract.findings?.length ?? 0;
+  const parts = [
+    `Review round ${review.round} ${review.status === 'pass' ? 'passed' : 'failed'} (${findings} finding(s), ${review.reviewerProfileName})`,
+    review.verifyExitCode === null
+      ? 'verify skipped'
+      : review.verifyExitCode === 0
+        ? 'verify passed'
+        : `verify failed (exit ${review.verifyExitCode})`,
+  ];
+  if (review.scopeWarnings.length > 0) parts.push(`${review.scopeWarnings.length} scope warning(s)`);
+  return parts.join(' · ');
+}
 
 export function detectPendingGate(
   detail: SessionDetailDTO | null,
@@ -60,27 +74,50 @@ export function detectPendingGate(
   if (!detail) return null;
 
   // 1. Merge / accept gate takes top priority when a task is waiting for human approval
-  const mergeCandidate = guard?.tasks.find(
+  const mergeCandidates = guard?.tasks.filter(
     (entry) => entry.task.status === 'awaiting_merge' && entry.canApproveMerge,
-  );
+  ) ?? [];
+  const mergeCandidate = mergeCandidates[0];
   if (mergeCandidate) {
     const output = mergeCandidate.task.output ?? 'files';
+    const id = mergeCandidate.task.externalId;
+    const mainBranch = guard?.mainBranch ?? 'main';
     return {
       kind: 'approve_merge',
       taskId: mergeCandidate.task.id,
-      externalId: mergeCandidate.task.externalId,
+      externalId: id,
       title: mergeCandidate.task.title,
       output,
-      branch: guard?.mainBranch ?? 'main',
+      branch: mainBranch,
       reviewFailed: false,
       prompt:
         output === 'answer'
-          ? `Accept answer [${mergeCandidate.task.externalId}] "${mergeCandidate.task.title}"? (y/n · /diff to inspect)`
-          : `Merge [${mergeCandidate.task.externalId}] "${mergeCandidate.task.title}" into ${guard?.mainBranch ?? 'main'}? (y/n · /diff to inspect)`,
+          ? `Accept answer [${id}] "${mergeCandidate.task.title}"?`
+          : `Merge [${id}] "${mergeCandidate.task.title}" into ${mainBranch}?`,
+      context: mergeContext(mergeCandidate),
+      yes: output === 'answer' ? 'accept' : 'merge',
+      no: `keep waiting · /diff ${id} to see the ${output === 'answer' ? 'answer' : 'changes'}`,
+      alsoWaiting: mergeCandidates.length - 1,
     };
   }
 
-  // 2. Quick draft plan gate
+  // 2. The Lead asked whether Auto work may replace unfinished work. Its text is in the timeline above.
+  const last = detail.messages.at(-1);
+  if (detail.session.mode === 'auto' && last?.role === 'lead' && last.type === 'ask' &&
+    last.content && typeof last.content === 'object' && 'pendingAutoWork' in last.content) {
+    const pending = (last.content as { pendingAutoWork?: { sessionId?: string } }).pendingAutoWork;
+    const replacesOwn = pending?.sessionId === detail.session.id;
+    return {
+      kind: 'auto_work',
+      prompt: replacesOwn
+        ? 'Replace the unfinished tasks of this chat with the new plan? Details are in the Lead message above.'
+        : 'Discard the other session\'s unfinished work and start this request? Details are in the Lead message above.',
+      yes: replacesOwn ? 'replace and start' : 'discard it and start',
+      no: 'keep the current work',
+    };
+  }
+
+  // 3. Quick draft plan gate
   if (detail.session.mode === 'quick' && detail.plan?.status === 'draft' && detail.plan.tasks.length > 0) {
     const task = detail.plan.tasks[0];
     return {
@@ -89,22 +126,26 @@ export function detectPendingGate(
       taskId: task.id,
       externalId: task.externalId,
       title: task.title,
-      prompt: `Run Quick task [${task.externalId}] "${task.title}"? (y/n)`,
+      prompt: `Run Quick task [${task.externalId}] "${task.title}"?`,
+      yes: 'run it',
+      no: 'keep the plan as a draft',
     };
   }
 
-  // 3. Full mode brief draft gate
+  // 4. Full mode brief draft gate
   const latestBrief = detail.briefs[0];
   if (detail.session.mode === 'full' && latestBrief?.status === 'draft') {
     return {
       kind: 'approve_brief',
       version: latestBrief.version,
       title: latestBrief.content.title,
-      prompt: `Approve Brief v${latestBrief.version} "${latestBrief.content.title}" and generate plan? (y/n)`,
+      prompt: `Approve Brief v${latestBrief.version} "${latestBrief.content.title}" and generate a plan?`,
+      yes: 'approve',
+      no: 'keep the brief as a draft',
     };
   }
 
-  // 4. Full mode plan draft gate
+  // 5. Full mode plan draft gate
   if (detail.session.mode === 'full' && detail.plan?.status === 'draft') {
     const hasNeedsSplit = detail.plan.tasks.some((t) => t.needsSplit);
     if (!hasNeedsSplit && detail.plan.tasks.length > 0) {
@@ -112,7 +153,9 @@ export function detectPendingGate(
         kind: 'approve_plan',
         version: detail.plan.version,
         taskCount: detail.plan.tasks.length,
-        prompt: `Approve Plan v${detail.plan.version} (${detail.plan.tasks.length} task(s)) and start work? (y/n)`,
+        prompt: `Approve Plan v${detail.plan.version} (${detail.plan.tasks.length} task(s)) and start work?`,
+        yes: 'approve and start',
+        no: 'keep the plan as a draft',
       };
     }
   }
@@ -247,6 +290,8 @@ export function formatRoomMessage(msg: DiscussMessageDTO): FormattedRoomMessage 
 
   if (msg.type === 'ask' && msg.content && typeof msg.content === 'object') {
     const ask = msg.content as AskMessageContent;
+    // A yes/no question that holds back Auto work until the user answers.
+    if ('pendingAutoWork' in ask) badge = 'QUESTION';
     lines.push(...(ask.text || '').split('\n'));
     if (ask.suggestion) {
       lines.push(

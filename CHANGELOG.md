@@ -2,6 +2,15 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
+## 0.14.6 (Clearer approval prompts), 26 Nov
+
+- **Approval prompts in the terminal room say what they need.** Each gate is now its own box headed "NEEDS YOUR APPROVAL": the question, a line on why the task is ready (review round, findings, reviewer, verify result, scope warnings), and what `y` + Enter and `n` + Enter each do. When several tasks wait for a merge, the heading says how many more are waiting. Approval stays required in every mode.
+- **Auto no longer asks to discard its own chat's work as if another session blocked it.** When the Lead plans new tasks in a chat whose plan still has unfinished tasks, the question now offers to replace those tasks with the new plan, counts them by status, names only the branches that would be deleted, and says that merged work and review findings stay. It also gets the approval box, and the answer goes to the Lead. A question about another session lists counts instead of every task title.
+- **Lead questions that wait for a yes or no are labelled** QUESTION in the room and Pertanyaan or Question in the web UI.
+- **From the v0.15 run inside DALANG:** `replay-matching` (interactive replay messages matched by content) ships here.
+- **Upgrade.** No database migration. Restart a running `dalang web` or room after updating.
+- **Verified:** typecheck, tests, and build. A test where the Lead replans its own chat fails on 0.14.5 and passes on 0.14.6. Not run: live providers, a PTY check, macOS, and Windows.
+
 ## 0.14.5 (Closing note when a run stops), 26 Nov
 
 - **A run no longer goes quiet when it stops.** When nothing is running and no task can start, the room and the web UI get one closing note. "Run finished" means every task is done. "Run stopped" says how many tasks are done, which ones failed review after the last round or failed, and which ones wait on them, with the next step (Retry, or ask the Lead to split a failed task into smaller ones). The Lead reads the note in its transcript on your next message. Before this, a plan whose failed tasks blocked the rest simply stopped, with no message.

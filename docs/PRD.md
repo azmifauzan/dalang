@@ -1,6 +1,6 @@
 # PRD: DALANG
 
-Nov 18, 2026 · @Fauzan · Updated through v0.14.5, Nov 26, 2026
+Nov 18, 2026 · @Fauzan · Updated through v0.14.6, Nov 26, 2026
 
 ## Summary
 
@@ -312,6 +312,7 @@ Each phase must be useful on its own before the next one starts.
 | v0.14.2 | Second security fix for the `/tmp` git mount | A worktree admin folder planted inside the workspace no longer mounts another `/tmp` repository | Released in v0.14.2. The admin folder must be git's own `<repository>/worktrees/<name>` outside the workspace; a regression test fails on 0.14.1. |
 | v0.14.4 | Dependencies installed in task worktrees, provider CLI recording | A JavaScript project's verify command finds its tools in a fresh task worktree without the agent installing anything | Released in v0.14.4 (the `v0.14.3` tag was not released). |
 | v0.14.5 | Closing note when a run stops, terminal room layout fixes, schema v17 | A run that finishes, or stops because failed tasks block the rest of the plan, ends with one note that names what is done, what failed, and what to do next | Released in v0.14.5. Also ships two v0.15 tasks that DALANG merged while running v0.15 itself: R8 (progress separated from the streamed JSON answer) and the schema v17 part of R7. |
+| v0.14.6 | Clearer approval prompts | A merge or Auto replace question says what it needs, why the task is ready, and what y and n each do | Released in v0.14.6. Also ships `replay-matching`, a v0.15 task DALANG merged while running v0.15. |
 | v0.15 | Reliability and parity: fatal provider errors fail fast, restart recovery, session protocol replay, waiting view, room and web parity | B1, B2, and B6 to B8 are closed with tests that failed before the fix, and typecheck, tests, and build pass | Planned |
 | v0.16 | Speed: per-project events, output hub, paged history, block-wise streaming | Recordings show improvement over the baseline; render and payload budgets pass | Planned |
 | v0.17 | Agent tools: DALANG browser, browser evidence at the gate, per-project MCP allowlist | An executor tests a dev server in the browser on all three providers, and Gate 2 shows the evidence | Planned |

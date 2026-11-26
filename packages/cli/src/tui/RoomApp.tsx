@@ -1271,8 +1271,9 @@ export function RoomApp({
       setHistoryIdx(-1);
       setScrollOffset(0);
 
-      // Answer active gate / unconfined prompt with y/n
-      if (pendingUnconfinedAction || pendingGate) {
+      // Answer active gate / unconfined prompt with y/n. The Lead's own question takes the reply as a
+      // chat message, so it falls through to the normal send below.
+      if (pendingUnconfinedAction || (pendingGate && pendingGate.kind !== 'auto_work')) {
         const lower = trimmed.toLowerCase();
         if (lower === 'y' || lower === 'yes') {
           await executeGateDecision(true);
@@ -1628,7 +1629,15 @@ export function RoomApp({
     completions.length > 0
       ? Math.min(completions.length, POPUP_SIZE) + 2 + (completions.length > POPUP_SIZE ? 1 : 0)
       : 0;
-  const gateRows = pendingGate || pendingUnconfinedAction || pendingRestartVersion ? 3 : 0;
+  // Border rows plus the gate's own lines: heading, question, optional context, and the y/n keys.
+  // Same order as the render below: sandbox prompt, then a gate, then the update notice.
+  const gateRows = pendingUnconfinedAction
+    ? 3
+    : pendingGate
+      ? 5 + (pendingGate.context ? 1 : 0)
+      : pendingRestartVersion
+        ? 3
+        : 0;
   const turn = activeSession?.id === activeSessionId && activeSession.projectId === activeProjectId
     ? activeSession.turn
     : null;
@@ -1879,9 +1888,18 @@ export function RoomApp({
           </Text>
         </Box>
       ) : pendingGate ? (
-        <Box borderStyle="single" borderColor="yellow" paddingX={1}>
-          <Text bold color="yellow" wrap="truncate-middle">
-            [GATE] {pendingGate.prompt}
+        // A gate stands apart from the timeline: a heading, the question, its context, and what y and n do.
+        <Box borderStyle="round" borderColor="yellow" paddingX={1} flexDirection="column" flexShrink={0}>
+          <Text bold color="yellow" wrap="truncate-end">
+            {pendingGate.alsoWaiting ? `NEEDS YOUR APPROVAL · ${pendingGate.alsoWaiting} more waiting` : 'NEEDS YOUR APPROVAL'}
+          </Text>
+          <Text bold wrap="truncate-middle">{pendingGate.prompt}</Text>
+          {pendingGate.context ? <Text dimColor wrap="truncate-end">{pendingGate.context}</Text> : null}
+          <Text wrap="truncate-end">
+            <Text bold color="green">y</Text>
+            <Text>{` + Enter: ${pendingGate.yes}  ·  `}</Text>
+            <Text bold color="red">n</Text>
+            <Text>{` + Enter: ${pendingGate.no}`}</Text>
           </Text>
         </Box>
       ) : pendingRestartVersion ? (

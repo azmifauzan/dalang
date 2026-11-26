@@ -57,6 +57,8 @@ export function ChatTranscript({
           msg.type === 'ask' && msg.content && typeof msg.content === 'object'
             ? (msg.content as AskMessageContent)
             : null;
+        // A yes/no question that holds back Auto work until the user answers.
+        const isQuestion = Boolean(ask && 'pendingAutoWork' in ask);
         const report =
           msg.type === 'report' && msg.content && typeof msg.content === 'object'
             ? (msg.content as RoomReportContent)
@@ -85,7 +87,9 @@ export function ChatTranscript({
                   : t('discuss.roleSystem');
         const reportBadgeKey = report
           ? (`room.report.${report.event}` as TranslationKey)
-          : null;
+          : isQuestion
+            ? ('room.badge.question' as TranslationKey)
+            : null;
 
         const formatReportSummary = (rep: RoomReportContent): string => {
           const task = rep.externalId ?? rep.taskId ?? '';
@@ -183,7 +187,9 @@ export function ChatTranscript({
                               report?.event === 'task_accepted' ||
                               report?.event === 'run_finished'
                             ? 'var(--pass)'
-                            : 'var(--border-subtle)',
+                            : isQuestion
+                              ? 'var(--accent)'
+                              : 'var(--border-subtle)',
                       color:
                         report?.reviewStatus === 'fail' || report?.event === 'task_failed' || report?.event === 'run_stopped'
                           ? 'var(--error)'
@@ -192,7 +198,9 @@ export function ChatTranscript({
                               report?.event === 'task_accepted' ||
                               report?.event === 'run_finished'
                             ? 'var(--pass)'
-                            : 'var(--text-secondary)',
+                            : isQuestion
+                              ? 'var(--accent)'
+                              : 'var(--text-secondary)',
                     }}
                   >
                     {t(reportBadgeKey)}
