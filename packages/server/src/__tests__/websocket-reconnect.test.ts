@@ -659,6 +659,84 @@ describe('WebSocket heartbeat and reconnect (R7)', () => {
         'live update after reconnect',
       );
 
+      // Turn 1 populates liveBySession, finishes, then socket drops while Turn 2 starts.
+      // After reconnect, stale Turn 1 text/logs must NOT reappear or prepend to Turn 2's live output.
+      const agentDeltaLine = (text: string) =>
+        JSON.stringify({
+          event: 'step_update',
+          step_update: { step_type: 'agent_response', state: 'ACTIVE', text_delta: text },
+        });
+      server2.events.emitEvent({
+        type: 'lead.turn_started',
+        projectId: p1.id,
+        sessionId: s1.id,
+        phase: 'ask',
+        provider: 'claude-code',
+      });
+      server2.events.emitEvent({ type: 'sessions.updated', projectId: p1.id });
+      server2.events.emitEvent({
+        type: 'lead.log',
+        projectId: p1.id,
+        sessionId: s1.id,
+        phase: 'ask',
+        line: agentDeltaLine('OLD_TURN_LIVE_ANSWER'),
+      });
+      await waitFor(
+        () => cdp.evalJs<boolean>(`document.body.innerText.includes('OLD_TURN_LIVE_ANSWER')`),
+        8000,
+        'Turn 1 live text rendered',
+      );
+      server2.events.emitEvent({
+        type: 'lead.turn_finished',
+        projectId: p1.id,
+        sessionId: s1.id,
+        phase: 'ask',
+        ok: true,
+      });
+      server2.events.emitEvent({ type: 'sessions.updated', projectId: p1.id });
+      await waitFor(
+        () => cdp.evalJs<boolean>(`!document.body.innerText.includes('OLD_TURN_LIVE_ANSWER')`),
+        8000,
+        'Turn 1 finished and cleared from view',
+      );
+
+      // Drop the live WebSocket and start Turn 2 while disconnected so lead.turn_started is missed.
+      for (const client of server2.app.websocketServer.clients) {
+        client.terminate();
+      }
+      await waitFor(() => server2.app.websocketServer.clients.size === 0, 5000, 'WS dropped before Turn 2');
+
+      server2.events.emitEvent({
+        type: 'lead.turn_started',
+        projectId: p1.id,
+        sessionId: s1.id,
+        phase: 'ask',
+        provider: 'claude-code',
+      });
+
+      // Wait for browser reconnect, then stream Turn 2's live text.
+      await waitFor(() => server2.app.websocketServer.clients.size === 1, 8000, 'WS reconnected during Turn 2');
+      server2.events.emitEvent({
+        type: 'lead.log',
+        projectId: p1.id,
+        sessionId: s1.id,
+        phase: 'ask',
+        line: agentDeltaLine('NEW_TURN_LIVE_ANSWER'),
+      });
+      await waitFor(
+        () => cdp.evalJs<boolean>(`document.body.innerText.includes('NEW_TURN_LIVE_ANSWER')`),
+        8000,
+        'Turn 2 live text rendered after reconnect',
+      );
+      expect(await cdp.evalJs<boolean>(`document.body.innerText.includes('OLD_TURN_LIVE_ANSWER')`)).toBe(false);
+      server2.events.emitEvent({
+        type: 'lead.turn_finished',
+        projectId: p1.id,
+        sessionId: s1.id,
+        phase: 'ask',
+        ok: true,
+      });
+
       // Closing the view cleans up the WebSocket connection on the server.
       await cdp.send('Page.navigate', { url: 'about:blank' });
       await waitFor(() => server2.app.websocketServer.clients.size === 0, 8000, 'WS closed after view close');

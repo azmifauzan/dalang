@@ -435,7 +435,14 @@ function AppShell({ authEnabled }: { authEnabled: boolean }) {
       }
     };
 
+    const resetTransientLiveState = () => {
+      setLiveBySession({});
+      setNewestLiveSessionId(null);
+      setRunLogsByRunId({});
+    };
+
     const reloadActiveState = () => {
+      resetTransientLiveState();
       void qc.invalidateQueries({ queryKey: ['projects'] });
       void qc.invalidateQueries({ queryKey: ['providers-status'] });
       void qc.invalidateQueries({ queryKey: ['statistics'] });
@@ -498,6 +505,7 @@ function AppShell({ authEnabled }: { authEnabled: boolean }) {
         detachSocket = null;
         ws = null;
         needsReloadOnOpen = true;
+        resetTransientLiveState();
         void qc.invalidateQueries({ queryKey: ['auth-status'] });
         if (ev.code === 4401) return;
         scheduleReconnect();
@@ -759,6 +767,7 @@ function AppShell({ authEnabled }: { authEnabled: boolean }) {
     const onPageHide = () => {
       clearReconnectTimer();
       closeCurrentSocket();
+      resetTransientLiveState();
       needsReloadOnOpen = true;
     };
 

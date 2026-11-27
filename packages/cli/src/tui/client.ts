@@ -49,6 +49,7 @@ export interface ServerEvent {
 export interface ConnectEventsOptions {
   baseDelayMs?: number;
   maxDelayMs?: number;
+  onAuthRequired?: () => void;
 }
 
 export interface ChatResponseDTO {
@@ -473,7 +474,10 @@ export class RoomApiClient {
         detachSocket = null;
         socket = null;
         onStatus?.(false);
-        if (ev.code === 4401) return;
+        if (ev.code === 4401) {
+          options?.onAuthRequired?.();
+          return;
+        }
         scheduleReconnect();
       };
 

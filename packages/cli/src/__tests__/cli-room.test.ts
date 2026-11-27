@@ -1123,12 +1123,16 @@ describe('WebSocket reconnect and cleanup (R7)', () => {
       expect(events).toEqual(['plan.updated']);
       expect(statuses.length).toBe(statusCountAfterUnsub);
 
-      // Access revocation (4401) stops reconnect scheduling.
+      // Access revocation (4401) stops reconnect scheduling and notifies onAuthRequired.
       FakeWebSocket.instances = [];
       scheduledDelays.length = 0;
+      let authRequiredCount = 0;
       const unsubAuth = client.connectEvents(() => {}, (ok) => statuses.push(ok), {
         baseDelayMs: 40,
         maxDelayMs: 120,
+        onAuthRequired: () => {
+          authRequiredCount += 1;
+        },
       });
       const authWs = FakeWebSocket.instances[0];
       authWs.emit('open');
@@ -1136,6 +1140,7 @@ describe('WebSocket reconnect and cleanup (R7)', () => {
       expect(authWs.listenerCount()).toBe(0);
       expect(pendingTimers.size).toBe(0);
       expect(scheduledDelays).toEqual([]);
+      expect(authRequiredCount).toBe(1);
       unsubAuth();
     } finally {
       globalThis.WebSocket = origWebSocket;
