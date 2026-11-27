@@ -2,12 +2,17 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
-## Unreleased
+## 0.14.12 (Independent terminals, project checks), 27 Nov
 
-- **Long review findings no longer break the terminal room.** A finding with several lines was counted as one row, so the screen overflowed: text landed on top of other text and the input box lost its shape. Every message line is now one row. A question box fits the terminal's height: its text wraps, and what does not fit is cut with a note.
-- **Reviewer and executor reports show formatted Markdown** in the room and the web UI. Command reports stay as typed.
-- **A question no longer repeats after `y`.** The room asked to continue a task whose files overlapped a running task, so each `y` failed and it asked again. It now asks once the other task is out of the way. Allowing files in that situation keeps your answer and says what it waits for.
-- **A pnpm setup command works after a snapshot is restored.** Since 0.14.11 it failed with `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`. Setup commands now run with `CI=true`. Until you update, `/setup off` uses the built-in install.
+- **Closing a terminal no longer stops other work.** The first room used to run the server inside itself, so closing it stopped every run and left other rooms answering `fetch failed`. The server now runs in the background in its own session. Rooms and browser tabs connect to it; it starts when needed, restarts if it dies, and stops after 15 idle minutes with no room, tab, running work, or enabled automation. New: `dalang stop [--force]`. `dalang web` from a terminal uses the same server (`--foreground` keeps the old behaviour; containers and services are unchanged).
+- **DALANG no longer commits its own files into your repository.** Task results and reviews under `.dalang/` reached users' branches and could break their checks. They now stay on disk and git ignores `.dalang/`. Files already committed stay in your history; `git rm -r --cached .dalang` removes them from tracking.
+- **Your project's own check runs before review and merge.** Give your CI command (proposed from `composer.json` or `package.json`, approved once, or `/setup check <command>`). It runs with each task's verify, a failure goes to a fix round, and it is the check after merge. The chat now says when that check passed, failed, or did not run.
+- **Reference images reach the executor and the reviewer**, whether attached or named by path. The reviewer lists what it could not check, and the merge question shows that list.
+- **An uncommitted `PROJECT.md`** is no longer a reason for a task to fail: the executor is told where to read it.
+- **Long review findings no longer break the terminal room,** and a question box fits the terminal's height.
+- **Reviewer and executor reports show formatted Markdown** in the room and the web UI.
+- **A question no longer repeats after `y`** when the task cannot start yet.
+- **A pnpm setup command works after a snapshot is restored** (`ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`).
 
 ## 0.14.11 (Fewer fix rounds, time per run), 27 Nov
 

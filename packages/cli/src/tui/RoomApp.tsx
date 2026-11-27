@@ -65,7 +65,10 @@ import {
 
 export interface RoomAppProps {
   client: RoomApiClient;
-  embedded: boolean;
+  /** Something to tell the user as the room opens, such as a server of another version. */
+  startupNotice?: string | null;
+  /** Called while the server cannot be reached; starts it again unless it was stopped on purpose. */
+  recoverServer?: () => Promise<string | null>;
   cwd: string;
   openBrowser: (url: string) => void;
   onOpenPager: (content: string, label: string) => Promise<{ ok: boolean; error?: string }>;
@@ -128,7 +131,8 @@ function matchProjectForCwd(projects: ProjectSummary[], cwd: string): ProjectSum
 
 export function RoomApp({
   client,
-  embedded,
+  startupNotice,
+  recoverServer,
   cwd,
   openBrowser,
   onOpenPager,
@@ -321,6 +325,40 @@ export function RoomApp({
       setCompletionIdx(0);
     }
   }, [completions.length, completionIdx]);
+
+  const startupShown = useRef(false);
+  useEffect(() => {
+    if (!startupNotice || startupShown.current) return;
+    startupShown.current = true;
+    pushNotice(startupNotice, { badge: 'SERVER' });
+  }, [startupNotice, pushNotice]);
+
+  // While the room is offline, check the server and bring it back (B30). Each message is shown once.
+  const wasLive = useRef(false);
+  useEffect(() => {
+    if (wsConnected) {
+      wasLive.current = true;
+      return;
+    }
+    if (!wasLive.current || !recoverServer) return;
+    let busy = false;
+    let said: string | null = null;
+    const timer = setInterval(() => {
+      if (busy) return;
+      busy = true;
+      void recoverServer()
+        .then((message) => {
+          if (message && message !== said) {
+            said = message;
+            pushNotice(message, { badge: 'SERVER' });
+          }
+        })
+        .finally(() => {
+          busy = false;
+        });
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [wsConnected, recoverServer, pushNotice]);
 
   const refreshSessionState = useCallback(
     async (projectId: string, sessionId: string | null) => {
@@ -753,8 +791,8 @@ export function RoomApp({
           });
         } else if (pendingGate.kind === 'workspace_setup') {
           const config = accept
-            ? { command: pendingGate.command, maintenanceCommand: pendingGate.maintenanceCommand, files: pendingGate.files }
-            : { command: null, maintenanceCommand: null, files: [] };
+            ? { command: pendingGate.command, maintenanceCommand: pendingGate.maintenanceCommand, checkCommand: pendingGate.checkCommand, files: pendingGate.files }
+            : { command: null, maintenanceCommand: null, checkCommand: null, files: [] };
           setWorkspaceSetup(await client.setWorkspaceSetup(activeProjectId, config));
           pushNotice(
             accept ? 'Worktree setup saved for this project.' : 'Keeping the built-in setup. Change it with /setup.',
@@ -941,18 +979,6 @@ export function RoomApp({
             if (!onRequestRestart) {
               pushNotice('Restart is unavailable in this terminal.', { isError: true });
               return;
-            }
-            if (embedded) {
-              const allProjects = await client.listProjects();
-              const states = await Promise.all(allProjects.map(async (project) => {
-                const { sessions: projectSessions } = await client.listSessions(project.id, true);
-                const executions = await Promise.all(projectSessions.map((session) => client.getExecutionState(project.id, session.id)));
-                return projectSessions.some((session) => session.turn) || executions.some((state) => state.queueRunning || state.activeRuns.length > 0);
-              }));
-              if (states.some(Boolean)) {
-                pushNotice('Cannot restart while an agent or task is running. Wait until it finishes or use /stop.', { isError: true });
-                return;
-              }
             }
             onRequestRestart({ projectId: activeProjectId, sessionId: activeSessionId, mode, modelChoice });
             exit();
@@ -1310,23 +1336,27 @@ export function RoomApp({
             const value = cmd.rawArgs.slice((cmd.args[0] ?? '').length).trim();
             let state = await client.getWorkspaceSetup(activeProjectId);
             const current = state.approved ?? { command: null, maintenanceCommand: null, files: [] };
+            // `/setup check <command>` and `/setup check off` set the project check.
+            const check = sub === 'check' && value ? (value.toLowerCase() === 'off' ? null : value) : undefined;
             if (sub === 'reset') {
               state = await client.resetWorkspaceSnapshot(activeProjectId);
             } else if (sub) {
               const next =
                 sub === 'approve' && state.proposal
-                  ? { command: state.proposal.command, maintenanceCommand: state.proposal.maintenanceCommand, files: state.proposal.files }
-                  : sub === 'set' && value
+                  ? { command: state.proposal.command, maintenanceCommand: state.proposal.maintenanceCommand, checkCommand: state.proposal.checkCommand, files: state.proposal.files }
+                  : sub === 'check' && check !== undefined
+                    ? { ...current, checkCommand: check }
+                    : sub === 'set' && value
                     ? { ...current, command: value }
                     : sub === 'maintenance'
                       ? { ...current, maintenanceCommand: value || null }
                       : sub === 'files'
                         ? { ...current, files: cmd.args.slice(1) }
                         : sub === 'off'
-                          ? { command: null, maintenanceCommand: null, files: [] }
+                          ? { command: null, maintenanceCommand: null, checkCommand: null, files: [] }
                           : null;
               if (!next) {
-                pushNotice('Usage: /setup [approve|set <command>|maintenance <command>|files <paths>|off|reset]', { isError: true });
+                pushNotice('Usage: /setup [approve|check <command|off>|set <command>|maintenance <command>|files <paths>|off|reset]', { isError: true });
                 return;
               }
               state = await client.setWorkspaceSetup(activeProjectId, next);
@@ -1337,6 +1367,7 @@ export function RoomApp({
                 state.approved
                   ? `Setup command: ${state.approved.command ?? 'built-in JavaScript install'}`
                   : 'Setup: not decided; the built-in JavaScript install runs.',
+                `Project check: ${state.approved?.checkCommand ?? (state.proposal?.checkCommand ? `none yet; proposed ${state.proposal.checkCommand}` : 'none, so only each task\'s own verify runs')}`,
                 state.approved?.maintenanceCommand ? `After a snapshot: ${state.approved.maintenanceCommand}` : '',
                 state.approved?.files.length ? `Local files: ${state.approved.files.join(', ')}` : '',
                 !state.approved && state.proposal
@@ -1377,7 +1408,6 @@ export function RoomApp({
       client,
       cwd,
       detail,
-      embedded,
       exit,
       guard,
       handleExit,
@@ -1866,7 +1896,7 @@ export function RoomApp({
   const afterCursor = input.slice(cursor + 1);
 
   // Keep the header on one row: the session title takes whatever width is left and is cut with "...".
-  const headerRight = `[${mode.toUpperCase()}] ${embedded ? 'embedded' : 'attached'}${wsConnected ? ' · live' : ''}`;
+  const headerRight = `[${mode.toUpperCase()}] ${wsConnected ? 'live' : 'offline'}`;
   const headerLeftFixed = `DALANG v${DALANG_VERSION} · ${activeProject?.name ?? '(no project)'} · `;
   // 4 columns of border and padding, plus the 7 the icon takes (5 wide and a 2 column gap).
   const titleRoom = termSize.cols - 4 - 7 - headerRight.length - 2 - headerLeftFixed.length;
@@ -1906,10 +1936,7 @@ export function RoomApp({
               <Text bold color={mode === 'ask' ? 'cyan' : mode === 'quick' ? 'green' : 'magenta'}>
                 [{mode.toUpperCase()}]
               </Text>
-              <Text dimColor>
-                {embedded ? 'embedded' : 'attached'}
-                {wsConnected ? ' · live' : ''}
-              </Text>
+              <Text dimColor>{wsConnected ? 'live' : 'offline'}</Text>
             </Box>
           </Box>
           <Text wrap="truncate-end">

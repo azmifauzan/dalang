@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DALANG_VERSION } from '@dalang/core';
 import { startDalangServer } from '@dalang/server';
+import { ensureServer, readServerStatus, requestServerStop, runBackgroundServer } from './daemon.js';
 import { formatDoctorReport, runDoctorChecks } from './doctor.js';
 import { startTerminalRoom } from './tui/index.js';
 import {
@@ -21,7 +22,9 @@ export type ResolvedCliCommand =
   | { kind: 'doctor'; asJson: boolean }
   | { kind: 'update'; asJson: boolean; checkOnly: boolean; clisOnly: boolean; includeClis: boolean }
   | { kind: 'room'; port: number }
-  | { kind: 'web'; port: number; shouldOpen: boolean; deprecated: boolean };
+  | { kind: 'serve'; port: number }
+  | { kind: 'stop'; port: number; force: boolean }
+  | { kind: 'web'; port: number; shouldOpen: boolean; deprecated: boolean; foreground?: boolean };
 
 function parseWebOptions(
   args: string[],
@@ -80,7 +83,13 @@ export function resolveCliCommand(
 
   if (argv[0] === 'web') {
     const { port, shouldOpen } = parseWebOptions(argv.slice(1), defaultPort);
-    return { kind: 'web', port, shouldOpen, deprecated: false };
+    return { kind: 'web', port, shouldOpen, deprecated: false, ...(argv.includes('--foreground') ? { foreground: true } : {}) };
+  }
+
+  // `serve` is the background server itself; rooms start it, so it is not in the help.
+  if (argv[0] === 'serve' || argv[0] === 'stop') {
+    const { port } = parseWebOptions(argv.slice(1), defaultPort);
+    return argv[0] === 'serve' ? { kind: 'serve', port } : { kind: 'stop', port, force: argv.includes('--force') };
   }
 
   if (argv[0] === 'room') {
@@ -133,7 +142,8 @@ function printHelp(): void {
 Usage:
   dalang                            Open the terminal team room (falls back to \`dalang web\` if not a TTY)
   dalang room [--port <number>]     Open the terminal team room on another port
-  dalang web [options]              Start the local DALANG web server and open the browser
+  dalang web [options]              Open the web UI (the server runs in the background; --foreground keeps it here)
+  dalang stop [--force]             Stop the background server (--force also stops running work)
   dalang doctor [--json]            Check Node, git, sandbox, data directory, terminal, and CLI logins
   dalang update [--check|--clis|--all] [--json]
                                     Check/install DALANG updates and/or update all connected CLIs
@@ -231,10 +241,39 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     return;
   }
 
+  if (cmd.kind === 'serve') {
+    await runBackgroundServer(cmd.port, staticDir);
+    return;
+  }
+
+  if (cmd.kind === 'stop') {
+    const status = await readServerStatus(cmd.port);
+    if (!status) {
+      console.log(`No DALANG server answers on port ${cmd.port}, or it is an older one: close the terminal that runs it.`);
+      return;
+    }
+    const result = await requestServerStop(cmd.port, cmd.force);
+    console.log(result.message);
+    if (!result.ok) process.exitCode = 1;
+    return;
+  }
+
   if (cmd.deprecated) {
     console.error(
       'Deprecation notice: starting the web server via `dalang --port` / `dalang --no-open` is deprecated. Use `dalang web` instead.',
     );
+  }
+
+  // From a terminal the browser uses the same background server as the rooms, so closing this terminal
+  // stops nothing. A service or a container has no terminal and keeps the server in the foreground.
+  if (!cmd.foreground && process.stdin.isTTY && process.stdout.isTTY && process.env.DALANG_CONTAINER !== '1') {
+    const { notice } = await ensureServer(cmd.port);
+    const url = `http://127.0.0.1:${cmd.port}`;
+    console.log(`DALANG v${DALANG_VERSION} running in the background at ${url}`);
+    console.log('You can close this terminal. Stop the server with `dalang stop`.');
+    if (notice) console.log(notice);
+    if (cmd.shouldOpen) openBrowser(url);
+    return;
   }
 
   const { url, close } = await startDalangServer({ port: cmd.port, staticDir });

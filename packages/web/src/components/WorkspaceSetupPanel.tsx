@@ -16,6 +16,7 @@ export function WorkspaceSetupPanel({ projectId, onlyWhenUndecided = false }: { 
   const [command, setCommand] = useState('');
   const [maintenance, setMaintenance] = useState('');
   const [files, setFiles] = useState('');
+  const [check, setCheck] = useState('');
 
   const shown = data?.approved ?? data?.proposal ?? null;
   const shownKey = JSON.stringify(shown);
@@ -23,6 +24,7 @@ export function WorkspaceSetupPanel({ projectId, onlyWhenUndecided = false }: { 
     setCommand(shown?.command ?? '');
     setMaintenance(shown?.maintenanceCommand ?? '');
     setFiles((shown?.files ?? []).join('\n'));
+    setCheck(data?.proposal?.checkCommand ?? data?.approved?.checkCommand ?? '');
     // Reset the drafts only when the saved or proposed setup changes, not while the user types.
   }, [shownKey]);
 
@@ -40,6 +42,10 @@ export function WorkspaceSetupPanel({ projectId, onlyWhenUndecided = false }: { 
       <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
         {data.needsApproval ? t('setup.proposed', { source: data.proposal?.source ?? '' }) : t('setup.desc')}
       </p>
+      <div className="space-y-1.5">
+        <Label htmlFor="setup-check">{t('setup.check')}</Label>
+        <Textarea id="setup-check" rows={1} className="font-mono text-xs" value={check} onChange={(e) => setCheck(e.target.value)} />
+      </div>
       <div className="space-y-1.5">
         <Label htmlFor="setup-command">{t('setup.command')}</Label>
         <Textarea id="setup-command" rows={2} className="font-mono text-xs" value={command} onChange={(e) => setCommand(e.target.value)} />
@@ -64,13 +70,14 @@ export function WorkspaceSetupPanel({ projectId, onlyWhenUndecided = false }: { 
             save.mutate({
               command: command.trim() || null,
               maintenanceCommand: maintenance.trim() || null,
+              checkCommand: check.trim() || null,
               files: files.split('\n').map((f) => f.trim()).filter(Boolean),
             })
           }
         >
           {t('setup.save')}
         </Button>
-        <Button type="button" variant="outline" disabled={pending} onClick={() => save.mutate({ command: null, maintenanceCommand: null, files: [] })}>
+        <Button type="button" variant="outline" disabled={pending} onClick={() => save.mutate({ command: null, maintenanceCommand: null, checkCommand: check.trim() || null, files: [] })}>
           {t('setup.builtin')}
         </Button>
         {data.hasSnapshot && (

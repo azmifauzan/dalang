@@ -119,7 +119,11 @@ export function removeArtifactFile(projectPath: string, target: string): void {
 }
 
 /** Entries `.dalang/.gitignore` needs so run logs and scratch files never show up as untracked. */
-export const DALANG_IGNORE_ENTRIES = ['tmp/', 'sessions/*/tmp/', 'sessions/*/logs/'];
+/**
+ * DALANG's own files never belong to the user's history (B31): session artifacts stay on disk, and
+ * the ignore file hides itself so nothing under `.dalang/` shows up as a change.
+ */
+export const DALANG_IGNORE_ENTRIES = ['tmp/', 'sessions/*/tmp/', 'sessions/*/logs/', 'sessions/', 'tasks/', 'answers/', '.gitignore'];
 
 /**
  * Create `.dalang/.gitignore`, or append the entries an older DALANG wrote without (v0.6 and earlier

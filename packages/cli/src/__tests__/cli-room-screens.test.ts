@@ -119,7 +119,6 @@ function mountRoom(client: RoomApiClient, extra: Record<string, unknown> = {}) {
   const inst = render(
     React.createElement(RoomApp, {
       client,
-      embedded: false,
       cwd: '/work/demo',
       openBrowser: () => {},
       onOpenPager: async () => ({ ok: true }),
@@ -217,21 +216,6 @@ describe('room screens (Ink, stub server)', () => {
     await restored.waitFor('Earlier chat');
     await restored.press('hello', '\r');
     expect(sent).toContainEqual(expect.objectContaining({ sessionId: 's1', message: 'hello' }));
-  });
-
-  it('keeps an embedded server running while work is active in another project', async () => {
-    const other = { ...project, id: 'p2', name: 'other', path: '/work/other' };
-    const { client } = roomClient({
-      listProjects: async () => [project, other],
-      listSessions: async (id: string) => ({ sessions: id === 'p2' ? [{ ...session, id: 's2', projectId: 'p2' }] : [session] }),
-      getExecutionState: async (id: string) => ({ runs: [], activeRuns: [], queueRunning: id === 'p2' }),
-    });
-    const requested: unknown[] = [];
-    const ui = mountRoom(client, { embedded: true, onRequestRestart: (room: unknown) => requested.push(room) });
-    await ui.waitFor('Lead Claude');
-    await ui.press('/restart', '\r');
-    await ui.waitFor('Cannot restart while an agent or task is running');
-    expect(requested).toEqual([]);
   });
 
   it('recalls prior prompts with Up and restores the draft with Down', async () => {

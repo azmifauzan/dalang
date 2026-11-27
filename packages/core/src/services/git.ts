@@ -301,6 +301,8 @@ export async function createGitCheckpoint(
   const identityArgs = await ensureGitIdentityArgs(git);
   const head = await getHeadCommit(projectPath);
   const status = await git.status();
+  // `.dalang/` is DALANG's own: it never goes into a commit on a task or user branch (B31).
+  excludePaths = [...(excludePaths ?? []), '.dalang'];
   const relevantFiles = status.files.filter((f) => !isPathExcluded(f.path, excludePaths));
 
   if (!head || relevantFiles.length > 0) {
@@ -756,7 +758,10 @@ export async function mergeTargetIntoTaskWorktree(
   const conflicted = (await git.status()).conflicted;
   if (await hasMergeInProgress(git)) {
     const excludeSpecs = buildExcludePathspecs(await filterUnignoredPaths(git, excludePaths));
+    // DALANG's own untracked files stay out of the merge commit (B31); tracked ones follow the merge.
+    const ownFiles = (await git.raw(['ls-files', '--others', '-z', '--', '.dalang'])).split('\0').filter(Boolean);
     await git.raw(['add', '-A', '--', '.', ...excludeSpecs]);
+    if (ownFiles.length > 0) await git.raw(['rm', '--cached', '--quiet', '--ignore-unmatch', '--', ...ownFiles]);
     await git.raw([...identityArgs, 'commit', '--no-verify', '-m', message]);
   }
   return { targetSha, conflicted };

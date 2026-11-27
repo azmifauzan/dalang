@@ -249,6 +249,7 @@ export function buildReviewPrompt(opts: {
       ? `- If any project file outside .dalang/ was modified, record a finding and fail.`
       : `- If files were modified outside files_allowed without justification, record a finding and fail.`,
     `- Record concrete, actionable findings with severity ("critical" | "major" | "minor" | "info"), file path, and note.`,
+    `- In "unverified", list each thing you could not check yourself (for example how a page renders, an image you could not open, behaviour that needs a live service). Use an empty list only when you checked everything.`,
     ``,
     isReadOnly
       ? `Output ONLY a single valid JSON object in your final response (no prose outside the JSON) matching this JSON Schema:`

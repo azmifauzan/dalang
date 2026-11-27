@@ -1,7 +1,7 @@
 import React from 'react';
 import { spawn } from 'node:child_process';
 import { render } from 'ink';
-import { startDalangServer } from '@dalang/server';
+import { ensureServer, serverLogPath, wasStoppedOnPurpose } from '../daemon.js';
 import { probeServerHealth, RoomApiClient } from './client.js';
 import { openTextInPager } from './format.js';
 import { mouseEnabled } from './mouse.js';
@@ -15,7 +15,7 @@ export interface StartTerminalRoomOptions {
 }
 
 export async function startTerminalRoom(options: StartTerminalRoomOptions): Promise<void> {
-  const { port, staticDir, openBrowser } = options;
+  const { port, openBrowser } = options;
   const cwd = options.cwd ?? process.cwd();
   let initialRoom: RoomAppProps['initialRoom'];
   try {
@@ -26,15 +26,21 @@ export async function startTerminalRoom(options: StartTerminalRoomOptions): Prom
   delete process.env.DALANG_RESTART_ROOM;
   let restartRoom: RoomAppProps['initialRoom'];
 
-  const existing = await probeServerHealth(port);
-  let embeddedClose: (() => Promise<void>) | null = null;
-  let embedded = false;
-
-  if (!existing) {
-    const started = await startDalangServer({ port, staticDir });
-    embeddedClose = started.close;
-    embedded = true;
-  }
+  // The server runs in the background and no room owns it: closing this one stops nothing (B30).
+  const { notice } = await ensureServer(port);
+  /** Called while the room cannot reach the server. Returns what to tell the user, or null. */
+  const recoverServer = async (): Promise<string | null> => {
+    if (await probeServerHealth(port)) return null;
+    if (wasStoppedOnPurpose()) return 'The DALANG server was stopped with `dalang stop`. Type /restart to start it again.';
+    try {
+      const again = await ensureServer(port);
+      return again.started
+        ? `The DALANG server had stopped, so it was started again; interrupted tasks continue. Its log: ${serverLogPath()}`
+        : again.notice;
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+  };
 
   const client = new RoomApiClient(port);
 
@@ -61,21 +67,12 @@ export async function startTerminalRoom(options: StartTerminalRoomOptions): Prom
     }
   };
 
-  let closed = false;
-  const cleanup = async () => {
-    if (closed) return;
-    closed = true;
-    if (embeddedClose) {
-      await embeddedClose().catch(() => undefined);
-      embeddedClose = null;
-    }
-  };
-
   const inst = render(
     React.createElement(RoomApp, {
       client,
-      embedded,
       cwd,
+      startupNotice: notice,
+      recoverServer,
       openBrowser,
       onOpenPager: runPagerWithCleanTty,
       initialRoom,
@@ -98,7 +95,6 @@ export async function startTerminalRoom(options: StartTerminalRoomOptions): Prom
   } finally {
     process.off('SIGINT', onSignal);
     process.off('SIGTERM', onSignal);
-    await cleanup();
   }
   if (restartRoom) {
     const env = { ...process.env, DALANG_RESTART_ROOM: JSON.stringify(restartRoom) };

@@ -74,6 +74,9 @@ function isLoopbackIp(ip: string | undefined): boolean {
 }
 
 export interface CreateServerOptions {
+  /** A server no terminal owns: it may be asked to stop through the API. */
+  background?: boolean;
+  onShutdownRequest?: () => void;
   dbPath?: string;
   staticDir?: string;
   runner?: CliRunner;
@@ -84,10 +87,21 @@ export interface CreateServerOptions {
   wsHeartbeatIntervalMs?: number;
 }
 
+export interface ServerActivity {
+  /** A run, a queue, or a Lead turn is going. */
+  activeWork: boolean;
+  /** Rooms and browser tabs listening for events. */
+  connections: number;
+  /** An enabled automation waits for its time or its webhook, so the server must stay up. */
+  scheduled: boolean;
+  lastRequestAt: number;
+}
+
 export async function createDalangServer(options: CreateServerOptions = {}): Promise<{
   app: FastifyInstance;
   events: DalangEventBus;
   automationService: AutomationService;
+  activity: () => ServerActivity;
   close: () => Promise<void>;
 }> {
   const conn = openDatabase(options.dbPath);
@@ -198,6 +212,38 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     const statusCode = (err as { statusCode?: number }).statusCode ?? 400;
     const message = err instanceof Error ? err.message : String(err);
     return reply.status(statusCode >= 400 ? statusCode : 400).send({ error: message });
+  });
+
+  let lastRequestAt = Date.now();
+  app.addHook('onRequest', async (req) => {
+    // Status checks are how DALANG looks at the server, not use of it.
+    if (!req.url.startsWith('/api/health') && !req.url.startsWith('/api/server/')) lastRequestAt = Date.now();
+  });
+  const activity = (): ServerActivity => ({
+    activeWork:
+      executionService.hasActiveWork() ||
+      conn.sqlite.prepare("SELECT 1 FROM lead_turns WHERE status = 'running' LIMIT 1").get() !== undefined,
+    connections: openSockets.size,
+    scheduled: conn.sqlite.prepare('SELECT 1 FROM automations WHERE enabled = 1 LIMIT 1').get() !== undefined,
+    lastRequestAt,
+  });
+
+  app.get('/api/server/status', async () => {
+    const { lastRequestAt: _, ...now } = activity();
+    return { version: options.currentVersion ?? DALANG_VERSION, pid: process.pid, background: Boolean(options.background), ...now };
+  });
+
+  app.post('/api/server/shutdown', async (req, reply) => {
+    const force = Boolean((req.body as { force?: boolean } | null)?.force);
+    if (!options.background || !options.onShutdownRequest) {
+      return reply.code(409).send({ message: 'This server runs in a terminal. Stop it there with Ctrl+C.' });
+    }
+    if (!force && activity().activeWork) {
+      return reply.code(409).send({ message: 'Work is running. Stop it first, or use `dalang stop --force` to stop it too.' });
+    }
+    // Answer first, then stop.
+    reply.raw.once('finish', () => setImmediate(options.onShutdownRequest!));
+    return { message: 'Stopping.' };
   });
 
   app.get('/api/health', async () => ({
@@ -1076,6 +1122,7 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     app,
     events,
     automationService,
+    activity,
     close: async () => {
       wsClosing = true;
       stopWsHeartbeat();
@@ -1107,9 +1154,18 @@ export async function startDalangServer(opts: {
   enableScheduler?: boolean;
   schedulerTickIntervalMs?: number;
   wsHeartbeatIntervalMs?: number;
-} = {}): Promise<{ url: string; automationService: AutomationService; close: () => Promise<void> }> {
+  background?: boolean;
+  onShutdownRequest?: () => void;
+} = {}): Promise<{
+  url: string;
+  automationService: AutomationService;
+  activity: () => ServerActivity;
+  close: () => Promise<void>;
+}> {
   const port = opts.port ?? Number(process.env.DALANG_PORT || 4173);
-  const { app, automationService, close } = await createDalangServer({
+  const { app, automationService, activity, close } = await createDalangServer({
+    background: opts.background,
+    onShutdownRequest: opts.onShutdownRequest,
     dbPath: opts.dbPath,
     staticDir: opts.staticDir,
     runner: opts.runner,
@@ -1131,6 +1187,7 @@ export async function startDalangServer(opts: {
   return {
     url: `http://127.0.0.1:${actualPort}`,
     automationService,
+    activity,
     close,
   };
 }

@@ -647,7 +647,6 @@ describe('Ink terminal room E2E (Quick task from plan to merge with no browser)'
     const inst = render(
       React.createElement(RoomApp, {
         client,
-        embedded: false,
         cwd: repoDir,
         openBrowser: (u) => openedUrls.push(u),
         onOpenPager: async (content) => {
@@ -745,7 +744,6 @@ describe('Ink terminal room E2E (Quick task from plan to merge with no browser)'
     const inst2 = render(
       React.createElement(RoomApp, {
         client,
-        embedded: false,
         cwd: repoDir,
         openBrowser: () => {},
         onOpenPager: async () => ({ ok: true }),
@@ -964,7 +962,7 @@ describe('Ink terminal room E2E (Quick task from plan to merge with no browser)'
     const setupGate = detectPendingGate(
       { session: { id: 's1', mode: 'auto' }, messages: [], briefs: [], plan: { version: 1, status: 'draft', tasks: [{ needsSplit: false }] } } as never,
       null,
-      { approved: null, needsApproval: true, warnings: [], hasSnapshot: false, proposal: { command: 'composer install', maintenanceCommand: null, source: 'composer.lock', files: ['.env'], warnings: ['.env may hold secrets'] } },
+      { approved: null, needsApproval: true, warnings: [], hasSnapshot: false, proposal: { command: 'composer install', maintenanceCommand: null, checkCommand: null, source: 'composer.lock', files: ['.env'], warnings: ['.env may hold secrets'] } },
     );
     expect(setupGate).toMatchObject({ kind: 'workspace_setup', command: 'composer install', files: ['.env'] });
     expect(setupGate?.context).toContain('Warning: .env may hold secrets');
@@ -1294,7 +1292,6 @@ describe('WebSocket reconnect and cleanup (R7)', () => {
     const inst = render(
       React.createElement(RoomApp, {
         client,
-        embedded: false,
         cwd: repoDir,
         initialRoom: { projectId, sessionId, mode: 'quick', modelChoice: null },
         openBrowser: () => {},
@@ -1324,7 +1321,7 @@ describe('WebSocket reconnect and cleanup (R7)', () => {
     await waitUntil(
       () =>
         screen.includes('Room Before Restart') &&
-        screen.includes('· live') &&
+        /\] live/.test(screen) &&
         wsClientCount(server1.app) === 2,
       8000,
       'RoomApp initial load and live socket',
@@ -1430,7 +1427,6 @@ describe('WebSocket reconnect and cleanup (R7)', () => {
     const inst = render(
       React.createElement(RoomApp, {
         client,
-        embedded: false,
         cwd: repoDir,
         initialRoom: { projectId, sessionId, mode: 'quick', modelChoice: null },
         openBrowser: () => {},
@@ -1467,7 +1463,7 @@ describe('WebSocket reconnect and cleanup (R7)', () => {
       () =>
         screen.includes('Auth Recovery Session') &&
         screen.includes('[QUICK]') &&
-        screen.includes('· live') &&
+        /\] live/.test(screen) &&
         wsClientCount() === 1,
       8000,
       'initial authenticated RoomApp session with restored initialRoom mode',

@@ -1,6 +1,6 @@
 # PRD: DALANG
 
-Nov 18, 2026 · @Fauzan · Updated through v0.14.11, Nov 27, 2026
+Nov 18, 2026 · @Fauzan · Updated through v0.14.12, Nov 27, 2026
 
 ## Summary
 
@@ -215,7 +215,7 @@ All orchestrator decisions come from JSON files the agent writes to `.dalang/`, 
 | Location | Contents |
 | --- | --- |
 | `~/.dalang/` (global) | SQLite: project index, sessions, agent profiles, routing, `provider_event`, statistics |
-| `<repo>/.dalang/` (per project) | Brief, plan, tasks, logs, reviews, versioned in git. The project stays portable and can be opened without DALANG |
+| `<repo>/.dalang/` (per project) | Brief, plan, tasks, logs, reviews, kept on disk and ignored by git since v0.14.12 (B31; before that, task results and reviews were committed into the user's branch). The project stays portable and can be opened without DALANG |
 
 One server process serves all projects. Each run is wrapped in a sandbox bound to its own project folder. Per-project routing or profile overrides are stored in `<repo>/.dalang/config` and win over global settings.
 
@@ -269,7 +269,7 @@ Implementation notes:
 
 ## Data model
 
-SQLite stores state and indexes, while the full content of artifacts (brief, plan, logs, review) stays as files in `.dalang/` so it is versioned in git.
+SQLite stores state and indexes, while the full content of artifacts (brief, plan, logs, review) stays as files in `.dalang/` on disk; since v0.14.12 DALANG does not commit them.
 
 | Entity | Main fields | Relations |
 | --- | --- | --- |
@@ -318,6 +318,7 @@ Each phase must be useful on its own before the next one starts.
 | v0.14.9 | Continue work that stopped short, up to 6 review rounds, seeded profiles named after their role (schema v18), test suite passes inside the sandbox | A task stopped after its last review continues on its branch with all findings and reaches the merge gate, and the final v0.15 verify command passes inside the DALANG sandbox | Released in v0.14.9. Closes B19 apart from the Retry and reject warnings, and ships U6. |
 | v0.14.10 | Project worktree setup with approval, local files, snapshots, and visible results; live activity for Antigravity agents | A PHP project's approved setup prepares each task worktree, the next task starts from a snapshot, and a failed setup is shown in the room | Shipped in v0.14.11 (0.14.10 was not published on its own). Schema v19. Ships U11 and closes B23 and B24. Internet only during setup was dropped: the agent CLI needs the network in the same sandbox |
 | v0.14.11 | Fewer fix rounds for medium and high tasks, no verify rerun by the reviewer, time split per run | A medium or high task's executor checks its work as the reviewer will, and every executor run logs where its time went | Released in v0.14.11. Starts P1 and P4. The first-review pass rate is not measured yet |
+| v0.14.12 | Background server, DALANG files kept out of user history, project check before merge, reference images and unchecked items, fixes for the terminal room and worktree setup | Closing any terminal stops nothing; no `.dalang/` file reaches the user's branch; the approved project check must pass before review | Released in v0.14.12. Closes B26 to B33. Needs live confirmation of the project check and references with real agents |
 | v0.15 | Reliability and parity: fatal provider errors fail fast, restart recovery, session protocol replay, waiting view, room and web parity, merge conflicts handled, structured questions, commands while busy, result summary, continue fixing after a failed review | B1, B6 to B8, B12, and B16 to B22 are closed with tests that failed before the fix, R1 follows the T3 Code design, and typecheck, tests, and build pass | Planned |
 | v0.16 | Speed: per-project events, output hub, paged history, block-wise streaming | Recordings show improvement over the baseline; render and payload budgets pass | Planned |
 | v0.17 | Agent tools: DALANG browser, browser evidence at the gate, per-project MCP allowlist | An executor tests a dev server in the browser on all three providers, and Gate 2 shows the evidence | Planned |
@@ -904,7 +905,7 @@ The terminal team room shipped in v0.12.0. The Telegram and Slack bridges remain
 
 Implementation:
 
-- The terminal client is a thin client of the server API, as the terminal research above recommends, so session and gate logic stays in core and the two UIs cannot drift. `dalang` checks `/api/health` on its port: it attaches when a server is running and otherwise starts the server in the same process. One server writes the database.
+- The terminal client is a thin client of the server API, as the terminal research above recommends, so session and gate logic stays in core and the two UIs cannot drift. `dalang` checks `/api/health` on its port: it attaches when a server is running and otherwise starts the server in the same process. One server writes the database. **Replaced in v0.14.12 (B30):** a server inside a room tied every other room and all running work to that terminal. The server now runs as its own background process.
 - Ink (React for the terminal) renders the room, reusing the TypeScript stack and the `shared` types.
 - Routing: a message without a tag goes to the Lead. `@<profile>` sends it to that profile: an idle profile answers in Ask mode (read-only), and a running coder receives it as a steering message (v0.10).
 - Slash commands: `/mode`, `/model`, `/project`, `/resume`, `/new`, `/config`, `/wizard`, `/diff` (opens `$PAGER`), `/merge`, `/reject`, `/stop`, `/run`, `/finish`, `/web` (opens the browser on the same session), `/help`, and `/exit`. Gates are answered with a y/n prompt in the room.
@@ -1063,10 +1064,14 @@ Read from a copy of a maintainer's local database and logs.
 | B23 | Worktree setup knows one stack | In a Laravel project, `npm run build` failed in two task worktrees at `artisan`; the log said the agent continues without it, and both agents installed the PHP dependencies themselves |
 | B24 | Antigravity activity is not shown | The room stayed on `Installing dependencies` while two Antigravity agents ran commands. From the code, their `sessionUpdate` lines were not recognized |
 | B25 | Tasks take two to three times a single CLI run, and a run stops for hours | Measured on the v0.15 run (56 runs, 16 tasks, from the database and run logs): runs, reviews, and Lead turns were busy for 220 minutes, while eight gaps of more than 5 minutes with nothing running added up to 1,241 minutes, mostly a stopped run waiting for the user. Only 3 of 16 tasks passed their first review, so most tasks ran a fix round (4 to 15 minutes) and a second review. Of 251 executor minutes, about 46 were spent waiting for an agent slot while the limit was 1, counted as run time. Antigravity averaged 15 seconds per tool call and about 33 calls per run, with up to 23 re-reads of the same files. Setup in this repository took about 16 seconds. Run logs have no timestamps, so the slot wait is estimated from overlapping runs. A small task in a new project (add a discount function with tests), run twice each way with the same executor model (Antigravity `gemini-4-hydrogen`): DALANG Auto took 105 and 104 seconds (Lead 30, executor 46 to 52, review 23 to 26), the CLI alone 36 and 33 seconds. Both passed the same six hidden checks. The executor run itself took about 15 seconds longer inside DALANG. A time split per run (P4) then showed that DALANG's own work before and after the agent takes about 0.4 seconds: the rest of that difference is inside the agent's turn (starting the CLI session, its closing message) and run-to-run variance. Asking the executor to review its own work first added 15 to 25 seconds to this small task, which passed its first review without it, so that check is limited to medium and high tasks |
-| B26 | Multi-line text broke the terminal room, and agent reports showed raw Markdown | In 0.14.11 a reviewer finding with 11 line breaks was one list entry, so the room drew more rows than it counted: leftovers over other text and a broken composer. The same held for the context of a question box, which also did not fit an 80x24 terminal. Reproduced and fixed in a pseudo-terminal at 80x24, 120x36, and 200x50. **Fixed after 0.14.11** |
-| B27 | A continue question repeated after every `y` | In the v0.15 run, a task shared four files with a running task, so continuing it was refused and the room asked again. **Fixed after 0.14.11** |
-| B28 | A pnpm setup command fails after a snapshot restore | In the v0.15 run, `pnpm install --frozen-lockfile` exited with `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`: the new throwaway store made pnpm remove the restored `node_modules`, which it refuses without a terminal. Reproduced with pnpm 10.34.9. **Fixed after 0.14.11** with `CI=true`. The snapshot saves little for pnpm, since pnpm rebuilds the folder |
-| B29 | An untracked `PROJECT.md` is missing from task worktrees | In the v0.15 run a task failed: the executor prompt says to read `PROJECT.md` first, and the file DALANG wrote at the project root was not committed, so the worktree did not have it. Not fixed |
+| B26 | Multi-line text broke the terminal room, and agent reports showed raw Markdown | In 0.14.11 a reviewer finding with 11 line breaks was one list entry, so the room drew more rows than it counted: leftovers over other text and a broken composer. The same held for the context of a question box, which also did not fit an 80x24 terminal. Reproduced and fixed in a pseudo-terminal at 80x24, 120x36, and 200x50. **Fixed in v0.14.12** |
+| B27 | A continue question repeated after every `y` | In the v0.15 run, a task shared four files with a running task, so continuing it was refused and the room asked again. **Fixed in v0.14.12** |
+| B28 | A pnpm setup command fails after a snapshot restore | In the v0.15 run, `pnpm install --frozen-lockfile` exited with `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`: the new throwaway store made pnpm remove the restored `node_modules`, which it refuses without a terminal. Reproduced with pnpm 10.34.9. **Fixed in v0.14.12** with `CI=true`. The snapshot saves little for pnpm, since pnpm rebuilds the folder |
+| B29 | An untracked `PROJECT.md` is missing from task worktrees | In the v0.15 run a task failed: the executor prompt says to read `PROJECT.md` first, and the file DALANG wrote at the project root was not committed, so the worktree did not have it. **Fixed in v0.14.12:** the executor is told where the file is; it is not copied, since a copy would count as a task change |
+| B30 | Closing one terminal stopped work started from another | In 0.14.11 the first room ran the server inside its own process and later rooms attached. Closing it stopped three runs within seven seconds, and the other room showed `fetch failed` for every answer. Reproduced with two rooms in pseudo-terminals. **Fixed in v0.14.12:** a background server in its own session |
+| B31 | DALANG committed its own files into the user's repository | In a Laravel project, nine `.dalang/sessions` JSON files reached the development branch through task commits and made the project's format check fail. **Fixed in v0.14.12:** task commits leave `.dalang/` out, artifacts are copied to the project folder, and `.dalang/` is ignored |
+| B32 | Nothing ran the project's own checks | The same project: verify ran three test files and a type check, and the check after merge was skipped twice (`none configured`) without a word in the chat, so the project's CI command never ran. **Fixed in v0.14.12:** an approved project check runs with each task's verify and after merge, and the chat says what happened |
+| B33 | The reviewer never saw the reference image and nothing showed what went unchecked | The reviewer wrote that it could not find the reference screenshot and did not render the page, and passed the task; another tool then found a layout problem. **Fixed in v0.14.12:** reference images reach executor and reviewer, and unchecked items appear in the report and the merge question. Rendering a page is still not possible (v0.17) |
 
 #### Decisions
 

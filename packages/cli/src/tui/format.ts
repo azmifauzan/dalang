@@ -44,7 +44,7 @@ export type PendingGate = GateText &
     // A task asked for files outside its files_allowed (R10).
     | { kind: 'scope_request'; taskId: string; externalId: string; files: string[] }
     | { kind: 'continue_task'; taskId: string; externalId: string }
-    | { kind: 'workspace_setup'; command: string | null; maintenanceCommand: string | null; files: string[] }
+    | { kind: 'workspace_setup'; command: string | null; maintenanceCommand: string | null; checkCommand: string | null; files: string[] }
     | {
         kind: 'approve_merge';
         taskId: string;
@@ -76,7 +76,9 @@ function mergeContext(entry: GuardTaskEntryDTO, messages: DiscussMessageDTO[]): 
         : `verify failed (exit ${review.verifyExitCode})`,
   ];
   if (review.scopeWarnings.length > 0) parts.push(`${review.scopeWarnings.length} scope warning(s)`);
-  return parts.join(' · ');
+  // What nobody checked is what the user must check before saying yes (B33).
+  const unverified = verdict?.unverified ?? review.contract.unverified ?? [];
+  return [parts.join(' · '), ...(unverified.length > 0 ? ['Not checked by the reviewer:', ...unverified.map((item) => `- ${item}`)] : [])].join('\n');
 }
 
 export function detectPendingGate(
@@ -182,15 +184,17 @@ export function detectPendingGate(
 
   // 4b. What prepares each task worktree is decided before work runs, once per project.
   if (setup?.needsApproval && setup.proposal && detail.plan) {
-    const { command, maintenanceCommand, files, source, warnings } = setup.proposal;
+    const { command, maintenanceCommand, checkCommand, files, source, warnings } = setup.proposal;
     return {
       kind: 'workspace_setup',
       command,
       maintenanceCommand,
+      checkCommand,
       files,
-      prompt: 'Use this to prepare every task worktree of this project?',
+      prompt: 'Use this to prepare and check every task of this project?',
       context: [
-        command ? `Command (from ${source}), run in the sandbox: ${command}` : '',
+        checkCommand ? `Project check, must pass before each merge: ${checkCommand}` : '',
+        command ? `Setup command (from ${source}), run in the sandbox: ${command}` : '',
         maintenanceCommand ? `After a snapshot is restored: ${maintenanceCommand}` : '',
         files.length ? `Local files copied into each worktree: ${files.join(', ')}` : '',
         ...warnings.map((w) => `Warning: ${w}`),

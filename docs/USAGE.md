@@ -2,6 +2,13 @@
 
 Use `dalang` for the terminal team room or `dalang web` for the browser workspace. Both use the same projects and conversations. [Install and start Dalang](INSTALL.md)
 
+## Project check and references
+
+- **Project check.** Give the command that already guards your project, usually your CI command (`composer ci:check`, `pnpm run typecheck && pnpm test`). DALANG proposes one from your `composer.json` or `package.json` scripts and asks once; `/setup check <command>` or `/setup check off` changes it. It runs with every files task's own verify, before review, and a failure goes to a fix round. It is also the check after a merge, unless you set an integration command. The chat always says whether that check passed, failed, or did not run.
+- **Reference images.** An image you attach, or name by its full path in a message, is given to the executor and the reviewer.
+- **What was not checked.** The reviewer lists what it could not check, such as how a page looks. The list appears in its report and in the merge question: check those yourself before you merge.
+- **Dalang's own files.** Plans, results, and reviews stay in the project's `.dalang/` folder, which git ignores. Dalang does not commit them. Files that earlier versions committed stay in your history until you remove them: `git rm -r --cached .dalang`, then commit.
+
 ## Preparing task worktrees
 
 Each task starts in a fresh git worktree: no dependencies, generated files, or local files. For a locked JavaScript project DALANG installs the dependencies itself. Anything else is the project's own setup, which you approve once:
@@ -13,7 +20,7 @@ Each task starts in a fresh git worktree: no dependencies, generated files, or l
 
 ## Terminal team room
 
-Run `dalang` in an interactive terminal to open the team room. If a Dalang server is already running on `DALANG_PORT` (default `4173`), `dalang` attaches to it; otherwise it starts the server in the same process and stops it when you exit. Use `dalang room --port <number>` for a server on another port. Run `dalang web` for the browser workspace. When stdin or stdout is not a terminal, `dalang` runs `dalang web` instead.
+Run `dalang` in an interactive terminal to open the team room. The Dalang server runs **in the background**, on its own: the first room (or `dalang web`) starts it, and every room and browser tab connects to it. Closing a room or its terminal stops nothing, so you can open and close terminals as with any other CLI. The server stops by itself after 15 minutes with no room, browser tab, running work, or enabled schedule or webhook. `dalang stop` stops it, and refuses while work runs unless you add `--force`. If it stops unexpectedly, an open room starts it again and interrupted tasks continue. Its log is `~/.dalang/logs/server.log`. Use `dalang room --port <number>` for a server on another port. Run `dalang web` for the browser workspace. When stdin or stdout is not a terminal, `dalang` runs `dalang web` instead.
 
 ### Open a project and start a chat
 
@@ -35,7 +42,7 @@ Run `dalang` in an interactive terminal to open the team room. If a Dalang serve
 ### Read the timeline and live status
 
 - **Header:** the Dalang mark (the Gunungan) on the left, then four rows:
-  - the project, session title, composer mode, and whether the room runs its own server (`embedded`) or attached to one;
+  - the project, session title, composer mode, and whether the room is connected (`live`) or has lost the server (`offline`);
   - quick stats: the 5 hour (`5h`) and weekly (`wk`) limit left for each installed provider, the same numbers as the web usage bar, red at 20% or less, refreshed on the interval set in `/config`;
   - the model the Lead will answer with next, and where it comes from: chosen with `/model`, the open session, or the Lead profile. A new chat uses the Lead from Config (`/config` or the browser's **Config → Agents → Team**); a session already started keeps its own CLI and model, so use `/model` or `/new` after changing the Lead;
   - the agents running now with their models (`@executor-light Antigravity · gemini-4-hydrogen`), or the project folder when none runs.
@@ -63,7 +70,7 @@ Run `dalang` in an interactive terminal to open the team room. If a Dalang serve
 | `/new` | Start a new session |
 | `/resume [n\|id]` | Pick an earlier session of this project from a list, newest first, and continue it |
 | `/update [check\|clis\|all]` | Check for or install the latest Dalang release (prompting `/restart` when updated), update all connected agent CLIs (`clis`), or update both (`all`) |
-| `/restart` | Restart the room and return to the selected project, session, mode, and model. An embedded server refuses while an agent or task is active |
+| `/restart` | Restart the room and return to the selected project, session, mode, and model. Running work is not affected. After an update, the background server switches to the new version once it has no work |
 | `/setup [approve\|set <cmd>\|maintenance <cmd>\|files <paths>\|off\|reset]` | Show or change what prepares each task worktree of this project. `reset` drops the saved snapshot |
 | `/mouse` | Toggle mouse capture to allow ordinary text selection or wheel scrolling |
 | `/diff [taskId]` | Open the task diff (or answer text for answer tasks) in `$PAGER` (`less -R`, or `more` on Windows) |

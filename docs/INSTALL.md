@@ -75,13 +75,14 @@ npx dalang-cli@latest
 
 `doctor` checks Node.js, Git, the sandbox, the data directory, GitHub CLI, and provider login status. Fix any issues affecting the features you plan to use. [Troubleshooting](TROUBLESHOOTING.md)
 
-In an interactive terminal, `dalang` opens the team room and starts with the setup wizard on a fresh install. For the browser workspace, run `dalang web` and open the URL it prints, normally `http://127.0.0.1:4173`. Keep the terminal running while you use the app. [Terminal walkthrough](USAGE.md#terminal-team-room) · [Browser walkthrough](USAGE.md#browser-workspace)
+In an interactive terminal, `dalang` opens the team room and starts with the setup wizard on a fresh install. For the browser workspace, run `dalang web` and open the URL it prints, normally `http://127.0.0.1:4173`. The server runs in the background, so you can close the terminal; stop it with `dalang stop`. [Terminal walkthrough](USAGE.md#terminal-team-room) · [Browser walkthrough](USAGE.md#browser-workspace)
 
 | Command | When to use it |
 | --- | --- |
 | `dalang` | Open the interactive terminal team room (falls back to `dalang web` when stdin/stdout is not a TTY) |
 | `dalang room --port 4180` | Open the terminal team room against a server on another port |
-| `dalang web` | Start the local web server and open the browser UI |
+| `dalang web` | Open the browser UI; in a terminal the server runs in the background (`--foreground` keeps it in the terminal) |
+| `dalang stop` | Stop the background server (`--force` also stops running work) |
 | `dalang web --no-open` | Start the web server without opening a browser tab |
 | `dalang web --port 4180` | Use another loopback port if 4173 is busy |
 | `dalang doctor [--json]` | Check Node, Git, sandbox, data directory, TTY, and provider logins |

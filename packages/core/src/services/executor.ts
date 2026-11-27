@@ -8,6 +8,7 @@ import {
   WorkspaceSetupConfigSchema,
   type WorkspaceSetupConfig,
   type WorkspaceSetupDTO,
+  type WorkspaceSetupProposal,
   MAX_REVIEW_ROUNDS,
   buildAccountKey,
   DEFAULT_MAX_SUBTASKS_PER_TASK,
@@ -55,6 +56,8 @@ import type { ProviderRegistry } from '../adapters/registry.js';
 import type { ActiveTurnControls, TurnTokenUsage } from '../adapters/types.js';
 import { getDbDataDir, type DalangDb } from '../db/client.js';
 import {
+  messages,
+  messageImages,
   agentProfiles,
   integrationRuns,
   plans,
@@ -68,6 +71,7 @@ import {
   tasks,
 } from '../db/schema.js';
 import {
+  getSessionDir,
   acceptedAnswerRelPath,
   getAcceptedAnswerPath,
   getProjectLogsDir,
@@ -78,6 +82,7 @@ import {
   getWorktreesRoot,
 } from '../paths.js';
 import {
+  ensureDalangIgnore,
   ensureProjectDir,
   readArtifactFile,
   removeArtifactFile,
@@ -90,12 +95,14 @@ import {
   copyApprovedFiles,
   describeFileRisks,
   isLocalFilePath,
+  proposeProjectCheck,
   proposeWorkspaceSetup,
   restoreSnapshot,
   saveSnapshot,
   snapshotKey,
   withFreshCaches,
 } from './workspace-setup.js';
+import { imagePathsInText, referenceBlock } from './references.js';
 import { describeRunOutcome } from './run-outcome.js';
 import type { DalangEventBus } from './events.js';
 import {
@@ -606,6 +613,43 @@ export class ExecutionService {
     }
   }
 
+  /** The project's own check, for a files task that is not a subtask (B32). */
+  private projectCheck(projectId: string, task: TaskDTO): string | null {
+    if (task.output === 'answer' || task.delegationDepth > 0) return null;
+    return this.approvedSetup(this.getProjectRow(projectId))?.checkCommand ?? null;
+  }
+
+  /** The task's verify command followed by the project check, as one command. */
+  private verifyWithProjectCheck(projectId: string, task: TaskDTO): TaskDTO {
+    const check = this.projectCheck(projectId, task);
+    if (!check) return task;
+    const own = task.verify?.trim();
+    return { ...task, verify: own && own !== check ? `(${own}) && (${check})` : check };
+  }
+
+  /** Reference images the user attached or named in this session's messages (B33). */
+  private referenceImages(projectPath: string, sessionId: string): string[] {
+    const rows = this.db.select().from(messages).where(and(eq(messages.sessionId, sessionId), eq(messages.role, 'user'))).all();
+    const found = new Set<string>();
+    for (const row of rows) {
+      for (const file of imagePathsInText(row.content)) found.add(file);
+      for (const image of this.db.select().from(messageImages).where(eq(messageImages.messageId, row.id)).all()) {
+        const extension = image.mimeType.split('/')[1]?.replace(/[^a-z0-9]/gi, '') || 'png';
+        const file = path.join(getSessionDir(projectPath, sessionId), 'refs', `${image.id}.${extension}`);
+        try {
+          if (!fs.existsSync(file)) {
+            ensureProjectDir(projectPath, path.dirname(file));
+            fs.writeFileSync(file, image.data, { flag: 'wx', mode: 0o600 });
+          }
+          found.add(file);
+        } catch {
+          // An image that cannot be written is left out.
+        }
+      }
+    }
+    return [...found];
+  }
+
   /** The setup command the Lead put in this project's latest plan, if any. */
   private leadSetupCommand(project: typeof projects.$inferSelect): string | null {
     const plan = this.db.select().from(plans).where(eq(plans.projectId, project.id)).orderBy(desc(plans.createdAt)).get();
@@ -622,14 +666,28 @@ export class ExecutionService {
     const project = this.getProjectRow(projectId);
     const approved = this.approvedSetup(project);
     // Proposing walks the checkout, so it runs only while there is a decision to make.
-    const proposal = approved
-      ? null
-      : await proposeWorkspaceSetup(project.path, this.leadSetupCommand(project)).catch(() => null);
+    let proposal: WorkspaceSetupProposal | null = null;
+    if (!approved) {
+      proposal = await proposeWorkspaceSetup(project.path, this.leadSetupCommand(project)).catch(() => null);
+    } else if (approved.checkCommand === undefined) {
+      // A setup approved before the project check existed: only the check is new.
+      const checkCommand = proposeProjectCheck(project.path);
+      if (checkCommand) {
+        proposal = {
+          command: approved.command,
+          maintenanceCommand: approved.maintenanceCommand,
+          files: approved.files,
+          checkCommand,
+          source: "the project's own scripts",
+          warnings: [],
+        };
+      }
+    }
     const dir = this.snapshotDir(projectId);
     return {
       approved,
       proposal,
-      needsApproval: !approved && proposal !== null,
+      needsApproval: proposal !== null,
       warnings: describeFileRisks(project.path, approved?.files ?? proposal?.files ?? []),
       hasSnapshot: fs.existsSync(dir) && fs.readdirSync(dir).some((name) => !name.endsWith('.tmp')),
     };
@@ -1328,6 +1386,38 @@ export class ExecutionService {
     return rootResult;
   }
 
+  /**
+   * A task's result and review files are written in its worktree and are no longer committed (B31), so a
+   * copy goes to the project's `.dalang/`, where they stay readable after the worktree is removed.
+   */
+  private keepTaskArtifacts(worktreePath: string, projectPath: string): void {
+    // The worktree is the agent's to write, so only this task's own folder is copied: another task's
+    // result or review must not be replaceable from here. The worktree folder is named after the task.
+    const own = `/tasks/${path.basename(worktreePath)}/`;
+    const copy = (relative: string) => {
+      const source = path.join(worktreePath, relative);
+      let stat: fs.Stats;
+      try {
+        stat = fs.lstatSync(source);
+      } catch {
+        return;
+      }
+      if (stat.isDirectory()) {
+        // Logs are written in the project already.
+        if (!/(^|\/)(logs|tmp)$/.test(relative)) for (const name of fs.readdirSync(source)) copy(`${relative}/${name}`);
+        return;
+      }
+      if (!stat.isFile() || stat.size > 5_000_000 || !`/${relative}`.includes(own)) return;
+      try {
+        writeArtifactFile(projectPath, path.join(projectPath, relative), readArtifactFile(worktreePath, source), 'replace');
+      } catch {
+        // A link or an unreadable file an agent left behind is not copied.
+      }
+    };
+    ensureDalangIgnore(projectPath);
+    copy('.dalang');
+  }
+
   private async createWorkspaceGitCheckpoints(
     runId: string,
     repos: TaskRepoContext[],
@@ -1340,6 +1430,7 @@ export class ExecutionService {
     let rootHiddenRef: string | null = null;
     for (const repo of repos) {
       if (!fs.existsSync(repo.worktreePath)) continue;
+      if (repo.repoPath === '.') this.keepTaskArtifacts(repo.worktreePath, repo.mainRepoPath);
       const ck = await createGitCheckpoint(
         repo.worktreePath,
         repo.repoPath === '.' ? commitMessage : `${commitMessage} [${repo.repoPath}]`,
@@ -2734,6 +2825,11 @@ export class ExecutionService {
     return { stopped: true };
   }
 
+  /** True while a task, its review, or a queue is running: stopping the server now would cut it off. */
+  hasActiveWork(): boolean {
+    return this.activeTasks.size > 0 || this.projectQueues.size > 0;
+  }
+
   async stopAll(): Promise<void> {
     const projectIds = new Set<string>([
       ...this.projectQueues.keys(),
@@ -3491,10 +3587,25 @@ export class ExecutionService {
         }
 
         timing.setup = Date.now() - setupStarted;
+        // A PROJECT.md that was never committed is not in the worktree, and the prompt says to read it (B29).
+        // It is named where it is, not copied: a copy would count as a task change.
+        const projectMd = path.join(opts.projectPath, 'PROJECT.md');
+        const projectMdNote =
+          !fs.existsSync(path.join(opts.worktreePath, 'PROJECT.md')) && fs.existsSync(projectMd)
+            ? `PROJECT.md is not committed, so this worktree has no copy. Read it at ${projectMd}. Do not change that file.`
+            : '';
         const agentStarted = Date.now();
         const turn = await adapter.runTurn({
           projectPath: opts.worktreePath,
-          prompt: setup.agentNote ? `${promptText}\n\n${setup.agentNote}` : promptText,
+          prompt: [
+            promptText,
+            setup.agentNote,
+            projectMdNote,
+            this.projectCheck(opts.projectId, opts.task)
+              ? `Before review DALANG also runs the project's own check, which must pass: ${this.projectCheck(opts.projectId, opts.task)}\nRun it before you finish. If it fails for a reason your change did not cause, say so in "blockers".`
+              : '',
+            referenceBlock(this.referenceImages(opts.projectPath, opts.sessionId), 'executor'),
+          ].filter(Boolean).join('\n\n'),
           sessionId: sessionToResume,
           model: profile.model || null,
           effort: profile.effort,
@@ -4615,7 +4726,7 @@ export class ExecutionService {
         sessionToResume: activeCoderSessionId,
         kind: 'fix',
         prompt: buildFixPrompt({
-          task: ctx.task,
+          task: this.verifyWithProjectCheck(ctx.projectId, ctx.task),
           profile: activeCoderProfile,
           relResultPath: ctx.relResultPath,
           relAnswerPath: ctx.relAnswerPath,
@@ -4626,7 +4737,7 @@ export class ExecutionService {
         }),
         buildPromptForProfile: (prof) =>
           buildFixPrompt({
-            task: ctx.task,
+            task: this.verifyWithProjectCheck(ctx.projectId, ctx.task),
             profile: prof,
             relResultPath: ctx.relResultPath,
             relAnswerPath: ctx.relAnswerPath,
@@ -4765,7 +4876,10 @@ export class ExecutionService {
       );
       if (opts.routeNote) emitDalangLine(`[dalang] ${opts.routeNote}`);
 
-      const verifyCommand = opts.task.verify?.trim() || null;
+      const checked = this.verifyWithProjectCheck(opts.projectId, opts.task);
+      const verifyCommand = checked.verify?.trim() || null;
+      // A whole project's check takes longer than one task's tests.
+      const verifyTimeoutMs = this.projectCheck(opts.projectId, opts.task) ? 900_000 : 300_000;
       let verifyExitCode: number | null = verifyInfo ? verifyInfo.exitCode : null;
       let verifyOutput = verifyInfo?.output ?? '';
 
@@ -4791,8 +4905,8 @@ export class ExecutionService {
           emitDalangLine(`[dalang] Running verify command: ${verifyCommand}`);
           try {
             const verifyRes = await this.registry.runShellCommand(opts.worktreePath, verifyCommand, {
-              timeoutMs: Math.min(reviewerProfile.timeoutMs, 300_000),
-              idleTimeoutMs: reviewerProfile.idleTimeoutMs,
+              timeoutMs: Math.min(reviewerProfile.timeoutMs, verifyTimeoutMs),
+              idleTimeoutMs: Math.max(reviewerProfile.idleTimeoutMs, 300_000),
               signal: opts.execHandle.controller.signal,
               onLogLine: emitDalangLine,
             });
@@ -4871,8 +4985,9 @@ export class ExecutionService {
 
       const adapter = this.registry.getAdapter(reviewerProfile.provider);
       const isReadOnly = reviewerProfile.permissionMode === 'read-only';
-      const initialPrompt = buildReviewPrompt({
-        task: opts.task,
+      const references = referenceBlock(this.referenceImages(opts.projectPath, opts.sessionId), 'reviewer');
+      const reviewPrompt = buildReviewPrompt({
+        task: checked,
         profile: reviewerProfile,
         relReviewPath: opts.relReviewPath,
         round: opts.round,
@@ -4887,6 +5002,7 @@ export class ExecutionService {
         coderResult: opts.coderResult,
         language: this.getLanguage(),
       });
+      const initialPrompt = references ? `${reviewPrompt}\n\n${references}` : reviewPrompt;
 
       let currentSessionId: string | null = null;
       let currentPrompt = initialPrompt;
@@ -5112,6 +5228,7 @@ export class ExecutionService {
         worktreePath: opts.worktreePath,
       });
       const reviewNestedNames = this.getNestedRepoNames(reviewTaskRepos);
+      this.keepTaskArtifacts(opts.worktreePath, opts.projectPath);
       const checkpointAfter = await createGitCheckpoint(
         opts.worktreePath,
         `dalang: ${opts.task.externalId} review round ${opts.round} (${finalContract.status})`,
@@ -5225,9 +5342,15 @@ export class ExecutionService {
             reviewRound: opts.round,
             findingsCount: finalContract.findings.length,
             findings: finalContract.findings.slice(0, 5),
+            unverified: finalContract.unverified,
             verifyExitCode,
             verifySkipped: verifyCommand === null,
-            summary: `Review round ${opts.round} [${opts.task.externalId}]: ${verdictLabel} (${finalContract.findings.length} finding(s)). ${verdictNote}`,
+            summary: [
+              `Review round ${opts.round} [${opts.task.externalId}]: ${verdictLabel} (${finalContract.findings.length} finding(s)). ${verdictNote}`,
+              finalContract.unverified.length > 0
+                ? `Not checked by the reviewer, check these yourself:\n${finalContract.unverified.map((item) => `- ${item}`).join('\n')}`
+                : '',
+            ].filter(Boolean).join('\n'),
           },
         );
       }
@@ -6947,6 +7070,7 @@ export class ExecutionService {
         allowUnconfined: input.allowUnconfined,
       });
     }
+    if (integrationRun) this.reportIntegration(projectId, sid, task, integrationRun);
 
     const shouldCreatePr = input.createPrAfterMerge ?? Boolean(project.createPrAfterMerge);
     const shouldPush = input.pushAfterMerge ?? Boolean(project.pushAfterMerge);
@@ -6992,6 +7116,23 @@ export class ExecutionService {
     }
     await this.reportRunOutcome(projectId, sid);
     return { task: updatedTask, mergeCommitSha, integrationRun, pushPrResult };
+  }
+
+  /** A skipped or failed integration run is said out loud: silence read as "everything passed" (B21). */
+  private reportIntegration(projectId: string, sessionId: string, task: TaskDTO, run: IntegrationRunDTO): void {
+    const tail = run.output.replace(/\x1b\[[0-9;]*m/g, '').trim().split('\n').slice(-8).join('\n');
+    this.postRoomReport(projectId, sessionId, null, 'status', {
+      event: 'integration_result',
+      taskId: task.id,
+      externalId: task.externalId,
+      taskTitle: task.title,
+      summary:
+        run.status === 'passed'
+          ? `Integration check passed after merging [${task.externalId}]: ${run.command}`
+          : run.status === 'skipped'
+            ? `No integration check ran after merging [${task.externalId}], so the merged result is not tested. ${tail}\nSet the project check with /setup check <command>.`
+            : `Integration check FAILED after merging [${task.externalId}] (exit ${run.exitCode}): ${run.command}\n${tail}`,
+    });
   }
 
   private buildPullRequestBody(task: TaskDTO, latestReview: TaskReviewDTO | null): string {
@@ -7434,6 +7575,7 @@ export class ExecutionService {
     const command =
       opts.command?.trim() ||
       project.integrationCommand?.trim() ||
+      this.approvedSetup(project)?.checkCommand ||
       detectIntegrationCommand(project.path);
 
     const startedAt = new Date().toISOString();
@@ -7946,6 +8088,7 @@ export class ExecutionService {
       status: row.status as 'pass' | 'fail',
       verify_exit_code: row.verifyExitCode,
       findings: [],
+      unverified: [],
     };
     const raw = await readArtifactWithGitFallback(projectPath, row.filePath, row.commitSha);
     if (raw) {

@@ -90,6 +90,28 @@ function declaredCommand(projectPath: string): { command: string; source: string
 }
 
 /**
+ * The command that already guards the project, or null. Task verify commands are narrow, so a change can
+ * pass them and still break the project's CI (B32).
+ */
+export function proposeProjectCheck(projectPath: string): string | null {
+  const composer = readJson(path.join(projectPath, 'composer.json'))?.scripts ?? {};
+  for (const name of ['ci:check', 'ci', 'check']) if (composer[name]) return `composer ${name}`;
+  const scripts: Record<string, unknown> = readJson(path.join(projectPath, 'package.json'))?.scripts ?? {};
+  const has = (name: string) => typeof scripts[name] === 'string' && !/no test specified/i.test(scripts[name] as string);
+  const manager = fs.existsSync(path.join(projectPath, 'pnpm-lock.yaml'))
+    ? 'pnpm'
+    : fs.existsSync(path.join(projectPath, 'yarn.lock'))
+      ? 'yarn'
+      : 'npm';
+  for (const name of ['ci:check', 'ci']) if (has(name)) return `${manager} run ${name}`;
+  const parts = ['check', 'typecheck', 'types:check', 'test'].filter(has).map((name) => `${manager} run ${name}`);
+  if (parts.length > 0) return parts.join(' && ');
+  if (fs.existsSync(path.join(projectPath, 'go.mod'))) return 'go test ./...';
+  if (fs.existsSync(path.join(projectPath, 'Cargo.toml'))) return 'cargo test';
+  return null;
+}
+
+/**
  * What DALANG would suggest, or null when there is nothing to ask: a plain JavaScript project is
  * already handled by the built-in install.
  */
@@ -118,11 +140,13 @@ export async function proposeWorkspaceSetup(
     maintenanceCommand = [composer, ...javascript.filter((step) => / run build$/.test(step))].join(' && ');
     source = 'composer.lock and the JavaScript lockfile';
   }
-  if (!command && files.length === 0) return null;
+  const checkCommand = proposeProjectCheck(projectPath);
+  if (!command && files.length === 0 && !checkCommand) return null;
   return {
     command,
     maintenanceCommand,
-    source: source ?? '.worktreeinclude',
+    checkCommand,
+    source: source ?? (files.length > 0 ? '.worktreeinclude' : "the project's own scripts"),
     files,
     warnings: describeFileRisks(projectPath, files),
   };

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const DALANG_VERSION = '0.14.11';
+export const DALANG_VERSION = '0.14.12';
 
 export const MAX_DELEGATION_DEPTH = 1;
 export const DEFAULT_MAX_SUBTASKS_PER_TASK = 6;
@@ -241,6 +241,8 @@ export const ReviewContractSchema = z.object({
   verify_exit_code: z.number().int().nullable().optional(),
   summary: z.string().optional(),
   findings: z.array(ReviewFindingSchema).default([]),
+  /** What the reviewer could not check, such as how a page looks. The user sees it before merging. */
+  unverified: z.array(z.string()).default([]),
 });
 export type ReviewContract = z.infer<typeof ReviewContractSchema>;
 
@@ -591,7 +593,8 @@ export type RoomReportEvent =
   | 'task_accepted'
   | 'task_rejected'
   | 'task_steered'
-  | 'task_waiting';
+  | 'task_waiting'
+  | 'integration_result';
 
 export interface RoomReportContent {
   event: RoomReportEvent;
@@ -618,6 +621,8 @@ export interface RoomReportContent {
   findingsCount?: number;
   findings?: Array<{ severity: ReviewFindingSeverity; file: string; note: string }>;
   mergeCommitSha?: string;
+  /** For `review_verdict`: what the reviewer could not check. */
+  unverified?: string[];
   /** For `scope_request`: files outside the task's files_allowed that it needs. */
   needsFiles?: string[];
   /** For `run_finished` and `run_stopped`: task counts and the external IDs of tasks left behind. */
@@ -839,6 +844,11 @@ export const WorkspaceSetupConfigSchema = z.object({
   command: SetupCommandSchema,
   /** Runs instead of `command` after a snapshot was restored. */
   maintenanceCommand: SetupCommandSchema.default(null),
+  /**
+   * The project's own check (its CI command), run with each task's verify before review and merge (B32).
+   * Absent means the user has not decided yet; null means none.
+   */
+  checkCommand: z.string().trim().max(4000).nullable().transform((v) => v || null).optional(),
   /** Git-ignored local files copied from the project into each task worktree. */
   files: z.array(z.string().trim().min(1)).max(50).default([]),
 });
@@ -847,6 +857,7 @@ export type WorkspaceSetupConfig = z.infer<typeof WorkspaceSetupConfigSchema>;
 export interface WorkspaceSetupProposal {
   command: string | null;
   maintenanceCommand: string | null;
+  checkCommand: string | null;
   source: string;
   files: string[];
   warnings: string[];

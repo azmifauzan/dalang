@@ -224,6 +224,8 @@ export const id: Record<TranslationKey, string> = {
   'setup.builtin': 'Pakai persiapan bawaan',
   'setup.resetSnapshot': 'Hapus snapshot',
   'room.report.task_waiting': 'Menunggu dilanjutkan',
+  'setup.check': 'Pemeriksaan project, dijalankan di tiap task sebelum review dan merge (perintah CI Anda)',
+  'room.report.integration_result': 'Pemeriksaan integrasi',
   'room.report.scope_request': 'Butuh file',
   'guard.mergeConflictSentBack': 'Merge [{task}] bentrok dengan branch utama. Tugas dikembalikan ke pelaksananya untuk menyelesaikan konflik; verifikasi dan tinjauan berjalan lagi sebelum Anda diminta merge.',
   'room.report.merge_conflict': 'Konflik merge',
