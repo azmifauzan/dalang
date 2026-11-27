@@ -424,9 +424,13 @@ describe('WebSocket heartbeat and reconnect (R7)', () => {
 
   it(
     'web UI reconnects after local server restart, reloads active state, and cleans up connections and listeners on project switch and close',
-    async () => {
+    async (ctx) => {
+      if (!fs.existsSync(WEB_DIST_DIR)) {
+        throw new Error(`Missing web build at ${WEB_DIST_DIR}. Run "pnpm build" before running this test.`);
+      }
       const chrome = findChromeBinary();
-      if (!chrome || !fs.existsSync(WEB_DIST_DIR)) {
+      if (!chrome) {
+        ctx.skip();
         return;
       }
 

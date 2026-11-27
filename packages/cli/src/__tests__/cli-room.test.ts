@@ -1225,7 +1225,7 @@ describe('WebSocket reconnect and cleanup (R7)', () => {
         client,
         embedded: false,
         cwd: repoDir,
-        initialRoom: { projectId, sessionId, mode: 'ask', modelChoice: null },
+        initialRoom: { projectId, sessionId, mode: 'quick', modelChoice: null },
         openBrowser: () => {},
         onOpenPager: async () => ({ ok: true }),
       }),
@@ -1361,7 +1361,7 @@ describe('WebSocket reconnect and cleanup (R7)', () => {
         client,
         embedded: false,
         cwd: repoDir,
-        initialRoom: { projectId, sessionId, mode: 'ask', modelChoice: null },
+        initialRoom: { projectId, sessionId, mode: 'quick', modelChoice: null },
         openBrowser: () => {},
         onOpenPager: async () => ({ ok: true }),
       }),
@@ -1393,9 +1393,13 @@ describe('WebSocket reconnect and cleanup (R7)', () => {
     };
 
     await waitUntil(
-      () => screen.includes('Auth Recovery Session') && screen.includes('· live') && wsClientCount() === 1,
+      () =>
+        screen.includes('Auth Recovery Session') &&
+        screen.includes('[QUICK]') &&
+        screen.includes('· live') &&
+        wsClientCount() === 1,
       8000,
-      'initial authenticated RoomApp session',
+      'initial authenticated RoomApp session with restored initialRoom mode',
     );
 
     // Enable login from another view -> server revokes the open room socket with 4401.

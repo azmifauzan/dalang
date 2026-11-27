@@ -414,6 +414,9 @@ function AppShell({ authEnabled }: { authEnabled: boolean }) {
       });
   };
 
+  // Persist pending reload across project switches while disconnected so the replacement socket still reloads active state.
+  const wsNeedsReloadRef = useRef(false);
+
   // WebSocket live updates with bounded reconnect and active-state reload
   useEffect(() => {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -426,7 +429,6 @@ function AppShell({ authEnabled }: { authEnabled: boolean }) {
     let reconnectTimer: number | null = null;
     let closedByEffect = false;
     let reconnectAttempt = 0;
-    let needsReloadOnOpen = false;
 
     const clearReconnectTimer = () => {
       if (reconnectTimer !== null) {
@@ -493,8 +495,8 @@ function AppShell({ authEnabled }: { authEnabled: boolean }) {
       const onOpen = () => {
         if (closedByEffect || socket !== ws) return;
         reconnectAttempt = 0;
-        if (needsReloadOnOpen) {
-          needsReloadOnOpen = false;
+        if (wsNeedsReloadRef.current) {
+          wsNeedsReloadRef.current = false;
           reloadActiveState();
         }
       };
@@ -504,7 +506,7 @@ function AppShell({ authEnabled }: { authEnabled: boolean }) {
         detachSocket?.();
         detachSocket = null;
         ws = null;
-        needsReloadOnOpen = true;
+        wsNeedsReloadRef.current = true;
         resetTransientLiveState();
         void qc.invalidateQueries({ queryKey: ['auth-status'] });
         if (ev.code === 4401) return;
@@ -768,7 +770,7 @@ function AppShell({ authEnabled }: { authEnabled: boolean }) {
       clearReconnectTimer();
       closeCurrentSocket();
       resetTransientLiveState();
-      needsReloadOnOpen = true;
+      wsNeedsReloadRef.current = true;
     };
 
     const onPageShow = (ev: PageTransitionEvent) => {

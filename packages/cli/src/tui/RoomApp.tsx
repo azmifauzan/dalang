@@ -370,13 +370,16 @@ export function RoomApp({
       setProjects(projList);
       setProfiles(profList);
 
-      const targetProjectId = activeProjectIdRef.current ?? initialRoom?.projectId ?? null;
+      const currentProjectId = activeProjectIdRef.current;
+      const currentSessionId = activeSessionIdRef.current;
+      const isInitialBootstrap = currentProjectId === null;
+      const targetProjectId = currentProjectId ?? initialRoom?.projectId ?? null;
       const matched = projList.find((p) => p.id === targetProjectId) ?? matchProjectForCwd(projList, cwd) ?? projList[0] ?? null;
       if (matched) {
         setActiveProjectId(matched.id);
         const restored =
-          matched.id === activeProjectIdRef.current
-            ? activeSessionIdRef.current
+          matched.id === currentProjectId
+            ? currentSessionId
             : matched.id === initialRoom?.projectId
               ? initialRoom.sessionId
               : null;
@@ -384,7 +387,7 @@ export function RoomApp({
         const sessionId = sessionList?.sessions.some((s) => s.id === restored) ? restored : null;
         setActiveSessionId(sessionId);
         await refreshSessionState(matched.id, sessionId);
-        if (!activeProjectIdRef.current && initialRoom) {
+        if (isInitialBootstrap && initialRoom) {
           setMode(initialRoom.mode);
           setModelChoice(initialRoom.modelChoice);
         }
