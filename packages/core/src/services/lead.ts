@@ -5,6 +5,8 @@ import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import {
   findProfileByRef,
+  liveReplyText,
+  parseTurnLogSignal,
   AskReplyContractSchema,
   MAX_CHAT_IMAGE_BYTES,
   BriefContentSchema,
@@ -13,8 +15,10 @@ import {
   QuickPlanContractSchema,
   TaskSplitOutputSchema,
   buildAccountKey,
+  type AnswerQuestionInput,
   type AgentProfileDTO,
   type AskMessageContent,
+  type StoredLeadQuestion,
   type BriefContent,
   type BriefDTO,
   type ChatMessageInput,
@@ -42,6 +46,7 @@ import {
   type QuickPlanMessageContent,
   type ReorderTasksInput,
   type SessionDetailDTO,
+  type SessionContextItemDTO,
   type SessionMessageType,
   type SessionMode,
   type SessionPhase,
@@ -57,6 +62,11 @@ import {
 } from '@dalang/shared';
 import type { ProviderRegistry } from '../adapters/registry.js';
 import type { TurnImage, TurnTokenUsage } from '../adapters/types.js';
+import {
+  deleteSessionContextItem,
+  getLatestTaskHandoffsMap,
+  listSessionContextItems,
+} from './task-context.js';
 import type { DalangDb } from '../db/client.js';
 import {
   agentProfiles,
@@ -249,6 +259,8 @@ export class LeadService {
 
   /** Lead turns running now, by session. Lives in memory: a restart ends the CLI process too. */
   private readonly runningTurns = new Map<string, SessionTurnDTO>();
+  /** U10 supervision boundary deduplication keys (`sessionId:kind:targetId`). */
+  private readonly supervisedBoundaries = new Set<string>();
 
   private trackTurn(event: DalangEvent): void {
     if (event.type === 'lead.turn_started' && event.sessionId) {
@@ -844,13 +856,29 @@ export class LeadService {
     const discuss = this.getDiscussState(projectId, sessionId);
     const sessionBriefs = this.listBriefs(projectId, sessionId);
     const plan = this.getPlan(projectId, sessionId);
+    const contextItems = listSessionContextItems(this.db, sessionId);
     return {
       session,
       messages: discuss.messages,
       currentRound: discuss.currentRound,
       briefs: sessionBriefs,
       plan,
+      contextItems,
     };
+  }
+
+  listSessionContext(projectId: string, sessionId: string): SessionContextItemDTO[] {
+    this.getSession(projectId, sessionId);
+    return listSessionContextItems(this.db, sessionId);
+  }
+
+  removeSessionContextItem(projectId: string, sessionId: string, itemId: string): boolean {
+    this.getSession(projectId, sessionId);
+    const removed = deleteSessionContextItem(this.db, sessionId, itemId);
+    if (removed) {
+      this.events?.emitEvent({ type: 'plan.updated', projectId, sessionId });
+    }
+    return removed;
   }
 
   // ---------------------------------------------------------------------------
@@ -1516,6 +1544,21 @@ export class LeadService {
     const run = async (cliSessionId: string | null, runEffort: EffortLevel) => {
       // Each attempt (resume retry, fallback) streams its own reply, so it starts with `reset`.
       const textStream = this.askTextStream(project.id, sessionRow.id, 'ask');
+      const turnRunId = `lead-${sessionRow.id}-${Date.now()}`;
+      const turnStartedAt = new Date().toISOString();
+      const stepStarts = new Map<string, number>();
+      this.events?.emitEvent({
+        type: 'turn.progress',
+        projectId: project.id,
+        sessionId: sessionRow.id,
+        runId: turnRunId,
+        role: 'lead',
+        profileName: 'lead',
+        provider,
+        model,
+        phase: cliSessionId ? 'resuming' : 'starting',
+        startedAt: turnStartedAt,
+      });
       const turn = await this.registry.getAdapter(provider).runTurn({
         projectPath: project.path,
         prompt: buildPrompt(!cliSessionId),
@@ -1527,16 +1570,56 @@ export class LeadService {
         permissionMode: 'read-only',
         signal,
         logFilePath: attemptLog,
-        onLogLine: (line) =>
+        onLogLine: (line) => {
           this.events?.emitEvent({
             type: 'lead.log',
             projectId: project.id,
             sessionId: sessionRow.id,
             phase: 'ask',
             line,
-          }),
+          });
+          const sig = parseTurnLogSignal(line);
+          if (sig) {
+            const nowMs = Date.now();
+            let step = sig.step ? { ...sig.step, startedAt: new Date(nowMs).toISOString() } : undefined;
+            if (step) {
+              if (step.status === 'running' && !stepStarts.has(step.id)) {
+                stepStarts.set(step.id, nowMs);
+              } else if (step.status !== 'running') {
+                const startMs = stepStarts.get(step.id);
+                if (startMs !== undefined) step = { ...step, durationMs: Math.max(0, nowMs - startMs) };
+              }
+            }
+            this.events?.emitEvent({
+              type: 'turn.progress',
+              projectId: project.id,
+              sessionId: sessionRow.id,
+              runId: turnRunId,
+              role: 'lead',
+              profileName: 'lead',
+              provider,
+              model,
+              phase: sig.phase ?? 'working',
+              ...(step ? { step } : {}),
+              ...(sig.progressText ? { progressText: sig.progressText } : {}),
+              startedAt: turnStartedAt,
+            });
+          }
+        },
         onTextDelta: textStream.push,
       }).finally(textStream.flush);
+      this.events?.emitEvent({
+        type: 'turn.progress',
+        projectId: project.id,
+        sessionId: sessionRow.id,
+        runId: turnRunId,
+        role: 'lead',
+        profileName: 'lead',
+        provider,
+        model,
+        phase: turn.exitCode === 0 && !turn.aborted ? 'completed' : 'failed',
+        startedAt: turnStartedAt,
+      });
       attemptUsage = mergeTokenUsage(attemptUsage, turn.usage);
       return turn;
     };
@@ -1709,6 +1792,126 @@ export class LeadService {
     };
   }
 
+  /**
+   * Validates and submits an answer to a pending structured Lead question (U3, B12).
+   * Never approves plans, merges, or sensitive actions — only feeds the validated answer back to the Lead.
+   */
+  async answerStructuredQuestion(
+    projectId: string,
+    sessionId: string,
+    input: AnswerQuestionInput,
+  ): Promise<{
+    session: SessionSummaryDTO;
+    mode: SessionMode;
+    messages: DiscussMessageDTO[];
+    plan?: PlanDTO | null;
+    answerText: string;
+  }> {
+    this.getProjectRow(projectId);
+    const sessionRow = this.getSessionRow(projectId, sessionId);
+    const sessionMessages = this.db
+      .select()
+      .from(messages)
+      .where(eq(messages.sessionId, sessionRow.id))
+      .orderBy(desc(messages.createdAt))
+      .all();
+
+    let targetRow: (typeof sessionMessages)[number] | null = null;
+    let parsedContent: AskMessageContent | null = null;
+    for (const row of sessionMessages) {
+      if (row.role !== 'lead' || row.type !== 'ask') continue;
+      try {
+        const obj = JSON.parse(row.content) as AskMessageContent;
+        if (obj?.question?.id === input.questionId) {
+          targetRow = row;
+          parsedContent = obj;
+          break;
+        }
+      } catch {
+        // ignore non-JSON
+      }
+    }
+
+    if (!targetRow || !parsedContent?.question) {
+      throw Object.assign(new Error(`Question not found: ${input.questionId}`), { statusCode: 404 });
+    }
+    const q = parsedContent.question;
+    if (q.answered) {
+      throw Object.assign(new Error('This question has already been answered.'), { statusCode: 409 });
+    }
+
+    const selected = input.selectedLabels.map((s) => s.trim()).filter(Boolean);
+    const custom = input.customAnswer?.trim() ?? '';
+    if (selected.length === 0 && !custom) {
+      throw Object.assign(new Error('Choose at least one option or enter an answer.'), { statusCode: 400 });
+    }
+    const seenLabels = new Set<string>();
+    const validLabels = new Set(q.options.map((o) => o.label));
+    for (const label of selected) {
+      if (!validLabels.has(label)) {
+        throw Object.assign(new Error(`Invalid option "${label}".`), { statusCode: 400 });
+      }
+      if (seenLabels.has(label)) {
+        throw Object.assign(new Error(`Duplicate option "${label}".`), { statusCode: 400 });
+      }
+      seenLabels.add(label);
+    }
+    if (!q.multiSelect && selected.length > 1) {
+      throw Object.assign(new Error('Only one option may be selected for this question.'), { statusCode: 400 });
+    }
+    if (custom && !q.allowCustomAnswer) {
+      throw Object.assign(new Error('Custom answers are not allowed for this question.'), { statusCode: 400 });
+    }
+    if (!q.multiSelect && selected.length > 0 && custom) {
+      throw Object.assign(new Error('Choose either an option or a custom answer, not both.'), { statusCode: 400 });
+    }
+
+    const parts: string[] = [];
+    if (selected.length > 0) parts.push(selected.join(', '));
+    if (custom) parts.push(custom);
+    const answerSummary = parts.join(' — ');
+    const answerText = `[Answer to "${q.header}"] ${answerSummary}`;
+
+    // Mark answered atomically before calling the Lead so concurrent or repeated answers return 409.
+    const updatedContent: AskMessageContent = {
+      ...parsedContent,
+      question: {
+        ...q,
+        answered: true,
+        answerSummary,
+      },
+    };
+    const serialized = JSON.stringify(updatedContent);
+    const updated = this.db.transaction((tx) => {
+      const fresh = tx.select().from(messages).where(eq(messages.id, targetRow!.id)).get();
+      if (!fresh) return false;
+      try {
+        const freshObj = JSON.parse(fresh.content) as AskMessageContent;
+        if (freshObj?.question?.answered) return false;
+      } catch {
+        return false;
+      }
+      tx.update(messages).set({ content: serialized }).where(eq(messages.id, targetRow!.id)).run();
+      return true;
+    });
+    if (!updated) {
+      throw Object.assign(new Error('This question has already been answered.'), { statusCode: 409 });
+    }
+
+    this.events?.emitEvent({
+      type: 'discuss.updated',
+      projectId,
+      sessionId: sessionRow.id,
+    });
+
+    const reply = await this.sendChatMessage(projectId, {
+      sessionId: sessionRow.id,
+      mode: sessionRow.mode as SessionMode,
+      message: answerText,
+    });
+    return { ...reply, answerText };
+  }
+
   private parseAskReply(turn: { text: string; structuredOutput?: unknown; stdout: string; stderr: string; exitCode: number | null; sessionId: string | null }): AskMessageContent {
     const candidate = extractJsonCandidate(turn);
     if (candidate && typeof candidate === 'object') {
@@ -1729,9 +1932,18 @@ export class LeadService {
                       : 'This work spans multiple steps and benefits from a brief and plan.',
                 }
               : null;
+        const question: StoredLeadQuestion | null = parsed.data.question
+          ? {
+              ...parsed.data.question,
+              id: parsed.data.question.id?.trim() || `q-${crypto.randomUUID().slice(0, 8)}`,
+              answered: false,
+              answerSummary: null,
+            }
+          : null;
         return {
           text: parsed.data.answer.trim(),
           suggestion,
+          ...(question ? { question } : {}),
         };
       }
     }
@@ -3203,6 +3415,7 @@ export class LeadService {
       `- setup_command (optional): when a fresh checkout needs commands before verify can run (dependencies, generated files), give one shell command taken from the repository's docs, CI, or manifests, for any language; omit it otherwise. The user approves it before it ever runs.`,
       `- When verify is set, it runs inside the task worktree. Use paths relative to the project root; never cd into or reference the project's absolute path.`,
       `- Write the plan JSON directly to "${relDraftPath}" with version = ${nextPlanVersion} and brief_version = ${briefDto.version}.`,
+      `- Add a task id to depends_on ONLY when this task truly needs that task's output or files; avoid unnecessary serialization so independent tasks can run in parallel.`,
       `- Task ids must be unique, every milestone must exist in "milestones", and every depends_on id must be another task in the plan with no cycles.`,
       `- Schema: ${JSON.stringify(z.toJSONSchema(PlanContractSchema))}`,
     ].join('\n');
@@ -3680,6 +3893,11 @@ export class LeadService {
       }
     }
 
+    const handoffsByTask = getLatestTaskHandoffsMap(
+      this.db,
+      taskRows.map((r) => r.id),
+    );
+
     const taskDtos: TaskDTO[] = taskRows.map((row) => ({
       id: row.id,
       planId: row.planId,
@@ -3710,6 +3928,7 @@ export class LeadService {
       prUrl: row.prUrl ?? null,
       pushedAt: row.pushedAt ?? null,
       dependsOn: depsByTaskId.get(row.id) ?? [],
+      latestHandoff: handoffsByTask.get(row.id) ?? null,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     }));
@@ -4201,6 +4420,142 @@ export class LeadService {
       createdAt: row.createdAt,
       approvedAt: row.approvedAt,
     };
+  }
+
+  /**
+   * U10 (B22): Read-only Lead supervision turn at key run boundaries
+   * (task failed / review_failed, integration check failed, or run ended).
+   * Never mutates plans, tasks, branches, or worktrees, never starts execution,
+   * and deduplicates per (sessionId, kind, targetId) so quota is used once per event.
+   */
+  async superviseRunBoundary(
+    projectId: string,
+    sessionId: string,
+    event: {
+      kind: 'task_failed' | 'review_failed' | 'integration_failed' | 'run_ended';
+      targetId: string;
+      summary: string;
+      detail?: string;
+    },
+  ): Promise<DiscussMessageDTO | null> {
+    const dedupeKey = `${sessionId}:${event.kind}:${event.targetId}`;
+    if (this.supervisedBoundaries.has(dedupeKey)) return null;
+    if (this.activeTurns.has(projectId)) return null;
+
+    let project: ReturnType<LeadService['getProjectRow']>;
+    let session: ReturnType<LeadService['getSessionRow']>;
+    try {
+      project = this.getProjectRow(projectId);
+      session = this.getSessionRow(projectId, sessionId);
+    } catch {
+      return null;
+    }
+    if (session.archivedAt) return null;
+
+    this.supervisedBoundaries.add(dedupeKey);
+    const provider = session.provider as ProviderId;
+    const adapter = this.registry.getAdapter(provider);
+    const logsDir = getSessionLogsDir(project.path, session.id);
+    ensureProjectDir(project.path, logsDir);
+    const logFilePath = path.join(logsDir, `supervision-${event.kind}-${Date.now()}.log`);
+
+    const prompt = [
+      `Run supervision check (${event.kind}). You are in READ-ONLY advisory mode.`,
+      buildLanguageInstruction(this.getLanguage()),
+      `Event summary: ${event.summary}`,
+      ...(event.detail ? [`Details:\n${event.detail.slice(0, 3000)}`] : []),
+      ``,
+      `Assess what happened and propose concrete, actionable next steps for the user in plain language.`,
+      `Rules:`,
+      `- Do NOT edit files, do NOT replace the plan, do NOT delete work, and do NOT run commands that mutate state.`,
+      `- Any action you propose requires the user's approval.`,
+      `- Reply with a concise plain-text assessment (no JSON wrapper).`,
+    ].join('\n');
+
+    this.events?.emitEvent({
+      type: 'lead.turn_started',
+      projectId,
+      sessionId: session.id,
+      phase: 'supervise',
+      provider,
+    });
+    const startedAt = new Date().toISOString();
+    let turnOk = false;
+    try {
+      const turn = await adapter.runTurn({
+        projectPath: project.path,
+        prompt,
+        sessionId: session.cliSessionId,
+        model: session.model,
+        effort: this.leadEffortFor(provider),
+        permissionMode: 'read-only',
+        logFilePath,
+      });
+
+      turnOk = turn.exitCode === 0;
+      if (turnOk) {
+        this.recordLeadTurn({
+          projectId,
+          sessionId: session.id,
+          phase: 'supervise',
+          provider,
+          model: session.model,
+          status: 'completed',
+          cliSessionId: turn.sessionId ?? session.cliSessionId,
+          startedAt,
+          logPath: path.relative(project.path, logFilePath).split(path.sep).join('/'),
+          usage: turn.usage,
+        });
+      } else {
+        return null;
+      }
+
+      // Extract safe display text only; ignore any JSON action/plan/destructive payload the model might output.
+      let replyText = (liveReplyText(turn.text) ?? '').trim();
+      const tryExtractSafeText = (val: unknown): string | null => {
+        if (!val || typeof val !== 'object') return null;
+        const obj = val as Record<string, unknown>;
+        for (const k of ['text', 'reply', 'summary']) {
+          if (typeof obj[k] === 'string' && obj[k].trim()) return obj[k].trim();
+        }
+        return null;
+      };
+      if (!replyText && turn.structuredOutput) {
+        replyText = tryExtractSafeText(turn.structuredOutput) ?? '';
+      }
+      if (!replyText && turn.text.trim().startsWith('{')) {
+        try {
+          replyText = tryExtractSafeText(JSON.parse(turn.text.trim())) ?? '';
+        } catch {
+          // ignore
+        }
+      }
+      if (!replyText) {
+        replyText = turn.text.trim();
+      }
+      if (!replyText) return null;
+
+      return this.postRoomMessage(projectId, session.id, {
+        role: 'lead',
+        type: 'ask',
+        kind: 'chat',
+        authorProfileId: 'profile-lead',
+        content: {
+          text: replyText,
+          suggestion: null,
+        } satisfies AskMessageContent,
+      });
+    } catch {
+      return null;
+    } finally {
+      this.events?.emitEvent({
+        type: 'lead.turn_finished',
+        projectId,
+        sessionId: session.id,
+        phase: 'supervise',
+        ok: turnOk,
+      });
+    }
   }
 
   private formatUserDiscussMessage(input: DiscussMessageInput): string {

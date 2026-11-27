@@ -29,7 +29,7 @@ export function getDbDataDir(db: DalangDb): string | null {
   return dbDataDirs.get(db) ?? null;
 }
 
-const SCHEMA_VERSION = 19;
+const SCHEMA_VERSION = 21;
 
 const BOOTSTRAP_SQL = `
 PRAGMA journal_mode = WAL;
@@ -243,7 +243,23 @@ CREATE TABLE IF NOT EXISTS runs (
   cache_read_tokens INTEGER,
   cache_write_tokens INTEGER,
   estimated_cost_usd REAL,
-  cost_source TEXT
+  cost_source TEXT,
+  setup_started_at TEXT,
+  setup_finished_at TEXT,
+  setup_ms INTEGER,
+  slot_wait_started_at TEXT,
+  slot_wait_finished_at TEXT,
+  slot_wait_ms INTEGER,
+  agent_started_at TEXT,
+  agent_finished_at TEXT,
+  agent_ms INTEGER,
+  verify_started_at TEXT,
+  verify_finished_at TEXT,
+  verify_ms INTEGER,
+  review_started_at TEXT,
+  review_finished_at TEXT,
+  review_ms INTEGER,
+  research_json TEXT
 );
 
 CREATE TABLE IF NOT EXISTS reviews (
@@ -1374,6 +1390,63 @@ export function openDatabase(dbFilePath: string = getDbPath()): DbConnection {
   if (upgrading && storedVersion < 17) migrateToV17(sqlite);
   // v19: what prepares a task worktree, as the user approved it.
   if (upgrading && storedVersion < 19) addColumnIfMissing(sqlite, 'projects', 'workspace_setup_json', 'TEXT');
+  // v20: per-step run timing breakdown (P4).
+  if (upgrading && storedVersion < 20) {
+    addColumnIfMissing(sqlite, 'runs', 'setup_started_at', 'TEXT');
+    addColumnIfMissing(sqlite, 'runs', 'setup_finished_at', 'TEXT');
+    addColumnIfMissing(sqlite, 'runs', 'setup_ms', 'INTEGER');
+    addColumnIfMissing(sqlite, 'runs', 'slot_wait_started_at', 'TEXT');
+    addColumnIfMissing(sqlite, 'runs', 'slot_wait_finished_at', 'TEXT');
+    addColumnIfMissing(sqlite, 'runs', 'slot_wait_ms', 'INTEGER');
+    addColumnIfMissing(sqlite, 'runs', 'agent_started_at', 'TEXT');
+    addColumnIfMissing(sqlite, 'runs', 'agent_finished_at', 'TEXT');
+    addColumnIfMissing(sqlite, 'runs', 'agent_ms', 'INTEGER');
+    addColumnIfMissing(sqlite, 'runs', 'verify_started_at', 'TEXT');
+    addColumnIfMissing(sqlite, 'runs', 'verify_finished_at', 'TEXT');
+    addColumnIfMissing(sqlite, 'runs', 'verify_ms', 'INTEGER');
+    addColumnIfMissing(sqlite, 'runs', 'review_started_at', 'TEXT');
+    addColumnIfMissing(sqlite, 'runs', 'review_finished_at', 'TEXT');
+    addColumnIfMissing(sqlite, 'runs', 'review_ms', 'INTEGER');
+  }
+  // v21: context between tasks — shared session decisions/findings (C1), pre-edit research (C2), handoff notes (C3).
+  if (upgrading && storedVersion < 21) {
+    addColumnIfMissing(sqlite, 'runs', 'research_json', 'TEXT');
+  }
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS session_context_items (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+      task_external_id TEXT,
+      run_id TEXT REFERENCES runs(id) ON DELETE SET NULL,
+      kind TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      rationale TEXT,
+      files_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_context_session
+      ON session_context_items(session_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS task_handoffs (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      run_id TEXT REFERENCES runs(id) ON DELETE SET NULL,
+      trigger TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      model TEXT,
+      what_done TEXT NOT NULL,
+      what_left TEXT NOT NULL,
+      why TEXT NOT NULL,
+      changed_files_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_handoffs_task
+      ON task_handoffs(task_id, created_at);
+  `);
   sqlite.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_task_repos_task_repo ON task_repos(task_id, repo_path);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_run_repo_checkpoints_run_repo ON run_repo_checkpoints(run_id, repo_path);
@@ -1888,6 +1961,8 @@ function migrateToV11(db: DalangDb): void {
  */
 export function resetDatabaseToDefaults(db: DalangDb, sqlite: Database.Database): void {
   sqlite.transaction(() => {
+    db.delete(schema.taskHandoffs).run();
+    db.delete(schema.sessionContextItems).run();
     db.delete(schema.webhookDeliveries).run();
     db.delete(schema.automationRuns).run();
     db.delete(schema.automations).run();

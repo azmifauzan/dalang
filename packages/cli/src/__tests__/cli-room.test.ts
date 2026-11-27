@@ -917,6 +917,7 @@ describe('Ink terminal room E2E (Quick task from plan to merge with no browser)'
     } as never);
     expect(proposed.lines).toEqual([
       'Proposed plan: 2 task(s). Nothing runs until you approve it.',
+      '  Longest chain (2): a -> b · Bottleneck: a holds 1 of 2 tasks',
       '  [a] First (executor · low)',
       '      executor: executor-light · antigravity · gemini-4-hydrogen',
       '  [b] Second (executor · high)',

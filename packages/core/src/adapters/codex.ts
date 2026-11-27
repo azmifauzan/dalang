@@ -11,7 +11,7 @@ import {
   type UsageWindow,
 } from '@dalang/shared';
 import { createTurnLogger, redactSecrets } from './logger.js';
-import { object, SessionRpcError, withSessionRpc } from './session-rpc.js';
+import { FatalStderrError, object, SessionRpcError, turnRunner, withSessionRpc } from './session-rpc.js';
 import {
   buildProviderAccountEnv,
   detectSandboxEngine,
@@ -388,7 +388,7 @@ export class CodexAdapter implements CliAdapter {
       if (sandboxMode === 'danger-full-access' && !invocation.sandboxed) {
         throw new Error('The platform sandbox became unavailable before starting Codex.');
       }
-      const res = await this.runner.run(invocation.command, invocation.args, {
+      const res = await turnRunner(this.runner, 'codex', secrets, invocation.engine).run(invocation.command, invocation.args, {
         cwd: options.projectPath,
         timeoutMs: options.timeoutMs ?? 600_000,
         idleTimeoutMs: options.idleTimeoutMs ?? 180_000,
@@ -468,7 +468,7 @@ export class CodexAdapter implements CliAdapter {
       };
     } finally {
       if (imageDir) fs.rmSync(imageDir, { recursive: true, force: true });
-      logger.close();
+      await logger.close();
     }
   }
 
@@ -505,7 +505,7 @@ export class CodexAdapter implements CliAdapter {
     let rateLimitReason: string | undefined;
     let stderr = '';
     try {
-      const turn = await withSessionRpc(this.runner, invocation.command, invocation.args, {
+      const turn = await withSessionRpc(turnRunner(this.runner, 'codex', secrets, invocation.engine), invocation.command, invocation.args, {
         cwd: options.projectPath,
         env: { ...buildProviderAccountEnv(this.id, options.configDir), DALANG_MCP_TOKEN: options.mcp?.bearerToken },
         timeoutMs: options.timeoutMs,
@@ -612,19 +612,20 @@ export class CodexAdapter implements CliAdapter {
       const error = object(turn.error).message;
       return {
         text, sessionId, structuredOutput, aborted, usage, logFilePath: options.logFilePath, stdout: '',
-        stderr: redactSecrets(typeof error === 'string' ? error : stderr, secrets),
+        stderr: redactSecrets([typeof error === 'string' ? error : '', stderr].filter(Boolean).join('\n').slice(-4000), secrets),
         exitCode: turn.status === 'completed' || aborted ? 0 : 1,
         ...(rateLimitReason ? { rateLimitReason } : {}),
       };
     } catch (error) {
       if (options.signal?.aborted) return { text: '', sessionId, aborted: true, exitCode: null, stdout: '', stderr };
+      if (error instanceof FatalStderrError) throw error;
       if (!submitted || error instanceof SessionRpcError && error.code === -32601) return null;
       const detail = lastProviderError ? `${String(error)} ${lastProviderError}` : String(error);
       return { text: messages.join('\n'), sessionId, exitCode: 1, stdout: '', stderr: redactSecrets(detail, secrets), usage };
     } finally {
       options.onControls?.(null);
       controller.abort();
-      logger.close();
+      await logger.close();
     }
   }
 }

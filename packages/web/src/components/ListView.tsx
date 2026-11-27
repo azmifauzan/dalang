@@ -1,15 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, type DragEvent, type FormEvent } from 'react';
-import type {
-  AgentProfileDTO,
-  CreateTaskInput,
-  EditableTaskStatus,
-  PlanTaskRole,
-  ProjectSummary,
-  TaskComplexity,
-  TaskDTO,
-  TaskOutputKind,
-  TaskStatus,
+import {
+  analyzePlanDependencies,
+  formatPlanDependencySummary,
+  type AgentProfileDTO,
+  type CreateTaskInput,
+  type EditableTaskStatus,
+  type PlanTaskRole,
+  type ProjectSummary,
+  type TaskComplexity,
+  type TaskDTO,
+  type TaskOutputKind,
+  type TaskStatus,
 } from '@dalang/shared';
 import { useI18n } from '../i18n/index.js';
 import { api } from '../lib/api.js';
@@ -448,6 +450,26 @@ export function ListView({
           }
         />
       )}
+
+      {plan && plan.tasks.length > 1 && (() => {
+        const analysis = analyzePlanDependencies(
+          plan.tasks.map((tk) => ({ externalId: tk.externalId, title: tk.title, dependsOn: tk.dependsOn })),
+        );
+        const summary = formatPlanDependencySummary(analysis);
+        if (!summary) return null;
+        return (
+          <div
+            data-testid="plan-critical-path"
+            className="rounded-[6px] border px-4 py-2.5 text-xs"
+            style={{ backgroundColor: 'var(--bg-well)', borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
+          >
+            <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>
+              Plan shape:
+            </span>{' '}
+            {summary}
+          </div>
+        );
+      })()}
 
       {plan && viewMode === 'graph' && (
         <DependencyGraph

@@ -33,6 +33,9 @@ function agentRunner(outcome: Outcome, seen: string[] = []): CliRunner {
       if (review) return review;
 
       const joined = `${cmd} ${args.join(' ')}`;
+      if (joined.includes('Run supervision check')) {
+        return { exitCode: 0, stdout: '', stderr: '', timedOut: false, idleTimedOut: false };
+      }
       seen.push(joined);
       const m = joined.match(/(\.dalang\/(?:sessions\/[A-Za-z0-9_-]+\/)?tasks\/([A-Za-z0-9_-]+)\/result\.json)/);
       const extId = m?.[2] ?? 'T-001';

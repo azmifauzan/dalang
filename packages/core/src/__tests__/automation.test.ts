@@ -434,6 +434,124 @@ describe('v0.11 AutomationService (schedules & webhooks)', () => {
       await h.close();
     }
   });
+
+  it('deduplicates redeliveries and parallel webhook calls by deliveryId across restarts while keeping distinct IDs and webhooks independent', async () => {
+    const h = createAutomationHarness();
+    try {
+      const projectA = await h.projectService.createOrOpen({
+        mode: 'open',
+        name: 'Webhook Idempotency A',
+        path: h.repoDir,
+        initGitIfMissing: false,
+      });
+      const repoB = makeTempDir('dalang-auto-repo-b-');
+      initGitRepo(repoB);
+      const projectB = await h.projectService.createOrOpen({
+        mode: 'open',
+        name: 'Webhook Idempotency B',
+        path: repoB,
+        initGitIfMissing: false,
+      });
+
+      const hookA = h.automationService.createAutomation({
+        projectId: projectA.id,
+        name: 'Hook A',
+        kind: 'webhook',
+        enabled: true,
+        title: 'Hook A task',
+        prompt: 'Handle {{event}} {{payload}}',
+        role: 'engineer',
+        complexity: 'low',
+        filesAllowed: ['auto-output.txt'],
+        filesReference: [],
+        acceptanceCriteria: ['auto-output.txt updated'],
+        verify: 'echo ok',
+        allowUnconfined: true,
+        autoMerge: true,
+      });
+      const hookB = h.automationService.createAutomation({
+        projectId: projectB.id,
+        name: 'Hook B',
+        kind: 'webhook',
+        enabled: true,
+        title: 'Hook B task',
+        prompt: 'Handle {{event}} {{payload}}',
+        role: 'engineer',
+        complexity: 'low',
+        filesAllowed: ['auto-output.txt'],
+        filesReference: [],
+        acceptanceCriteria: ['auto-output.txt updated'],
+        verify: 'echo ok',
+        allowUnconfined: true,
+        autoMerge: true,
+      });
+
+      const body = Buffer.from(JSON.stringify({ ref: 'refs/heads/main', n: 1 }), 'utf8');
+      const nowSec = Math.floor(Date.now() / 1000);
+      const ts1 = String(nowSec);
+      const ts2 = String(nowSec + 1);
+      const dalangSig1 = computeWebhookSignature(hookA.webhookSecret!, body, ts1);
+      const dalangSig2 = computeWebhookSignature(hookA.webhookSecret!, body, ts2);
+
+      let startExecCalls = 0;
+      const origStartExec = h.executionService.startExecution.bind(h.executionService);
+      let releaseGate!: () => void;
+      const gatePromise = new Promise<void>((resolve) => { releaseGate = resolve; });
+      let enteredStartExec!: () => void;
+      const enteredPromise = new Promise<void>((resolve) => { enteredStartExec = resolve; });
+      h.executionService.startExecution = (async (projectId, input) => {
+        startExecCalls += 1;
+        if (startExecCalls === 1) {
+          enteredStartExec();
+          await gatePromise;
+        }
+        return origStartExec(projectId, input);
+      }) as typeof h.executionService.startExecution;
+
+      const p1 = h.automationService.handleWebhook(hookA.webhookToken!, body, { dalang: dalangSig1, timestamp: ts1 }, { event: 'push', deliveryId: 'deliv-parallel' });
+      await enteredPromise;
+      const p2 = h.automationService.handleWebhook(hookA.webhookToken!, body, { dalang: dalangSig2, timestamp: ts2 }, { event: 'push', deliveryId: 'deliv-parallel' });
+      const peerService = new AutomationService(h.conn.db, h.leadService, h.executionService);
+      const p3 = peerService.handleWebhook(hookA.webhookToken!, body, { dalang: dalangSig2, timestamp: ts2 }, { event: 'push', deliveryId: 'deliv-parallel' });
+      releaseGate();
+
+      const [res1, res2, res3] = await Promise.all([p1, p2, p3]);
+      h.executionService.startExecution = origStartExec;
+      expect(startExecCalls).toBe(1);
+      expect(res2.run.id).toBe(res1.run.id);
+      expect(res3.run.id).toBe(res1.run.id);
+      expect((await h.automationService.waitForRun(res1.run.id))?.status).toBe('completed');
+      expect(h.promptsSeen).toHaveLength(1);
+
+      const restarted = new AutomationService(h.conn.db, h.leadService, h.executionService);
+      const hubSig = computeWebhookSignature(hookA.webhookSecret!, body);
+      const redelivAfterRestart = await restarted.handleWebhook(hookA.webhookToken!, body, { hub: hubSig }, { event: 'push', deliveryId: 'deliv-parallel' });
+      expect(redelivAfterRestart.run.id).toBe(res1.run.id);
+      expect(h.promptsSeen).toHaveLength(1);
+
+      const distinctIdRes = await restarted.handleWebhook(hookA.webhookToken!, body, { hub: hubSig }, { event: 'push', deliveryId: 'deliv-distinct-2' });
+      expect(distinctIdRes.run.id).not.toBe(res1.run.id);
+      expect((await restarted.waitForRun(distinctIdRes.run.id))?.status).toBe('completed');
+
+      const bodyB = Buffer.from(JSON.stringify({ ref: 'refs/heads/main', n: 2 }), 'utf8');
+      const hubSigB = computeWebhookSignature(hookB.webhookSecret!, bodyB);
+      const otherHookRes = await restarted.handleWebhook(hookB.webhookToken!, bodyB, { hub: hubSigB }, { event: 'push', deliveryId: 'deliv-parallel' });
+      expect(otherHookRes.run.id).not.toBe(res1.run.id);
+      expect((await restarted.waitForRun(otherHookRes.run.id))?.status).toBe('completed');
+
+      await expect(
+        restarted.handleWebhook(hookA.webhookToken!, body, { hub: 'sha256=' + 'f'.repeat(64) }, { deliveryId: 'deliv-parallel' }),
+      ).rejects.toThrow(/Invalid or missing webhook signature/);
+
+      const noIdBody1 = Buffer.from(JSON.stringify({ noId: 1 }), 'utf8');
+      const noIdSig1 = computeWebhookSignature(hookA.webhookSecret!, noIdBody1);
+      const noIdRun1 = await restarted.handleWebhook(hookA.webhookToken!, noIdBody1, { hub: noIdSig1 });
+      expect(await restarted.waitForRun(noIdRun1.run.id)).toMatchObject({ status: 'completed' });
+      await expect(restarted.handleWebhook(hookA.webhookToken!, noIdBody1, { hub: noIdSig1 })).rejects.toThrow(/already received/);
+    } finally {
+      await h.close();
+    }
+  });
 });
 
 describe('v0.11 ExternalMcpService (outside agents over loopback MCP)', () => {

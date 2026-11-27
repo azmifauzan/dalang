@@ -8,6 +8,7 @@ import {
   AllowTaskScopeInputSchema,
   ContinueTaskInputSchema,
   WorkspaceSetupConfigSchema,
+  AnswerQuestionInputSchema,
   ApproveMergeInputSchema,
   AssignTaskProfileInputSchema,
   BriefContentSchema,
@@ -31,6 +32,7 @@ import {
   ReorderTasksInputSchema,
   RunIntegrationInputSchema,
   StartExecutionInputSchema,
+  StartTriageInputSchema,
   StopExecutionInputSchema,
   SwitchSessionModeInputSchema,
   TriggerAutomationInputSchema,
@@ -57,6 +59,9 @@ import {
   SettingsService,
   StatisticsService,
   UpdateCheckService,
+  buildTriagePrompt,
+  collectTriageContext,
+  getDbDataDir,
   openDatabase,
   resetDatabaseToDefaults,
   type CliRunner,
@@ -656,6 +661,14 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     });
   });
 
+  app.post<{ Params: { id: string; sessionId: string } }>(
+    '/api/projects/:id/sessions/:sessionId/question/answer',
+    async (req) => {
+      const body = AnswerQuestionInputSchema.parse(req.body ?? {});
+      return leadService.answerStructuredQuestion(req.params.id, req.params.sessionId, body);
+    },
+  );
+
   app.post<{ Params: { id: string } }>('/api/projects/:id/discuss/finish', async (req) => {
     const brief = await leadService.finishDiscussAndWriteBrief(req.params.id, readSessionId(req));
     return { brief };
@@ -883,6 +896,32 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     return {
       integrationRun: await executionService.runIntegrationTests(req.params.id, body),
     };
+  });
+
+  app.get('/api/triage/preview', async () => {
+    const preview = await collectTriageContext({
+      dataDir: getDbDataDir(conn.db) ?? undefined,
+      runner: registry.getRunner(),
+      currentVersion: DALANG_VERSION,
+    });
+    return { preview };
+  });
+
+  app.post<{ Params: { id: string } }>('/api/projects/:id/triage', async (req) => {
+    const body = StartTriageInputSchema.parse(req.body ?? {});
+    const preview = await collectTriageContext({
+      dataDir: getDbDataDir(conn.db) ?? undefined,
+      runner: registry.getRunner(),
+      currentVersion: DALANG_VERSION,
+    });
+    const prompt = buildTriagePrompt(preview, body.note);
+    const res = await leadService.sendChatMessage(req.params.id, {
+      mode: 'ask',
+      message: prompt,
+      ...(body.provider ? { provider: body.provider } : {}),
+      ...(body.model ? { model: body.model } : {}),
+    });
+    return { ...res, preview };
   });
 
   app.get('/api/settings', async () => ({ settings: settingsService.getAll() }));

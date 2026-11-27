@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import type { MessageKind, RunStatus } from '@dalang/shared';
+import type { IntegrationFailureKind, MessageKind, ProviderId, RunStatus, TurnProgressEventPayload } from '@dalang/shared';
 
 export type DalangEvent =
   | { type: 'lead.turn_started'; projectId: string; sessionId?: string; phase: string; provider: string }
@@ -7,6 +7,7 @@ export type DalangEvent =
   /** Reply text written so far in an Ask turn, sent in batches. `reset` starts a new attempt's text. */
   | { type: 'lead.text'; projectId: string; sessionId: string; phase: string; text: string; reset?: boolean }
   | { type: 'lead.turn_finished'; projectId: string; sessionId?: string; phase: string; ok: boolean; error?: string }
+  | ({ type: 'turn.progress' } & TurnProgressEventPayload)
   | { type: 'sessions.updated'; projectId: string; sessionId?: string }
   | { type: 'discuss.updated'; projectId: string; sessionId?: string }
   | { type: 'brief.updated'; projectId: string; sessionId?: string; version: number }
@@ -21,6 +22,28 @@ export type DalangEvent =
       provider: string;
     }
   | { type: 'run.log'; projectId: string; sessionId?: string; taskId: string; runId: string; line: string }
+  | {
+      type: 'run.slot_waiting';
+      projectId: string;
+      sessionId?: string;
+      taskId: string;
+      taskExternalId?: string;
+      runId: string;
+      profileName: string;
+      provider: ProviderId;
+      accountKey: string;
+      activeCount: number;
+      limit: number;
+      waitingSince: string;
+    }
+  | {
+      type: 'run.slot_acquired';
+      projectId: string;
+      sessionId?: string;
+      taskId: string;
+      runId: string;
+      accountKey: string;
+    }
   | {
       type: 'run.finished';
       projectId: string;
@@ -43,7 +66,9 @@ export type DalangEvent =
       projectId: string;
       sessionId?: string;
       taskId: string | null;
+      integrationRunId?: string;
       status: 'passed' | 'failed' | 'skipped';
+      failureKind?: IntegrationFailureKind;
     }
   | {
       type: 'provider.updated';

@@ -1,8 +1,11 @@
-import { expect, it } from 'vitest';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { describe, expect, it } from 'vitest';
 import { ClaudeCodeAdapter } from '../adapters/claude.js';
 import { CodexAdapter } from '../adapters/codex.js';
 import { AntigravityAdapter } from '../adapters/antigravity.js';
 import type { ActiveTurnControls, CliRunner, RunCommandResult } from '../adapters/types.js';
+import { loadReplayTranscript, ReplayCliRunner } from '../testing/replay-runner.js';
 
 type Request = { id?: number; method: string; params: Record<string, unknown> };
 
@@ -190,4 +193,100 @@ it('steers and interrupts a Claude session over stream-json input', async () => 
   expect(written[0].message.content[0].text).toBe('Start');
   expect(written[1]).toMatchObject({ type: 'user', priority: 'now', message: { content: 'Keep the tests' } });
   expect(written[2]).toMatchObject({ type: 'control_request', request: { subtype: 'interrupt' } });
+});
+
+describe('R1 linear session protocol replay across all three providers', () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const fixturePath = path.resolve(here, './fixtures/replays/session-protocols.json');
+  const recordingsScript = path.resolve(here, '../../scripts/recordings.mjs');
+
+  it('replays new and resumed interactive turns for Claude, Codex, and Antigravity from the sanitized linear fixture', async () => {
+    const transcript = loadReplayTranscript(fixturePath);
+    const runner = new ReplayCliRunner(transcript);
+
+    // 1. Claude new turn (with interactive steering) + resume turn
+    const claude = new ClaudeCodeAdapter(runner);
+    let claudeControlsReady!: (controls: ActiveTurnControls) => void;
+    const claudeControlsPromise = new Promise<ActiveTurnControls>((resolve) => { claudeControlsReady = resolve; });
+    const claudeNewRun = claude.runTurn({
+      projectPath: '/replay/workspace',
+      prompt: 'Start claude protocol replay',
+      onControls: (controls) => { if (controls) claudeControlsReady(controls); },
+    });
+    const claudeControls = await claudeControlsPromise;
+    await claudeControls.steer?.('Keep changes minimal');
+    const claudeNew = await claudeNewRun;
+    expect(claudeNew).toMatchObject({ exitCode: 0, sessionId: 'claude-sess-1', text: 'Claude new turn complete.' });
+
+    const claudeResumed = await claude.runTurn({
+      projectPath: '/replay/workspace',
+      sessionId: claudeNew.sessionId,
+      prompt: 'Resume claude protocol replay',
+    });
+    expect(claudeResumed).toMatchObject({ exitCode: 0, sessionId: 'claude-sess-1', text: 'Claude resumed turn complete.' });
+
+    // 2. Codex new turn (with interactive steering + streamed delta) + resume turn
+    const codex = new CodexAdapter(runner);
+    const codexDeltas: string[] = [];
+    let codexControlsReady!: (controls: ActiveTurnControls) => void;
+    const codexControlsPromise = new Promise<ActiveTurnControls>((resolve) => { codexControlsReady = resolve; });
+    const codexNewRun = codex.runTurn({
+      projectPath: '/replay/workspace',
+      prompt: 'Start codex protocol replay',
+      onTextDelta: (delta) => codexDeltas.push(delta),
+      onControls: (controls) => { if (controls) codexControlsReady(controls); },
+    });
+    const codexControls = await codexControlsPromise;
+    await codexControls.steer?.('Focus on tests');
+    const codexNew = await codexNewRun;
+    expect(codexNew).toMatchObject({ exitCode: 0, sessionId: 'codex-thread-1', text: 'Codex new turn complete.' });
+    expect(codexDeltas.join('')).toBe('Codex new ');
+
+    const codexResumed = await codex.runTurn({
+      projectPath: '/replay/workspace',
+      sessionId: codexNew.sessionId,
+      prompt: 'Resume codex protocol replay',
+    });
+    expect(codexResumed).toMatchObject({ exitCode: 0, sessionId: 'codex-thread-1', text: 'Codex resumed turn complete.' });
+
+    // 3. Antigravity ACP new turn (with tool_call update + streamed chunk) + resume turn
+    const agy = new AntigravityAdapter(runner, { antigravityKeyringAccess: () => false });
+    const agyLogs: string[] = [];
+    const agyNew = await agy.runTurn({
+      projectPath: '/replay/workspace',
+      prompt: 'Start antigravity protocol replay',
+      onLogLine: (line) => agyLogs.push(line),
+    });
+    expect(agyNew).toMatchObject({ exitCode: 0, sessionId: 'agy-sess-1', text: 'Antigravity new turn complete.' });
+    expect(agyLogs.some((line) => line.includes('tool_call') && line.includes('Read package.json'))).toBe(true);
+
+    const agyResumed = await agy.runTurn({
+      projectPath: '/replay/workspace',
+      sessionId: agyNew.sessionId,
+      prompt: 'Resume antigravity protocol replay',
+    });
+    expect(agyResumed).toMatchObject({ exitCode: 0, sessionId: 'agy-sess-1', text: 'Antigravity resumed turn complete.' });
+  });
+
+  it('produces compatible linear entries via recordings.mjs converter', async () => {
+    const mod = (await import(pathToFileURL(recordingsScript).href)) as {
+      buildTranscriptFromRecordings: (
+        recordings: Array<Record<string, unknown>>,
+        options?: { name?: string },
+      ) => { turns: Array<{ entries?: Array<{ type: string }> }> };
+    };
+    const converted = mod.buildTranscriptFromRecordings([
+      {
+        provider: 'codex',
+        command: 'codex',
+        args: ['app-server'],
+        exitCode: 0,
+        events: [
+          { direction: 'stdin', atMs: 0, data: '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n' },
+          { direction: 'stdout', atMs: 10, data: '{"jsonrpc":"2.0","id":1,"result":{}}' },
+        ],
+      },
+    ], { name: 'converter-check' });
+    expect(converted.turns[0].entries?.map((e) => e.type)).toEqual(['expect_outbound', 'emit_inbound', 'exit']);
+  });
 });

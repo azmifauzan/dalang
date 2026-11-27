@@ -18,6 +18,8 @@ export function ConfigView({
   factoryResetError,
   onSignOut,
   signingOut,
+  activeProjectId,
+  onTriageSessionStarted,
 }: {
   tab: ConfigTabId;
   updateStatus: UpdateStatusDTO | null;
@@ -28,6 +30,8 @@ export function ConfigView({
   factoryResetError: string | null;
   onSignOut: () => void;
   signingOut: boolean;
+  activeProjectId?: string | null;
+  onTriageSessionStarted?: (sessionId: string) => void;
 }) {
   const qc = useQueryClient();
 
@@ -140,6 +144,8 @@ export function ConfigView({
           checkingUpdates={forceUpdateCheckMutation.isPending}
           onForceUpdateCheck={() => forceUpdateCheckMutation.mutate()}
           onOpenGeneral={() => onSelectTab('general')}
+          activeProjectId={activeProjectId ?? null}
+          onTriageSessionStarted={onTriageSessionStarted}
         />
       )}
     </div>

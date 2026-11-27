@@ -79,7 +79,7 @@ describe('ExecutionService (v0.2 Jalan + v0.3 Kawal)', () => {
 
     const { conn, events, project, plan, execSvc, projDir, leadSvc } = await setupApprovedProject(runner, [
       { id: 'T-001', title: 'Item model', complexity: 'low', depends_on: [], files_allowed: ['src/**'] },
-      { id: 'T-002', title: 'Item routes', complexity: 'low', depends_on: ['T-001'], files_allowed: ['src/**'] },
+      { id: 'T-002', title: 'Item routes', complexity: 'medium', depends_on: ['T-001'], files_allowed: ['src/**'] },
     ]);
 
     const capturedEvents: DalangEvent[] = [];

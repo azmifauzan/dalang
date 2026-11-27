@@ -12,6 +12,7 @@ export interface RunCommandOptions {
   env?: Record<string, string | undefined>;
   onStdoutLine?: (line: string) => void;
   onStderrLine?: (line: string) => void;
+  onStderrChunk?: (chunk: string) => void;
 }
 
 export interface RunCommandResult {

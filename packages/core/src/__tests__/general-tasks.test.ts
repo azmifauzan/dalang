@@ -204,6 +204,9 @@ describe('v0.14 general tasks (optional verify & answer tasks)', () => {
       expect(task.output).toBe('files');
       expect(task.verify).toBeNull();
 
+      // Full mode + medium complexity exercises automatic fix round 2 after scope violation (P2 keeps Quick/low single-round).
+      h.conn.sqlite.prepare(`UPDATE sessions SET mode = 'full' WHERE id = ?`).run(session.id);
+
       await h.execSvc.startExecution(h.project.id, { sessionId: session.id, allowUnconfined: true });
       await h.execSvc.waitForProjectExecution(h.project.id);
 
@@ -299,6 +302,7 @@ describe('v0.14 general tasks (optional verify & answer tasks)', () => {
         sessionTitle: 'Answer Q3 question',
         userMessage: 'Summarize Q3 revenue from notes.md.',
         title: 'Summarize Q3 revenue',
+        complexity: 'medium',
         goal: 'Read notes.md and write a short Markdown summary of Q3 revenue without modifying project files.',
         output: 'answer',
         filesAllowed: [],
@@ -306,6 +310,9 @@ describe('v0.14 general tasks (optional verify & answer tasks)', () => {
         acceptanceCriteria: ['Cites $120k from notes.md', 'Leaves all project files unchanged'],
         verify: null,
       });
+
+      // Full mode + medium complexity exercises automatic fix round 2 after scope violation (P2 keeps Quick/low single-round).
+      h.conn.sqlite.prepare(`UPDATE sessions SET mode = 'full' WHERE id = ?`).run(session.id);
 
       await h.execSvc.startExecution(h.project.id, { sessionId: session.id, allowUnconfined: true });
       await h.execSvc.waitForProjectExecution(h.project.id);

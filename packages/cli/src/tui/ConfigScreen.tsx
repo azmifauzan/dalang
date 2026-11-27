@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Box, Text } from 'ink';
-import { USAGE_REFRESH_OPTIONS, type UiLanguage } from '@dalang/shared';
+import { USAGE_REFRESH_OPTIONS, type AutomationDTO, type McpTokenDTO, type UiLanguage } from '@dalang/shared';
 import type { RoomApiClient } from './client.js';
 import { ProvidersPanel, TeamEditor } from './setup-panels.js';
 import { useSetupData } from './setup.js';
@@ -11,7 +11,7 @@ const LANGUAGES: Array<{ key: UiLanguage; label: string }> = [
   { key: 'id', label: 'Indonesian' },
 ];
 
-type View = 'main' | 'language' | 'refresh' | 'providers' | 'team';
+type View = 'main' | 'language' | 'refresh' | 'providers' | 'team' | 'routing' | 'automation';
 
 /**
  * `/config`: the settings that make sense in a terminal. Theme, the app password, and factory reset
@@ -32,8 +32,26 @@ export function ConfigScreen({
 }) {
   const data = useSetupData(client);
   const [view, setView] = useState<View>('main');
+  const [automations, setAutomations] = useState<AutomationDTO[] | null>(null);
+  const [tokens, setTokens] = useState<McpTokenDTO[] | null>(null);
   const settings = data.settings;
   const toMain = () => setView('main');
+
+  useEffect(() => {
+    if (view !== 'automation') return;
+    let cancelled = false;
+    void Promise.all([
+      client.listAutomations().catch(() => [] as AutomationDTO[]),
+      client.listMcpTokens().then((r) => r.tokens).catch(() => [] as McpTokenDTO[]),
+    ]).then(([autos, toks]) => {
+      if (cancelled) return;
+      setAutomations(autos);
+      setTokens(toks);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [view, client]);
 
   let title = 'Config';
   let body: React.ReactNode;
@@ -110,13 +128,62 @@ export function ConfigScreen({
         onExtra={toMain}
       />
     );
+  } else if (view === 'routing') {
+    title = 'Config · Task routing';
+    const profileName = (id: string) => data.profiles.find((p) => p.id === id)?.name ?? id;
+    body = (
+      <Box flexDirection="column">
+        <Text dimColor>Task routing rules (evaluated top to bottom). Use /routing for add, edit, move, or delete.</Text>
+        <Box flexDirection="column" marginTop={1}>
+          {data.rules.length === 0 ? (
+            <Text dimColor>No routing rules configured.</Text>
+          ) : (
+            data.rules.map((r, idx) => (
+              <Text key={r.id}>
+                {`${idx + 1}. ${r.role} / ${r.complexity ?? 'any'} -> ${profileName(r.profileId)}${r.fallback ? ` (fallback ${r.fallback.provider})` : ''}`}
+              </Text>
+            ))
+          )}
+        </Box>
+        <Box marginTop={1}>
+          <Menu items={[{ key: 'back', label: 'Back' }]} onSelect={toMain} onCancel={toMain} />
+        </Box>
+      </Box>
+    );
+  } else if (view === 'automation') {
+    title = 'Config · Automation & MCP';
+    body = (
+      <Box flexDirection="column">
+        <Text bold>Automations ({automations?.length ?? 0})</Text>
+        <Text dimColor>Manage schedules & webhooks with /automation [list|add|enable|disable|trigger|rotate|runs|delete].</Text>
+        {(automations ?? []).slice(0, 6).map((a) => (
+          <Text key={a.id}>
+            {`  - ${a.name} [${a.kind}] ${a.enabled ? 'enabled' : 'paused'} (${a.projectName})`}
+          </Text>
+        ))}
+        <Box marginTop={1} flexDirection="column">
+          <Text bold>Outside-agent MCP tokens ({tokens?.length ?? 0})</Text>
+          <Text dimColor>Manage MCP tokens with /tokens [list|create|revoke|delete].</Text>
+          {(tokens ?? []).slice(0, 6).map((tok) => (
+            <Text key={tok.id}>
+              {`  - ${tok.name} [${tok.accessLevel}] ${tok.revokedAt ? 'revoked' : 'active'}`}
+            </Text>
+          ))}
+        </Box>
+        <Box marginTop={1}>
+          <Menu items={[{ key: 'back', label: 'Back' }]} onSelect={toMain} onCancel={toMain} />
+        </Box>
+      </Box>
+    );
   } else {
     const items: MenuItem[] = [
       { key: 'language', label: 'Language', detail: settings.language === 'id' ? 'Indonesian' : settings.language === 'en' ? 'English' : 'not set' },
       { key: 'refresh', label: 'Provider limits refresh', detail: `${settings.usageRefreshMinutes} min` },
       { key: 'updates', label: 'Check for new versions', detail: settings.checkForUpdates ? 'on (Enter turns it off)' : 'off (Enter turns it on)' },
       { key: 'providers', label: 'Agent CLIs', detail: 'status, re-check, Antigravity keyring' },
-      { key: 'team', label: 'Agent team', detail: 'provider, model, and effort per role' },
+      { key: 'team', label: 'Agent team', detail: 'provider, model, effort, fallback, advanced slots/timeouts' },
+      { key: 'routing', label: 'Task routing', detail: `${data.rules.length} rule(s) · /routing` },
+      { key: 'automation', label: 'Automation & MCP', detail: 'schedules, webhooks, MCP tokens · /automation, /tokens' },
       { key: 'wizard', label: 'Setup wizard', detail: 'walk through the first-run steps again' },
       { key: 'close', label: 'Close' },
     ];

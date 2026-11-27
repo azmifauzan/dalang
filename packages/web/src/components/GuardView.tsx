@@ -1025,7 +1025,13 @@ export function GuardView({ project, sessionId, onGoToWork }: GuardViewProps) {
                   <li key={irun.id} className="rounded-[6px] border border-border bg-background p-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="flex min-w-0 flex-wrap items-center gap-2">
-                        <Badge style={guardStatusStyle(irun.status)}>{te(irun.status)}</Badge>
+                        <Badge style={guardStatusStyle(irun.status)}>
+                          {irun.failureKind === 'sandbox_environment'
+                            ? t('guard.integrationEnvProblem')
+                            : irun.failureKind === 'timeout'
+                              ? t('guard.integrationTimeout')
+                              : te(irun.status)}
+                        </Badge>
                         <span className="min-w-0 max-w-full font-mono-token text-xs font-medium break-all">
                           {irun.command}
                         </span>
@@ -1052,6 +1058,45 @@ export function GuardView({ project, sessionId, onGoToWork }: GuardViewProps) {
                         </Button>
                       </div>
                     </div>
+                    {irun.environmentReason && (
+                      <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
+                        {irun.environmentReason}
+                      </p>
+                    )}
+                    {irun.unrunPackages && irun.unrunPackages.length > 0 && (
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {t('guard.integrationUnrun', { packages: irun.unrunPackages.join(', ') })}
+                      </p>
+                    )}
+                    {irun.canRerunOutsideSandbox && (
+                      <div className="mt-2 rounded-[6px] border border-amber-500/40 bg-amber-500/5 p-2.5 text-xs">
+                        <p className="font-semibold">{t('guard.rerunOutsideSandboxTitle')}</p>
+                        <p className="mt-0.5 text-muted-foreground">
+                          {t('guard.rerunOutsideSandboxWarn', { command: irun.command })}
+                        </p>
+                        <div className="mt-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            disabled={runIntegrationMutation.isPending}
+                            onClick={() => {
+                              void api
+                                .runIntegration(project.id, {
+                                  command: irun.command,
+                                  allowUnconfined: true,
+                                  bypassSandbox: true,
+                                })
+                                .then(() => {
+                                  qc.invalidateQueries({ queryKey: ['guard', project.id] });
+                                  qc.invalidateQueries({ queryKey: ['session-detail', project.id] });
+                                });
+                            }}
+                          >
+                            {t('guard.rerunOutsideSandboxBtn')}
+                          </Button>
+                        </div>
+                      </div>
+                    )}
                     {isExpanded && (
                       <pre className="mt-3 max-h-60 overflow-x-auto overflow-y-auto rounded-[6px] border border-border bg-card p-3 font-mono-token text-xs">
                         {irun.output || t('guard.noOutputCaptured')}
@@ -1132,6 +1177,13 @@ export function GuardView({ project, sessionId, onGoToWork }: GuardViewProps) {
         title={t('guard.rejectModalTitle', { id: selectedEntry?.task.externalId ?? '' })}
         onClose={() => setRejectModalOpen(false)}
       >
+        <div
+          className="mb-3 rounded-[6px] border p-3 text-xs"
+          style={{ borderColor: 'var(--error)', backgroundColor: 'var(--error-tint)', color: 'var(--text-primary)' }}
+          role="alert"
+        >
+          {t('destructive.rejectWarn', { task: selectedEntry?.task.externalId ?? '' })}
+        </div>
         <form
           className="space-y-4"
           onSubmit={(e) => {

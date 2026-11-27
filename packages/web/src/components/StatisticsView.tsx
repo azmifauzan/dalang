@@ -352,14 +352,34 @@ export function StatisticsView() {
                   {statistics.projects.map((proj) => (
                     <li
                       key={proj.projectId}
-                      className="flex flex-wrap items-center justify-between gap-2 border-b pb-2 last:border-b-0 last:pb-0"
+                      className="space-y-1 border-b pb-2 last:border-b-0 last:pb-0"
                       style={{ borderColor: 'var(--border-subtle)' }}
                     >
-                      <span className="font-medium">{proj.projectName}</span>
-                      <span className="font-mono-token" style={{ color: 'var(--text-secondary)' }}>
-                        {proj.totalRuns} runs · {proj.completedRuns} ok · {proj.failedRuns} fail ·{' '}
-                        {proj.fallbackRuns} fallback · {formatStatsDuration(proj.totalDurationMs)}
-                      </span>
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-medium">{proj.projectName}</span>
+                        <span className="font-mono-token" style={{ color: 'var(--text-secondary)' }}>
+                          {proj.totalRuns} runs · {proj.completedRuns} ok · {proj.failedRuns} fail ·{' '}
+                          {proj.fallbackRuns} fallback · {formatStatsDuration(proj.totalDurationMs)}
+                        </span>
+                      </div>
+                      {proj.timing &&
+                        (proj.timing.setupMs > 0 ||
+                          proj.timing.slotWaitMs > 0 ||
+                          proj.timing.agentMs > 0 ||
+                          proj.timing.verifyMs > 0 ||
+                          proj.timing.reviewMs > 0) && (
+                          <div className="font-mono-token text-[11px]" style={{ color: 'var(--text-secondary)' }}>
+                            {[
+                              proj.timing.setupMs > 0 ? `setup ${formatStatsDuration(proj.timing.setupMs)}` : null,
+                              proj.timing.slotWaitMs > 0 ? `wait ${formatStatsDuration(proj.timing.slotWaitMs)}` : null,
+                              proj.timing.agentMs > 0 ? `agent ${formatStatsDuration(proj.timing.agentMs)}` : null,
+                              proj.timing.verifyMs > 0 ? `verify ${formatStatsDuration(proj.timing.verifyMs)}` : null,
+                              proj.timing.reviewMs > 0 ? `review ${formatStatsDuration(proj.timing.reviewMs)}` : null,
+                            ]
+                              .filter(Boolean)
+                              .join(' · ')}
+                          </div>
+                        )}
                     </li>
                   ))}
                 </ul>

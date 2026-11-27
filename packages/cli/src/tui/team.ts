@@ -106,6 +106,13 @@ export interface RoleEdit {
   model?: string;
   effort?: EffortLevel;
   fallback?: FallbackTarget | null;
+  maxParallel?: number;
+  configDir?: string | null;
+  permissionMode?: AgentProfileDTO['permissionMode'];
+  maxReviewRounds?: number;
+  timeoutMs?: number;
+  idleTimeoutMs?: number;
+  rolePrompt?: string;
 }
 
 export interface RoleValue {
@@ -182,17 +189,45 @@ export function planTeamChanges(input: {
     const prof = roles[key];
     if (!prof) continue;
     const v = roleValue(prof, edits[prof.id], usable, providers, suggestFallbacks);
-    const fallback = edits[prof.id]?.fallback !== undefined
-      ? edits[prof.id].fallback!
+    const edit = edits[prof.id] ?? {};
+    const fallback = edit.fallback !== undefined
+      ? edit.fallback
       : suggestFallbacks ? roleFallback(prof, v.provider, usable, rules) : prof.fallback;
     fallbackByProfile.set(prof.id, fallback);
+    const maxParallel = edit.maxParallel ?? prof.maxParallel;
+    const configDir = edit.configDir !== undefined ? edit.configDir : prof.configDir;
+    const permissionMode = edit.permissionMode ?? prof.permissionMode;
+    const maxReviewRounds = edit.maxReviewRounds ?? prof.maxReviewRounds;
+    const timeoutMs = edit.timeoutMs ?? prof.timeoutMs;
+    const idleTimeoutMs = edit.idleTimeoutMs ?? prof.idleTimeoutMs;
+    const rolePrompt = edit.rolePrompt !== undefined ? edit.rolePrompt : prof.rolePrompt;
     if (
       v.provider !== prof.provider ||
       v.model !== prof.model ||
       v.effort !== prof.effort ||
-      !same(fallback, prof.fallback)
+      !same(fallback, prof.fallback) ||
+      maxParallel !== prof.maxParallel ||
+      configDir !== prof.configDir ||
+      permissionMode !== prof.permissionMode ||
+      maxReviewRounds !== prof.maxReviewRounds ||
+      timeoutMs !== prof.timeoutMs ||
+      idleTimeoutMs !== prof.idleTimeoutMs ||
+      rolePrompt !== prof.rolePrompt
     ) {
-      plan.profileUpdates.push({ id: prof.id, body: { ...v, fallback } });
+      plan.profileUpdates.push({
+        id: prof.id,
+        body: {
+          ...v,
+          fallback,
+          maxParallel,
+          configDir,
+          permissionMode,
+          maxReviewRounds,
+          timeoutMs,
+          idleTimeoutMs,
+          rolePrompt,
+        },
+      });
     }
   }
 

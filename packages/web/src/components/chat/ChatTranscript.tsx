@@ -1,4 +1,4 @@
-import type { ReactNode, RefObject } from 'react';
+import { useState, type ReactNode, type RefObject } from 'react';
 import type {
   AskMessageContent,
   ChatImageMessage,
@@ -6,10 +6,133 @@ import type {
   RoomReportContent,
   SessionMode,
   SessionSummaryDTO,
+  StoredLeadQuestion,
 } from '@dalang/shared';
 import { useI18n, type TranslationKey } from '../../i18n/index.js';
 import { Markdown } from '../Markdown.js';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+
+function StructuredQuestionCard({
+  question,
+  pending,
+  error,
+  onSubmit,
+}: {
+  question: StoredLeadQuestion;
+  pending: boolean;
+  error: string | null;
+  onSubmit: (payload: { questionId: string; selectedLabels: string[]; customAnswer?: string }) => void;
+}) {
+  const { t } = useI18n();
+  const [selected, setSelected] = useState<string[]>([]);
+  const [custom, setCustom] = useState('');
+
+  if (question.answered) {
+    return (
+      <div
+        className="rounded-[6px] border px-3 py-2 text-xs"
+        style={{ backgroundColor: 'var(--bg-well)', borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
+      >
+        <div className="font-semibold" style={{ color: 'var(--text-primary)' }}>{question.header}</div>
+        <p className="mt-0.5">{question.question}</p>
+        <p className="mt-1 font-medium" style={{ color: 'var(--pass)' }}>
+          {t('question.answered', { answer: question.answerSummary ?? '' })}
+        </p>
+      </div>
+    );
+  }
+
+  const toggle = (label: string) => {
+    if (question.multiSelect) {
+      setSelected((prev) => (prev.includes(label) ? prev.filter((x) => x !== label) : [...prev, label]));
+    } else {
+      setCustom('');
+      setSelected([label]);
+    }
+  };
+
+  const canSend = !pending && (selected.length > 0 || (question.allowCustomAnswer && custom.trim().length > 0));
+
+  return (
+    <div
+      className="space-y-2.5 rounded-[8px] border p-3"
+      style={{ backgroundColor: 'var(--accent-tint)', borderColor: 'var(--accent)' }}
+      data-structured-question={question.id}
+    >
+      <div>
+        <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--accent)' }}>
+          {question.header}
+        </div>
+        <p className="mt-1 text-sm font-medium">{question.question}</p>
+      </div>
+      <div className="flex flex-col gap-1.5" role="group" aria-label={question.header}>
+        {question.options.map((opt) => {
+          const isSelected = selected.includes(opt.label);
+          return (
+            <button
+              key={opt.label}
+              type="button"
+              aria-pressed={isSelected}
+              disabled={pending}
+              onClick={() => {
+                if (!question.multiSelect && !question.allowCustomAnswer) {
+                  onSubmit({ questionId: question.id, selectedLabels: [opt.label] });
+                } else {
+                  toggle(opt.label);
+                }
+              }}
+              className="flex flex-col items-start rounded-[6px] border px-3 py-2 text-left text-xs transition-colors"
+              style={{
+                backgroundColor: isSelected ? 'var(--accent)' : 'var(--bg-surface)',
+                color: isSelected ? 'var(--accent-ink)' : 'var(--text-primary)',
+                borderColor: isSelected ? 'var(--accent)' : 'var(--border-control)',
+              }}
+            >
+              <span className="font-semibold">{opt.label}</span>
+              {opt.description && (
+                <span className="mt-0.5 opacity-80">{opt.description}</span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+      {question.allowCustomAnswer && (
+        <Input
+          value={custom}
+          disabled={pending}
+          placeholder={t('question.customPlaceholder')}
+          onChange={(e) => {
+            setCustom(e.target.value);
+            if (!question.multiSelect && e.target.value.trim()) setSelected([]);
+          }}
+        />
+      )}
+      {(question.multiSelect || question.allowCustomAnswer) && (
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            disabled={!canSend}
+            onClick={() =>
+              onSubmit({
+                questionId: question.id,
+                selectedLabels: selected,
+                ...(custom.trim() ? { customAnswer: custom.trim() } : {}),
+              })
+            }
+          >
+            {t('question.submitAnswer')}
+          </Button>
+        </div>
+      )}
+      {error && (
+        <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
 
 /**
  * The conversation, the same in every mode: your messages on the right, the Lead's on the left, replies as
@@ -26,6 +149,7 @@ export function ChatTranscript({
   planApproval,
   scopeRequest,
   continueRequest,
+  questionAnswer,
 }: {
   messages: DiscussMessageDTO[];
   session: SessionSummaryDTO | null;
@@ -39,6 +163,11 @@ export function ChatTranscript({
   /** A failed task that asked for more files: its latest scope request gets an Allow button. */
   scopeRequest?: { messageId: string; pending: boolean; error: string | null; onAllow: () => void };
   continueRequest?: { messageIds: string[]; pending: boolean; error: string | null; onContinue: (messageId: string) => void };
+  questionAnswer?: {
+    pending: boolean;
+    error: string | null;
+    onAnswer: (payload: { questionId: string; selectedLabels: string[]; customAnswer?: string }) => void;
+  };
 }) {
   const { t, formatTime } = useI18n();
 
@@ -257,7 +386,60 @@ export function ChatTranscript({
                       )}
                     </div>
                   )}
-                  {report.diffStats && (
+                  {report.resultSummary && (
+                    <div
+                      className="mt-2 space-y-1.5 rounded-[8px] border p-3 text-xs"
+                      style={{
+                        backgroundColor: 'var(--bg-well)',
+                        borderColor: report.resultSummary.outcome === 'completed' ? 'var(--pass)' : 'var(--error)',
+                      }}
+                      data-result-summary={report.resultSummary.externalId}
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2 font-semibold">
+                        <span>
+                          {t('result.title')}: [{report.resultSummary.externalId}] {report.resultSummary.title}
+                        </span>
+                        <span className="font-mono uppercase">{report.resultSummary.outcome}</span>
+                      </div>
+                      <p>
+                        <span className="font-semibold">{t('result.whatWasDone')}: </span>
+                        {report.resultSummary.whatWasDone}
+                      </p>
+                      {report.resultSummary.changedFiles.length > 0 && (
+                        <div>
+                          <span className="font-semibold">{t('result.changedFiles')}:</span>
+                          <ul className="mt-0.5 space-y-0.5 pl-3 font-mono">
+                            {report.resultSummary.changedFiles.slice(0, 12).map((f) => (
+                              <li key={f.path}>
+                                {f.path} (+{f.additions} -{f.deletions})
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      <p>
+                        <span className="font-semibold">{t('result.verify')}: </span>
+                        {report.resultSummary.verifyResult}
+                      </p>
+                      {report.resultSummary.reviewResult && (
+                        <p>
+                          <span className="font-semibold">{t('result.review')}: </span>
+                          {report.resultSummary.reviewResult}
+                        </p>
+                      )}
+                      {report.resultSummary.durationMs !== null && (
+                        <p>
+                          <span className="font-semibold">{t('result.duration')}: </span>
+                          {(report.resultSummary.durationMs / 1000).toFixed(1)}s
+                        </p>
+                      )}
+                      <p style={{ color: 'var(--text-secondary)' }}>
+                        <span className="font-semibold">{t('result.nextStep')}: </span>
+                        {report.resultSummary.nextStep}
+                      </p>
+                    </div>
+                  )}
+                  {report.diffStats && !report.resultSummary && (
                     <p className="font-mono text-xs" style={{ color: 'var(--text-secondary)' }}>
                       {t('room.report.diffStats', {
                         files: report.diffStats.filesChanged,
@@ -330,6 +512,14 @@ export function ChatTranscript({
               ) : ask ? (
                 <div className="space-y-3">
                   <Markdown>{ask.text}</Markdown>
+                  {ask.question && questionAnswer && (
+                    <StructuredQuestionCard
+                      question={ask.question}
+                      pending={questionAnswer.pending}
+                      error={questionAnswer.error}
+                      onSubmit={questionAnswer.onAnswer}
+                    />
+                  )}
                   {ask.suggestion && onPromote && (
                     <div
                       className="flex flex-wrap items-center justify-between gap-3 rounded-[6px] border px-3 py-2.5"

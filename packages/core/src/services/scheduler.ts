@@ -258,11 +258,24 @@ export interface SlotLease {
   release: () => void;
 }
 
+export interface SlotWaitInfo {
+  accountKey: string;
+  activeCount: number;
+  limit: number;
+}
+
+export interface AcquireSlotOptions {
+  signal?: AbortSignal;
+  onWaitStart?: (info: SlotWaitInfo) => void;
+  onWaitEnd?: () => void;
+}
+
 interface LimiterWaiter {
   provider: string;
   limit: number;
   resolve: (lease: SlotLease) => void;
   reject: (err: Error) => void;
+  onWaitEnd?: () => void;
   cleanup?: () => void;
 }
 
@@ -279,6 +292,11 @@ export class ProviderLimiter {
     return this.activeCounts.get(accountKey) ?? 0;
   }
 
+  getWaiterCount(accountKey?: string): number {
+    if (!accountKey) return this.waiters.length;
+    return this.waiters.filter((w) => w.provider === accountKey).length;
+  }
+
   hasCapacity(accountKey: string, limit: number): boolean {
     const effectiveLimit = Math.max(1, limit);
     return this.getActiveCount(accountKey) < effectiveLimit;
@@ -289,25 +307,50 @@ export class ProviderLimiter {
     return this.createLease(accountKey);
   }
 
-  acquire(accountKey: string, limit: number, signal?: AbortSignal): Promise<SlotLease> {
+  acquire(
+    accountKey: string,
+    limit: number,
+    signalOrOptions?: AbortSignal | AcquireSlotOptions,
+  ): Promise<SlotLease> {
+    const opts: AcquireSlotOptions =
+      signalOrOptions && 'aborted' in signalOrOptions
+        ? { signal: signalOrOptions }
+        : (signalOrOptions ?? {});
+    const signal = opts.signal;
     if (signal?.aborted) {
       return Promise.reject(new Error('Aborted while waiting for provider parallel slot'));
     }
     const immediate = this.tryAcquire(accountKey, limit);
     if (immediate) return Promise.resolve(immediate);
 
+    const effectiveLimit = Math.max(1, limit);
+    let waitEnded = false;
+    const endWait = () => {
+      if (waitEnded) return;
+      waitEnded = true;
+      opts.onWaitEnd?.();
+    };
+
+    opts.onWaitStart?.({
+      accountKey,
+      activeCount: this.getActiveCount(accountKey),
+      limit: effectiveLimit,
+    });
+
     return new Promise<SlotLease>((resolve, reject) => {
       const waiter: LimiterWaiter = {
         provider: accountKey,
-        limit: Math.max(1, limit),
+        limit: effectiveLimit,
         resolve,
         reject,
+        onWaitEnd: endWait,
       };
 
       if (signal) {
         const onAbort = () => {
           const idx = this.waiters.indexOf(waiter);
           if (idx >= 0) this.waiters.splice(idx, 1);
+          endWait();
           reject(new Error('Aborted while waiting for provider parallel slot'));
         };
         signal.addEventListener('abort', onAbort, { once: true });
@@ -368,6 +411,7 @@ export class ProviderLimiter {
       if (!this.hasCapacity(accountKey, w.limit)) continue;
       this.waiters.splice(i, 1);
       w.cleanup?.();
+      w.onWaitEnd?.();
       w.resolve(this.createLease(accountKey));
       i--;
     }

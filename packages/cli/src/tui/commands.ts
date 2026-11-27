@@ -10,7 +10,8 @@ export interface SlashCommandDef {
 export const SLASH_COMMANDS: SlashCommandDef[] = [
   { name: 'mouse', usage: '/mouse', description: 'Toggle mouse wheel capture for text selection' },
   { name: 'mode', usage: '/mode [auto|ask|quick|full]', description: 'Show or switch chat mode' },
-  { name: 'project', usage: '/project [list|<n|name>|open [path]|create [path]]', description: 'List, switch, or open a project' },
+  { name: 'project', usage: '/project [list|<n|name>|open|create|settings|lead|integration|push|pr|remote|md|delete]', description: 'Manage and configure projects' },
+  { name: 'session', usage: '/session [list|rename <title>|archive|unarchive|discard|delete]', description: 'Manage sessions in the active project' },
   { name: 'new', usage: '/new', description: 'Start a new session' },
   { name: 'resume', usage: '/resume [n|id]', description: 'Pick a previous session to continue' },
   { name: 'update', usage: '/update [check|clis|all]', description: 'Check/install DALANG update or update all connected CLIs' },
@@ -18,11 +19,23 @@ export const SLASH_COMMANDS: SlashCommandDef[] = [
   { name: 'setup', usage: '/setup [approve|check <cmd>|set <cmd>|maintenance <cmd>|files <paths>|off|reset]', description: 'What prepares and checks each task of this project' },
   { name: 'model', usage: '/model', description: "Choose the Lead's model from every connected provider" },
   { name: 'config', usage: '/config', description: 'Language, limits refresh, agent CLIs, and the agent team' },
+  { name: 'providers', usage: '/providers [refresh|clear-cooldown <provider>]', description: 'Inspect provider CLIs, refresh quotas, or clear cooldown' },
+  { name: 'profile', usage: '/profile [list|show <name>|add|set <name> <field> <value>|delete <name>]', description: 'Inspect, create, edit (incl. parallel/timeouts/prompt), or delete profiles' },
+  { name: 'routing', usage: '/routing [list|add|edit|move|delete]', description: 'Manage task routing rules and priority order' },
+  { name: 'automation', usage: '/automation [list|add|enable|disable|trigger|rotate|runs|delete]', description: 'Manage scheduled and webhook automations' },
+  { name: 'tokens', usage: '/tokens [list|create|revoke|delete]', description: 'Manage outside-agent MCP access tokens' },
+  { name: 'work', usage: '/work [status|run <id>|retry <id>|assign <id> <profile>|rollback <runId>|push-pr <id>]', description: 'Inspect tasks/runs and run, retry, assign, rollback, or push PR' },
+  { name: 'history', usage: '/history [sessions|runs|log <runId>]', description: 'Browse past sessions/runs or open a run log in $PAGER' },
+  { name: 'stats', usage: '/stats [days]', description: 'Show usage statistics (runs, tokens, cost, timing)' },
+  { name: 'statistics', usage: '/statistics [days]', description: 'Alias for /stats' },
   { name: 'wizard', usage: '/wizard', description: 'Open the setup wizard again' },
   { name: 'diff', usage: '/diff [taskId]', description: 'Open task diff or answer in $PAGER' },
   { name: 'merge', usage: '/merge [taskId]', description: 'Approve and merge (or accept) the ready task' },
+  { name: 'integration', usage: '/integration [--outside-sandbox] [command]', description: 'Run project integration check (outside sandbox asks confirmation)' },
   { name: 'accept', usage: '/accept [taskId]', description: 'Accept the ready answer task (or merge a files task)' },
-  { name: 'reject', usage: '/reject [taskId] [note]', description: 'Reject the awaiting task (--requeue to retry)' },
+  { name: 'reject', usage: '/reject [taskId] [note]', description: 'Reject the awaiting task (--requeue to retry; warns before deleting work)' },
+  { name: 'continue', usage: '/continue [taskId]', description: 'Continue fixing a failed or review_failed task on its branch' },
+  { name: 'triage', usage: '/triage [problem]', description: 'Start a local Ask triage session with redacted diagnostics' },
   { name: 'stop', usage: '/stop [taskId]', description: 'Stop all running agents and tasks (or one task)' },
   { name: 'web', usage: '/web', description: 'Open the web UI on the current session' },
   { name: 'run', usage: '/run', description: 'Approve and run the current draft plan' },
@@ -50,6 +63,45 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
   const rawArgs = rest.slice(spaceIdx + 1).trim();
   const args = rawArgs ? rawArgs.split(/\s+/) : [];
   return { name, args, rawArgs };
+}
+
+const BUSY_SAFE_COMMANDS = new Set([
+  'config',
+  'model',
+  'help',
+  'diff',
+  'mouse',
+  'web',
+  'mode',
+  'stop',
+  'exit',
+  'stats',
+  'statistics',
+  'history',
+  'work',
+]);
+
+/**
+ * Commands that only read state, adjust settings for subsequent turns, or stop/exit
+ * can run immediately even while the Lead is answering or tasks are running (U4, B16).
+ */
+export function isBusySafeCommand(input: string): boolean {
+  const parsed = parseSlashCommand(input);
+  if (!parsed) return false;
+  if (BUSY_SAFE_COMMANDS.has(parsed.name)) return true;
+  const sub = parsed.args[0]?.toLowerCase();
+  if ((parsed.name === 'project' || parsed.name === 'projects') && (!sub || sub === 'list' || sub === 'settings')) {
+    return true;
+  }
+  if (parsed.name === 'session' && (!sub || sub === 'list')) return true;
+  if (parsed.name === 'providers' && (!sub || sub === 'status')) return true;
+  if (parsed.name === 'profile' && (!sub || sub === 'list' || sub === 'show')) return true;
+  if (parsed.name === 'routing' && (!sub || sub === 'list')) return true;
+  if (parsed.name === 'automation' && (!sub || sub === 'list' || sub === 'runs')) return true;
+  if (parsed.name === 'tokens' && (!sub || sub === 'list')) return true;
+  if (parsed.name === 'setup' && parsed.args.length === 0) return true;
+  if (parsed.name === 'update' && sub === 'check') return true;
+  return false;
 }
 
 export interface CompletionItem {

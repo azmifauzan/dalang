@@ -72,6 +72,7 @@ export function WorkStage({
       run.usedFallback,
       preview?.complexity ?? null,
     );
+    const slotWait = run.slotWait ?? null;
     actors.push({
       key: `run-${run.id}`,
       character: ch,
@@ -79,9 +80,15 @@ export function WorkStage({
       provider: run.provider,
       taskId: run.taskId,
       taskExternalId: run.taskExternalId,
-      statusLine: `${run.taskExternalId} · ${te(run.kind)}`,
-      active: true,
-      dimmed: false,
+      statusLine: slotWait
+        ? `${run.taskExternalId} · ${t('work.waitingForSlot', {
+            account: slotWait.accountKey,
+            active: slotWait.activeCount,
+            limit: slotWait.limit,
+          })}`
+        : `${run.taskExternalId} · ${te(run.kind)}`,
+      active: !slotWait,
+      dimmed: Boolean(slotWait),
     });
   }
 

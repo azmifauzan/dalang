@@ -234,6 +234,22 @@ export const runs = sqliteTable('runs', {
   cacheWriteTokens: integer('cache_write_tokens'),
   estimatedCostUsd: real('estimated_cost_usd'),
   costSource: text('cost_source'),
+  setupStartedAt: text('setup_started_at'),
+  setupFinishedAt: text('setup_finished_at'),
+  setupMs: integer('setup_ms'),
+  slotWaitStartedAt: text('slot_wait_started_at'),
+  slotWaitFinishedAt: text('slot_wait_finished_at'),
+  slotWaitMs: integer('slot_wait_ms'),
+  agentStartedAt: text('agent_started_at'),
+  agentFinishedAt: text('agent_finished_at'),
+  agentMs: integer('agent_ms'),
+  verifyStartedAt: text('verify_started_at'),
+  verifyFinishedAt: text('verify_finished_at'),
+  verifyMs: integer('verify_ms'),
+  reviewStartedAt: text('review_started_at'),
+  reviewFinishedAt: text('review_finished_at'),
+  reviewMs: integer('review_ms'),
+  researchJson: text('research_json'),
 });
 
 export const reviews = sqliteTable('reviews', {
@@ -388,5 +404,43 @@ export const mcpTokens = sqliteTable('mcp_tokens', {
   projectId: text('project_id').references(() => projects.id, { onDelete: 'cascade' }),
   lastUsedAt: text('last_used_at'),
   revokedAt: text('revoked_at'),
+  createdAt: text('created_at').notNull(),
+});
+
+export const sessionContextItems = sqliteTable('session_context_items', {
+  id: text('id').primaryKey(),
+  projectId: text('project_id')
+    .notNull()
+    .references(() => projects.id, { onDelete: 'cascade' }),
+  sessionId: text('session_id')
+    .notNull()
+    .references(() => sessions.id, { onDelete: 'cascade' }),
+  taskId: text('task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  taskExternalId: text('task_external_id'),
+  runId: text('run_id').references(() => runs.id, { onDelete: 'set null' }),
+  kind: text('kind').notNull(),
+  summary: text('summary').notNull(),
+  rationale: text('rationale'),
+  filesJson: text('files_json').notNull().default('[]'),
+  createdAt: text('created_at').notNull(),
+});
+
+export const taskHandoffs = sqliteTable('task_handoffs', {
+  id: text('id').primaryKey(),
+  projectId: text('project_id')
+    .notNull()
+    .references(() => projects.id, { onDelete: 'cascade' }),
+  sessionId: text('session_id').references(() => sessions.id, { onDelete: 'cascade' }),
+  taskId: text('task_id')
+    .notNull()
+    .references(() => tasks.id, { onDelete: 'cascade' }),
+  runId: text('run_id').references(() => runs.id, { onDelete: 'set null' }),
+  trigger: text('trigger').notNull(),
+  provider: text('provider').notNull(),
+  model: text('model'),
+  whatDone: text('what_done').notNull(),
+  whatLeft: text('what_left').notNull(),
+  why: text('why').notNull(),
+  changedFilesJson: text('changed_files_json').notNull().default('[]'),
   createdAt: text('created_at').notNull(),
 });

@@ -78,10 +78,40 @@ export const ModeSuggestionSchema = z.object({
 });
 export type ModeSuggestion = z.infer<typeof ModeSuggestionSchema>;
 
+export const UserInputQuestionOptionSchema = z.object({
+  label: z.string().trim().min(1).max(120),
+  description: z.string().trim().max(400).default(''),
+});
+export type UserInputQuestionOption = z.infer<typeof UserInputQuestionOptionSchema>;
+
+export const UserInputQuestionSchema = z.object({
+  id: z.string().trim().min(1).max(80).optional(),
+  header: z.string().trim().min(1).max(120),
+  question: z.string().trim().min(1).max(1000),
+  options: z.array(UserInputQuestionOptionSchema).min(1).max(10),
+  allowCustomAnswer: z.boolean().default(false),
+  multiSelect: z.boolean().default(false),
+});
+export type UserInputQuestion = z.infer<typeof UserInputQuestionSchema>;
+
+export interface StoredLeadQuestion extends UserInputQuestion {
+  id: string;
+  answered?: boolean;
+  answerSummary?: string | null;
+}
+
+export const AnswerQuestionInputSchema = z.object({
+  questionId: z.string().trim().min(1).max(80),
+  selectedLabels: z.array(z.string().trim().min(1).max(120)).default([]),
+  customAnswer: z.string().trim().max(4000).optional(),
+});
+export type AnswerQuestionInput = z.infer<typeof AnswerQuestionInputSchema>;
+
 export const AskReplyContractSchema = z.object({
   answer: z.string().min(1),
   suggested_mode: z.enum(['quick', 'full']).nullable().optional(),
   suggestion_reason: z.string().nullable().optional(),
+  question: UserInputQuestionSchema.nullable().optional(),
 });
 export type AskReplyContract = z.infer<typeof AskReplyContractSchema>;
 
@@ -205,6 +235,90 @@ export const PlanContractSchema = z
 export type PlanContract = z.infer<typeof PlanContractSchema>;
 
 /**
+ * Short shared decision or finding reported in `result.json` (PRD v0.15.1 C1).
+ * Accepts either a plain concise string or a structured object with optional rationale and file paths.
+ */
+export const ContextNoteInputSchema = z.union([
+  z.string().trim().min(1).max(600),
+  z.object({
+    summary: z.string().trim().min(1).max(400),
+    why: z.string().trim().max(400).optional(),
+    detail: z.string().trim().max(400).optional(),
+    files: z.array(z.string().trim().min(1)).max(20).optional(),
+  }),
+]);
+export type ContextNoteInput = z.infer<typeof ContextNoteInputSchema>;
+
+/**
+ * Pre-edit research note written by the executor before editing medium/high tasks (PRD v0.15.1 C2).
+ */
+export const TaskResearchContractSchema = z.object({
+  understanding: z.string().trim().min(1).max(2000),
+  files_to_change: z.array(z.string().trim().min(1)).max(50).default([]),
+  edge_cases: z.array(z.string().trim().min(1).max(400)).max(30).default([]),
+});
+export type TaskResearchContract = z.infer<typeof TaskResearchContractSchema>;
+
+/**
+ * Structured handoff note written when a task stops, fails, or ends a fix round (PRD v0.15.1 C3).
+ */
+export const TaskHandoffInputSchema = z.object({
+  what_done: z.string().trim().min(1).max(1200),
+  what_left: z.string().trim().min(1).max(1200),
+  why: z.string().trim().min(1).max(1200),
+});
+export type TaskHandoffInput = z.infer<typeof TaskHandoffInputSchema>;
+
+export type SessionContextItemKind = 'decision' | 'finding';
+
+export interface SessionContextItemDTO {
+  id: string;
+  projectId: string;
+  sessionId: string;
+  taskId: string | null;
+  taskExternalId: string | null;
+  runId: string | null;
+  kind: SessionContextItemKind;
+  summary: string;
+  rationale: string | null;
+  files: string[];
+  createdAt: string;
+}
+
+export interface TaskResearchDTO {
+  understanding: string;
+  filesToChange: string[];
+  edgeCases: string[];
+  recordedAt: string;
+  source: 'executor' | 'synthesized';
+  warning?: string | null;
+}
+
+export type TaskHandoffTrigger =
+  | 'stopped'
+  | 'failed'
+  | 'fix_round'
+  | 'review_failed'
+  | 'provider_switch'
+  | 'restart';
+
+export interface TaskHandoffDTO {
+  id: string;
+  projectId: string;
+  sessionId: string | null;
+  taskId: string;
+  runId: string | null;
+  trigger: TaskHandoffTrigger;
+  provider: ProviderId;
+  model: string | null;
+  whatDone: string;
+  whatLeft: string;
+  why: string;
+  changedFiles: string[];
+  createdAt: string;
+}
+
+/**
  * Task execution result written by Executor to `.dalang/tasks/{id}/result.json`.
  */
 export const TaskResultContractSchema = z.object({
@@ -219,6 +333,14 @@ export const TaskResultContractSchema = z.object({
   verify_exit_code: z.number().int().nullable().optional(),
   /** Files outside files_allowed the task cannot finish without; set with status "blocked". */
   needs_files: z.array(z.string()).optional(),
+  /** Shared architectural/implementation decisions for later tasks in the same session (v0.15.1 C1). */
+  decisions: z.array(ContextNoteInputSchema).default([]),
+  /** Shared traps, gotchas, or conventions confirmed for later tasks in the same session (v0.15.1 C1). */
+  findings: z.array(ContextNoteInputSchema).default([]),
+  /** Pre-edit research summary for medium/high tasks (v0.15.1 C2). */
+  research: TaskResearchContractSchema.optional(),
+  /** Structured handoff note when a task stops, fails, or ends a fix round (v0.15.1 C3). */
+  handoff: TaskHandoffInputSchema.optional(),
 });
 export type TaskResultContract = z.infer<typeof TaskResultContractSchema>;
 
@@ -596,6 +718,51 @@ export type RoomReportEvent =
   | 'task_waiting'
   | 'integration_result';
 
+export interface TaskResultSummaryDTO {
+  taskId: string;
+  externalId: string;
+  title: string;
+  outcome: 'completed' | 'failed' | 'review_failed' | 'stopped';
+  whatWasDone: string;
+  changedFiles: Array<{ path: string; additions: number; deletions: number }>;
+  verifyResult: string;
+  reviewResult: string | null;
+  durationMs: number | null;
+  nextStep: string;
+}
+
+export interface RunOutcomeTaskSummaryDTO {
+  externalId: string;
+  title: string;
+  status: string;
+  summary: string;
+}
+
+export interface TriageDoctorCheckDTO {
+  id: string;
+  label: string;
+  status: 'pass' | 'warn' | 'fail';
+  detail: string;
+}
+
+export interface TriageContextPreviewDTO {
+  version: string;
+  os: string;
+  nodeVersion: string;
+  doctorChecks: TriageDoctorCheckDTO[];
+  serverLogTail: string;
+  recordingSummary: string | null;
+  promptPreview: string;
+}
+
+export const StartTriageInputSchema = z.object({
+  confirmed: z.literal(true),
+  note: z.string().trim().max(4000).optional(),
+  provider: ProviderIdSchema.optional(),
+  model: z.string().trim().max(120).optional(),
+});
+export type StartTriageInput = z.infer<typeof StartTriageInputSchema>;
+
 export interface RoomReportContent {
   event: RoomReportEvent;
   taskId?: string;
@@ -626,7 +793,34 @@ export interface RoomReportContent {
   /** For `scope_request`: files outside the task's files_allowed that it needs. */
   needsFiles?: string[];
   /** For `run_finished` and `run_stopped`: task counts and the external IDs of tasks left behind. */
-  outcome?: { done: number; total: number; reviewFailed: string[]; failed: string[]; waiting: string[] };
+  outcome?: {
+    done: number;
+    total: number;
+    reviewFailed: string[];
+    failed: string[];
+    waiting: string[];
+    taskSummaries?: RunOutcomeTaskSummaryDTO[];
+  };
+  /** For `task_finished` and `task_failed`: structured result summary block built from stored data (U5, B17). */
+  resultSummary?: TaskResultSummaryDTO;
+  /** For `task_finished`: pre-edit research summary captured for medium/high tasks (v0.15.1 C2). */
+  research?: TaskResearchDTO | null;
+  /** For `task_failed` / `review_verdict`: structured handoff note recorded by DALANG (v0.15.1 C3). */
+  handoff?: TaskHandoffDTO | null;
+  /** Number of shared session decisions/findings stored from this task (v0.15.1 C1). */
+  capturedContextCount?: number;
+  /** For `integration_result`: structured integration check result (U8, B21). */
+  integrationRun?: {
+    id: string;
+    command: string;
+    status: 'passed' | 'failed' | 'skipped';
+    exitCode: number | null;
+    failureKind: IntegrationFailureKind;
+    environmentReason?: string | null;
+    unrunPackages?: string[];
+    canRerunOutsideSandbox?: boolean;
+    outputTail?: string;
+  };
 }
 
 export interface RoomRouteInfo {
@@ -640,6 +834,7 @@ export interface RoomRouteInfo {
 export interface AskMessageContent {
   text: string;
   suggestion: ModeSuggestion | null;
+  question?: StoredLeadQuestion | null;
 }
 
 export interface QuickPlanMessageContent {
@@ -707,6 +902,7 @@ export interface TaskDTO {
   prUrl: string | null;
   pushedAt: string | null;
   dependsOn: string[];
+  latestHandoff?: TaskHandoffDTO | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -731,6 +927,8 @@ export interface SessionDetailDTO {
   currentRound: number;
   briefs: BriefDTO[];
   plan: PlanDTO | null;
+  /** Shared decisions and findings recorded during this session (v0.15.1 C1). */
+  contextItems?: SessionContextItemDTO[];
 }
 
 export const PermissionModeSchema = z.enum(['workspace-write', 'read-only', 'accept-edits']);
@@ -951,7 +1149,10 @@ export interface PushPrResultDTO {
 
 export const RunIntegrationInputSchema = z.object({
   command: z.string().trim().min(1).max(500).optional(),
+  sessionId: z.string().trim().min(1).optional(),
   allowUnconfined: z.boolean().default(false),
+  /** Explicit user-approved override to run outside the sandbox after a sandbox environment failure (U8). */
+  bypassSandbox: z.boolean().default(false),
 });
 export type RunIntegrationInput = z.infer<typeof RunIntegrationInputSchema>;
 
@@ -1047,8 +1248,44 @@ export interface TaskDispatchPreviewDTO {
   quotaReroutedReason: string | null;
 }
 
+export interface SlotWaitStateDTO {
+  projectId: string;
+  sessionId: string | null;
+  taskId: string;
+  taskExternalId?: string;
+  runId: string;
+  profileName: string;
+  provider: ProviderId;
+  accountKey: string;
+  activeCount: number;
+  limit: number;
+  waitingSince: string;
+}
+
+export interface RunTimingBreakdownDTO {
+  setupStartedAt?: string | null;
+  setupFinishedAt?: string | null;
+  setupMs: number | null;
+  slotWaitStartedAt?: string | null;
+  slotWaitFinishedAt?: string | null;
+  slotWaitMs: number | null;
+  agentStartedAt?: string | null;
+  agentFinishedAt?: string | null;
+  agentMs: number | null;
+  verifyStartedAt?: string | null;
+  verifyFinishedAt?: string | null;
+  verifyMs: number | null;
+  reviewStartedAt?: string | null;
+  reviewFinishedAt?: string | null;
+  reviewMs: number | null;
+}
+
 export interface TaskRunDTO {
   canSteer?: boolean;
+  slotWait?: SlotWaitStateDTO | null;
+  timing?: RunTimingBreakdownDTO | null;
+  /** Pre-edit research note recorded on medium/high runs (v0.15.1 C2). */
+  research?: TaskResearchDTO | null;
   id: string;
   projectId: string;
   taskId: string;
@@ -1152,6 +1389,97 @@ export interface TaskDiffDTO {
   truncated: boolean;
 }
 
+export type IntegrationFailureKind =
+  | 'none'
+  | 'test_failure'
+  | 'timeout'
+  | 'sandbox_environment'
+  | 'skipped';
+
+const SANDBOX_ENV_PATTERNS: Array<[RegExp, string]> = [
+  [
+    /bwrap:\s*(?:No permissions to create a new namespace|Operation not permitted|Can't create .*namespace)/i,
+    'The integration command tried to create a nested bubblewrap namespace inside DALANG\'s sandbox.',
+  ],
+  [
+    /Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces/i,
+    'The integration command tried to start Codex\'s nested bubblewrap sandbox inside DALANG\'s sandbox.',
+  ],
+  [
+    /(?:unprivileged user namespaces|user_namespaces|CLONE_NEWUSER).*(?:disabled|denied|not permitted|permission)/i,
+    'The host or sandbox blocked creating a user namespace needed by the integration command.',
+  ],
+  [
+    /sandbox-exec:.*Operation not permitted/i,
+    'macOS sandbox-exec blocked a nested sandbox or restricted syscall inside the integration command.',
+  ],
+];
+
+export function detectUnrunPackagesFromOutput(output: string): string[] {
+  const clean = output.replace(/\x1b\[[0-9;]*m/g, '');
+  const unrun = new Set<string>();
+
+  // Explicit workspace scope lines, e.g. pnpm recursive output or structured test logs
+  const scopeMatch = clean.match(/Scope:\s*(\d+)\s+of\s+(\d+)\s+workspace projects/i);
+  const failedPkgMatch = clean.match(/([a-zA-Z0-9@_./-]+)\s+(?:test|check|build)\$\s+[^\n]*\n[\s\S]*?ERR_PNPM_RECURSIVE_(?:RUN|EXEC)_FIRST_FAIL/i);
+  const stoppedAtMatch = clean.match(/(?:^|\n)([a-zA-Z0-9@_./-]+):\s*\n\s*ERR_PNPM_RECURSIVE_(?:RUN|EXEC)_FIRST_FAIL/i);
+  const skippedLines = clean.matchAll(/(?:not run|skipped package|unrun packages?):\s*([^\n]+)/gi);
+  for (const m of skippedLines) {
+    for (const part of m[1].split(/[,\s]+/)) {
+      const trimmed = part.trim().replace(/[.;]+$/, '');
+      if (trimmed && !/^none$/i.test(trimmed)) unrun.add(trimmed);
+    }
+  }
+  // pnpm recursive summary lists ran packages before failing on one package; note remaining count if explicit names aren't listed
+  if (unrun.size === 0 && scopeMatch && (failedPkgMatch || stoppedAtMatch)) {
+    const failedPkg = (failedPkgMatch?.[1] ?? stoppedAtMatch?.[1] ?? '').trim();
+    const ranPkgs = new Set<string>();
+    for (const m of clean.matchAll(/^([a-zA-Z0-9@_./-]+)\s+(?:test|check|build)\$/gm)) {
+      ranPkgs.add(m[1].trim());
+    }
+    const total = Number(scopeMatch[1]);
+    if (Number.isFinite(total) && ranPkgs.size > 0 && total > ranPkgs.size) {
+      const remaining = total - ranPkgs.size;
+      unrun.add(`${remaining} remaining workspace package${remaining === 1 ? '' : 's'} after ${failedPkg || 'failure'}`);
+    }
+  }
+  return [...unrun];
+}
+
+export function analyzeIntegrationRunOutput(
+  status: 'passed' | 'failed' | 'skipped',
+  exitCode: number | null,
+  output: string,
+): {
+  failureKind: IntegrationFailureKind;
+  environmentReason: string | null;
+  unrunPackages: string[];
+  canRerunOutsideSandbox: boolean;
+} {
+  if (status === 'passed') {
+    return { failureKind: 'none', environmentReason: null, unrunPackages: [], canRerunOutsideSandbox: false };
+  }
+  if (status === 'skipped') {
+    return { failureKind: 'skipped', environmentReason: null, unrunPackages: [], canRerunOutsideSandbox: false };
+  }
+  const clean = output.replace(/\x1b\[[0-9;]*m/g, '');
+  const unrunPackages = detectUnrunPackagesFromOutput(clean);
+  if (exitCode === 124 || /\[dalang\]\s*Integration suite timed out/i.test(clean)) {
+    return { failureKind: 'timeout', environmentReason: null, unrunPackages, canRerunOutsideSandbox: false };
+  }
+  for (const [pattern, reason] of SANDBOX_ENV_PATTERNS) {
+    if (pattern.test(clean)) {
+      return {
+        failureKind: 'sandbox_environment',
+        environmentReason: reason,
+        unrunPackages,
+        canRerunOutsideSandbox: true,
+      };
+    }
+  }
+  return { failureKind: 'test_failure', environmentReason: null, unrunPackages, canRerunOutsideSandbox: false };
+}
+
 export interface IntegrationRunDTO {
   id: string;
   projectId: string;
@@ -1164,11 +1492,17 @@ export interface IntegrationRunDTO {
   output: string;
   startedAt: string;
   finishedAt: string;
+  failureKind?: IntegrationFailureKind;
+  environmentReason?: string | null;
+  unrunPackages?: string[];
+  canRerunOutsideSandbox?: boolean;
+  ranOutsideSandbox?: boolean;
 }
 
 export interface GuardTaskEntryDTO {
   task: TaskDTO;
   latestRun: TaskRunDTO | null;
+  latestHandoff?: TaskHandoffDTO | null;
   reviews: TaskReviewDTO[];
   latestReview: TaskReviewDTO | null;
   diffAvailable: boolean;
@@ -1282,6 +1616,13 @@ export interface ProjectUsageStatisticsDTO {
   totalDurationMs: number;
   totalTokens: number;
   estimatedCostUsd: number;
+  timing?: {
+    setupMs: number;
+    slotWaitMs: number;
+    agentMs: number;
+    verifyMs: number;
+    reviewMs: number;
+  };
 }
 
 export interface UsageStatisticsResponseDTO {
@@ -1320,6 +1661,7 @@ export interface ExecutionStateDTO {
   sandboxEngine: SandboxEngine;
   platform: string;
   providerStates: ProviderRuntimeStateDTO[];
+  slotWaits?: SlotWaitStateDTO[];
   dispatchPreviews: TaskDispatchPreviewDTO[];
   runs: TaskRunDTO[];
 }

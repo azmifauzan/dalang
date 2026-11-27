@@ -142,6 +142,7 @@ export class StatisticsService {
         totalDurationMs: 0,
         totalTokens: 0,
         estimatedCostUsd: 0,
+        timing: { setupMs: 0, slotWaitMs: 0, agentMs: 0, verifyMs: 0, reviewMs: 0 },
       });
     }
 
@@ -170,6 +171,11 @@ export class StatisticsService {
       cacheWriteTokens: number | null;
       estimatedCostUsd: number | null;
       costSource: string | null;
+      setupMs?: number | null;
+      slotWaitMs?: number | null;
+      agentMs?: number | null;
+      verifyMs?: number | null;
+      reviewMs?: number | null;
     }> = [
       ...runRows,
       ...leadTurnRows.map((lt) => ({
@@ -252,9 +258,14 @@ export class StatisticsService {
       if (r.costSource === 'estimated') existingModel.costIsEstimated = true;
       modelStatsMap.set(modelKey, existingModel);
 
-      const durationMs =
+      const rawDurationMs =
         r.finishedAt && r.startedAt
           ? Math.max(0, new Date(r.finishedAt).getTime() - new Date(r.startedAt).getTime())
+          : null;
+      // P4: task run time excludes slot wait time.
+      const durationMs =
+        rawDurationMs !== null
+          ? Math.max(0, rawDurationMs - (r.slotWaitMs ?? 0))
           : null;
 
       if (durationMs !== null) {
@@ -280,6 +291,7 @@ export class StatisticsService {
         totalDurationMs: 0,
         totalTokens: 0,
         estimatedCostUsd: 0,
+        timing: { setupMs: 0, slotWaitMs: 0, agentMs: 0, verifyMs: 0, reviewMs: 0 },
       };
       projStat.totalRuns += 1;
       if (r.status === 'completed') projStat.completedRuns += 1;
@@ -288,6 +300,13 @@ export class StatisticsService {
       if (durationMs !== null) projStat.totalDurationMs += durationMs;
       projStat.totalTokens += runTotalTok;
       projStat.estimatedCostUsd += runCost;
+      if (projStat.timing) {
+        if (typeof r.setupMs === 'number') projStat.timing.setupMs += r.setupMs;
+        if (typeof r.slotWaitMs === 'number') projStat.timing.slotWaitMs += r.slotWaitMs;
+        if (typeof r.agentMs === 'number') projStat.timing.agentMs += r.agentMs;
+        if (typeof r.verifyMs === 'number') projStat.timing.verifyMs += r.verifyMs;
+        if (typeof r.reviewMs === 'number') projStat.timing.reviewMs += r.reviewMs;
+      }
       projectStatsMap.set(r.projectId, projStat);
     }
 

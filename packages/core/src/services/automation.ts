@@ -1,6 +1,6 @@
 import { findProfileByRef } from '@dalang/shared';
 import crypto from 'node:crypto';
-import { desc, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import type {
   AutomationDTO,
   AutomationKind,
@@ -15,7 +15,7 @@ import type {
   UpdateAutomationInput,
 } from '@dalang/shared';
 import type { DalangDb } from '../db/client.js';
-import { agentProfiles, automationRuns, automations, projects, tasks } from '../db/schema.js';
+import { agentProfiles, automationRuns, automations, projects, tasks, webhookDeliveries } from '../db/schema.js';
 import { getNextCronRun, parseCronExpression } from './cron.js';
 import type { DalangEventBus } from './events.js';
 import type { ExecutionService } from './executor.js';
@@ -103,6 +103,20 @@ function mapTaskStatusToAutomationStatus(taskStatus: string | null): AutomationR
   return 'failed';
 }
 
+function isUniqueConstraintError(err: unknown): boolean {
+  const candidates: unknown[] = [err];
+  if (err && typeof err === 'object' && 'cause' in err) {
+    candidates.push((err as { cause?: unknown }).cause);
+  }
+  return candidates.some((item) => {
+    if (!item || typeof item !== 'object') return false;
+    const code = 'code' in item ? String((item as { code?: unknown }).code ?? '') : '';
+    if (code === 'SQLITE_CONSTRAINT_UNIQUE' || code === 'SQLITE_CONSTRAINT_PRIMARYKEY') return true;
+    const message = item instanceof Error ? item.message : String(item);
+    return /UNIQUE constraint failed/i.test(message);
+  });
+}
+
 export class AutomationService {
   private readonly baseUrlResolver: () => string | null;
   private readonly tickIntervalMs: number;
@@ -111,6 +125,10 @@ export class AutomationService {
   private readonly activeWatchers = new Map<string, Promise<AutomationRunDTO>>();
   /** Signatures of deliveries that started a run, with the time they may be forgotten. */
   private readonly seenSignatures = new Map<string, number>();
+  /** Refcount of in-flight webhook triggers per `<automationId>:<signature>` so concurrent no-ID replays are refused. */
+  private readonly inFlightSignatureCounts = new Map<string, number>();
+  /** In-flight webhook deliveries keyed by `<automationId>:<deliveryId>` so parallel calls coalesce. */
+  private readonly inFlightDeliveries = new Map<string, Promise<{ automation: AutomationDTO; run: AutomationRunDTO }>>();
 
   constructor(
     private readonly db: DalangDb,
@@ -415,6 +433,46 @@ export class AutomationService {
     this.events?.emitEvent({ type: 'automation.updated', projectId: row.projectId, automationId: id });
   }
 
+  private async withReservedSignature<T>(
+    replayKey: string,
+    forgetAt: number,
+    fn: () => Promise<{ result: T; recordSignature: boolean }>,
+  ): Promise<T> {
+    this.inFlightSignatureCounts.set(replayKey, (this.inFlightSignatureCounts.get(replayKey) ?? 0) + 1);
+    try {
+      const { result, recordSignature } = await fn();
+      if (recordSignature) {
+        this.seenSignatures.set(replayKey, Math.max(this.seenSignatures.get(replayKey) ?? 0, forgetAt));
+      }
+      return result;
+    } finally {
+      const remaining = (this.inFlightSignatureCounts.get(replayKey) ?? 1) - 1;
+      if (remaining <= 0) this.inFlightSignatureCounts.delete(replayKey);
+      else this.inFlightSignatureCounts.set(replayKey, remaining);
+    }
+  }
+
+  private findRecordedDelivery(
+    automationId: string,
+    deliveryId: string,
+  ): { deliveryExists: boolean; run: AutomationRunDTO | null } {
+    const record = this.db
+      .select()
+      .from(webhookDeliveries)
+      .where(and(eq(webhookDeliveries.automationId, automationId), eq(webhookDeliveries.deliveryId, deliveryId)))
+      .get();
+    if (!record) return { deliveryExists: false, run: null };
+    if (record.automationRunId) {
+      const runRow = this.db
+        .select()
+        .from(automationRuns)
+        .where(eq(automationRuns.id, record.automationRunId))
+        .get();
+      if (runRow) return { deliveryExists: true, run: this.toRunDTO(runRow) };
+    }
+    return { deliveryExists: true, run: null };
+  }
+
   async handleWebhook(
     token: string,
     rawBody: Buffer | string,
@@ -429,7 +487,8 @@ export class AutomationService {
     if (!row || row.kind !== 'webhook') {
       throw Object.assign(new Error('Webhook not found.'), { statusCode: 404 });
     }
-    const nowMs = (meta.now ?? new Date()).getTime();
+    const now = meta.now ?? new Date();
+    const nowMs = now.getTime();
     let header: string | undefined;
     let timestamp: string | undefined;
     let forgetAt: number;
@@ -462,25 +521,63 @@ export class AutomationService {
     }
     for (const [sig, until] of this.seenSignatures) if (until <= nowMs) this.seenSignatures.delete(sig);
     const replayKey = `${row.id}:${header!.trim().toLowerCase()}`;
-    if (this.seenSignatures.has(replayKey)) {
+    const deliveryId = meta.deliveryId?.trim() || null;
+    const payloadText = Buffer.isBuffer(rawBody) ? rawBody.toString('utf8') : rawBody;
+    const detail = deliveryId ? `delivery:${deliveryId}` : meta.event ? `event:${meta.event}` : undefined;
+
+    if (!deliveryId) {
+      if (this.seenSignatures.has(replayKey) || (this.inFlightSignatureCounts.get(replayKey) ?? 0) > 0) {
+        throw Object.assign(new Error('This webhook delivery was already received.'), { statusCode: 409 });
+      }
+      return this.withReservedSignature(replayKey, forgetAt, async () => {
+        const { run } = await this.triggerAutomationInternal(row.id, 'webhook', {
+          event: meta.event,
+          payload: payloadText,
+          detail,
+          now,
+        });
+        return {
+          result: { automation: this.getAutomation(row.id), run },
+          // A delivery that was skipped or failed to start may be sent again.
+          recordSignature: run.status === 'running',
+        };
+      });
+    }
+
+    const deliveryKey = `${row.id}:${deliveryId}`;
+    const inFlight = this.inFlightDeliveries.get(deliveryKey);
+    if (inFlight) {
+      return inFlight;
+    }
+
+    const existing = this.findRecordedDelivery(row.id, deliveryId);
+    if (existing.deliveryExists) {
+      if (existing.run) {
+        return { automation: this.getAutomation(row.id), run: existing.run };
+      }
       throw Object.assign(new Error('This webhook delivery was already received.'), { statusCode: 409 });
     }
-    // Reserve before the first await so a concurrent copy is refused too.
-    this.seenSignatures.set(replayKey, forgetAt);
 
-    const payloadText = Buffer.isBuffer(rawBody) ? rawBody.toString('utf8') : rawBody;
-    const detail = meta.deliveryId ? `delivery:${meta.deliveryId}` : meta.event ? `event:${meta.event}` : undefined;
-    const run = await this.triggerAutomation(row.id, 'webhook', {
-      event: meta.event,
-      payload: payloadText,
-      detail,
-    }).catch((err: unknown) => {
-      this.seenSignatures.delete(replayKey);
-      throw err;
+    const pending = this.withReservedSignature(replayKey, forgetAt, async () => {
+      const outcome = await this.triggerAutomationInternal(row.id, 'webhook', {
+        event: meta.event,
+        payload: payloadText,
+        detail,
+        deliveryId,
+        now,
+      });
+      return {
+        result: { automation: this.getAutomation(row.id), run: outcome.run },
+        recordSignature: outcome.created && outcome.run.status === 'running',
+      };
+    }).finally(() => {
+      if (this.inFlightDeliveries.get(deliveryKey) === pending) {
+        this.inFlightDeliveries.delete(deliveryKey);
+      }
     });
-    // A delivery that was skipped or failed to start may be sent again.
-    if (run.status !== 'running') this.seenSignatures.delete(replayKey);
-    return { automation: this.getAutomation(row.id), run };
+
+    this.inFlightDeliveries.set(deliveryKey, pending);
+    return pending;
   }
 
   async triggerAutomation(
@@ -493,6 +590,21 @@ export class AutomationService {
       now?: Date;
     } = {},
   ): Promise<AutomationRunDTO> {
+    const { run } = await this.triggerAutomationInternal(automationId, source, opts);
+    return run;
+  }
+
+  private async triggerAutomationInternal(
+    automationId: string,
+    source: AutomationTriggerSource,
+    opts: {
+      event?: string;
+      payload?: string;
+      detail?: string;
+      deliveryId?: string;
+      now?: Date;
+    } = {},
+  ): Promise<{ run: AutomationRunDTO; created: boolean }> {
     const row = this.db.select().from(automations).where(eq(automations.id, automationId)).get();
     if (!row) {
       throw Object.assign(new Error(`Automation not found: ${automationId}`), { statusCode: 404 });
@@ -501,6 +613,7 @@ export class AutomationService {
     const now = opts.now ?? new Date();
     const nowIso = now.toISOString();
     const runId = crypto.randomUUID();
+    const deliveryId = opts.deliveryId?.trim() || null;
     const rawPayload = opts.payload?.trim() ?? '';
     const payloadExcerpt = rawPayload
       ? rawPayload.length > MAX_PAYLOAD_EXCERPT_CHARS
@@ -508,33 +621,59 @@ export class AutomationService {
         : rawPayload
       : null;
 
-    this.db
-      .insert(automationRuns)
-      .values({
-        id: runId,
-        automationId: row.id,
-        projectId: row.projectId,
-        triggerSource: source,
-        sessionId: null,
-        taskId: null,
-        status: 'running',
-        detail: opts.detail ?? null,
-        payloadExcerpt,
-        triggeredAt: nowIso,
-        finishedAt: null,
-      })
-      .run();
+    try {
+      this.db.transaction((tx) => {
+        tx.insert(automationRuns)
+          .values({
+            id: runId,
+            automationId: row.id,
+            projectId: row.projectId,
+            triggerSource: source,
+            deliveryId,
+            sessionId: null,
+            taskId: null,
+            status: 'running',
+            detail: opts.detail ?? null,
+            payloadExcerpt,
+            triggeredAt: nowIso,
+            finishedAt: null,
+          })
+          .run();
 
-    this.db
-      .update(automations)
-      .set({
-        lastTriggeredAt: nowIso,
-        lastStatus: 'running',
-        lastError: null,
-        updatedAt: nowIso,
-      })
-      .where(eq(automations.id, row.id))
-      .run();
+        if (deliveryId) {
+          tx.insert(webhookDeliveries)
+            .values({
+              automationId: row.id,
+              deliveryId,
+              automationRunId: runId,
+              receivedAt: nowIso,
+              expiresAt: null,
+            })
+            .run();
+        }
+
+        tx.update(automations)
+          .set({
+            lastTriggeredAt: nowIso,
+            lastStatus: 'running',
+            lastError: null,
+            updatedAt: nowIso,
+          })
+          .where(eq(automations.id, row.id))
+          .run();
+      });
+    } catch (err) {
+      if (deliveryId && isUniqueConstraintError(err)) {
+        const existing = this.findRecordedDelivery(row.id, deliveryId);
+        if (existing.run) {
+          return { run: existing.run, created: false };
+        }
+        if (existing.deliveryExists) {
+          throw Object.assign(new Error('This webhook delivery was already received.'), { statusCode: 409 });
+        }
+      }
+      throw err;
+    }
 
     const filesAllowed = parseJsonStringArray(row.filesAllowedJson);
     const filesReference = parseJsonStringArray(row.filesReferenceJson);
@@ -600,26 +739,37 @@ export class AutomationService {
         }
       }
 
-      this.db
-        .update(automationRuns)
-        .set({
-          sessionId: null,
-          taskId: null,
-          status: failStatus,
-          detail: message,
-          finishedAt,
-        })
-        .where(eq(automationRuns.id, runId))
-        .run();
-      this.db
-        .update(automations)
-        .set({
-          lastStatus: failStatus,
-          lastError: message,
-          updatedAt: finishedAt,
-        })
-        .where(eq(automations.id, row.id))
-        .run();
+      this.db.transaction((tx) => {
+        tx.update(automationRuns)
+          .set({
+            sessionId: null,
+            taskId: null,
+            status: failStatus,
+            detail: message,
+            finishedAt,
+          })
+          .where(eq(automationRuns.id, runId))
+          .run();
+        if (deliveryId) {
+          tx.delete(webhookDeliveries)
+            .where(
+              and(
+                eq(webhookDeliveries.automationId, row.id),
+                eq(webhookDeliveries.deliveryId, deliveryId),
+                eq(webhookDeliveries.automationRunId, runId),
+              ),
+            )
+            .run();
+        }
+        tx.update(automations)
+          .set({
+            lastStatus: failStatus,
+            lastError: message,
+            updatedAt: finishedAt,
+          })
+          .where(eq(automations.id, row.id))
+          .run();
+      });
 
       this.events?.emitEvent({
         type: 'automation.finished',
@@ -635,9 +785,12 @@ export class AutomationService {
         automationId: row.id,
       });
 
-      return this.toRunDTO(
-        this.db.select().from(automationRuns).where(eq(automationRuns.id, runId)).get()!,
-      );
+      return {
+        run: this.toRunDTO(
+          this.db.select().from(automationRuns).where(eq(automationRuns.id, runId)).get()!,
+        ),
+        created: true,
+      };
     }
 
     this.events?.emitEvent({
@@ -667,9 +820,12 @@ export class AutomationService {
       this.activeWatchers.delete(runId);
     });
 
-    return this.toRunDTO(
-      this.db.select().from(automationRuns).where(eq(automationRuns.id, runId)).get()!,
-    );
+    return {
+      run: this.toRunDTO(
+        this.db.select().from(automationRuns).where(eq(automationRuns.id, runId)).get()!,
+      ),
+      created: true,
+    };
   }
 
   private async watchAutomationRun(

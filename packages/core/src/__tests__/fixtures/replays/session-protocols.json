@@ -1,0 +1,505 @@
+{
+  "name": "session-protocols",
+  "description": "Sanitized linear session protocol fixtures for Claude Code, Codex app-server, and Antigravity ACP (new and resumed turns).",
+  "binaries": ["claude", "codex", "agy"],
+  "turns": [
+    {
+      "id": "claude-new-turn",
+      "match": {
+        "provider": "claude-code"
+      },
+      "entries": [
+        {
+          "type": "expect_outbound",
+          "frame": {
+            "type": "user",
+            "message": {
+              "role": "user",
+              "content": [{ "type": "text", "text": "Start claude protocol replay" }]
+            }
+          }
+        },
+        {
+          "type": "emit_inbound",
+          "frame": {
+            "type": "system",
+            "subtype": "init",
+            "session_id": "claude-sess-1"
+          }
+        },
+        {
+          "type": "expect_outbound",
+          "frame": {
+            "type": "user",
+            "message": { "role": "user", "content": "Keep changes minimal" },
+            "parent_tool_use_id": null,
+            "uuid": "steer-uuid-1",
+            "priority": "now"
+          }
+        },
+        {
+          "type": "emit_inbound",
+          "afterMs": 5,
+          "frame": {
+            "type": "assistant",
+            "message": {
+              "model": "claude-sonnet-5-5",
+              "content": [{ "type": "text", "text": "Claude new turn complete." }]
+            }
+          }
+        },
+        {
+          "type": "emit_inbound",
+          "frame": {
+            "type": "result",
+            "subtype": "success",
+            "session_id": "claude-sess-1",
+            "user_message_uuid": "steer-uuid-1",
+            "result": "Claude new turn complete."
+          }
+        },
+        { "type": "exit", "exitCode": 0 }
+      ]
+    },
+    {
+      "id": "claude-resume-turn",
+      "match": {
+        "provider": "claude-code"
+      },
+      "entries": [
+        {
+          "type": "expect_outbound",
+          "frame": {
+            "type": "user",
+            "message": {
+              "role": "user",
+              "content": [{ "type": "text", "text": "Resume claude protocol replay" }]
+            }
+          }
+        },
+        {
+          "type": "emit_inbound",
+          "frame": {
+            "type": "system",
+            "subtype": "init",
+            "session_id": "claude-sess-1"
+          }
+        },
+        {
+          "type": "emit_inbound",
+          "frame": {
+            "type": "result",
+            "subtype": "success",
+            "session_id": "claude-sess-1",
+            "result": "Claude resumed turn complete."
+          }
+        },
+        { "type": "exit", "exitCode": 0 }
+      ]
+    },
+    {
+      "id": "codex-new-turn",
+      "match": {
+        "provider": "codex"
+      },
+      "entries": [
+        {
+          "type": "expect_outbound",
+          "frame": {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+              "clientInfo": { "name": "dalang", "version": "0.14.12" }
+            }
+          }
+        },
+        {
+          "type": "emit_inbound",
+          "frame": { "jsonrpc": "2.0", "id": 1, "result": {} }
+        },
+        {
+          "type": "expect_outbound",
+          "frame": {
+            "jsonrpc": "2.0",
+            "method": "initialized",
+            "params": {}
+          }
+        },
+        {
+          "type": "expect_outbound",
+          "frame": {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "thread/start",
+            "params": {
+              "cwd": "/replay/workspace",
+              "model": null,
+              "approvalPolicy": "never",
+              "sandbox": "workspace-write"
+            }
+          }
+        },
+        {
+          "type": "emit_inbound",
+          "frame": { "jsonrpc": "2.0", "id": 2, "result": { "thread": { "id": "codex-thread-1" } } }
+        },
+        {
+          "type": "expect_outbound",
+          "frame": {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "turn/start",
+            "params": {
+              "threadId": "codex-thread-1",
+              "input": [{ "type": "text", "text": "Start codex protocol replay", "text_elements": [] }]
+            }
+          }
+        },
+        {
+          "type": "emit_inbound",
+          "frame": { "jsonrpc": "2.0", "id": 3, "result": { "turn": { "id": "codex-turn-1" } } }
+        },
+        {
+          "type": "expect_outbound",
+          "frame": {
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "turn/steer",
+            "params": {
+              "threadId": "codex-thread-1",
+              "expectedTurnId": "codex-turn-1",
+              "input": [{ "type": "text", "text": "Focus on tests", "text_elements": [] }]
+            }
+          }
+        },
+        {
+          "type": "emit_inbound",
+          "frame": { "jsonrpc": "2.0", "id": 4, "result": {} }
+        },
+        {
+          "type": "emit_inbound",
+          "afterMs": 5,
+          "frame": {
+            "jsonrpc": "2.0",
+            "method": "item/agentMessage/delta",
+            "params": { "threadId": "codex-thread-1", "itemId": "item-1", "delta": "Codex new " }
+          }
+        },
+        {
+          "type": "emit_inbound",
+          "frame": {
+            "jsonrpc": "2.0",
+            "method": "item/completed",
+            "params": {
+              "threadId": "codex-thread-1",
+              "item": { "id": "item-1", "type": "agentMessage", "text": "Codex new turn complete." }
+            }
+          }
+        },
+        {
+          "type": "emit_inbound",
+          "frame": {
+            "jsonrpc": "2.0",
+            "method": "turn/completed",
+            "params": {
+              "threadId": "codex-thread-1",
+              "turn": { "id": "codex-turn-1", "status": "completed" }
+            }
+          }
+        },
+        { "type": "exit", "exitCode": 0 }
+      ]
+    },
+    {
+      "id": "codex-resume-turn",
+      "match": {
+        "provider": "codex"
+      },
+      "entries": [
+        {
+          "type": "expect_outbound",
+          "frame": {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+              "clientInfo": { "name": "dalang", "version": "0.14.12" }
+            }
+          }
+        },
+        {
+          "type": "emit_inbound",
+          "frame": { "jsonrpc": "2.0", "id": 1, "result": {} }
+        },
+        {
+          "type": "expect_outbound",
+          "frame": {
+            "jsonrpc": "2.0",
+            "method": "initialized",
+            "params": {}
+          }
+        },
+        {
+          "type": "expect_outbound",
+          "frame": {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "thread/resume",
+            "params": {
+              "threadId": "codex-thread-1",
+              "excludeTurns": true,
+              "cwd": "/replay/workspace",
+              "model": null,
+              "approvalPolicy": "never",
+              "sandbox": "workspace-write"
+            }
+          }
+        },
+        {
+          "type": "emit_inbound",
+          "frame": { "jsonrpc": "2.0", "id": 2, "result": { "thread": { "id": "codex-thread-1" } } }
+        },
+        {
+          "type": "expect_outbound",
+          "frame": {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "turn/start",
+            "params": {
+              "threadId": "codex-thread-1",
+              "input": [{ "type": "text", "text": "Resume codex protocol replay", "text_elements": [] }]
+            }
+          }
+        },
+        {
+          "type": "emit_inbound",
+          "frame": { "jsonrpc": "2.0", "id": 3, "result": { "turn": { "id": "codex-turn-2" } } }
+        },
+        {
+          "type": "emit_inbound",
+          "frame": {
+            "jsonrpc": "2.0",
+            "method": "item/completed",
+            "params": {
+              "threadId": "codex-thread-1",
+              "item": { "id": "item-2", "type": "agentMessage", "text": "Codex resumed turn complete." }
+            }
+          }
+        },
+        {
+          "type": "emit_inbound",
+          "frame": {
+            "jsonrpc": "2.0",
+            "method": "turn/completed",
+            "params": {
+              "threadId": "codex-thread-1",
+              "turn": { "id": "codex-turn-2", "status": "completed" }
+            }
+          }
+        },
+        { "type": "exit", "exitCode": 0 }
+      ]
+    },
+    {
+      "id": "antigravity-new-turn",
+      "match": {
+        "provider": "antigravity"
+      },
+      "entries": [
+        {
+          "type": "expect_outbound",
+          "frame": {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+              "protocolVersion": 1,
+              "clientCapabilities": {},
+              "clientInfo": { "name": "dalang", "version": "0.14.12" }
+            }
+          }
+        },
+        {
+          "type": "emit_inbound",
+          "frame": {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+              "protocolVersion": 1,
+              "agentCapabilities": {
+                "sessionCapabilities": { "resume": true },
+                "loadSession": true
+              }
+            }
+          }
+        },
+        {
+          "type": "expect_outbound",
+          "frame": {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "session/new",
+            "params": {
+              "cwd": "/replay/workspace",
+              "mcpServers": []
+            }
+          }
+        },
+        {
+          "type": "emit_inbound",
+          "frame": {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": {
+              "sessionId": "agy-sess-1",
+              "configOptions": [
+                { "category": "mode", "id": "mode", "currentValue": "accept-edits" }
+              ]
+            }
+          }
+        },
+        {
+          "type": "expect_outbound",
+          "frame": {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "session/prompt",
+            "params": {
+              "sessionId": "agy-sess-1",
+              "prompt": [{ "type": "text", "text": "Start antigravity protocol replay" }]
+            }
+          }
+        },
+        {
+          "type": "emit_inbound",
+          "afterMs": 5,
+          "frame": {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+              "sessionId": "agy-sess-1",
+              "update": {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc-1",
+                "title": "Read package.json",
+                "status": "in_progress"
+              }
+            }
+          }
+        },
+        {
+          "type": "emit_inbound",
+          "frame": {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+              "sessionId": "agy-sess-1",
+              "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "content": { "text": "Antigravity new turn complete." }
+              }
+            }
+          }
+        },
+        {
+          "type": "emit_inbound",
+          "frame": { "jsonrpc": "2.0", "id": 3, "result": { "stopReason": "end_turn" } }
+        },
+        { "type": "exit", "exitCode": 0 }
+      ]
+    },
+    {
+      "id": "antigravity-resume-turn",
+      "match": {
+        "provider": "antigravity"
+      },
+      "entries": [
+        {
+          "type": "expect_outbound",
+          "frame": {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+              "protocolVersion": 1,
+              "clientCapabilities": {},
+              "clientInfo": { "name": "dalang", "version": "0.14.12" }
+            }
+          }
+        },
+        {
+          "type": "emit_inbound",
+          "frame": {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+              "protocolVersion": 1,
+              "agentCapabilities": {
+                "sessionCapabilities": { "resume": true },
+                "loadSession": true
+              }
+            }
+          }
+        },
+        {
+          "type": "expect_outbound",
+          "frame": {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "session/resume",
+            "params": {
+              "cwd": "/replay/workspace",
+              "mcpServers": [],
+              "sessionId": "agy-sess-1"
+            }
+          }
+        },
+        {
+          "type": "emit_inbound",
+          "frame": {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": {
+              "sessionId": "agy-sess-1",
+              "configOptions": [
+                { "category": "mode", "id": "mode", "currentValue": "accept-edits" }
+              ]
+            }
+          }
+        },
+        {
+          "type": "expect_outbound",
+          "frame": {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "session/prompt",
+            "params": {
+              "sessionId": "agy-sess-1",
+              "prompt": [{ "type": "text", "text": "Resume antigravity protocol replay" }]
+            }
+          }
+        },
+        {
+          "type": "emit_inbound",
+          "frame": {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+              "sessionId": "agy-sess-1",
+              "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "content": { "text": "Antigravity resumed turn complete." }
+              }
+            }
+          }
+        },
+        {
+          "type": "emit_inbound",
+          "frame": { "jsonrpc": "2.0", "id": 3, "result": { "stopReason": "end_turn" } }
+        },
+        { "type": "exit", "exitCode": 0 }
+      ]
+    }
+  ]
+}

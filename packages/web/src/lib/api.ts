@@ -228,6 +228,36 @@ export const api = {
     request<{ brief: BriefDTO }>(withSessionQuery(`/api/projects/${id}/discuss/finish`, sessionId), {
       method: 'POST',
     }),
+  answerQuestion: (
+    id: string,
+    sessionId: string,
+    body: { questionId: string; selectedLabels: string[]; customAnswer?: string },
+  ) =>
+    request<{
+      session: SessionSummaryDTO;
+      mode: SessionMode;
+      messages: DiscussMessageDTO[];
+      plan?: PlanDTO | null;
+      answerText: string;
+    }>(`/api/projects/${id}/sessions/${sessionId}/question/answer`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  getTriagePreview: () =>
+    request<{ preview: import('@dalang/shared').TriageContextPreviewDTO }>('/api/triage/preview'),
+  startTriage: (
+    projectId: string,
+    body: { confirmed: true; note?: string; provider?: ProviderId; model?: string },
+  ) =>
+    request<{
+      session: SessionSummaryDTO;
+      mode: SessionMode;
+      messages: DiscussMessageDTO[];
+      preview: import('@dalang/shared').TriageContextPreviewDTO;
+    }>(`/api/projects/${projectId}/triage`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 
   // Agree / Briefs
   listBriefs: (id: string, sessionId?: string | null) =>

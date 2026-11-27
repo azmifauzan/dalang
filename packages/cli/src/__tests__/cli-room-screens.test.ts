@@ -345,11 +345,12 @@ describe('room screens (Ink, stub server)', () => {
     const ui = mountRoom(client);
     await ui.waitFor('Lead Claude');
     await ui.press('/resume 1', '\r');
-    await ui.waitFor('@coder-small (Codex) +1 · Working on T-001');
+    await ui.waitFor('@coder-small (Codex) · Working on T-001');
+    expect(ui.screen()).toContain('@reviewer (Codex) · Working on T-002');
 
     const beforeFinish = ui.mark();
     emit({ type: 'run.log', projectId: 'p1', runId: 'r1', line: '[dalang] Running verify command: pnpm test' });
-    await ui.waitFor('@coder-small (Codex) +1 · Running verification', beforeFinish);
+    await ui.waitFor('@coder-small (Codex) · Running verification', beforeFinish);
     runs = [reviewer];
     const afterFinish = ui.mark();
     emit({ type: 'run.finished', projectId: 'p1', sessionId: 's1', runId: 'r1' });

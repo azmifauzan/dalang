@@ -492,6 +492,59 @@ describe('Phase 0.4 parallel execution, worktrees, provider pool, quota fallback
       conn.close();
     }
   }, process.platform === 'win32' ? 60_000 : 15_000);
+
+  it('reports slot waits only when the account limit is full and clears them immediately on acquire or abort (U9, B20)', async () => {
+    const { ProviderLimiter } = await import('../services/scheduler.js');
+    const limiter = new ProviderLimiter();
+
+    // 1. Free slot: no wait callback fires
+    let waitStarts = 0;
+    const lease1 = await limiter.acquire('codex', 1, {
+      onWaitStart: () => { waitStarts += 1; },
+    });
+    expect(waitStarts).toBe(0);
+    expect(limiter.getActiveCount('codex')).toBe(1);
+
+    // 2. Different account is independent and acquires without waiting
+    const otherAccountLease = await limiter.acquire('claude-code', 1, {
+      onWaitStart: () => { waitStarts += 1; },
+    });
+    expect(waitStarts).toBe(0);
+    otherAccountLease.release();
+
+    // 3. Full account: fires onWaitStart with account, activeCount, and limit, then clears immediately on release
+    const events: string[] = [];
+    const waitPromise = limiter.acquire('codex', 1, {
+      onWaitStart: (info) => {
+        events.push(`wait:${info.accountKey}:${info.activeCount}/${info.limit}`);
+      },
+      onWaitEnd: () => {
+        events.push('end');
+      },
+    });
+    expect(events).toEqual(['wait:codex:1/1']);
+    expect(limiter.getWaiterCount('codex')).toBe(1);
+
+    // 4. Aborted waiter cleans up wait state immediately
+    const abortCtrl = new AbortController();
+    const abortEvents: string[] = [];
+    const abortedWait = limiter.acquire('codex', 1, {
+      signal: abortCtrl.signal,
+      onWaitStart: (info) => abortEvents.push(`wait:${info.activeCount}/${info.limit}`),
+      onWaitEnd: () => abortEvents.push('end'),
+    });
+    expect(abortEvents).toEqual(['wait:1/1']);
+    abortCtrl.abort();
+    await expect(abortedWait).rejects.toThrow(/Aborted/);
+    expect(abortEvents).toEqual(['wait:1/1', 'end']);
+
+    // Release first slot -> promotes queued waiter and fires onWaitEnd immediately
+    lease1.release();
+    const lease2 = await waitPromise;
+    expect(events).toEqual(['wait:codex:1/1', 'end']);
+    expect(limiter.getWaiterCount('codex')).toBe(0);
+    lease2.release();
+  });
 });
 
 describe('Claude model discovery', () => {

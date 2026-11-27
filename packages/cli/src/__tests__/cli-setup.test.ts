@@ -430,7 +430,7 @@ describe('setup wizard (Ink)', () => {
     await ui.waitFor('GPT-5');
     await ui.press(DOWN, '\r'); // CLI default -> GPT-5
     await ui.waitFor('Codex · GPT-5');
-    await ui.press(DOWN, DOWN, DOWN, DOWN, '\r'); // Done
+    await ui.press(DOWN, DOWN, DOWN, DOWN, DOWN, '\r'); // Done
     await ui.waitFor('Cross-provider review active');
     await ui.press(DOWN, DOWN, DOWN, DOWN, DOWN, DOWN, '\r'); // Accept team & continue
 
@@ -589,7 +589,7 @@ describe('/config (Ink)', () => {
     await ui.waitFor('Fallback reasoning effort');
     await ui.press(DOWN, DOWN, DOWN, DOWN, '\r');
     await ui.waitFor('Reviewer (Arjuna)');
-    await ui.press(DOWN, DOWN, DOWN, DOWN, '\r');
+    await ui.press(DOWN, DOWN, DOWN, DOWN, DOWN, '\r');
     await ui.waitFor('Save team');
     await ui.press(DOWN, DOWN, DOWN, DOWN, DOWN, DOWN, '\r');
     await sleep(200);
@@ -643,8 +643,8 @@ describe('/config (Ink)', () => {
       }),
     );
     await ui.waitFor('Setup wizard');
-    // Language, refresh, updates, CLIs, team, wizard
-    await ui.press(DOWN, DOWN, DOWN, DOWN, DOWN, '\r');
+    // Language, refresh, updates, CLIs, team, routing, automation, wizard
+    await ui.press(DOWN, DOWN, DOWN, DOWN, DOWN, DOWN, DOWN, '\r');
     await sleep(100);
     expect(wizard).toBe(1);
   });

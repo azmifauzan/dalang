@@ -534,6 +534,14 @@ describe('@dalang/server API (v0.1 Rembuk)', () => {
         await app.inject({ method: 'POST', url: `/api/projects/${pid}/briefs/1/approve` });
         const pRes = await app.inject({ method: 'POST', url: `/api/projects/${pid}/plan/generate` });
         const tid = pRes.json().plan.tasks[0].id as string;
+        if (idx === 2) {
+          // Project 2 tests automatic fix round 2 after a failed review (P2 keeps low tasks single-round).
+          await app.inject({
+            method: 'PATCH',
+            url: `/api/projects/${pid}/tasks/${tid}`,
+            payload: { complexity: 'medium' },
+          });
+        }
         await app.inject({ method: 'POST', url: `/api/projects/${pid}/plan/approve` });
 
         // Add package.json test script on main so F-20 post-merge integration executes.

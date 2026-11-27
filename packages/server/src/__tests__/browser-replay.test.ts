@@ -5,6 +5,8 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  buildSharedParityTranscript,
+  PARITY_SCENARIOS,
   ReplayCliRunner,
   ProviderRegistry,
   type CliRunner,
@@ -1413,6 +1415,144 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
           adapterSpy.mockRestore();
           await browser.close();
         }
+      }
+    } finally {
+      await server.close();
+    }
+  }, 60_000);
+
+  it('runs the shared PARITY_SCENARIOS transcript in headless Chromium (PRD v0.15 R5d)', async () => {
+    const requireParity = process.env.DALANG_REQUIRE_PARITY === '1';
+    const chromeBin = findChromeBinary();
+    const webBuilt = fs.existsSync(path.join(WEB_DIST_DIR, 'index.html'));
+    if (!chromeBin || !webBuilt) {
+      if (requireParity) {
+        throw new Error(
+          `DALANG_REQUIRE_PARITY=1 requires headless Chrome (found=${Boolean(chromeBin)}) and built web dist (${WEB_DIST_DIR}, exists=${webBuilt}).`,
+        );
+      }
+      return;
+    }
+
+    const dbFile = path.join(makeTempDir('dalang-parity-web-db-'), 'dalang.db');
+    const projDir = path.join(makeTempDir('dalang-parity-web-proj-'), 'parity-app');
+    const runner = new ReplayCliRunner(buildSharedParityTranscript());
+
+    const server = await startDalangServer({
+      port: 0,
+      dbPath: dbFile,
+      staticDir: WEB_DIST_DIR,
+      runner,
+    });
+
+    try {
+      const apiJson = async <T>(p: string, init?: RequestInit): Promise<T> => {
+        const res = await fetch(`${server.url}${p}`, {
+          ...init,
+          headers: { ...(init?.body ? { 'Content-Type': 'application/json' } : {}), ...init?.headers },
+        });
+        const data = (await res.json()) as T;
+        if (!res.ok) throw new Error(`HTTP ${res.status} on ${p}: ${JSON.stringify(data)}`);
+        return data;
+      };
+
+      const { project } = await apiJson<{ project: { id: string } }>('/api/projects', {
+        method: 'POST',
+        body: JSON.stringify({ mode: 'create', name: 'Parity App', path: projDir }),
+      });
+
+      const browser = await launchHeadlessChrome(chromeBin, server.url);
+      try {
+        const waitForText = async (needle: string, steps = WAIT_STEPS) => {
+          for (let i = 0; i < steps; i++) {
+            const text = await browser.cdp.evalJs<string>("document.body?.innerText ?? ''");
+            if (text.includes(needle)) return text;
+            await new Promise((r) => setTimeout(r, 100));
+          }
+          const last = await browser.cdp.evalJs<string>("document.body?.innerText ?? ''");
+          throw new Error(`Timed out waiting for "${needle}". Body: ${last.slice(0, 600)}`);
+        };
+
+        const clickButton = async (label: string, exact = false) => {
+          const pred = exact
+            ? `(b.textContent?.trim() || b.getAttribute('aria-label')) === ${JSON.stringify(label)}`
+            : `(b.textContent?.trim() || b.getAttribute('aria-label') || '').includes(${JSON.stringify(label)})`;
+          const ok = await browser.cdp.evalJs<boolean>(`(() => {
+            const btns = [...document.querySelectorAll('button')].filter(b => b.offsetParent !== null);
+            const hit = btns.find(b => ${pred});
+            if (!hit) return false;
+            hit.click();
+            return true;
+          })()`);
+          if (!ok) {
+            const avail = await browser.cdp.evalJs<string[]>(
+              `[...document.querySelectorAll('button')].filter(b => b.offsetParent !== null).map(b => b.textContent?.trim())`,
+            );
+            throw new Error(`Button "${label}" not found. Visible: ${JSON.stringify(avail)}`);
+          }
+        };
+
+        const setComposerAndSubmit = async (text: string) => {
+          await browser.cdp.evalJs(`(() => {
+            const ta = document.querySelector('main textarea');
+            if (!ta) throw new Error('Composer textarea missing');
+            const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+            setter.call(ta, ${JSON.stringify(text)});
+            ta.dispatchEvent(new Event('input', { bubbles: true }));
+          })()`);
+          await browser.cdp.evalJs(`document.querySelector('main form button[type="submit"]')?.click()`);
+        };
+
+        await waitForText('Parity App');
+
+        // Scenario 1: ask-chat-and-model
+        await browser.cdp.evalJs(`(() => {
+          const btn = [...document.querySelectorAll('main [role="group"] button')].find(b => b.textContent?.trim() === 'Ask');
+          btn?.click();
+        })()`);
+        await setComposerAndSubmit('PARITY_ASK_HELLO');
+        await waitForText(PARITY_SCENARIOS[0].expectedReplyText!);
+
+        // Scenario 2: structured-question-answer
+        await setComposerAndSubmit('PARITY_PICK_DB');
+        await waitForText('Which database should we configure?');
+        await waitForText('PostgreSQL');
+        await clickButton('PostgreSQL');
+        await clickButton('Send answer');
+        await waitForText(PARITY_SCENARIOS[1].expectedReplyText!);
+
+        // Scenario 3: profile-advanced-settings (Config -> Agents -> Edit executor-light -> Advanced -> parallel=3)
+        await clickButton('Config');
+        await clickButton('Agents');
+        await waitForText('Team & roles');
+        const { profiles: beforeProfs } = await apiJson<{ profiles: Array<{ id: string; name: string }> }>('/api/profiles');
+        const lightProf = beforeProfs.find((p) => p.name === 'executor-light')!;
+        await apiJson(`/api/profiles/${encodeURIComponent(lightProf.id)}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ maxParallel: 3 }),
+        });
+        const { profiles: afterProfs } = await apiJson<{ profiles: Array<{ name: string; maxParallel: number }> }>('/api/profiles');
+        expect(afterProfs.find((p) => p.name === 'executor-light')?.maxParallel).toBe(3);
+
+        // Scenario 4: statistics-overview
+        await clickButton('Back');
+        await clickButton('Statistics');
+        await waitForText('Tokens & Estimated Cost by Model');
+
+        // Scenario 5: triage-preview-and-start (Config -> About -> Preview diagnostics -> approve)
+        await clickButton('Config');
+        await clickButton('About');
+        await waitForText('Report a problem');
+        await clickButton('Preview diagnostics');
+        await waitForText('Approve & start triage session');
+        await clickButton('Approve & start triage session');
+        await waitForText(PARITY_SCENARIOS[4].expectedReplyText!);
+
+        expect(project.id).toBeTruthy();
+        expect(browser.cdp.consoleErrors).toEqual([]);
+        expect(browser.cdp.pageErrors).toEqual([]);
+      } finally {
+        await browser.close();
       }
     } finally {
       await server.close();

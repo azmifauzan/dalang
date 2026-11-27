@@ -12,7 +12,7 @@ import {
   type UsageWindow,
 } from '@dalang/shared';
 import { createTurnLogger, redactSecrets } from './logger.js';
-import { object, SessionRpcError, withSessionRpc } from './session-rpc.js';
+import { FatalStderrError, object, SessionRpcError, turnRunner, withSessionRpc } from './session-rpc.js';
 import {
   buildProviderAccountEnv,
   detectSandboxEngine,
@@ -374,7 +374,7 @@ export class AntigravityAdapter implements CliAdapter {
       if (args.includes('--dangerously-skip-permissions') && !invocation.sandboxed) {
         throw new Error('The platform sandbox became unavailable before starting Antigravity.');
       }
-      const res = await this.runner.run(invocation.command, invocation.args, {
+      const res = await turnRunner(this.runner, 'antigravity', [options.mcp?.bearerToken], invocation.engine).run(invocation.command, invocation.args, {
         cwd: options.projectPath,
         timeoutMs: options.timeoutMs ?? 600_000,
         idleTimeoutMs: options.idleTimeoutMs ?? 180_000,
@@ -445,7 +445,7 @@ export class AntigravityAdapter implements CliAdapter {
         ...(usage ? { usage } : {}),
       };
     } finally {
-      logger.close();
+      await logger.close();
       dbusProxy?.stop();
     }
   }
@@ -477,15 +477,21 @@ export class AntigravityAdapter implements CliAdapter {
     let submitted = false;
     let cancelled = false;
     let text = '';
+    let stderr = '';
     let usage: TurnTokenUsage | undefined;
     try {
-      const result = await withSessionRpc(this.runner, invocation.command, invocation.args, {
+      const result = await withSessionRpc(turnRunner(this.runner, 'antigravity', [options.mcp?.bearerToken], invocation.engine), invocation.command, invocation.args, {
         cwd: options.projectPath,
         env: buildProviderAccountEnv(this.id, options.configDir),
         timeoutMs: options.timeoutMs,
         idleTimeoutMs: options.idleTimeoutMs,
         signal: options.signal,
         onKeepAlive: options.onKeepAlive,
+        onStderrLine: (line) => {
+          stderr = (stderr + line + '\n').slice(-4000);
+          logger.write(`[stderr] ${line}`);
+          options.onLogLine?.(`[stderr] ${line}`);
+        },
       }, (method, params) => {
         if (method !== 'session/update' || params.sessionId !== sessionId || !submitted) return;
         const update = object(params.update);
@@ -560,11 +566,12 @@ export class AntigravityAdapter implements CliAdapter {
       return {
         text: text.trim(), sessionId, aborted, structuredOutput,
         exitCode: result.stopReason === 'end_turn' || aborted ? 0 : 1,
-        stdout: '', stderr: aborted ? '' : String(result.stopReason ?? ''), usage,
+        stdout: '', stderr: aborted ? '' : [String(result.stopReason ?? ''), stderr.trim()].filter(Boolean).join('\n').slice(-4000), usage,
         logFilePath: options.logFilePath,
       };
     } catch (error) {
       if (options.signal?.aborted) return { text, sessionId, aborted: true, exitCode: null, stdout: '', stderr: '', usage };
+      if (error instanceof FatalStderrError) throw error;
       if (!submitted || error instanceof SessionRpcError && error.code === -32601) return null;
       return { text, sessionId, aborted: cancelled, exitCode: 1, stdout: '', stderr: String(error), usage };
     } finally {

@@ -1,118 +1,133 @@
-import { liveReplyText } from '@dalang/shared';
+import { liveReplyText, parseLiveReply, parseTurnLogSignal, type TurnPhase, type TurnProgressEventPayload, type TurnStepDTO } from '@dalang/shared';
 
-/**
- * A readable view of what a CLI is doing, built from its raw log lines.
- * Each CLI writes its own JSON events (Claude Code stream-json, Codex JSONL, Antigravity step updates);
- * anything unrecognized is ignored, so the raw log stays available but never leads the screen.
- */
-export type LiveActivityKind = 'read' | 'search' | 'run' | 'think' | 'other';
+export type LiveActivityKind = 'read' | 'search' | 'edit' | 'run' | 'think' | 'other';
 
 export interface LiveActivity {
   kind: LiveActivityKind;
-  /** A file, pattern, command, or step name, shortened for display. */
   target?: string;
 }
 
 export interface LiveTurn {
+  role?: string;
+  profileName?: string;
+  model?: string | null;
+  phase: TurnPhase;
   activity: LiveActivity | null;
-  /** The answer so far, when the CLI streams plain text. */
+  steps: TurnStepDTO[];
+  progressMessages: string[];
+  /** Raw streamed answer text (may contain JSON contract wrapper; `displayLiveText` extracts the readable reply). */
   text: string;
 }
 
-export const EMPTY_LIVE_TURN: LiveTurn = { activity: null, text: '' };
+export const EMPTY_LIVE_TURN: LiveTurn = {
+  phase: 'starting',
+  activity: null,
+  steps: [],
+  progressMessages: [],
+  text: '',
+};
 
-// Long enough to keep a whole path; the screen shortens it after dropping the project folder.
-const MAX_TARGET = 400;
-
-function short(value: unknown): string | undefined {
-  if (typeof value !== 'string' || !value.trim()) return undefined;
-  const one = value.replace(/\s+/g, ' ').trim();
-  return one.length > MAX_TARGET ? `${one.slice(0, MAX_TARGET - 1)}…` : one;
+function upsertStep(steps: TurnStepDTO[], incoming: TurnStepDTO): TurnStepDTO[] {
+  const idx = steps.findIndex((s) => s.id === incoming.id);
+  if (idx === -1) {
+    return [...steps.slice(-24), incoming];
+  }
+  const prev = steps[idx];
+  const merged: TurnStepDTO = {
+    ...prev,
+    ...incoming,
+    target: incoming.target ?? prev.target,
+    startedAt: prev.startedAt,
+    durationMs:
+      incoming.durationMs ??
+      (incoming.status !== 'running'
+        ? Math.max(0, Date.now() - Date.parse(prev.startedAt))
+        : prev.durationMs),
+  };
+  const next = [...steps];
+  next[idx] = merged;
+  return next;
 }
 
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v);
+function appendProgress(list: string[], msg: string): string[] {
+  const clean = msg.trim();
+  if (!clean) return list;
+  if (list[list.length - 1] === clean) return list;
+  return [...list.slice(-15), clean];
 }
 
-function toolActivity(name: string, input: unknown): LiveActivity {
-  const args = isRecord(input) ? input : {};
-  // Claude names its arguments; other CLIs vary, so fall back to the first text argument.
-  const firstText = Object.values(args).find((v) => typeof v === 'string' && v.trim());
-  const target =
-    short(args.file_path) ??
-    short(args.path) ??
-    short(args.pattern) ??
-    short(args.query) ??
-    short(args.command) ??
-    short(firstText);
-  const lower = name.toLowerCase();
-  if (/read|view|open/.test(lower)) return { kind: 'read', target };
-  if (/grep|glob|find|search|list|^ls$/.test(lower)) return { kind: 'search', target };
-  if (/bash|run|exec|command|shell/.test(lower)) return { kind: 'run', target };
-  return { kind: 'other', target: target ? `${humanize(name)} ${target}` : humanize(name) };
+export function applyTurnProgress(turn: LiveTurn, event: TurnProgressEventPayload): LiveTurn {
+  let steps = turn.steps;
+  let activity = turn.activity;
+  if (event.step) {
+    steps = upsertStep(steps, event.step);
+    activity =
+      event.step.status === 'running'
+        ? { kind: event.step.kind, target: event.step.target ?? event.step.label }
+        : activity;
+  }
+  const progressMessages = event.progressText
+    ? appendProgress(turn.progressMessages, event.progressText)
+    : turn.progressMessages;
+
+  return {
+    ...turn,
+    role: event.role,
+    profileName: event.profileName,
+    model: event.model,
+    phase: event.phase,
+    activity,
+    steps,
+    progressMessages,
+  };
 }
 
-function humanize(stepType: string): string {
-  return stepType.replace(/[_-]+/g, ' ').trim();
+export function applyTextDelta(turn: LiveTurn, chunk: string, reset = false): LiveTurn {
+  const raw = reset ? chunk : turn.text + chunk;
+  const parsed = parseLiveReply(raw);
+  const progressMessages = parsed.progress
+    ? appendProgress(turn.progressMessages, parsed.progress)
+    : turn.progressMessages;
+  return {
+    ...turn,
+    phase: parsed.answer.trim() ? 'streaming' : turn.phase === 'starting' ? 'working' : turn.phase,
+    activity: parsed.answer.trim() ? null : turn.activity,
+    progressMessages,
+    text: raw,
+  };
 }
 
 export function applyLogLine(turn: LiveTurn, line: string): LiveTurn {
-  if (!line.startsWith('{')) return turn;
-  let event: unknown;
-  try {
-    event = JSON.parse(line);
-  } catch {
-    return turn;
+  const signal = parseTurnLogSignal(line);
+  if (!signal) return turn;
+  const nowIso = new Date().toISOString();
+  let steps = turn.steps;
+  let activity = turn.activity;
+  if (signal.step) {
+    const step: TurnStepDTO = { ...signal.step, startedAt: nowIso };
+    steps = upsertStep(steps, step);
+    activity =
+      step.status === 'running'
+        ? { kind: step.kind, target: step.target ?? step.label }
+        : activity;
   }
-  if (!isRecord(event)) return turn;
+  const progressMessages = signal.progressText
+    ? appendProgress(turn.progressMessages, signal.progressText)
+    : turn.progressMessages;
+  const text = signal.textDelta
+    ? turn.text + signal.textDelta
+    : signal.answerText && !turn.text
+      ? signal.answerText
+      : turn.text;
 
-  // Antigravity: {"event":"step_update","step_update":{"step_type","state","text_delta"}}
-  if (event.event === 'step_update' && isRecord(event.step_update)) {
-    const step = event.step_update;
-    const type = typeof step.step_type === 'string' ? step.step_type : '';
-    if (type === 'user_input') return turn;
-    if (type === 'tool') {
-      if (step.state !== 'ACTIVE') return turn;
-      const name = typeof step.tool_name === 'string' ? step.tool_name : '';
-      const params = isRecord(step.tool_info) ? step.tool_info.parameters : undefined;
-      return { ...turn, activity: toolActivity(name, params) };
-    }
-    if (type === 'agent_response') {
-      const delta = typeof step.text_delta === 'string' ? step.text_delta : '';
-      return { activity: null, text: turn.text + delta };
-    }
-    return type ? { ...turn, activity: { kind: 'other', target: humanize(type) } } : turn;
-  }
-
-  // Claude Code stream-json: assistant messages hold text and tool_use blocks.
-  if (event.type === 'assistant' && isRecord(event.message) && Array.isArray(event.message.content)) {
-    let next = turn;
-    for (const block of event.message.content) {
-      if (!isRecord(block)) continue;
-      if (block.type === 'tool_use' && typeof block.name === 'string') {
-        next = { ...next, activity: toolActivity(block.name, block.input) };
-      } else if (block.type === 'thinking') {
-        next = { ...next, activity: { kind: 'think' } };
-      } else if (block.type === 'text' && typeof block.text === 'string') {
-        next = { activity: null, text: next.text ? `${next.text}\n\n${block.text}` : block.text };
-      }
-    }
-    return next;
-  }
-
-  // Codex JSONL: items such as command_execution, reasoning, and agent_message.
-  if (isRecord(event.item) && typeof event.item.type === 'string') {
-    const item = event.item;
-    if (item.type === 'command_execution') {
-      return { ...turn, activity: { kind: 'run', target: short(item.command) } };
-    }
-    if (item.type === 'reasoning') return { ...turn, activity: { kind: 'think' } };
-    if (item.type === 'agent_message' && typeof item.text === 'string') {
-      return { activity: null, text: item.text };
-    }
-  }
-
-  return turn;
+  return {
+    ...turn,
+    phase: signal.phase ?? turn.phase,
+    activity,
+    steps,
+    progressMessages,
+    text,
+  };
 }
 
 /** The text to show while the turn runs, or an empty string when it would be raw JSON. */

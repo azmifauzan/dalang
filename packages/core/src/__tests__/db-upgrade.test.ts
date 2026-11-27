@@ -18,7 +18,7 @@ function getTableIndexColumns(sqlite: Database.Database, table: string): Map<str
 }
 
 function expectV17PragmasAndFkIndexes(sqlite: Database.Database): void {
-  expect(sqlite.pragma('user_version', { simple: true })).toBe(19);
+  expect(sqlite.pragma('user_version', { simple: true })).toBe(20);
   expect(sqlite.pragma('busy_timeout', { simple: true })).toBe(5000);
   expect(sqlite.pragma('synchronous', { simple: true })).toBe(1); // NORMAL
   expect(sqlite.pragma('journal_mode', { simple: true })).toBe('wal');
@@ -88,7 +88,7 @@ describe('database upgrade', () => {
     fresh.close();
 
     const upgraded = openDatabase(file);
-    expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(19);
+    expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(20);
     const runCols = (upgraded.sqlite.pragma('table_info(runs)') as Array<{ name: string }>).map((c) => c.name);
     expect(runCols).toContain('worktree_path');
     expect(runCols).toContain('input_tokens');
@@ -293,7 +293,7 @@ describe('database upgrade', () => {
     // Open and trigger v8 -> v9 upgrade
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(19);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(20);
 
       // Project A: 1 Full working session preserving brief, plan, tasks, messages, and moved artifacts
       const sessionsA = upgraded.sqlite
@@ -397,7 +397,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(19);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(20);
       const names = (
         upgraded.sqlite.prepare('SELECT name FROM agent_profiles ORDER BY name').all() as Array<{ name: string }>
       ).map((r) => r.name);
@@ -432,7 +432,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(19);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(20);
       const taskCols = (upgraded.sqlite.pragma('table_info(tasks)') as Array<{ name: string }>).map((c) => c.name);
       expect(taskCols).toContain('delegated_by_run_id');
       expect(taskCols).toContain('delegation_depth');
@@ -456,7 +456,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(19);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(20);
       const taskRepoCols = (
         upgraded.sqlite.pragma('table_info(task_repos)') as Array<{ name: string }>
       ).map((c) => c.name);
@@ -509,7 +509,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(19);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(20);
       const autoCols = (
         upgraded.sqlite.pragma('table_info(automations)') as Array<{ name: string }>
       ).map((c) => c.name);
@@ -566,7 +566,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(19);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(20);
       const msgCols = (
         upgraded.sqlite.pragma('table_info(messages)') as Array<{ name: string }>
       ).map((c) => c.name);
@@ -739,7 +739,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(19);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(20);
 
       const oldTask = upgraded.sqlite
         .prepare(`SELECT external_id, output_kind, verify FROM tasks WHERE id = 't-old'`)
@@ -1068,6 +1068,101 @@ describe('database upgrade', () => {
       });
     } finally {
       reopened.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('upgrades a v19 database to v20 by adding nullable per-step run timing columns without fabricating values', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dalang-up20-'));
+    const file = path.join(dir, 'dalang.db');
+    const now = '2026-11-27T00:00:00.000Z';
+
+    const v19 = openDatabase(file);
+    v19.sqlite.exec(`
+      ALTER TABLE runs DROP COLUMN setup_started_at;
+      ALTER TABLE runs DROP COLUMN setup_finished_at;
+      ALTER TABLE runs DROP COLUMN setup_ms;
+      ALTER TABLE runs DROP COLUMN slot_wait_started_at;
+      ALTER TABLE runs DROP COLUMN slot_wait_finished_at;
+      ALTER TABLE runs DROP COLUMN slot_wait_ms;
+      ALTER TABLE runs DROP COLUMN agent_started_at;
+      ALTER TABLE runs DROP COLUMN agent_finished_at;
+      ALTER TABLE runs DROP COLUMN agent_ms;
+      ALTER TABLE runs DROP COLUMN verify_started_at;
+      ALTER TABLE runs DROP COLUMN verify_finished_at;
+      ALTER TABLE runs DROP COLUMN verify_ms;
+      ALTER TABLE runs DROP COLUMN review_started_at;
+      ALTER TABLE runs DROP COLUMN review_finished_at;
+      ALTER TABLE runs DROP COLUMN review_ms;
+    `);
+    v19.sqlite
+      .prepare(
+        `INSERT INTO projects (id, name, path, main_branch, lead_provider, created_at, updated_at)
+         VALUES ('p20', 'v19-proj', ?, 'main', 'claude-code', ?, ?)`,
+      )
+      .run(path.join(dir, 'repo'), now, now);
+    v19.sqlite
+      .prepare(
+        `INSERT INTO sessions (id, project_id, title, mode, work_state, phase, provider, created_at, updated_at)
+         VALUES ('s20', 'p20', 'Legacy', 'quick', 'idle', 'run', 'claude-code', ?, ?)`,
+      )
+      .run(now, now);
+    v19.sqlite
+      .prepare(
+        `INSERT INTO plans (id, project_id, session_id, brief_id, version, status, file_path, created_at)
+         VALUES ('plan20', 'p20', 's20', NULL, 1, 'approved', '.dalang/sessions/s20/plan.json', ?)`,
+      )
+      .run(now);
+    v19.sqlite
+      .prepare(
+        `INSERT INTO tasks (id, plan_id, external_id, title, milestone, role, complexity, output_kind, status, position, goal, files_allowed_json, files_reference_json, acceptance_criteria_json, verify, created_at, updated_at)
+         VALUES ('t20', 'plan20', 'T-001', 'Legacy task', 'M1', 'engineer', 'low', 'files', 'done', 0, 'Goal', '[]', '[]', '["ok"]', NULL, ?, ?)`,
+      )
+      .run(now, now);
+    v19.sqlite
+      .prepare(
+        `INSERT INTO runs (id, project_id, task_id, profile_id, provider, kind, status, log_path, started_at, finished_at)
+         VALUES ('run20', 'p20', 't20', 'profile-coder-small', 'codex', 'execute', 'completed', '.dalang/logs/r20.log', ?, ?)`,
+      )
+      .run(now, now);
+    v19.sqlite.pragma('user_version = 19');
+    v19.close();
+
+    const upgraded = openDatabase(file);
+    try {
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(20);
+      const cols = (upgraded.sqlite.pragma('table_info(runs)') as Array<{ name: string }>).map((c) => c.name);
+      expect(cols).toEqual(
+        expect.arrayContaining([
+          'setup_started_at',
+          'setup_finished_at',
+          'setup_ms',
+          'slot_wait_started_at',
+          'slot_wait_finished_at',
+          'slot_wait_ms',
+          'agent_started_at',
+          'agent_finished_at',
+          'agent_ms',
+          'verify_started_at',
+          'verify_finished_at',
+          'verify_ms',
+          'review_started_at',
+          'review_finished_at',
+          'review_ms',
+        ]),
+      );
+      const legacy = upgraded.sqlite
+        .prepare(`SELECT setup_ms, slot_wait_ms, agent_ms, verify_ms, review_ms FROM runs WHERE id = 'run20'`)
+        .get();
+      expect(legacy).toEqual({
+        setup_ms: null,
+        slot_wait_ms: null,
+        agent_ms: null,
+        verify_ms: null,
+        review_ms: null,
+      });
+    } finally {
+      upgraded.close();
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });

@@ -1,17 +1,28 @@
 import type {
   AgentProfileDTO,
   AuthStatusDTO,
+  AutomationDTO,
+  AutomationRunDTO,
   BriefDTO,
   ChatMessageInput,
+  CreateAutomationInput,
+  CreatedAutomationDTO,
+  CreatedMcpTokenDTO,
+  CreateMcpTokenInput,
   CreateOrOpenProjectInput,
+  CreateProfileInput,
+  CreateRoutingRuleInput,
   DiscussMessageDTO,
   ExecutionStateDTO,
   GuardStateDTO,
+  McpTokenDTO,
   PlanDTO,
   ProjectSummary,
   ProviderCliUpdateResultDTO,
   ProviderId,
   ProviderStatus,
+  PushPrInput,
+  PushPrResultDTO,
   RoomRouteInfo,
   RoutingRuleDTO,
   SessionDetailDTO,
@@ -20,10 +31,15 @@ import type {
   SettingsDTO,
   TaskDiffDTO,
   TaskDTO,
+  TaskRunDTO,
+  TriggerAutomationInput,
+  UpdateAutomationInput,
   UpdateProfileInput,
   UpdateRoutingRuleInput,
+  UpdateSessionInput,
   UpdateSettingsInput,
   UpdateStatusDTO,
+  UsageStatisticsResponseDTO,
   WorkspaceSetupConfig,
   WorkspaceSetupDTO,
 } from '@dalang/shared';
@@ -195,6 +211,31 @@ export class RoomApiClient {
     });
   }
 
+  answerQuestion(
+    projectId: string,
+    sessionId: string,
+    input: { questionId: string; selectedLabels: string[]; customAnswer?: string },
+  ): Promise<ChatResponseDTO & { answerText: string }> {
+    return this.request(
+      `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/question/answer`,
+      { method: 'POST', body: JSON.stringify(input) },
+    );
+  }
+
+  getTriagePreview(): Promise<{ preview: import('@dalang/shared').TriageContextPreviewDTO }> {
+    return this.request('/api/triage/preview');
+  }
+
+  startTriage(
+    projectId: string,
+    input: { confirmed: true; note?: string; provider?: ProviderId; model?: string },
+  ): Promise<ChatResponseDTO & { preview: import('@dalang/shared').TriageContextPreviewDTO }> {
+    return this.request(`/api/projects/${encodeURIComponent(projectId)}/triage`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
   approveQuickAndRun(
     projectId: string,
     sessionId: string,
@@ -296,6 +337,16 @@ export class RoomApiClient {
       `/api/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/approve-merge`,
       { method: 'POST', body: JSON.stringify(opts) },
     );
+  }
+
+  runIntegration(
+    projectId: string,
+    opts: { command?: string; sessionId?: string; allowUnconfined?: boolean; bypassSandbox?: boolean } = {},
+  ): Promise<{ integrationRun: import('@dalang/shared').IntegrationRunDTO }> {
+    return this.request(`/api/projects/${encodeURIComponent(projectId)}/integration/run`, {
+      method: 'POST',
+      body: JSON.stringify(opts),
+    });
   }
 
   getWorkspaceSetup(projectId: string): Promise<WorkspaceSetupDTO> {
@@ -415,6 +466,223 @@ export class RoomApiClient {
   async listProfiles(): Promise<AgentProfileDTO[]> {
     const res = await this.request<{ profiles: AgentProfileDTO[] }>('/api/profiles');
     return res.profiles;
+  }
+
+  async createProfile(body: CreateProfileInput): Promise<AgentProfileDTO> {
+    const res = await this.request<{ profile: AgentProfileDTO }>('/api/profiles', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    return res.profile;
+  }
+
+  async deleteProfile(profileId: string): Promise<{ ok: boolean }> {
+    return this.request(`/api/profiles/${encodeURIComponent(profileId)}`, { method: 'DELETE' });
+  }
+
+  async createRoutingRule(body: CreateRoutingRuleInput): Promise<RoutingRuleDTO> {
+    const res = await this.request<{ rule: RoutingRuleDTO }>('/api/routing', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    return res.rule;
+  }
+
+  async deleteRoutingRule(ruleId: string): Promise<{ ok: boolean }> {
+    return this.request(`/api/routing/${encodeURIComponent(ruleId)}`, { method: 'DELETE' });
+  }
+
+  async reorderRoutingRules(ruleIds: string[]): Promise<RoutingRuleDTO[]> {
+    const res = await this.request<{ rules: RoutingRuleDTO[] }>('/api/routing/reorder', {
+      method: 'POST',
+      body: JSON.stringify({ ruleIds }),
+    });
+    return res.rules;
+  }
+
+  async clearProviderCooldown(provider: ProviderId): Promise<{ ok: boolean }> {
+    return this.request(`/api/providers/${encodeURIComponent(provider)}/clear-cooldown`, {
+      method: 'POST',
+    });
+  }
+
+  async updateProjectSettings(
+    projectId: string,
+    body: {
+      leadProvider?: ProviderId;
+      leadModel?: string | null;
+      integrationCommand?: string | null;
+      pushAfterMerge?: boolean;
+      createPrAfterMerge?: boolean;
+      gitRemote?: string | null;
+    },
+  ): Promise<ProjectSummary> {
+    const res = await this.request<{ project: ProjectSummary }>(
+      `/api/projects/${encodeURIComponent(projectId)}/settings`,
+      { method: 'PATCH', body: JSON.stringify(body) },
+    );
+    return res.project;
+  }
+
+  deleteProject(projectId: string): Promise<{ ok: boolean }> {
+    return this.request(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'DELETE' });
+  }
+
+  getProjectMd(projectId: string): Promise<{ content: string; symlinksValid: { claudeMd: boolean; agentsMd: boolean } }> {
+    return this.request(`/api/projects/${encodeURIComponent(projectId)}/project-md`);
+  }
+
+  saveProjectMd(
+    projectId: string,
+    content: string,
+    repairSymlinks = true,
+  ): Promise<{ content: string; symlinksValid: { claudeMd: boolean; agentsMd: boolean } }> {
+    return this.request(`/api/projects/${encodeURIComponent(projectId)}/project-md`, {
+      method: 'PUT',
+      body: JSON.stringify({ content, repairSymlinks }),
+    });
+  }
+
+  async updateSession(projectId: string, sessionId: string, body: UpdateSessionInput): Promise<SessionSummaryDTO> {
+    const res = await this.request<{ session: SessionSummaryDTO }>(
+      `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}`,
+      { method: 'PATCH', body: JSON.stringify(body) },
+    );
+    return res.session;
+  }
+
+  deleteSession(projectId: string, sessionId: string): Promise<{ ok: boolean }> {
+    return this.request(
+      `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}`,
+      { method: 'DELETE' },
+    );
+  }
+
+  discardSessionWork(projectId: string, sessionId: string): Promise<{ session: SessionSummaryDTO; discardedTasks: number }> {
+    return this.request(
+      `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/discard`,
+      { method: 'POST' },
+    );
+  }
+
+  runTask(
+    projectId: string,
+    taskId: string,
+    body: { allowUnconfined?: boolean; resumeSession?: boolean } = {},
+  ): Promise<{ started: boolean; run: TaskRunDTO | null; queueMode: boolean }> {
+    return this.request(
+      `/api/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/run`,
+      { method: 'POST', body: JSON.stringify(body) },
+    );
+  }
+
+  async assignTaskProfile(projectId: string, taskId: string, profileOverride: string | null): Promise<TaskDTO> {
+    const res = await this.request<{ task: TaskDTO }>(
+      `/api/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/profile`,
+      { method: 'PATCH', body: JSON.stringify({ profileOverride }) },
+    );
+    return res.task;
+  }
+
+  getRunLog(projectId: string, runId: string): Promise<{ runId: string; logPath: string; content: string }> {
+    return this.request(
+      `/api/projects/${encodeURIComponent(projectId)}/runs/${encodeURIComponent(runId)}/log`,
+    );
+  }
+
+  async rollbackRun(projectId: string, runId: string): Promise<TaskRunDTO> {
+    const res = await this.request<{ run: TaskRunDTO }>(
+      `/api/projects/${encodeURIComponent(projectId)}/runs/${encodeURIComponent(runId)}/rollback`,
+      { method: 'POST' },
+    );
+    return res.run;
+  }
+
+  async pushTaskPr(projectId: string, taskId: string, body: Partial<PushPrInput> = {}): Promise<PushPrResultDTO> {
+    const res = await this.request<{ result: PushPrResultDTO }>(
+      `/api/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/push-pr`,
+      { method: 'POST', body: JSON.stringify(body) },
+    );
+    return res.result;
+  }
+
+  async listAutomations(projectId?: string): Promise<AutomationDTO[]> {
+    const qs = projectId ? `?projectId=${encodeURIComponent(projectId)}` : '';
+    const res = await this.request<{ automations: AutomationDTO[] }>(`/api/automations${qs}`);
+    return res.automations;
+  }
+
+  async createAutomation(body: CreateAutomationInput): Promise<CreatedAutomationDTO> {
+    const res = await this.request<{ automation: CreatedAutomationDTO }>('/api/automations', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    return res.automation;
+  }
+
+  async updateAutomation(id: string, body: UpdateAutomationInput): Promise<AutomationDTO> {
+    const res = await this.request<{ automation: AutomationDTO }>(`/api/automations/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    });
+    return res.automation;
+  }
+
+  deleteAutomation(id: string): Promise<{ ok: boolean }> {
+    return this.request(`/api/automations/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  }
+
+  async triggerAutomation(id: string, body: TriggerAutomationInput = {}): Promise<AutomationRunDTO> {
+    const res = await this.request<{ run: AutomationRunDTO }>(
+      `/api/automations/${encodeURIComponent(id)}/trigger`,
+      { method: 'POST', body: JSON.stringify(body) },
+    );
+    return res.run;
+  }
+
+  async rotateWebhookSecret(id: string): Promise<CreatedAutomationDTO> {
+    const res = await this.request<{ automation: CreatedAutomationDTO }>(
+      `/api/automations/${encodeURIComponent(id)}/rotate-secret`,
+      { method: 'POST' },
+    );
+    return res.automation;
+  }
+
+  async listAutomationRuns(id: string, limit = 20): Promise<AutomationRunDTO[]> {
+    const res = await this.request<{ runs: AutomationRunDTO[] }>(
+      `/api/automations/${encodeURIComponent(id)}/runs?limit=${limit}`,
+    );
+    return res.runs;
+  }
+
+  listMcpTokens(): Promise<{ tokens: McpTokenDTO[]; endpointUrl: string | null }> {
+    return this.request('/api/mcp-tokens');
+  }
+
+  createMcpToken(body: CreateMcpTokenInput): Promise<CreatedMcpTokenDTO> {
+    return this.request('/api/mcp-tokens', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }
+
+  revokeMcpToken(id: string): Promise<{ tokenInfo: McpTokenDTO }> {
+    return this.request(`/api/mcp-tokens/${encodeURIComponent(id)}/revoke`, { method: 'POST' });
+  }
+
+  deleteMcpToken(id: string): Promise<{ ok: boolean }> {
+    return this.request(`/api/mcp-tokens/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  }
+
+  async getUsageStatistics(params: { projectId?: string; days?: number } = {}): Promise<UsageStatisticsResponseDTO> {
+    const search = new URLSearchParams();
+    if (params.projectId) search.set('projectId', params.projectId);
+    if (params.days !== undefined) search.set('days', String(params.days));
+    const qs = search.toString();
+    const res = await this.request<{ statistics: UsageStatisticsResponseDTO }>(
+      `/api/statistics${qs ? `?${qs}` : ''}`,
+    );
+    return res.statistics;
   }
 
   connectEvents(

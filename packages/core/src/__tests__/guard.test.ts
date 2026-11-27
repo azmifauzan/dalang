@@ -95,7 +95,9 @@ describe('v0.3 Kawal: Reviewer, Fix Loop, Guard Diff/Merge, Integration, Profile
       },
     };
 
-    const { conn, project, plan, execSvc, projDir } = await setupApprovedProject(runner);
+    const { conn, project, plan, execSvc, projDir } = await setupApprovedProject(runner, [
+      { id: 'T-001', title: 'Store validation', complexity: 'medium', files_allowed: ['src/**'] },
+    ]);
     const taskId = plan.tasks[0].id;
 
     try {
@@ -202,7 +204,9 @@ describe('v0.3 Kawal: Reviewer, Fix Loop, Guard Diff/Merge, Integration, Profile
       },
     };
 
-    const { conn, project, plan, execSvc, projDir } = await setupApprovedProject(runner);
+    const { conn, project, plan, execSvc, projDir } = await setupApprovedProject(runner, [
+      { id: 'T-001', title: 'Verify check', complexity: 'medium', files_allowed: ['src/**'] },
+    ]);
     try {
       await execSvc.startExecution(project.id, { taskId: plan.tasks[0].id, allowUnconfined: true });
       await execSvc.waitForProjectExecution(project.id);
@@ -374,7 +378,9 @@ describe('v0.3 Kawal: Reviewer, Fix Loop, Guard Diff/Merge, Integration, Profile
       },
     };
 
-    const { conn, project, plan, execSvc, projDir } = await setupApprovedProject(runner);
+    const { conn, project, plan, execSvc, projDir } = await setupApprovedProject(runner, [
+      { id: 'T-001', title: 'Store validation', complexity: 'medium', files_allowed: ['src/**'] },
+    ]);
     const taskId = plan.tasks[0].id;
     try {
       await execSvc.startExecution(project.id, { taskId, allowUnconfined: true });

@@ -120,6 +120,16 @@ export function AskSessionView({
       qc.invalidateQueries({ queryKey: ['discuss', project.id, session?.id] });
     },
   });
+  const answerQuestionMutation = useMutation({
+    mutationFn: (payload: { questionId: string; selectedLabels: string[]; customAnswer?: string }) =>
+      api.answerQuestion(project.id, session!.id, payload),
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ['sessions', project.id] });
+      qc.invalidateQueries({ queryKey: ['discuss', project.id, res.session.id] });
+      qc.invalidateQueries({ queryKey: ['plan', project.id, res.session.id] });
+      onSessionCreatedOrUpdated(res.session);
+    },
+  });
 
   const sendMutation = useMutation({
     mutationFn: (vars: { message: string; mode: SessionMode; images: ChatImage[] }) =>
@@ -246,6 +256,15 @@ export function AskSessionView({
                         pending: allowScopeMutation.isPending,
                         error: allowScopeMutation.isError ? (allowScopeMutation.error as Error).message : null,
                         onAllow: () => allowScopeMutation.mutate({ taskId: scopeAsk.taskId, files: scopeAsk.files }),
+                      }
+                    : undefined
+                }
+                questionAnswer={
+                  session
+                    ? {
+                        pending: answerQuestionMutation.isPending,
+                        error: answerQuestionMutation.isError ? (answerQuestionMutation.error as Error).message : null,
+                        onAnswer: (payload) => answerQuestionMutation.mutate(payload),
                       }
                     : undefined
                 }

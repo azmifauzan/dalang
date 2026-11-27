@@ -516,12 +516,23 @@ export function WorkView({
                                 type="button"
                                 variant={task.eligible ? 'default' : 'outline'}
                                 disabled={!canRunFresh || runTaskMutation.isPending}
-                                onClick={() =>
+                                onClick={() => {
+                                  const isDestructiveRetry =
+                                    task.status === 'failed' ||
+                                    task.status === 'review_failed' ||
+                                    task.status === 'stopped' ||
+                                    task.status === 'done';
+                                  if (
+                                    isDestructiveRetry &&
+                                    !window.confirm(t('destructive.retryWarn', { task: task.externalId }))
+                                  ) {
+                                    return;
+                                  }
                                   runTaskMutation.mutate({
                                     taskId: task.taskId,
                                     resumeSession: false,
-                                  })
-                                }
+                                  });
+                                }}
                               >
                                 {task.status === 'failed' ||
                                 task.status === 'review_failed' ||
@@ -680,6 +691,25 @@ export function WorkView({
                           {inspectedRun.commitAfter?.slice(0, 7) ?? 'pending'}
                           {inspectedRun.branchName ? ` · ${inspectedRun.branchName}` : ''}
                         </p>
+                        {inspectedRun.timing && (
+                          <p
+                            data-testid="run-timing-breakdown"
+                            className="mt-1 font-mono-token text-xs"
+                            style={{ color: 'var(--text-secondary)' }}
+                          >
+                            {[
+                              inspectedRun.timing.setupMs !== null ? `setup ${formatDuration(inspectedRun.timing.setupMs)}` : null,
+                              inspectedRun.timing.slotWaitMs !== null && inspectedRun.timing.slotWaitMs > 0
+                                ? `wait ${formatDuration(inspectedRun.timing.slotWaitMs)}`
+                                : null,
+                              inspectedRun.timing.agentMs !== null ? `agent ${formatDuration(inspectedRun.timing.agentMs)}` : null,
+                              inspectedRun.timing.verifyMs !== null ? `verify ${formatDuration(inspectedRun.timing.verifyMs)}` : null,
+                              inspectedRun.timing.reviewMs !== null ? `review ${formatDuration(inspectedRun.timing.reviewMs)}` : null,
+                            ]
+                              .filter(Boolean)
+                              .join(' · ')}
+                          </p>
+                        )}
                       </div>
 
                       {inspectedRun.commitBefore &&

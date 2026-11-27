@@ -63,6 +63,7 @@ export function ModeComposer({
   const fileInput = useRef<HTMLInputElement>(null);
   const [readingImages, setReadingImages] = useState(false);
   const [imageError, setImageError] = useState<string | null>(null);
+  const [busyNotice, setBusyNotice] = useState<string | null>(null);
   const supportsImages = modelPicker?.provider !== 'antigravity';
   const attachLabel = t(readingImages ? 'chat.readingImages' : 'chat.attachImages');
 
@@ -171,6 +172,12 @@ export function ModeComposer({
   return (
     <form
       onSubmit={(e) => {
+        if (busy) {
+          e.preventDefault();
+          setBusyNotice(t('sessions.busyCannotSend'));
+          return;
+        }
+        setBusyNotice(null);
         if (canSend) onSubmit(e);
         else e.preventDefault();
       }}
@@ -233,6 +240,7 @@ export function ModeComposer({
         </ul>
       )}
       {imageError && <p role="alert" className="mt-2 text-sm text-destructive">{imageError}</p>}
+      {busyNotice && busy && <p role="status" className="mt-2 text-xs text-amber-600 dark:text-amber-400">{busyNotice}</p>}
       {!supportsImages && <p className="mt-2 text-xs text-muted-foreground">{t('chat.imagesProvider')}</p>}
 
       <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
@@ -312,7 +320,7 @@ export function ModeComposer({
               model={modelPicker.model}
               effort={modelPicker.effort}
               providers={modelPicker.providers}
-              disabled={busy}
+              disabled={false}
               onChange={modelPicker.onChange}
             />
           )}

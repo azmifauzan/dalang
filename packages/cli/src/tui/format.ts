@@ -2,20 +2,22 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type {
-  AskMessageContent,
-  ChatImageMessage,
-  DiscussMessageDTO,
-  DiscussRound,
-  GuardStateDTO,
-  GuardTaskEntryDTO,
-  ProviderStatus,
-  QuickPlanMessageContent,
-  RoomReportContent,
-  SessionDetailDTO,
-  TaskOutputKind,
-  WorkspaceSetupDTO,
-  ExecutionStateDTO,
+import {
+  analyzePlanDependencies,
+  formatPlanDependencySummary,
+  type AskMessageContent,
+  type ChatImageMessage,
+  type DiscussMessageDTO,
+  type DiscussRound,
+  type GuardStateDTO,
+  type GuardTaskEntryDTO,
+  type ProviderStatus,
+  type QuickPlanMessageContent,
+  type RoomReportContent,
+  type SessionDetailDTO,
+  type TaskOutputKind,
+  type WorkspaceSetupDTO,
+  type ExecutionStateDTO,
 } from '@dalang/shared';
 
 function displayTaskRole(role: string): string {
@@ -41,6 +43,16 @@ export type PendingGate = GateText &
     | { kind: 'approve_plan'; version: number; taskCount: number }
     // The Lead's yes/no question before Auto work replaces unfinished work; the answer goes to the Lead.
     | { kind: 'auto_work' }
+    // Structured Lead question (U3, B12) with numbered choices.
+    | {
+        kind: 'lead_question';
+        questionId: string;
+        header: string;
+        question: string;
+        options: Array<{ label: string; description: string }>;
+        allowCustomAnswer: boolean;
+        multiSelect: boolean;
+      }
     // A task asked for files outside its files_allowed (R10).
     | { kind: 'scope_request'; taskId: string; externalId: string; files: string[] }
     | { kind: 'continue_task'; taskId: string; externalId: string }
@@ -138,6 +150,36 @@ export function detectPendingGate(
     }
   }
 
+  // 2b. Structured Lead question (U3, B12) waiting for a numbered choice or custom answer.
+  for (let i = detail.messages.length - 1; i >= 0; i--) {
+    const m = detail.messages[i];
+    if (m.role !== 'lead' || m.type !== 'ask' || !m.content || typeof m.content !== 'object') continue;
+    const ask = m.content as AskMessageContent;
+    if (ask.question && !ask.question.answered) {
+      const q = ask.question;
+      const optionLines = q.options.map(
+        (opt, idx) => `${idx + 1}. ${opt.label}${opt.description ? ` — ${opt.description}` : ''}`,
+      );
+      const pickHint = q.multiSelect
+        ? `Type choice number(s) like 1 or 1,2${q.allowCustomAnswer ? ', or your own answer' : ''}`
+        : `Type 1-${q.options.length}${q.allowCustomAnswer ? ', or your own answer' : ''}`;
+      return {
+        kind: 'lead_question',
+        questionId: q.id,
+        header: q.header,
+        question: q.question,
+        options: q.options,
+        allowCustomAnswer: q.allowCustomAnswer,
+        multiSelect: q.multiSelect,
+        prompt: `${q.header}: ${q.question}`,
+        context: optionLines.join('\n'),
+        yes: pickHint,
+        no: 'use /stop or switch sessions to leave it waiting',
+      };
+    }
+    break;
+  }
+
   // 2. The Lead asked whether Auto work may replace unfinished work. Its text is in the timeline above.
   const last = detail.messages.at(-1);
   if (detail.session.mode === 'auto' && last?.role === 'lead' && last.type === 'ask' &&
@@ -209,12 +251,27 @@ export function detectPendingGate(
     const hasNeedsSplit = detail.plan.tasks.some((t) => t.needsSplit);
     if (!hasNeedsSplit && detail.plan.tasks.length > 0) {
       const auto = detail.session.mode === 'auto';
+      const depSummary = formatPlanDependencySummary(
+        analyzePlanDependencies(
+          detail.plan.tasks
+            .filter((t) => typeof t.externalId === 'string' && t.externalId.length > 0)
+            .map((t) => ({
+              externalId: t.externalId,
+              title: t.title,
+              dependsOn: Array.isArray(t.dependsOn) ? t.dependsOn : [],
+            })),
+        ),
+      );
+      const contextLines = [
+        depSummary,
+        auto ? 'The tasks, their order, and their executors are in the plan above.' : null,
+      ].filter(Boolean);
       return {
         kind: 'approve_plan',
         version: detail.plan.version,
         taskCount: detail.plan.tasks.length,
         prompt: `Approve Plan v${detail.plan.version} (${detail.plan.tasks.length} task(s)) and start work?`,
-        context: auto ? 'The tasks, their order, and their executors are in the plan above.' : undefined,
+        context: contextLines.length > 0 ? contextLines.join('\n') : undefined,
         yes: 'approve and start',
         no: auto ? 'keep it as a draft · or send a message to change it' : 'keep the plan as a draft',
       };
@@ -451,6 +508,14 @@ export function formatRoomMessage(msg: DiscussMessageDTO): FormattedRoomMessage 
         ? `Proposed plan: ${p.taskCount ?? p.tasks?.length ?? 0} task(s). Nothing runs until you approve it.`
         : `Plan ready: ${p.taskCount ?? p.tasks?.length ?? 0} task(s) across ${p.milestoneCount ?? 1} milestone(s).`,
     );
+    if (p.tasks && p.tasks.length > 1) {
+      const depLine = formatPlanDependencySummary(
+        analyzePlanDependencies(
+          p.tasks.map((t) => ({ externalId: t.id, title: t.title, dependsOn: t.dependsOn ?? [] })),
+        ),
+      );
+      if (depLine) lines.push(`  ${depLine}`);
+    }
     // A plan waiting for approval lists every task with its order and executor; an older plan only the first eight.
     for (const t of p.awaitingApproval ? (p.tasks ?? []) : (p.tasks ?? []).slice(0, 8)) {
       const outputTag = t.output === 'answer' ? ' · answer' : '';
@@ -461,8 +526,24 @@ export function formatRoomMessage(msg: DiscussMessageDTO): FormattedRoomMessage 
   } else if (msg.type === 'report' && msg.content && typeof msg.content === 'object') {
     const rep = msg.content as RoomReportContent;
     badge = rep.event.replace(/_/g, ' ').toUpperCase();
-    lines.push(...rep.summary.split('\n'));
-    if (rep.diffStats) {
+    if (rep.resultSummary) {
+      const rs = rep.resultSummary;
+      lines.push(`── RESULT [${rs.externalId}] ${rs.title} (${rs.outcome.toUpperCase()}) ──`);
+      lines.push(`  Done: ${rs.whatWasDone}`);
+      if (rs.changedFiles.length > 0) {
+        lines.push(`  Files (${rs.changedFiles.length}):`);
+        for (const f of rs.changedFiles.slice(0, 10)) {
+          lines.push(`    ${f.path} (+${f.additions} -${f.deletions})`);
+        }
+      }
+      lines.push(`  Verify: ${rs.verifyResult}`);
+      if (rs.reviewResult) lines.push(`  Review: ${rs.reviewResult}`);
+      if (rs.durationMs !== null) lines.push(`  Duration: ${(rs.durationMs / 1000).toFixed(1)}s`);
+      lines.push(`  Next: ${rs.nextStep}`);
+    } else {
+      lines.push(...rep.summary.split('\n'));
+    }
+    if (rep.diffStats && !rep.resultSummary) {
       lines.push(
         `  Diff: ${rep.diffStats.filesChanged} file(s), +${rep.diffStats.insertions} -${rep.diffStats.deletions}`,
       );

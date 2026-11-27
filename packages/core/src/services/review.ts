@@ -3,12 +3,34 @@ import path from 'node:path';
 import { z } from 'zod';
 import {
   ReviewContractSchema,
+  TaskResultContractSchema,
   type AgentProfileDTO,
   type ReviewContract,
+  type SessionMode,
+  type TaskComplexity,
   type TaskDTO,
+  type TaskResearchDTO,
   type TaskResultContract,
   type UiLanguage,
 } from '@dalang/shared';
+import { enforceExecutorPromptLimit, formatResearchForReview } from './task-context.js';
+
+/**
+ * Light review policy (PRD v0.15 P2):
+ * Low-complexity tasks and Quick sessions run verify + 1 review round and stop at the
+ * merge gate with findings instead of starting an automatic fix round; the user chooses
+ * whether to continue fixing (U7) or override.
+ */
+export function shouldAutoFixAfterReview(opts: {
+  complexity: TaskComplexity;
+  sessionMode: SessionMode | null | undefined;
+  round: number;
+  maxRounds: number;
+}): boolean {
+  if (opts.round >= opts.maxRounds) return false;
+  if (opts.complexity === 'low' || opts.sessionMode === 'quick') return false;
+  return true;
+}
 import type { AdapterTurnResult } from '../adapters/types.js';
 import { readArtifactFile } from '../safe-fs.js';
 import { formatZodError } from './contract.js';
@@ -147,6 +169,7 @@ export function buildReviewPrompt(opts: {
   answerContent?: string | null;
   relAnswerPath?: string | null;
   coderResult: TaskResultContract | null;
+  coderResearch?: TaskResearchDTO | null;
   language?: UiLanguage;
 }): string {
   const jsonSchema = z.toJSONSchema(ReviewContractSchema);
@@ -192,7 +215,7 @@ export function buildReviewPrompt(opts: {
     : [
         `Allowed files (files_allowed):`,
         opts.task.filesAllowed.length > 0 ? opts.task.filesAllowed.map((f) => `- ${f}`).join('\n') : '- (project workspace)',
-        `DALANG requires the executor to write "${opts.relReviewPath.replace(/review\.json$/, 'result.json')}" as orchestration metadata, even when the task says only one project file may change. This required result file is not a scope violation. Do not ask the executor to remove it. Other changes outside files_allowed still require justification.`,
+        `DALANG requires the executor to write "${opts.relReviewPath.replace(/review\.json$/, 'result.json')}" (and optional "research.json") under ".dalang/" as orchestration metadata, even when the task says only one project file may change. These metadata files are not scope violations. Do not ask the executor to remove them. Other changes outside files_allowed still require justification.`,
       ].join('\n');
 
   const workArtifactBlock = isAnswer
@@ -232,6 +255,7 @@ export function buildReviewPrompt(opts: {
     opts.scopeWarnings.length > 0 ? opts.scopeWarnings.map((w) => `- ${w}`).join('\n') : '- None',
     ``,
     opts.coderResult ? `Executor result summary:\n${opts.coderResult.summary}` : '',
+    formatResearchForReview(opts.coderResearch),
     ``,
     workArtifactBlock,
     ``,
@@ -271,22 +295,12 @@ export function buildFixPrompt(opts: {
   review: ReviewContract;
   verifyOutput: string;
   scopeWarnings: string[];
+  handoffContext?: string;
+  sharedContext?: string;
 }): string {
   const isAnswer = opts.task.output === 'answer';
   const hasVerify = Boolean(opts.task.verify?.trim());
-  const jsonSchema = z.toJSONSchema(
-    z.object({
-      task_id: z.string(),
-      status: z.enum(['completed', 'blocked', 'failed']),
-      changed_files: z.array(z.string()),
-      summary: z.string(),
-      answer: z.string().optional(),
-      notes: z.array(z.string()),
-      blockers: z.array(z.string()),
-      verify_command: z.string().nullable().optional(),
-      verify_exit_code: z.number().int().nullable().optional(),
-    }),
-  );
+  const jsonSchema = z.toJSONSchema(TaskResultContractSchema);
 
   const findingsText =
     opts.review.findings.length > 0
@@ -311,27 +325,32 @@ export function buildFixPrompt(opts: {
       ? `Run "${opts.task.verify}" after fixing, then write the updated result JSON to "${opts.relResultPath}" matching:`
       : `Re-check every acceptance criterion after fixing, then write the updated result JSON to "${opts.relResultPath}" matching:`;
 
-  return [
-    `Review round ${opts.round} FAILED for task ${opts.task.externalId}: "${opts.task.title}". Fix the issues and re-check.`,
-    opts.profile.rolePrompt ? `Role instructions: ${opts.profile.rolePrompt}` : '',
-    ``,
-    `Review findings to resolve:`,
-    findingsText,
-    ``,
-    opts.scopeWarnings.length > 0
-      ? `Scope warnings (${isAnswer ? 'revert all edits to project files outside .dalang/' : 'revert or justify edits outside files_allowed'}):\n${opts.scopeWarnings.map((w) => `- ${w}`).join('\n')}\n`
-      : '',
-    verifySection,
-    ``,
-    scopeSection,
-    ``,
-    `Fix the cause of each finding, not only the example it names: the next review checks the same places again.`,
-    selfReviewBlock(isAnswer),
-    ``,
-    finishLine,
-    JSON.stringify(jsonSchema, null, 2),
-    `Set "task_id" to "${opts.task.externalId}".`,
-  ]
-    .filter(Boolean)
-    .join('\n');
+  return enforceExecutorPromptLimit(
+    [
+      `Review round ${opts.round} FAILED for task ${opts.task.externalId}: "${opts.task.title}". Fix the issues and re-check.`,
+      opts.profile.rolePrompt ? `Role instructions: ${opts.profile.rolePrompt}` : '',
+      opts.handoffContext ?? '',
+      opts.sharedContext ?? '',
+      ``,
+      `Review findings to resolve:`,
+      findingsText,
+      ``,
+      opts.scopeWarnings.length > 0
+        ? `Scope warnings (${isAnswer ? 'revert all edits to project files outside .dalang/' : 'revert or justify edits outside files_allowed'}):\n${opts.scopeWarnings.map((w) => `- ${w}`).join('\n')}\n`
+        : '',
+      verifySection,
+      ``,
+      scopeSection,
+      ``,
+      `Fix the cause of each finding, not only the example it names: the next review checks the same places again.`,
+      `Include short "decisions" or "findings" in result.json for traps/conventions later tasks should know, and include "handoff" ({ what_done, what_left, why }) describing what you fixed and anything still left.`,
+      selfReviewBlock(isAnswer),
+      ``,
+      finishLine,
+      JSON.stringify(jsonSchema, null, 2),
+      `Set "task_id" to "${opts.task.externalId}".`,
+    ]
+      .filter(Boolean)
+      .join('\n'),
+  );
 }

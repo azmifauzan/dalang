@@ -28,7 +28,7 @@ import { WorkView } from './components/WorkView.js';
 import { I18nProvider, useI18n } from './i18n/index.js';
 import { parseRunLogActivity, type ActivityFeedItem } from './lib/activity.js';
 import { api } from './lib/api.js';
-import { applyLogLine, EMPTY_LIVE_TURN, type LiveTurn } from './lib/liveTurn.js';
+import { applyLogLine, applyTextDelta, applyTurnProgress, EMPTY_LIVE_TURN, type LiveTurn } from './lib/liveTurn.js';
 
 interface LiveSession {
   logs: string[];
@@ -534,9 +534,17 @@ function AppShell({ authEnabled }: { authEnabled: boolean }) {
             profileName?: string;
             provider?: string;
             line?: string;
+            text?: string;
+            reset?: boolean;
+            phase?: string;
             status?: string;
             error?: string;
             round?: number;
+            role?: 'lead' | 'executor' | 'fix' | 'reviewer';
+            model?: string | null;
+            step?: import('@dalang/shared').TurnStepDTO;
+            progressText?: string;
+            startedAt?: string;
           };
 
           if (msg.type === 'lead.turn_started' && msg.projectId === activeProjectId) {
@@ -548,9 +556,39 @@ function AppShell({ authEnabled }: { authEnabled: boolean }) {
               }));
             }
             qc.invalidateQueries({ queryKey: ['statistics'] });
+          } else if (msg.type === 'lead.text' && msg.projectId === activeProjectId && typeof msg.text === 'string') {
+            if (msg.sessionId) {
+              setNewestLiveSessionId(msg.sessionId);
+              setLiveBySession((prev) => {
+                const current = prev[msg.sessionId!] ?? { logs: [], turn: EMPTY_LIVE_TURN };
+                return {
+                  ...prev,
+                  [msg.sessionId!]: {
+                    ...current,
+                    turn: applyTextDelta(current.turn, msg.text!, msg.reset === true),
+                  },
+                };
+              });
+            }
+          } else if (msg.type === 'turn.progress' && msg.projectId === activeProjectId && msg.sessionId) {
+            if (msg.role === 'lead') {
+              setLiveBySession((prev) => {
+                const current = prev[msg.sessionId!] ?? { logs: [], turn: EMPTY_LIVE_TURN };
+                return {
+                  ...prev,
+                  [msg.sessionId!]: {
+                    ...current,
+                    turn: applyTurnProgress(current.turn, msg as unknown as import('@dalang/shared').TurnProgressEventPayload),
+                  },
+                };
+              });
+            }
           } else if (msg.type === 'lead.turn_finished' && msg.projectId) {
             refreshUsageAfterRun();
             qc.invalidateQueries({ queryKey: ['statistics'] });
+            qc.invalidateQueries({ queryKey: ['discuss', msg.projectId] });
+            qc.invalidateQueries({ queryKey: ['session-detail', msg.projectId] });
+            qc.invalidateQueries({ queryKey: ['sessions', msg.projectId] });
           } else if (msg.type === 'lead.log' && msg.projectId === activeProjectId && msg.line) {
             if (msg.sessionId) {
               setLiveBySession((prev) => {
@@ -710,6 +748,11 @@ function AppShell({ authEnabled }: { authEnabled: boolean }) {
             qc.invalidateQueries({ queryKey: ['execution', msg.projectId] });
             qc.invalidateQueries({ queryKey: ['plan', msg.projectId] });
             qc.invalidateQueries({ queryKey: ['session-detail', msg.projectId] });
+          } else if (
+            (msg.type === 'run.slot_waiting' || msg.type === 'run.slot_acquired') &&
+            msg.projectId
+          ) {
+            qc.invalidateQueries({ queryKey: ['execution', msg.projectId] });
           } else if (msg.type === 'integration.finished' && msg.projectId) {
             pushActivity(msg.projectId, {
               id: `integration-${Date.now()}`,
@@ -794,6 +837,26 @@ function AppShell({ authEnabled }: { authEnabled: boolean }) {
       closeCurrentSocket();
     };
   }, [activeProjectId, authEnabled, qc]);
+
+  useEffect(() => {
+    const base = activeProject ? `${activeProject.name} · DALANG` : 'DALANG';
+    const needsApproval = Boolean(
+      activeSession &&
+        (activeSession.phase === 'agree' ||
+          activeSession.planStatus === 'draft' ||
+          activeSession.latestBriefStatus === 'draft'),
+    );
+    const working = activeSession?.workState === 'working' || Boolean(activeSession?.turn);
+    if (needsApproval && !working) {
+      document.title = `* ${activeSession?.title || 'Approval'} · ${base}`;
+    } else if (working) {
+      document.title = `⟳ ${activeSession?.title || 'Working'} · ${base}`;
+    } else if (activeSession?.title) {
+      document.title = `${activeSession.title} · ${base}`;
+    } else {
+      document.title = base;
+    }
+  }, [activeProject, activeSession]);
 
   const handleSelectProject = (project: ProjectSummary) => {
     setActiveProjectId(project.id);
@@ -989,6 +1052,15 @@ function AppShell({ authEnabled }: { authEnabled: boolean }) {
               factoryResetError={factoryResetMutation.isError ? factoryResetMutation.error.message : null}
               onSignOut={signOut}
               signingOut={signOutMutation.isPending}
+              activeProjectId={activeProjectId ?? projects[0]?.id ?? null}
+              onTriageSessionStarted={(sessionId) => {
+                setSection('project');
+                setActiveSessionId(sessionId);
+                if (activeProjectId) {
+                  qc.invalidateQueries({ queryKey: ['sessions', activeProjectId] });
+                  qc.invalidateQueries({ queryKey: ['discuss', activeProjectId, sessionId] });
+                }
+              }}
             />
           )}
 

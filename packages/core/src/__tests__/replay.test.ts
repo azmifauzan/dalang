@@ -211,7 +211,7 @@ describe('v0.5 Replay runner scenarios (process-only replacement)', () => {
       [
         {
           title: 'Slugify helper',
-          complexity: 'low',
+          complexity: 'medium',
           filesAllowed: ['src/slug.mjs', 'src/slug.test.mjs'],
           verify: 'node --test src/slug.test.mjs',
         },
@@ -281,7 +281,7 @@ describe('v0.5 Replay runner scenarios (process-only replacement)', () => {
     const ctx = await seedProjectWithTasks(transcript, [
       {
         title: 'Slugify helper',
-        complexity: 'low',
+        complexity: 'medium',
         filesAllowed: ['src/slug.mjs', 'src/slug.test.mjs'],
         verify: 'node --test src/slug.test.mjs',
       },
@@ -321,7 +321,7 @@ describe('v0.5 Replay runner scenarios (process-only replacement)', () => {
     const ctx = await seedProjectWithTasks(transcript, [
       {
         title: 'Slugify helper',
-        complexity: 'low',
+        complexity: 'medium',
         filesAllowed: ['src/slug.mjs', 'src/slug.test.mjs'],
         verify: 'node --test src/slug.test.mjs',
       },

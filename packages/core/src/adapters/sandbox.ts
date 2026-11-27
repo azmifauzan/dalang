@@ -79,6 +79,7 @@ export class NodeCliRunner implements CliRunner {
       let timedOut = false;
       let idleTimedOut = false;
       let aborted = false;
+      let killed = false;
       let settled = false;
 
       const totalMs = options.timeoutMs ?? 600_000;
@@ -89,6 +90,7 @@ export class NodeCliRunner implements CliRunner {
       let exitCloseTimer: NodeJS.Timeout | null = null;
       const terminateChild = () => {
         if (settled) return;
+        killed = true;
         child.kill('SIGTERM');
         if (!forceKillTimer) {
           forceKillTimer = setTimeout(() => {
@@ -157,6 +159,7 @@ export class NodeCliRunner implements CliRunner {
       child.stderr?.setEncoding('utf8').on('data', (text: string) => {
         resetIdle();
         stderr += text;
+        options.onStderrChunk?.(text);
         flushLines(text, true);
       });
 
@@ -184,7 +187,7 @@ export class NodeCliRunner implements CliRunner {
       };
 
       child.on('exit', (exitCode) => {
-        if (settled || (!aborted && !timedOut && !idleTimedOut)) return;
+        if (settled || (!aborted && !timedOut && !idleTimedOut && !killed)) return;
         // If a grandchild inherited stdio and keeps pipes open after the child exited,
         // stop waiting for `close` so abort/timeout cannot hang indefinitely.
         exitCloseTimer = setTimeout(() => {
@@ -199,7 +202,7 @@ export class NodeCliRunner implements CliRunner {
         finish(exitCode);
       });
 
-      if (options.onSpawn && child.stdin) {
+      if (options.onSpawn) {
         options.onSpawn({
           writeStdin: (data: string) => {
             if (!child.stdin?.writableEnded) {

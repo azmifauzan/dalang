@@ -318,16 +318,15 @@ export class ProviderRegistry {
       idleTimeoutMs?: number;
       signal?: AbortSignal;
       onLogLine?: (line: string) => void;
+      /** Explicit user-approved override to run outside the sandbox (never enabled automatically). */
+      bypassSandbox?: boolean;
     } = {},
   ): Promise<RunCommandResult> {
-    const invocation = await wrapWithSandbox(
-      this.runner,
-      null,
-      projectPath,
-      process.platform === 'win32' ? (process.env.ComSpec || 'cmd.exe') : '/bin/sh',
-      process.platform === 'win32' ? ['/d', '/s', '/c', `"${command}"`] : ['-c', command],
-      { bindProviderDirs: false },
-    );
+    const shellCmd = process.platform === 'win32' ? (process.env.ComSpec || 'cmd.exe') : '/bin/sh';
+    const shellArgs = process.platform === 'win32' ? ['/d', '/s', '/c', `"${command}"`] : ['-c', command];
+    const invocation = options.bypassSandbox
+      ? { command: shellCmd, args: shellArgs }
+      : await wrapWithSandbox(this.runner, null, projectPath, shellCmd, shellArgs, { bindProviderDirs: false });
     return this.runner.run(invocation.command, invocation.args, {
       cwd: projectPath,
       timeoutMs: options.timeoutMs ?? 300_000,

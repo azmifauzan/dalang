@@ -36,6 +36,7 @@ import { markdownRows } from './markdown.js';
 import {
   applyComposerCompletion,
   getComposerCompletions,
+  isBusySafeCommand,
   parseSlashCommand,
   POPUP_SIZE,
   popupWindowStart,
@@ -43,6 +44,7 @@ import {
   resumableSessions,
   SLASH_COMMANDS,
 } from './commands.js';
+import { handleParitySlashCommand } from './parity-commands.js';
 import {
   formatConnectedClisUpdateLines,
   runUpdate,
@@ -216,6 +218,12 @@ export function RoomApp({
   const [pendingUnconfinedAction, setPendingUnconfinedAction] = useState<
     null | { label: string; run: () => Promise<void> }
   >(null);
+  const [liveSlotWaits, setLiveSlotWaits] = useState<
+    Map<string, { accountKey: string; activeCount: number; limit: number; waitingSince: string }>
+  >(() => new Map());
+  const [liveRunProgress, setLiveRunProgress] = useState<
+    Map<string, { phase: string; stepText?: string; progressText?: string; completedSteps: Set<string>; model?: string | null }>
+  >(() => new Map());
 
   const activeProjectIdRef = useRef(activeProjectId);
   activeProjectIdRef.current = activeProjectId;
@@ -577,11 +585,83 @@ export function RoomApp({
               liveReplies.append(event.sessionId, event.phase ?? 'ask', event.text, event.reset === true);
             }
             break;
+          case 'turn.progress': {
+            const key = event.role === 'lead' ? event.sessionId : event.runId;
+            if (key) {
+              const phase = typeof event.phase === 'string' ? event.phase : 'working';
+              const step = event.step as { id?: string; label?: string; target?: string; status?: string } | undefined;
+              const progressText = typeof event.progressText === 'string' ? event.progressText : undefined;
+              const model = typeof event.model === 'string' ? event.model : undefined;
+              setLiveRunProgress((prev) => {
+                const next = new Map(prev);
+                const cur = next.get(key) ?? { phase, completedSteps: new Set<string>() };
+                const completedSteps = new Set(cur.completedSteps);
+                let stepText = cur.stepText;
+                if (step) {
+                  if (step.status === 'running') {
+                    stepText = step.target ? `${step.label ?? 'Step'}: ${step.target}` : (step.label ?? cur.stepText);
+                  } else if (step.id) {
+                    completedSteps.add(step.id);
+                  }
+                }
+                next.set(key, {
+                  phase,
+                  stepText,
+                  progressText: progressText ?? cur.progressText,
+                  completedSteps,
+                  model: model ?? cur.model,
+                });
+                return next;
+              });
+            }
+            break;
+          }
+          case 'run.slot_waiting': {
+            if (event.runId && typeof event.accountKey === 'string') {
+              const runId = event.runId;
+              const accountKey = event.accountKey;
+              const activeCount = typeof event.activeCount === 'number' ? event.activeCount : 1;
+              const limit = typeof event.limit === 'number' ? event.limit : 1;
+              const waitingSince = typeof event.waitingSince === 'string' ? event.waitingSince : new Date().toISOString();
+              setLiveSlotWaits((prev) => {
+                const next = new Map(prev);
+                next.set(runId, { accountKey, activeCount, limit, waitingSince });
+                return next;
+              });
+            }
+            void refreshSessionState(pid, sessionFor());
+            break;
+          }
+          case 'run.slot_acquired': {
+            if (event.runId) {
+              const runId = event.runId;
+              setLiveSlotWaits((prev) => {
+                if (!prev.has(runId)) return prev;
+                const next = new Map(prev);
+                next.delete(runId);
+                return next;
+              });
+            }
+            void refreshSessionState(pid, sessionFor());
+            break;
+          }
           case 'lead.turn_finished':
           case 'run.finished': {
             const key = event.type === 'lead.turn_finished' ? event.sessionId : event.runId;
             if (key) {
               setActivityPreviews((prev) => {
+                if (!prev.has(key)) return prev;
+                const next = new Map(prev);
+                next.delete(key);
+                return next;
+              });
+              setLiveSlotWaits((prev) => {
+                if (!prev.has(key)) return prev;
+                const next = new Map(prev);
+                next.delete(key);
+                return next;
+              });
+              setLiveRunProgress((prev) => {
                 if (!prev.has(key)) return prev;
                 const next = new Map(prev);
                 next.delete(key);
@@ -616,6 +696,7 @@ export function RoomApp({
         if (connected && pid) void refreshSessionState(pid, activeSessionIdRef.current);
         if (!connected) {
           setActivityPreviews(new Map());
+          setLiveSlotWaits(new Map());
           liveReplies.clear();
           verifyAuth(false);
         }
@@ -910,6 +991,30 @@ export function RoomApp({
       if (!cmd) return;
 
       try {
+        const handledParity = await handleParitySlashCommand(cmd, {
+          client,
+          activeProjectId,
+          activeProject,
+          activeSessionId,
+          activeSession,
+          detail,
+          execution,
+          profiles,
+          pushNotice,
+          setPendingConfirmation: setPendingUnconfinedAction,
+          refreshSessionState,
+          reloadAfterSetup,
+          setActiveProjectId,
+          setActiveSessionId,
+          setDetail,
+          setProjects,
+          setSending,
+          setPagerOpen,
+          onOpenPager,
+          runWithUnconfinedSupport,
+        });
+        if (handledParity) return;
+
         switch (cmd.name) {
           case 'exit':
             handleExit();
@@ -1208,6 +1313,44 @@ export function RoomApp({
             return;
           }
 
+          case 'integration': {
+            if (!activeProjectId) {
+              pushNotice('No active project.', { isError: true });
+              return;
+            }
+            const outside = cmd.args.includes('--outside-sandbox');
+            const cmdParts = cmd.args.filter((a) => a !== '--outside-sandbox');
+            const customCmd = cmdParts.join(' ').trim() || undefined;
+            const effectiveCmd =
+              customCmd ??
+              guard?.integrationCommand ??
+              guard?.detectedIntegrationCommand ??
+              workspaceSetup?.approved?.checkCommand ??
+              '(project check)';
+            const runIt = async (allowUnconfined: boolean, bypassSandbox: boolean) => {
+              const res = await client.runIntegration(activeProjectId, {
+                ...(customCmd ? { command: customCmd } : {}),
+                ...(activeSessionId ? { sessionId: activeSessionId } : {}),
+                allowUnconfined,
+                bypassSandbox,
+              });
+              await refreshSessionState(activeProjectId, activeSessionId);
+              pushNotice(
+                `Integration check ${res.integrationRun.status} (exit ${res.integrationRun.exitCode ?? 'n/a'}): ${res.integrationRun.command}`,
+                { badge: 'INTEGRATION', isError: res.integrationRun.status === 'failed' },
+              );
+            };
+            if (outside) {
+              setPendingUnconfinedAction({
+                label: `integration check "${effectiveCmd}" OUTSIDE sandbox (direct filesystem and namespace access)`,
+                run: () => runIt(true, true),
+              });
+              return;
+            }
+            await runIt(false, false);
+            return;
+          }
+
           case 'merge':
           case 'accept': {
             if (!activeProjectId) {
@@ -1249,7 +1392,8 @@ export function RoomApp({
               return;
             }
             const requeue = cmd.args.includes('--requeue');
-            const cleanArgs = cmd.args.filter((a) => a !== '--requeue');
+            const confirmedYes = cmd.args.includes('--yes');
+            const cleanArgs = cmd.args.filter((a) => a !== '--requeue' && a !== '--yes');
             const guardTasks = guard?.tasks ?? [];
             const firstMatch = cleanArgs[0]
               ? guardTasks.find(
@@ -1266,14 +1410,89 @@ export function RoomApp({
               return;
             }
             const note = (firstMatch ? cleanArgs.slice(1) : cleanArgs).join(' ').trim() || 'Rejected in terminal room';
+            const doReject = async () => {
+              setSending(true);
+              try {
+                await client.rejectTask(activeProjectId, entry.task.id, { note, requeue });
+                await refreshSessionState(activeProjectId, activeSessionId);
+              } finally {
+                setSending(false);
+              }
+            };
+            if (!confirmedYes) {
+              setPendingUnconfinedAction({
+                label: `reject [${entry.task.externalId}] (deletes branch & worktree — all unmerged work will be lost; use /continue to keep the branch)`,
+                run: doReject,
+              });
+              return;
+            }
+            await doReject();
+            return;
+          }
+
+          case 'continue': {
+            if (!activeProjectId) {
+              pushNotice('No active project.', { isError: true });
+              return;
+            }
+            const requestedId = cmd.args[0];
+            const planTasks = detail?.plan?.tasks ?? [];
+            const target = requestedId
+              ? planTasks.find(
+                  (t) =>
+                    t.id === requestedId ||
+                    t.externalId.toLowerCase() === requestedId.toLowerCase(),
+                )
+              : planTasks.find((t) => t.branchName && ['review_failed', 'failed', 'stopped'].includes(t.status));
+            if (!target) {
+              pushNotice('No failed or review_failed task with a branch to continue.', { isError: true });
+              return;
+            }
             setSending(true);
             try {
-              // The server posts the "task rejected" report with the note.
-              await client.rejectTask(activeProjectId, entry.task.id, { note, requeue });
+              await runWithUnconfinedSupport(`continue [${target.externalId}]`, async (allowUnconfined) => {
+                await client.continueTask(activeProjectId, target.id, { allowUnconfined });
+              });
               await refreshSessionState(activeProjectId, activeSessionId);
+              pushNotice(`Continuing [${target.externalId}] on its existing branch.`, { badge: 'CONTINUE' });
             } finally {
               setSending(false);
             }
+            return;
+          }
+
+          case 'triage': {
+            if (!activeProjectId) {
+              pushNotice('No active project. Open or create a project first to run /triage.', { isError: true });
+              return;
+            }
+            const { preview } = await client.getTriagePreview();
+            const note = cmd.rawArgs.trim() || undefined;
+            const summaryLines = [
+              `Triage preview (DALANG v${preview.version}, ${preview.os}, Node v${preview.nodeVersion}):`,
+              ...preview.doctorChecks.map((c) => `  [${c.status.toUpperCase()}] ${c.label}: ${c.detail}`),
+              `  Server logs: ${preview.serverLogTail ? `${preview.serverLogTail.split('\n').length} redacted line(s)` : 'none'}`,
+              `  Recordings: ${preview.recordingSummary ? 'summary included' : 'none'}`,
+              'Confirm sending this redacted context to a local Ask triage session (no external issue is opened without approval).',
+            ];
+            pushNotice(summaryLines, { badge: 'TRIAGE' });
+            setPendingUnconfinedAction({
+              label: 'send redacted diagnostics to local Ask triage session',
+              run: async () => {
+                setSending(true);
+                try {
+                  const res = await client.startTriage(activeProjectId, {
+                    confirmed: true,
+                    ...(note ? { note } : {}),
+                    ...(modelChoice ? { provider: modelChoice.provider, model: modelChoice.model } : {}),
+                  });
+                  setActiveSessionId(res.session.id);
+                  await refreshSessionState(activeProjectId, res.session.id);
+                } finally {
+                  setSending(false);
+                }
+              },
+            });
             return;
           }
 
@@ -1418,9 +1637,14 @@ export function RoomApp({
       onOpenPager,
       openBrowser,
       openModelPicker,
+      activeProject,
+      activeSession,
+      execution,
+      profiles,
       projects,
       pushNotice,
       refreshSessionState,
+      reloadAfterSetup,
       runWithUnconfinedSupport,
       sessions,
       stopRunningWork,
@@ -1437,9 +1661,70 @@ export function RoomApp({
       setHistoryIdx(-1);
       setScrollOffset(0);
 
+      // Answer structured Lead question (U3, B12) with numbered choice(s), label, or custom answer.
+      if (!pendingUnconfinedAction && pendingGate?.kind === 'lead_question' && !trimmed.startsWith('/')) {
+        if (!activeProjectId || !activeSessionId) return;
+        const rawTokens = pendingGate.multiSelect
+          ? trimmed.split(',').map((s) => s.trim()).filter(Boolean)
+          : [trimmed];
+        const selectedLabels: string[] = [];
+        let customAnswer: string | undefined;
+        let invalidReason: string | null = null;
+
+        const allNumbersOrLabels = rawTokens.every((tok) => {
+          const num = Number(tok);
+          if (Number.isInteger(num) && num >= 1 && num <= pendingGate.options.length) return true;
+          return pendingGate.options.some((o) => o.label.toLowerCase() === tok.toLowerCase());
+        });
+
+        if (allNumbersOrLabels && rawTokens.length > 0) {
+          for (const tok of rawTokens) {
+            const num = Number(tok);
+            const matched =
+              Number.isInteger(num) && num >= 1 && num <= pendingGate.options.length
+                ? pendingGate.options[num - 1]
+                : pendingGate.options.find((o) => o.label.toLowerCase() === tok.toLowerCase());
+            if (!matched) {
+              invalidReason = `Invalid choice "${tok}". Choose 1-${pendingGate.options.length}.`;
+              break;
+            }
+            if (selectedLabels.includes(matched.label)) {
+              invalidReason = `Duplicate choice "${matched.label}".`;
+              break;
+            }
+            selectedLabels.push(matched.label);
+          }
+        } else if (pendingGate.allowCustomAnswer) {
+          customAnswer = trimmed;
+        } else {
+          invalidReason = `Invalid choice "${trimmed}". Enter ${pendingGate.multiSelect ? 'comma-separated numbers' : `a number from 1 to ${pendingGate.options.length}`}.`;
+        }
+
+        if (invalidReason) {
+          pushNotice(invalidReason, { isError: true, badge: 'QUESTION' });
+          return;
+        }
+
+        setSending(true);
+        try {
+          const res = await client.answerQuestion(activeProjectId, activeSessionId, {
+            questionId: pendingGate.questionId,
+            selectedLabels,
+            ...(customAnswer ? { customAnswer } : {}),
+          });
+          setActiveSessionId(res.session.id);
+          setSending(false);
+          void refreshSessionState(activeProjectId, res.session.id);
+        } catch (err) {
+          setSending(false);
+          pushNotice(err instanceof Error ? err.message : String(err), { isError: true, badge: 'QUESTION' });
+        }
+        return;
+      }
+
       // Answer active gate / unconfined prompt with y/n. The Lead's own question takes the reply as a
       // chat message, so it falls through to the normal send below.
-      if (pendingUnconfinedAction || (pendingGate && pendingGate.kind !== 'auto_work')) {
+      if (pendingUnconfinedAction || (pendingGate && pendingGate.kind !== 'auto_work' && pendingGate.kind !== 'lead_question')) {
         const lower = trimmed.toLowerCase();
         if (lower === 'y' || lower === 'yes') {
           await executeGateDecision(true);
@@ -1609,9 +1894,16 @@ export function RoomApp({
       // Submit
       if (key.return) {
         const submit = resolveComposerSubmit(input, completions, completionIdx);
-        const trimmedSubmit = submit.text.trim().toLowerCase();
-        const allowWhileSending = trimmedSubmit === '/stop' || trimmedSubmit.startsWith('/stop ') || trimmedSubmit === '/exit';
-        if (sending && !allowWhileSending) return;
+        const allowWhileSending = isBusySafeCommand(submit.text);
+        if (sending && !allowWhileSending) {
+          if (submit.text.trim()) {
+            pushNotice(
+              'Still waiting for the Lead response — wait for it to finish, press Esc / /stop, or use read/settings commands (/config, /model, /help, /diff). Your draft was kept.',
+              { isError: true, badge: 'BUSY' },
+            );
+          }
+          return;
+        }
         if (submit.action === 'fill') {
           setInput(submit.text);
           setCursor(submit.text.length);
@@ -1700,10 +1992,20 @@ export function RoomApp({
         const submits = chunk.endsWith('\n');
         const text = chunk.replace(/\n+$/, '').replace(/\n/g, ' ');
         const next = input.slice(0, cursor) + text + input.slice(cursor);
-        const trimmedNext = next.trim().toLowerCase();
-        const allowWhileSending = trimmedNext === '/stop' || trimmedNext.startsWith('/stop ') || trimmedNext === '/exit';
-        if (submits && (!sending || allowWhileSending)) {
-          void handleSubmit(next);
+        const allowWhileSending = isBusySafeCommand(next);
+        if (submits) {
+          if (!sending || allowWhileSending) {
+            void handleSubmit(next);
+            return;
+          }
+          if (next.trim()) {
+            pushNotice(
+              'Still waiting for the Lead response — wait for it to finish, press Esc / /stop, or use read/settings commands (/config, /model, /help, /diff). Your draft was kept.',
+              { isError: true, badge: 'BUSY' },
+            );
+          }
+          setInput(next);
+          setCursor(cursor + text.length);
           return;
         }
         setInput(next);
@@ -1802,7 +2104,8 @@ export function RoomApp({
     ? execution.activeRuns.filter((run) => run.status === 'running')
     : [];
   const activeRun = activeRuns.at(-1);
-  const liveRows = turn || activeRun || sending ? 1 : 0;
+  const visibleRunCount = activeRuns.length > 1 ? Math.min(activeRuns.length, 3) : 1;
+  const liveRows = turn || sending ? 1 : activeRuns.length > 0 ? visibleRunCount : 0;
   // Border rows plus the gate's own lines: heading, question, optional context, and the y/n keys.
   // Same order as the render below: sandbox prompt, then a gate, then the update notice.
   // Box border and padding take four columns.
@@ -2022,25 +2325,53 @@ export function RoomApp({
       ) : null}
 
       {/* Live activity strip */}
-      {turn && activeSessionId ? (
-        <WorkingStatus
-          key={turn.startedAt}
-          actor={stripControl(`@${turn.phase.startsWith('ask:') ? turn.phase.slice(4) : 'lead'} (${providerLabel(turn.provider)})`)}
-          activity={stopping ? 'Stopping...' : hasLiveReply ? 'Writing a response' : activityPreviews.get(activeSessionId) ?? 'Working'}
-          startedAt={turn.startedAt}
-          others={activeRuns.length}
-          hint={stopping ? undefined : 'Esc to stop'}
-        />
-      ) : activeRun ? (
-        <WorkingStatus
-          key={activeRun.id}
-          actor={stripControl(`@${activeRun.profileName} (${providerLabel(activeRun.provider)})`)}
-          activity={stopping ? 'Stopping...' : activityPreviews.get(activeRun.id) ?? `Working on ${stripControl(activeRun.taskExternalId)}`}
-          startedAt={activeRun.startedAt}
-          others={activeRuns.length - 1}
-          hint={stopping ? undefined : 'Esc to stop'}
-        />
-      ) : sending ? (
+      {turn && activeSessionId ? (() => {
+        const prog = liveRunProgress.get(activeSessionId);
+        return (
+          <WorkingStatus
+            key={turn.startedAt}
+            actor={stripControl(`@${turn.phase.startsWith('ask:') ? turn.phase.slice(4) : 'lead'} (${providerLabel(turn.provider)})`)}
+            model={prog?.model ?? activeSession?.model ?? null}
+            phase={prog?.phase}
+            activity={stopping ? 'Stopping...' : hasLiveReply ? 'Writing a response' : prog?.stepText ?? activityPreviews.get(activeSessionId) ?? 'Working'}
+            progressText={prog?.progressText}
+            completedSteps={prog?.completedSteps.size ?? 0}
+            startedAt={turn.startedAt}
+            others={activeRuns.length}
+            hint={stopping ? undefined : 'Esc to stop'}
+          />
+        );
+      })() : activeRuns.length > 0 ? (() => {
+        const shownRuns = activeRuns.slice(-3);
+        return (
+          <WorkingStatus
+            key={shownRuns.map((r) => r.id).join(',')}
+            actor=""
+            activity=""
+            others={Math.max(0, activeRuns.length - shownRuns.length)}
+            runs={shownRuns.map((run, idx) => {
+              const slotWait = run.slotWait ?? liveSlotWaits.get(run.id) ?? null;
+              const prog = liveRunProgress.get(run.id);
+              return {
+                key: run.id,
+                actor: stripControl(`@${run.profileName} (${providerLabel(run.provider)})`),
+                model: run.model ?? prog?.model ?? null,
+                phase: prog?.phase,
+                activity: stopping
+                  ? 'Stopping...'
+                  : slotWait
+                    ? `Waiting for slot on ${stripControl(slotWait.accountKey)} (${slotWait.activeCount}/${slotWait.limit} active)`
+                    : prog?.stepText ?? activityPreviews.get(run.id) ?? `Working on ${stripControl(run.taskExternalId)}`,
+                progressText: slotWait ? undefined : prog?.progressText,
+                completedSteps: prog?.completedSteps.size ?? 0,
+                startedAt: slotWait ? slotWait.waitingSince : run.startedAt,
+                waiting: Boolean(slotWait) && !stopping,
+                hint: idx === 0 && !stopping ? 'Esc to stop' : undefined,
+              };
+            })}
+          />
+        );
+      })() : sending ? (
         <WorkingStatus
           actor="Dalang"
           activity={stopping ? 'Stopping...' : busyActivity ?? 'Waiting for a response'}

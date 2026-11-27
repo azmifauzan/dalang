@@ -186,7 +186,25 @@ export function TeamEditor({
   const usable = useMemo(() => usableProviderIds(data.providers, keyring), [data.providers, keyring]);
   const [edits, setEdits] = useState<Record<string, RoleEdit>>({});
   const [role, setRole] = useState<RoleKey | null>(null);
-  const [field, setField] = useState<'provider' | 'model' | 'effort' | 'fallback' | 'fallback-provider' | 'fallback-model' | 'fallback-effort' | 'fallback-account' | null>(null);
+  const [field, setField] = useState<
+    | 'provider'
+    | 'model'
+    | 'effort'
+    | 'fallback'
+    | 'fallback-provider'
+    | 'fallback-model'
+    | 'fallback-effort'
+    | 'fallback-account'
+    | 'advanced'
+    | 'adv-parallel'
+    | 'adv-account'
+    | 'adv-permission'
+    | 'adv-review-rounds'
+    | 'adv-timeout'
+    | 'adv-idle-timeout'
+    | 'adv-prompt'
+    | null
+  >(null);
   const roles = useMemo(() => roleProfiles(data.profiles), [data.profiles]);
   const patch = (id: string, next: RoleEdit) =>
     setEdits((prev) => ({ ...prev, [id]: { ...(prev[id] ?? {}), ...next } }));
@@ -200,13 +218,181 @@ export function TeamEditor({
     : null;
 
   if (role && prof && cur) {
-    const back = () => (field?.startsWith('fallback-') ? setField('fallback') : field ? setField(null) : setRole(null));
+    const back = () =>
+      field?.startsWith('fallback-')
+        ? setField('fallback')
+        : field?.startsWith('adv-')
+          ? setField('advanced')
+          : field
+            ? setField(null)
+            : setRole(null);
+    const roleEdit = edits[prof.id] ?? {};
+    const curParallel = roleEdit.maxParallel ?? prof.maxParallel;
+    const curAccount = roleEdit.configDir !== undefined ? roleEdit.configDir : prof.configDir;
+    const curPermission = roleEdit.permissionMode ?? prof.permissionMode;
+    const curReviewRounds = roleEdit.maxReviewRounds ?? prof.maxReviewRounds;
+    const curTimeoutMs = roleEdit.timeoutMs ?? prof.timeoutMs;
+    const curIdleTimeoutMs = roleEdit.idleTimeoutMs ?? prof.idleTimeoutMs;
+    const curRolePrompt = roleEdit.rolePrompt !== undefined ? roleEdit.rolePrompt : prof.rolePrompt;
     const heading = (
       <Text bold>
         {ROLE_LABEL[role]}
         <Text dimColor>{`   ${describeRole(data.providers, cur)}`}</Text>
       </Text>
     );
+    if (field === 'adv-parallel') {
+      return (
+        <Box flexDirection="column">
+          {heading}
+          <Menu
+            key="adv-parallel"
+            initialKey={String(curParallel)}
+            onCancel={back}
+            items={[1, 2, 3, 4, 6, 8].map((n) => ({ key: String(n), label: `${n} slot${n === 1 ? '' : 's'}` }))}
+            onSelect={(item) => {
+              patch(prof.id, { maxParallel: Number(item.key) });
+              setField('advanced');
+            }}
+          />
+        </Box>
+      );
+    }
+    if (field === 'adv-account') {
+      return (
+        <Box flexDirection="column">
+          {heading}
+          <Field
+            key="adv-account"
+            label="Account config directory (blank = default)"
+            initialValue={curAccount ?? ''}
+            placeholder="Default account"
+            onCancel={back}
+            onSubmit={(value) => {
+              patch(prof.id, { configDir: value.trim() || null });
+              setField('advanced');
+            }}
+          />
+        </Box>
+      );
+    }
+    if (field === 'adv-permission') {
+      return (
+        <Box flexDirection="column">
+          {heading}
+          <Menu
+            key="adv-permission"
+            initialKey={curPermission}
+            onCancel={back}
+            items={[
+              { key: 'read-only', label: 'read-only' },
+              { key: 'workspace-write', label: 'workspace-write' },
+              { key: 'accept-edits', label: 'accept-edits' },
+            ]}
+            onSelect={(item) => {
+              patch(prof.id, { permissionMode: item.key as typeof curPermission });
+              setField('advanced');
+            }}
+          />
+        </Box>
+      );
+    }
+    if (field === 'adv-review-rounds') {
+      return (
+        <Box flexDirection="column">
+          {heading}
+          <Menu
+            key="adv-review-rounds"
+            initialKey={String(curReviewRounds)}
+            onCancel={back}
+            items={[1, 2, 3, 4, 5, 6].map((n) => ({ key: String(n), label: `${n} round${n === 1 ? '' : 's'}` }))}
+            onSelect={(item) => {
+              patch(prof.id, { maxReviewRounds: Number(item.key) });
+              setField('advanced');
+            }}
+          />
+        </Box>
+      );
+    }
+    if (field === 'adv-timeout') {
+      return (
+        <Box flexDirection="column">
+          {heading}
+          <Field
+            key="adv-timeout"
+            label="Total timeout (seconds, 5-7200)"
+            initialValue={String(Math.round(curTimeoutMs / 1000))}
+            onCancel={back}
+            onSubmit={(value) => {
+              const sec = Number(value.trim());
+              if (Number.isFinite(sec) && sec >= 5 && sec <= 7200) {
+                patch(prof.id, { timeoutMs: Math.round(sec * 1000) });
+              }
+              setField('advanced');
+            }}
+          />
+        </Box>
+      );
+    }
+    if (field === 'adv-idle-timeout') {
+      return (
+        <Box flexDirection="column">
+          {heading}
+          <Field
+            key="adv-idle-timeout"
+            label="Idle timeout (seconds, 5-1800)"
+            initialValue={String(Math.round(curIdleTimeoutMs / 1000))}
+            onCancel={back}
+            onSubmit={(value) => {
+              const sec = Number(value.trim());
+              if (Number.isFinite(sec) && sec >= 5 && sec <= 1800) {
+                patch(prof.id, { idleTimeoutMs: Math.round(sec * 1000) });
+              }
+              setField('advanced');
+            }}
+          />
+        </Box>
+      );
+    }
+    if (field === 'adv-prompt') {
+      return (
+        <Box flexDirection="column">
+          {heading}
+          <Field
+            key="adv-prompt"
+            label="Role prompt (extra instructions)"
+            initialValue={curRolePrompt}
+            placeholder="(none)"
+            onCancel={back}
+            onSubmit={(value) => {
+              patch(prof.id, { rolePrompt: value });
+              setField('advanced');
+            }}
+          />
+        </Box>
+      );
+    }
+    if (field === 'advanced') {
+      return (
+        <Box flexDirection="column">
+          {heading}
+          <Menu
+            key="advanced"
+            onCancel={back}
+            items={[
+              { key: 'adv-parallel', label: 'Parallel slots', detail: String(curParallel) },
+              { key: 'adv-account', label: 'Account folder', detail: curAccount || 'Default account' },
+              { key: 'adv-permission', label: 'Permission mode', detail: curPermission },
+              { key: 'adv-review-rounds', label: 'Max review rounds', detail: String(curReviewRounds) },
+              { key: 'adv-timeout', label: 'Timeout', detail: `${Math.round(curTimeoutMs / 1000)}s` },
+              { key: 'adv-idle-timeout', label: 'Idle timeout', detail: `${Math.round(curIdleTimeoutMs / 1000)}s` },
+              { key: 'adv-prompt', label: 'Role prompt', detail: curRolePrompt ? `${curRolePrompt.slice(0, 32)}${curRolePrompt.length > 32 ? '...' : ''}` : '(none)' },
+              { key: 'done', label: 'Done' },
+            ]}
+            onSelect={(item) => setField(item.key === 'done' ? null : (item.key as typeof field))}
+          />
+        </Box>
+      );
+    }
     if (field === 'fallback-provider') {
       return <Box flexDirection="column">{heading}<Menu key="fallback-provider" onCancel={back}
         initialKey={fallback?.provider ?? 'none'}
@@ -337,9 +523,10 @@ export function TeamEditor({
             { key: 'model', label: 'Model', detail: modelValueLabel(data.providers, cur.provider, cur.model) },
             { key: 'effort', label: 'Reasoning effort', detail: cur.effort },
             { key: 'fallback', label: 'Fallback', detail: fallback ? describeRole(data.providers, fallback) : 'Off' },
+            { key: 'advanced', label: 'Advanced settings', detail: `slots=${curParallel} · ${curPermission} · rounds=${curReviewRounds}` },
             { key: 'done', label: 'Done' },
           ]}
-          onSelect={(item) => (item.key === 'done' ? setRole(null) : setField(item.key as 'provider' | 'model' | 'effort' | 'fallback'))}
+          onSelect={(item) => (item.key === 'done' ? setRole(null) : setField(item.key as typeof field))}
         />
       </Box>
     );

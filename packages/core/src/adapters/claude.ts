@@ -11,6 +11,7 @@ import {
   type UsageWindow,
 } from '@dalang/shared';
 import { createTurnLogger, redactSecrets } from './logger.js';
+import { turnRunner } from './session-rpc.js';
 import {
   buildProviderAccountEnv,
   detectSandboxEngine,
@@ -575,8 +576,8 @@ export class ClaudeCodeAdapter implements CliAdapter {
         throw new Error('The platform sandbox became unavailable before starting Claude.');
       }
       const res = interactive
-        ? await this.runSession(invocation.command, invocation.args, stdinData!, options, runOptions)
-        : await this.runner.run(invocation.command, invocation.args, runOptions);
+        ? await this.runSession(invocation.command, invocation.args, stdinData!, options, runOptions, invocation.engine)
+        : await turnRunner(this.runner, 'claude', secrets, invocation.engine).run(invocation.command, invocation.args, runOptions);
 
       const text = resultText || assistantChunks.join('\n').trim();
       if (!res.aborted && (res.timedOut || res.idleTimedOut)) {
@@ -597,7 +598,7 @@ export class ClaudeCodeAdapter implements CliAdapter {
       };
     } finally {
       if (mcpDir) fs.rmSync(mcpDir, { recursive: true, force: true });
-      logger.close();
+      await logger.close();
     }
   }
 
@@ -611,6 +612,7 @@ export class ClaudeCodeAdapter implements CliAdapter {
     firstMessage: string,
     options: AdapterTurnOptions,
     runOptions: RunCommandOptions,
+    engine?: string,
   ): Promise<RunCommandResult> {
     let write: ((data: string) => void) | undefined;
     let endInput: (() => void) | undefined;
@@ -623,7 +625,7 @@ export class ClaudeCodeAdapter implements CliAdapter {
     const userMessage = (content: string, extra: object = {}) => ({
       type: 'user', message: { role: 'user', content }, parent_tool_use_id: null, ...extra,
     });
-    const result = await this.runner.run(command, args, {
+    const result = await turnRunner(this.runner, 'claude', [options.mcp?.bearerToken], engine).run(command, args, {
       ...runOptions,
       stdinData: undefined,
       interactiveStdin: true,

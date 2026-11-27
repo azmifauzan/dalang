@@ -1,9 +1,11 @@
 import { useState } from 'react';
-import { DALANG_VERSION, type UpdateStatusDTO } from '@dalang/shared';
+import { DALANG_VERSION, type TriageContextPreviewDTO, type UpdateStatusDTO } from '@dalang/shared';
 import { GununganDetailed } from '../../assets/wayang/Gunungan.js';
 import { useI18n } from '../../i18n/index.js';
+import { api } from '../../lib/api.js';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Textarea } from '@/components/ui/textarea';
 
 export function AboutTab({
   updateStatus,
@@ -11,15 +13,23 @@ export function AboutTab({
   checkingUpdates,
   onForceUpdateCheck,
   onOpenGeneral,
+  activeProjectId,
+  onTriageSessionStarted,
 }: {
   updateStatus: UpdateStatusDTO | null;
   checkForUpdates: boolean;
   checkingUpdates: boolean;
   onForceUpdateCheck: () => void;
   onOpenGeneral: () => void;
+  activeProjectId?: string | null;
+  onTriageSessionStarted?: (sessionId: string) => void;
 }) {
   const { t } = useI18n();
   const [copiedCmd, setCopiedCmd] = useState<string | null>(null);
+  const [triagePreview, setTriagePreview] = useState<TriageContextPreviewDTO | null>(null);
+  const [triageNote, setTriageNote] = useState('');
+  const [triageBusy, setTriageBusy] = useState(false);
+  const [triageError, setTriageError] = useState<string | null>(null);
 
   const copyCommand = async (cmd: string) => {
     try {
@@ -129,6 +139,99 @@ export function AboutTab({
           <p className="text-sm" style={{ color: 'var(--pass)' }}>
             {t('config.about.upToDate')}
           </p>
+        )}
+      </div>
+
+      {/* Report a problem (F6) */}
+      <div
+        className="space-y-3 rounded-[8px] border p-5"
+        style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
+      >
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-base font-semibold">{t('triage.title')}</h2>
+            <p className="mt-0.5 text-sm" style={{ color: 'var(--text-secondary)' }}>
+              {t('triage.desc')}
+            </p>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={triageBusy}
+            onClick={async () => {
+              setTriageBusy(true);
+              setTriageError(null);
+              try {
+                const res = await api.getTriagePreview();
+                setTriagePreview(res.preview);
+              } catch (err) {
+                setTriageError(err instanceof Error ? err.message : String(err));
+              } finally {
+                setTriageBusy(false);
+              }
+            }}
+          >
+            {t('triage.previewBtn')}
+          </Button>
+        </div>
+        {triageError && (
+          <p role="alert" className="text-xs text-destructive">
+            {triageError}
+          </p>
+        )}
+        {triagePreview && (
+          <div className="space-y-3 rounded-[6px] border p-3 text-xs" style={{ borderColor: 'var(--border-subtle)', backgroundColor: 'var(--bg-well)' }}>
+            <div className="font-mono">
+              DALANG v{triagePreview.version} · {triagePreview.os} · Node v{triagePreview.nodeVersion}
+            </div>
+            <ul className="space-y-0.5">
+              {triagePreview.doctorChecks.map((c) => (
+                <li key={c.id}>
+                  [{c.status.toUpperCase()}] {c.label}: {c.detail}
+                </li>
+              ))}
+            </ul>
+            {triagePreview.serverLogTail && (
+              <pre className="max-h-32 overflow-auto rounded border p-2 font-mono text-[11px]">
+                {triagePreview.serverLogTail}
+              </pre>
+            )}
+            <Textarea
+              rows={2}
+              value={triageNote}
+              placeholder={t('triage.notePlaceholder')}
+              onChange={(e) => setTriageNote(e.target.value)}
+            />
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                disabled={triageBusy || !activeProjectId}
+                onClick={async () => {
+                  if (!activeProjectId) return;
+                  setTriageBusy(true);
+                  setTriageError(null);
+                  try {
+                    const res = await api.startTriage(activeProjectId, {
+                      confirmed: true,
+                      ...(triageNote.trim() ? { note: triageNote.trim() } : {}),
+                    });
+                    setTriagePreview(null);
+                    setTriageNote('');
+                    onTriageSessionStarted?.(res.session.id);
+                  } catch (err) {
+                    setTriageError(err instanceof Error ? err.message : String(err));
+                  } finally {
+                    setTriageBusy(false);
+                  }
+                }}
+              >
+                {t('triage.startBtn')}
+              </Button>
+              <Button type="button" variant="outline" onClick={() => setTriagePreview(null)}>
+                {t('common.cancel')}
+              </Button>
+            </div>
+          </div>
         )}
       </div>
 
