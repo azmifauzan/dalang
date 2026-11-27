@@ -1308,4 +1308,138 @@ describe('WebSocket reconnect and cleanup (R7)', () => {
     expect(receivedEvents.length).toBe(eventCountAfterCleanup);
     expect(statusLog.length).toBe(statusCountAfterCleanup);
   });
+
+  it('prompts for login in RoomApp when access is revoked (4401) and restores the live subscription after sign-in', async () => {
+    const dbDir = mkTmp('dalang-tui-auth-db-');
+    const dbPath = path.join(dbDir, 'dalang.db');
+    const repoDir = mkTmp('dalang-tui-auth-repo-');
+    const password = 'a long local password';
+
+    const server = await createDalangServer({
+      dbPath,
+      enableScheduler: false,
+      wsHeartbeatIntervalMs: 1000,
+    });
+    cleanups.push(server.close);
+
+    const createdProj = await server.app.inject({
+      method: 'POST',
+      url: '/api/projects',
+      payload: { mode: 'create', name: 'auth-room-demo', path: repoDir, initGitIfMissing: true },
+    });
+    expect(createdProj.statusCode).toBe(201);
+    const projectId = createdProj.json().project.id as string;
+
+    const createdSess = await server.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/sessions`,
+      payload: { mode: 'ask', title: 'Auth Recovery Session' },
+    });
+    expect(createdSess.statusCode).toBe(201);
+    const sessionId = createdSess.json().session.id as string;
+
+    await server.app.listen({ host: '127.0.0.1', port: 0 });
+    const addr = server.app.server.address();
+    const port = typeof addr === 'object' && addr ? addr.port : 0;
+    expect(port).toBeGreaterThan(0);
+
+    const client = new RoomApiClient(port);
+    const wsClientCount = () =>
+      (server.app as unknown as { websocketServer: { clients: Set<unknown> } }).websocketServer.clients.size;
+
+    const stdout = new PassThrough();
+    Object.assign(stdout, { columns: 110, rows: 32, isTTY: true });
+    let screen = '';
+    stdout.on('data', (chunk) => {
+      screen += chunk.toString('utf8');
+    });
+    const stdin = new PassThrough();
+    Object.assign(stdin, { isTTY: true, setRawMode: () => {} });
+
+    const inst = render(
+      React.createElement(RoomApp, {
+        client,
+        embedded: false,
+        cwd: repoDir,
+        initialRoom: { projectId, sessionId, mode: 'ask', modelChoice: null },
+        openBrowser: () => {},
+        onOpenPager: async () => ({ ok: true }),
+      }),
+      {
+        stdout: stdout as unknown as NodeJS.WriteStream,
+        stdin: stdin as unknown as NodeJS.ReadStream,
+        exitOnCtrlC: false,
+        patchConsole: false,
+      },
+    );
+    let unmounted = false;
+    cleanups.push(async () => {
+      if (!unmounted) {
+        inst.unmount();
+        unmounted = true;
+      }
+      stdout.end();
+      stdin.end();
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    const waitUntil = async (predicate: () => boolean, timeoutMs = 8000, label = 'condition') => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (predicate()) return;
+        await new Promise((r) => setTimeout(r, 30));
+      }
+      throw new Error(`Timed out waiting for ${label}. Last screen tail:\n${screen.slice(-1000)}`);
+    };
+
+    await waitUntil(
+      () => screen.includes('Auth Recovery Session') && screen.includes('· live') && wsClientCount() === 1,
+      8000,
+      'initial authenticated RoomApp session',
+    );
+
+    // Enable login from another view -> server revokes the open room socket with 4401.
+    const enabled = await server.app.inject({
+      method: 'PUT',
+      url: '/api/auth/settings',
+      payload: { enabled: true, password },
+    });
+    expect(enabled.statusCode).toBe(200);
+    const adminCookie = String(enabled.headers['set-cookie']).split(';')[0];
+
+    await waitUntil(
+      () => wsClientCount() === 0 && screen.includes('sign in required'),
+      8000,
+      'RoomApp login prompt after 4401 revocation',
+    );
+
+    // Sign in through the RoomApp password prompt and verify the live subscription is restored.
+    stdin.write(`${password}\r`);
+
+    await waitUntil(
+      () => wsClientCount() === 1,
+      8000,
+      'restored authenticated WebSocket after sign-in',
+    );
+
+    // Emit a live update after sign-in to prove the restored subscription receives events.
+    const renamed = await server.app.inject({
+      method: 'PATCH',
+      url: `/api/projects/${projectId}/sessions/${sessionId}`,
+      headers: { cookie: adminCookie },
+      payload: { title: 'Live After Reauth' },
+    });
+    expect(renamed.statusCode).toBe(200);
+    server.events.emitEvent({ type: 'sessions.updated', projectId });
+
+    await waitUntil(
+      () => screen.includes('Live After Reauth'),
+      8000,
+      'live session update received after RoomApp re-authentication',
+    );
+
+    inst.unmount();
+    unmounted = true;
+    await waitUntil(() => wsClientCount() === 0, 5000, 'WS closed after RoomApp unmount');
+  });
 });
