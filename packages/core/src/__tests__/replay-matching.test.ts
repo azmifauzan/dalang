@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   compareReplayMessages,
   compareReplaySequence,
+  getProviderReplayDynamicFields,
   parseInteractiveJsonLines,
   ReplayMessageMatcher,
   type ReplaySequenceMessage,
@@ -676,5 +677,192 @@ describe('replay-matching interactive message comparator', () => {
       { ok: true, value: { id: 2, method: 'turn/start' } },
     ]);
     expect(JSON.stringify(parsed)).not.toContain('SECRET_RAW');
+  });
+
+  it('provides bounded per-provider dynamic ID rules and rewrites correlated inbound IDs without loosening non-ID fields', () => {
+    // 1. Codex: correlates JSON-RPC id + threadId + turnId, keeps prompt/steering text strict.
+    const codexMatcher = new ReplayMessageMatcher({
+      dynamicFields: getProviderReplayDynamicFields('codex'),
+    });
+    expect(
+      codexMatcher.matchMessage(
+        {
+          jsonrpc: '2.0',
+          id: 10,
+          method: 'thread/resume',
+          params: { threadId: 'thread-rec-1', cwd: '/repo' },
+        },
+        {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'thread/resume',
+          params: { threadId: 'thread-live-9', cwd: '/repo' },
+        },
+        { direction: 'stdin' },
+      ).matched,
+    ).toBe(true);
+
+    // Inbound response rewrites both request id (10 -> 1) and correlated threadId (thread-rec-1 -> thread-live-9).
+    const rewrittenThreadResp = codexMatcher.rewriteCorrelatedFrame(
+      {
+        jsonrpc: '2.0',
+        id: 10,
+        result: { thread: { id: 'thread-rec-1' } },
+      },
+      { direction: 'stdout' },
+    );
+    expect(rewrittenThreadResp).toEqual({
+      jsonrpc: '2.0',
+      id: 1,
+      result: { thread: { id: 'thread-live-9' } },
+    });
+
+    // Server-originated turn.id is bound on emit, so outbound steer must echo it and keep text strict.
+    const rewrittenTurnResp = codexMatcher.rewriteCorrelatedFrame(
+      {
+        jsonrpc: '2.0',
+        id: 20,
+        result: { turn: { id: 'turn-srv-1' } },
+      },
+      { direction: 'stdout' },
+    );
+    expect(rewrittenTurnResp).toEqual({
+      jsonrpc: '2.0',
+      id: 20,
+      result: { turn: { id: 'turn-srv-1' } },
+    });
+
+    const wrongTurnSteer = codexMatcher.tryMatchMessage(
+      {
+        jsonrpc: '2.0',
+        id: 30,
+        method: 'turn/steer',
+        params: {
+          threadId: 'thread-rec-1',
+          expectedTurnId: 'turn-srv-1',
+          input: [{ type: 'text', text: 'Keep tests' }],
+        },
+      },
+      {
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'turn/steer',
+        params: {
+          threadId: 'thread-live-9',
+          expectedTurnId: 'turn-WRONG',
+          input: [{ type: 'text', text: 'Keep tests' }],
+        },
+      },
+      { direction: 'stdin' },
+    );
+    expect(wrongTurnSteer.matched).toBe(false);
+    expect(wrongTurnSteer.mismatches[0]).toMatchObject({
+      kind: 'id_correlation_mismatch',
+      location: { direction: 'stdin', path: 'params.expectedTurnId' },
+    });
+
+    const mutatedSteerText = codexMatcher.tryMatchMessage(
+      {
+        jsonrpc: '2.0',
+        id: 30,
+        method: 'turn/steer',
+        params: {
+          threadId: 'thread-rec-1',
+          expectedTurnId: 'turn-srv-1',
+          input: [{ type: 'text', text: 'ORIGINAL_STEER' }],
+        },
+      },
+      {
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'turn/steer',
+        params: {
+          threadId: 'thread-live-9',
+          expectedTurnId: 'turn-srv-1',
+          input: [{ type: 'text', text: 'MUTATED_STEER' }],
+        },
+      },
+      { direction: 'stdin' },
+    );
+    expect(mutatedSteerText.matched).toBe(false);
+    expect(mutatedSteerText.mismatches[0]).toMatchObject({
+      kind: 'value_mismatch',
+      location: { direction: 'stdin', path: 'params.input[0].text' },
+    });
+
+    // 2. Claude: correlates steering uuid -> user_message_uuid and control request_id -> response.request_id.
+    const claudeMatcher = new ReplayMessageMatcher({
+      dynamicFields: getProviderReplayDynamicFields('claude-code'),
+    });
+    expect(
+      claudeMatcher.matchMessage(
+        {
+          type: 'user',
+          uuid: 'rec-steer-uuid',
+          priority: 'now',
+          parent_tool_use_id: null,
+          message: { role: 'user', content: 'Keep tests' },
+        },
+        {
+          type: 'user',
+          uuid: 'live-steer-uuid',
+          priority: 'now',
+          parent_tool_use_id: null,
+          message: { role: 'user', content: 'Keep tests' },
+        },
+        { direction: 'stdin' },
+      ).matched,
+    ).toBe(true);
+    expect(
+      claudeMatcher.rewriteCorrelatedFrame(
+        {
+          type: 'result',
+          subtype: 'success',
+          session_id: 'claude-rec-1',
+          user_message_uuid: 'rec-steer-uuid',
+          user_message_uuids: ['rec-steer-uuid'],
+          result: 'done',
+        },
+        { direction: 'stdout' },
+      ),
+    ).toEqual({
+      type: 'result',
+      subtype: 'success',
+      session_id: 'claude-rec-1',
+      user_message_uuid: 'live-steer-uuid',
+      user_message_uuids: ['live-steer-uuid'],
+      result: 'done',
+    });
+
+    // 3. Antigravity: correlates id, sessionId, toolCallId; keeps permission outcome strict.
+    const agyMatcher = new ReplayMessageMatcher({
+      dynamicFields: getProviderReplayDynamicFields('antigravity'),
+    });
+    expect(
+      agyMatcher.rewriteCorrelatedFrame(
+        {
+          jsonrpc: '2.0',
+          id: 77,
+          method: 'session/request_permission',
+          params: { sessionId: 'agy-rec-1', toolCall: { toolCallId: 'tc-1' } },
+        },
+        { direction: 'stdout' },
+      ),
+    ).toEqual({
+      jsonrpc: '2.0',
+      id: 77,
+      method: 'session/request_permission',
+      params: { sessionId: 'agy-rec-1', toolCall: { toolCallId: 'tc-1' } },
+    });
+    const wrongPermDecision = agyMatcher.tryMatchMessage(
+      { jsonrpc: '2.0', id: 77, result: { outcome: { outcome: 'cancelled' } } },
+      { jsonrpc: '2.0', id: 77, result: { outcome: { outcome: 'selected' } } },
+      { direction: 'stdin' },
+    );
+    expect(wrongPermDecision.matched).toBe(false);
+    expect(wrongPermDecision.mismatches[0]).toMatchObject({
+      kind: 'value_mismatch',
+      location: { direction: 'stdin', path: 'result.outcome.outcome' },
+    });
   });
 });

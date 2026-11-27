@@ -1,3 +1,5 @@
+import type { ProviderId } from '@dalang/shared';
+
 export type MessageDirection = 'stdin' | 'stdout' | 'request' | 'response' | 'notification';
 
 export type DynamicFieldMode = 'correlate' | 'ignore';
@@ -255,6 +257,11 @@ class CorrelationStore {
     this.actualToExpected.clear();
   }
 
+  lookupActual(groupKey: string, expected: string | number): string | number | undefined {
+    const encoded = this.expectedToActual.get(groupKey)?.get(scalarKey(expected));
+    return encoded !== undefined ? decodeScalarKey(encoded) : undefined;
+  }
+
   correlate(groupKey: string, expected: string | number, actual: string | number): boolean {
     const expKey = scalarKey(expected);
     const actKey = scalarKey(actual);
@@ -287,6 +294,51 @@ class CorrelationStore {
 
 function scalarKey(value: string | number): string {
   return typeof value === 'number' ? `n:${Object.is(value, -0) ? 0 : value}` : `s:${value}`;
+}
+
+function decodeScalarKey(encoded: string): string | number {
+  return encoded.startsWith('n:') ? Number(encoded.slice(2)) : encoded.slice(2);
+}
+
+const PROVIDER_REPLAY_DYNAMIC_FIELDS: Record<ProviderId, readonly DynamicFieldRule[]> = {
+  'claude-code': [
+    { path: 'request_id', correlateAs: 'controlRequestId', scope: 'endpoint' },
+    { path: 'response.request_id', correlateAs: 'controlRequestId', scope: 'endpoint' },
+    { path: 'uuid', correlateAs: 'userMessageUuid', scope: 'shared', when: { type: 'user' } },
+    { path: 'user_message_uuid', correlateAs: 'userMessageUuid', scope: 'shared', when: { type: 'result' } },
+    { path: 'user_message_uuids[*]', correlateAs: 'userMessageUuid', scope: 'shared', when: { type: 'result' } },
+    { path: 'session_id', correlateAs: 'sessionId', scope: 'shared' },
+  ],
+  codex: [
+    { path: 'id', correlateAs: 'id', scope: 'endpoint' },
+    { path: 'result.thread.id', correlateAs: 'threadId', scope: 'shared' },
+    { path: 'params.threadId', correlateAs: 'threadId', scope: 'shared' },
+    { path: 'result.turn.id', correlateAs: 'turnId', scope: 'shared' },
+    { path: 'params.turnId', correlateAs: 'turnId', scope: 'shared' },
+    { path: 'params.expectedTurnId', correlateAs: 'turnId', scope: 'shared' },
+    { path: 'params.turn.id', correlateAs: 'turnId', scope: 'shared' },
+    { path: 'params.itemId', correlateAs: 'itemId', scope: 'shared' },
+    { path: 'params.item.id', correlateAs: 'itemId', scope: 'shared' },
+  ],
+  antigravity: [
+    { path: 'id', correlateAs: 'id', scope: 'endpoint' },
+    { path: 'result.sessionId', correlateAs: 'sessionId', scope: 'shared' },
+    { path: 'params.sessionId', correlateAs: 'sessionId', scope: 'shared' },
+    { path: 'params.toolCall.toolCallId', correlateAs: 'toolCallId', scope: 'shared' },
+    { path: 'params.update.toolCallId', correlateAs: 'toolCallId', scope: 'shared' },
+  ],
+};
+
+/**
+ * Returns the bounded per-provider dynamic ID correlation rules for interactive session replay.
+ * Only protocol request/session/entity IDs are normalized; prompts, steering text, and permission
+ * decisions are always compared strictly.
+ */
+export function getProviderReplayDynamicFields(provider: ProviderId): DynamicFieldRule[] {
+  return PROVIDER_REPLAY_DYNAMIC_FIELDS[provider].map((rule) => ({
+    ...rule,
+    ...(rule.when ? { when: { ...rule.when } } : {}),
+  }));
 }
 
 function parseRulePath(rawPath: string): RuleSegment[] {
@@ -543,6 +595,70 @@ export class ReplayMessageMatcher {
    */
   tryMatchMessage(expected: unknown, actual: unknown, options?: ReplayMatchOptions): ReplayMatchResult {
     return this.compareOne(expected, actual, options, false);
+  }
+
+  /**
+   * Rewrites correlated IDs in a recorded frame (typically `emit_inbound` on `stdout`) to the
+   * actual live IDs bound during prior messages, and registers newly introduced server IDs so
+   * subsequent outbound frames must echo them consistently.
+   */
+  rewriteCorrelatedFrame(
+    frame: unknown,
+    options?: Pick<ReplayMatchOptions, 'direction' | 'dynamicFields'>,
+  ): unknown {
+    const rules = options?.dynamicFields
+      ? [...this.defaultRules, ...normalizeRules(options.dynamicFields)]
+      : this.defaultRules;
+    if (rules.length === 0) return frame;
+    const meta = extractMessageMeta(frame, options?.direction);
+    return this.rewriteValue(frame, [], rules, meta);
+  }
+
+  private rewriteValue(
+    value: unknown,
+    segments: PathSegment[],
+    rules: NormalizedRule[],
+    meta: MessageMeta,
+  ): unknown {
+    const matchingRule = rules.find((rule) => ruleMatches(rule, segments, meta));
+    if (matchingRule && matchingRule.mode === 'correlate' && isCorrelatableId(value)) {
+      const groupKey = resolveCorrelationKey(matchingRule, meta);
+      const boundActual = this.correlations.lookupActual(groupKey, value);
+      if (boundActual !== undefined) {
+        return boundActual;
+      }
+      this.correlations.correlate(groupKey, value, value);
+      return value;
+    }
+
+    if (Array.isArray(value)) {
+      if (!hasPotentialDescendantRule(rules, segments, meta)) {
+        return value;
+      }
+      let changed = false;
+      const next = value.map((item, idx) => {
+        const rewritten = this.rewriteValue(item, [...segments, idx], rules, meta);
+        if (rewritten !== item) changed = true;
+        return rewritten;
+      });
+      return changed ? next : value;
+    }
+
+    if (isPlainObject(value)) {
+      if (!hasPotentialDescendantRule(rules, segments, meta)) {
+        return value;
+      }
+      let changed = false;
+      const next: Record<string, unknown> = {};
+      for (const [key, entry] of Object.entries(value)) {
+        const rewritten = this.rewriteValue(entry, [...segments, key], rules, meta);
+        if (rewritten !== entry) changed = true;
+        next[key] = rewritten;
+      }
+      return changed ? next : value;
+    }
+
+    return value;
   }
 
   /**

@@ -1,8 +1,31 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import type { ProviderId } from '@dalang/shared';
 import { NodeCliRunner } from '../adapters/sandbox.js';
 import type { CliRunner, RunCommandOptions, RunCommandResult } from '../adapters/types.js';
+import {
+  getProviderReplayDynamicFields,
+  ReplayMessageMatcher,
+} from './replay-matching.js';
+
+export type ReplayScriptEntry =
+  | {
+      type: 'expect_outbound';
+      frame: unknown;
+    }
+  | {
+      type: 'emit_inbound';
+      frame: unknown;
+      afterMs?: number;
+    }
+  | {
+      type: 'exit';
+      exitCode: number | null;
+      timedOut?: boolean;
+      idleTimedOut?: boolean;
+      aborted?: boolean;
+    };
 
 export interface ReplayTurnMatch {
   provider?: ProviderId;
@@ -18,13 +41,24 @@ export interface ReplayTurnEntry {
   files?: Record<string, string>;
   /** Files to remove relative to options.cwd. */
   deleteFiles?: string[];
-  /** Streamed stdout lines (recorded CLI JSONL events). */
-  stdoutLines: string[];
+  /** Streamed stdout lines (recorded CLI JSONL events). Optional when `entries` is provided. */
+  stdoutLines?: string[];
   stderrLines?: string[];
-  exitCode: number;
+  exitCode?: number;
   delayMs?: number;
   /** If true, this entry can match more than once. Default false (consumed on match). */
   reusable?: boolean;
+  /** Linear interactive replay script (`expect_outbound`, `emit_inbound`, `exit`). */
+  entries?: ReplayScriptEntry[];
+}
+
+export interface ReplayCliRunnerOptions {
+  runRealShellCommands?: boolean;
+  ghPrUrl?: string;
+  /** Override `supportsInteractiveStdin` (defaults to `true` when any transcript turn has `entries`). */
+  supportsInteractiveStdin?: boolean;
+  /** Optional per-step timeout (ms) when waiting for an `expect_outbound` frame. */
+  expectOutboundTimeoutMs?: number;
 }
 
 export interface ReplayTranscript {
@@ -92,7 +126,7 @@ export function extractPromptAndModel(provider: ProviderId, innerArgs: string[])
     if ((a === '--model' || a === '-m') && innerArgs[i + 1]) {
       model = innerArgs[i + 1];
     }
-    if (provider === 'claude-code' && a === '-p' && innerArgs[i + 1]) {
+    if (provider === 'claude-code' && a === '-p' && innerArgs[i + 1] && !innerArgs[i + 1].startsWith('-')) {
       prompt = innerArgs[i + 1];
     }
     if (provider === 'antigravity' && a.startsWith('-p=')) {
@@ -117,12 +151,110 @@ export function loadReplayTranscript(filePath: string): ReplayTranscript {
   return JSON.parse(raw) as ReplayTranscript;
 }
 
+function isInteractiveTurn(
+  turn: ReplayTurnEntry,
+): turn is ReplayTurnEntry & { entries: ReplayScriptEntry[] } {
+  return Array.isArray(turn.entries);
+}
+
+type SpawnControls = Parameters<NonNullable<RunCommandOptions['onSpawn']>>[0];
+
+function extractPromptFromStdin(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const firstLine = trimmed.split(/\r?\n/).find((line) => line.trim().length > 0);
+  if (!firstLine) return null;
+  try {
+    const parsed = JSON.parse(firstLine) as Record<string, unknown>;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      if (parsed.type === 'user' && parsed.message && typeof parsed.message === 'object') {
+        const content = (parsed.message as { content?: unknown }).content;
+        if (typeof content === 'string') return content;
+        if (Array.isArray(content)) {
+          const texts = content
+            .filter(
+              (block): block is { type?: string; text: string } =>
+                Boolean(block) &&
+                typeof block === 'object' &&
+                typeof (block as { text?: unknown }).text === 'string',
+            )
+            .map((block) => block.text);
+          if (texts.length > 0) return texts.join('\n');
+        }
+      }
+    }
+  } catch {
+    // Fall back to raw stdin text
+  }
+  return trimmed;
+}
+
+function waitDelay(ms: number, signal?: AbortSignal): Promise<boolean> {
+  if (ms <= 0) return Promise.resolve(!signal?.aborted);
+  if (signal?.aborted) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve(false);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve(true);
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function applyTurnFiles(turn: ReplayTurnEntry, cwd: string, promptHint: string): void {
+  if (turn.files) {
+    const sessionMatch = promptHint.match(/\.dalang\/sessions\/([A-Za-z0-9_-]+)\//);
+    const sessionIdFromPrompt = sessionMatch?.[1] ?? null;
+    for (const [rawRelPath, content] of Object.entries(turn.files)) {
+      const relPath =
+        sessionIdFromPrompt &&
+        rawRelPath.startsWith('.dalang/') &&
+        !rawRelPath.startsWith('.dalang/sessions/')
+          ? `.dalang/sessions/${sessionIdFromPrompt}/${rawRelPath.slice('.dalang/'.length)}`
+          : rawRelPath;
+      const abs = path.resolve(cwd, relPath);
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.writeFileSync(abs, content, 'utf8');
+    }
+  }
+  if (turn.deleteFiles) {
+    for (const relPath of turn.deleteFiles) {
+      fs.rmSync(path.resolve(cwd, relPath), { force: true });
+    }
+  }
+}
+
+function isJsonStringLiteral(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return false;
+  try {
+    JSON.parse(trimmed);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function scriptMentionsText(entries: ReplayScriptEntry[], needle: string): boolean {
+  for (const entry of entries) {
+    if (entry.type === 'exit') continue;
+    const text = typeof entry.frame === 'string' ? entry.frame : JSON.stringify(entry.frame);
+    if (text.includes(needle)) return true;
+  }
+  return false;
+}
+
 /**
  * Process-level replay runner: replaces only the external CLI subprocess while the real adapters,
  * normalizers, git worktrees, SQLite database, and orchestrator run unmodified.
  * Shell commands (`/bin/sh -c ...`) run for real via `NodeCliRunner` so `verify` and integration tests execute.
  */
 export class ReplayCliRunner implements CliRunner {
+  readonly supportsInteractiveStdin: boolean;
   private readonly realRunner = new NodeCliRunner();
   private readonly consumedIndices = new Set<number>();
   private readonly binaries: Set<string>;
@@ -130,14 +262,47 @@ export class ReplayCliRunner implements CliRunner {
 
   constructor(
     private readonly transcript: ReplayTranscript,
-    private readonly options: {
-      runRealShellCommands?: boolean;
-      ghPrUrl?: string;
-    } = {},
+    private readonly options: ReplayCliRunnerOptions = {},
   ) {
+    this.supportsInteractiveStdin =
+      options.supportsInteractiveStdin ?? transcript.turns.some((turn) => isInteractiveTurn(turn));
     this.binaries = new Set(
       transcript.binaries ?? ['claude', 'codex', 'agy', 'bwrap', 'sandbox-exec', 'gh'],
     );
+  }
+
+  private findMatchingUnconsumedInteractiveTurn(
+    provider: ProviderId,
+    env?: Record<string, string | undefined>,
+  ): (ReplayTurnEntry & { entries: ReplayScriptEntry[] }) | undefined {
+    const configDir = extractConfigDir(provider, env);
+    for (let idx = 0; idx < this.transcript.turns.length; idx++) {
+      const turn = this.transcript.turns[idx];
+      if (!turn.reusable && this.consumedIndices.has(idx)) continue;
+      if (!isInteractiveTurn(turn)) continue;
+      const m = turn.match;
+      if (m?.provider && m.provider !== provider) continue;
+      if (m?.configDir && m.configDir !== configDir) continue;
+      return turn;
+    }
+    return undefined;
+  }
+
+  private hasUnconsumedLegacyTurn(
+    provider: ProviderId,
+    env?: Record<string, string | undefined>,
+  ): boolean {
+    const configDir = extractConfigDir(provider, env);
+    for (let idx = 0; idx < this.transcript.turns.length; idx++) {
+      const turn = this.transcript.turns[idx];
+      if (!turn.reusable && this.consumedIndices.has(idx)) continue;
+      if (isInteractiveTurn(turn)) continue;
+      const m = turn.match;
+      if (m?.provider && m.provider !== provider) continue;
+      if (m?.configDir && m.configDir !== configDir) continue;
+      return true;
+    }
+    return false;
   }
 
   async which(binary: string): Promise<string | null> {
@@ -272,23 +437,37 @@ export class ReplayCliRunner implements CliRunner {
         };
       }
       if (innerArgs[0] === 'app-server') {
-        const rl = h.codexRateLimits ?? {
-          rateLimits: {
-            primary: { usedPercent: 12, windowDurationMins: 300 },
-            secondary: { usedPercent: 25, windowDurationMins: 10080 },
-          },
-        };
-        const line1 = JSON.stringify({ jsonrpc: '2.0', id: 1, result: { ok: true } });
-        const line2 = JSON.stringify({ jsonrpc: '2.0', id: 2, result: rl });
-        options.onStdoutLine?.(line1);
-        options.onStdoutLine?.(line2);
-        return {
-          exitCode: 0,
-          stdout: `${line1}\n${line2}\n`,
-          stderr: '',
-          timedOut: false,
-          idleTimedOut: false,
-        };
+        const interactiveTurn = this.findMatchingUnconsumedInteractiveTurn('codex', options.env);
+        const looksLikeUsageProbe =
+          !options.signal &&
+          !options.onStderrLine &&
+          options.cwd === os.tmpdir() &&
+          options.timeoutMs === 8000 &&
+          options.idleTimeoutMs === 5000 &&
+          innerArgs.length === 1;
+        const interactiveExpectsRateLimits =
+          interactiveTurn !== undefined &&
+          scriptMentionsText(interactiveTurn.entries, 'account/rateLimits/read');
+
+        if (!this.supportsInteractiveStdin || (looksLikeUsageProbe && !interactiveExpectsRateLimits)) {
+          const rl = h.codexRateLimits ?? {
+            rateLimits: {
+              primary: { usedPercent: 12, windowDurationMins: 300 },
+              secondary: { usedPercent: 25, windowDurationMins: 10080 },
+            },
+          };
+          const line1 = JSON.stringify({ jsonrpc: '2.0', id: 1, result: { ok: true } });
+          const line2 = JSON.stringify({ jsonrpc: '2.0', id: 2, result: rl });
+          options.onStdoutLine?.(line1);
+          options.onStdoutLine?.(line2);
+          return {
+            exitCode: 0,
+            stdout: `${line1}\n${line2}\n`,
+            stderr: '',
+            timedOut: false,
+            idleTimedOut: false,
+          };
+        }
       }
     }
 
@@ -380,17 +559,77 @@ export class ReplayCliRunner implements CliRunner {
       return healthReply;
     }
 
-    const { prompt, model } = extractPromptAndModel(provider, innerArgs);
+    const { prompt: argvPrompt, model } = extractPromptAndModel(provider, innerArgs);
     const configDir = extractConfigDir(provider, options.env);
+    const hasStdinPipe = Boolean(
+      options.interactiveStdin || options.onSpawn || options.stdinData !== undefined,
+    );
+    const isProtocolOnlyCall =
+      (provider === 'codex' && innerArgs[0] === 'app-server') ||
+      (provider === 'antigravity' && innerArgs[0] === 'acp');
+
+    // In mixed transcripts, Claude's interactive session path sends the initial prompt through
+    // onSpawn().writeStdin() rather than argv. Buffer synchronous spawn writes once so turn
+    // selection can match legacy Claude turns (including promptContains) without double-spawning.
+    let spawnProxy:
+      | {
+          attach: (controls: SpawnControls) => void;
+          killed: () => boolean;
+        }
+      | undefined;
+    let stdinPromptSource = options.stdinData ?? '';
+    if (!isProtocolOnlyCall && options.onSpawn && this.hasUnconsumedLegacyTurn(provider, options.env)) {
+      let delegate: SpawnControls | null = null;
+      const bufferedWrites: string[] = [];
+      let bufferedEnded = false;
+      let bufferedKilled = false;
+      const proxyControls: SpawnControls = {
+        writeStdin: (data) => {
+          if (delegate) delegate.writeStdin(data);
+          else if (!bufferedEnded && !bufferedKilled) bufferedWrites.push(data);
+        },
+        endStdin: () => {
+          if (delegate) delegate.endStdin();
+          else bufferedEnded = true;
+        },
+        kill: () => {
+          if (delegate) delegate.kill();
+          else bufferedKilled = true;
+        },
+      };
+      options.onSpawn(proxyControls);
+      stdinPromptSource = `${bufferedWrites.join('')}${options.stdinData ?? ''}`;
+      spawnProxy = {
+        attach: (realControls) => {
+          delegate = realControls;
+          for (const chunk of bufferedWrites) {
+            realControls.writeStdin(chunk);
+          }
+          if (bufferedEnded) realControls.endStdin();
+          if (bufferedKilled) realControls.kill();
+        },
+        killed: () => bufferedKilled,
+      };
+    }
+
+    const promptFromStdin = extractPromptFromStdin(stdinPromptSource);
+    const prompt = promptFromStdin ?? argvPrompt;
 
     const matchedIndex = this.transcript.turns.findIndex((turn, idx) => {
       if (!turn.reusable && this.consumedIndices.has(idx)) return false;
+      const interactiveTurn = isInteractiveTurn(turn);
+      if (isProtocolOnlyCall && !interactiveTurn) return false;
+      if (!hasStdinPipe && interactiveTurn) return false;
       const m = turn.match;
       if (!m) return true;
       if (m.provider && m.provider !== provider) return false;
       if (m.model && m.model !== model) return false;
       if (m.configDir && m.configDir !== configDir) return false;
-      if (m.promptContains && !prompt.includes(m.promptContains)) return false;
+      if (m.promptContains) {
+        if (!interactiveTurn || promptFromStdin !== null) {
+          if (!prompt.includes(m.promptContains)) return false;
+        }
+      }
       return true;
     });
 
@@ -421,34 +660,34 @@ export class ReplayCliRunner implements CliRunner {
     });
 
     if (turn.delayMs && turn.delayMs > 0) {
-      await new Promise((resolve) => setTimeout(resolve, turn.delayMs));
+      const completed = await waitDelay(turn.delayMs, options.signal);
+      if (!completed) {
+        return { exitCode: null, stdout: '', stderr: '', timedOut: false, idleTimedOut: false, aborted: true };
+      }
     }
     if (options.signal?.aborted) {
       return { exitCode: null, stdout: '', stderr: '', timedOut: false, idleTimedOut: false, aborted: true };
     }
 
-    if (turn.files) {
-      const sessionMatch = prompt.match(/\.dalang\/sessions\/([A-Za-z0-9_-]+)\//);
-      const sessionIdFromPrompt = sessionMatch?.[1] ?? null;
-      for (const [rawRelPath, content] of Object.entries(turn.files)) {
-        const relPath =
-          sessionIdFromPrompt &&
-          rawRelPath.startsWith('.dalang/') &&
-          !rawRelPath.startsWith('.dalang/sessions/')
-            ? `.dalang/sessions/${sessionIdFromPrompt}/${rawRelPath.slice('.dalang/'.length)}`
-            : rawRelPath;
-        const abs = path.resolve(options.cwd, relPath);
-        fs.mkdirSync(path.dirname(abs), { recursive: true });
-        fs.writeFileSync(abs, content, 'utf8');
-      }
-    }
-    if (turn.deleteFiles) {
-      for (const relPath of turn.deleteFiles) {
-        fs.rmSync(path.resolve(options.cwd, relPath), { force: true });
-      }
+    if (isInteractiveTurn(turn)) {
+      return this.runInteractiveTurn(provider, turn, options, spawnProxy?.attach);
     }
 
-    for (const line of turn.stdoutLines) {
+    if (spawnProxy?.killed()) {
+      return {
+        exitCode: null,
+        stdout: '',
+        stderr: '',
+        timedOut: false,
+        idleTimedOut: false,
+        aborted: Boolean(options.signal?.aborted),
+      };
+    }
+
+    applyTurnFiles(turn, options.cwd, prompt);
+
+    const stdoutLines = turn.stdoutLines ?? [];
+    for (const line of stdoutLines) {
       options.onStdoutLine?.(line);
     }
     for (const line of turn.stderrLines ?? []) {
@@ -456,12 +695,457 @@ export class ReplayCliRunner implements CliRunner {
     }
 
     return {
-      exitCode: turn.exitCode,
-      stdout: `${turn.stdoutLines.join('\n')}\n`,
+      exitCode: turn.exitCode ?? 0,
+      stdout: `${stdoutLines.join('\n')}\n`,
       stderr: turn.stderrLines ? `${turn.stderrLines.join('\n')}\n` : '',
       timedOut: false,
       idleTimedOut: false,
       aborted: false,
     };
+  }
+
+  /**
+   * Executes a linear interactive session script (`expect_outbound`, `emit_inbound`, `exit`) in strict
+   * order following T3 Code's replay runner design, validating outbound frames with bounded per-provider
+   * ID normalization and guaranteeing timer cleanup on every exit path.
+   */
+  private runInteractiveTurn(
+    provider: ProviderId,
+    turn: ReplayTurnEntry & { entries: ReplayScriptEntry[] },
+    options: RunCommandOptions,
+    attachSpawnProxy?: (controls: SpawnControls) => void,
+  ): Promise<RunCommandResult> {
+    if (options.signal?.aborted) {
+      return Promise.resolve({
+        exitCode: null,
+        stdout: '',
+        stderr: '',
+        timedOut: false,
+        idleTimedOut: false,
+        aborted: true,
+      });
+    }
+
+    return new Promise<RunCommandResult>((resolve, reject) => {
+      const entries = turn.entries;
+      const matcher = new ReplayMessageMatcher({
+        dynamicFields: getProviderReplayDynamicFields(provider),
+      });
+
+      let cursor = 0;
+      const outboundQueue: string[] = [];
+      let stdinRemainder = '';
+      let stdinEnded = false;
+      let settled = false;
+      let advancing = false;
+      let filesApplied = false;
+      let firstOutboundRaw = '';
+      let turnStderrEmitted = false;
+      let waitingForEmitTimer = false;
+      let pendingExitEntry: Extract<ReplayScriptEntry, { type: 'exit' }> | null = null;
+      const stdoutLines: string[] = [];
+      const stderrLines: string[] = [];
+
+      const activeTimers = new Set<ReturnType<typeof setTimeout>>();
+      let totalTimer: ReturnType<typeof setTimeout> | null = null;
+      let idleTimer: ReturnType<typeof setTimeout> | null = null;
+      let expectOutboundTimer: ReturnType<typeof setTimeout> | null = null;
+      let emitTimer: ReturnType<typeof setTimeout> | null = null;
+      let exitTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const scheduleTimer = (fn: () => void, ms: number): ReturnType<typeof setTimeout> => {
+        const timer = setTimeout(() => {
+          activeTimers.delete(timer);
+          fn();
+        }, ms);
+        activeTimers.add(timer);
+        return timer;
+      };
+
+      const cancelTimer = (timer: ReturnType<typeof setTimeout> | null): void => {
+        if (timer) {
+          clearTimeout(timer);
+          activeTimers.delete(timer);
+        }
+      };
+
+      const onAbort = () => {
+        finish({ exitCode: null, aborted: true });
+      };
+
+      const cleanup = () => {
+        for (const timer of activeTimers) {
+          clearTimeout(timer);
+        }
+        activeTimers.clear();
+        totalTimer = null;
+        idleTimer = null;
+        expectOutboundTimer = null;
+        emitTimer = null;
+        exitTimer = null;
+        options.signal?.removeEventListener('abort', onAbort);
+      };
+
+      const emitDiagnostic = (message: string) => {
+        stderrLines.push(message);
+        options.onStderrLine?.(message);
+      };
+
+      const emitTurnStderr = () => {
+        if (turnStderrEmitted) return;
+        turnStderrEmitted = true;
+        for (const line of turn.stderrLines ?? []) {
+          stderrLines.push(line);
+          options.onStderrLine?.(line);
+        }
+      };
+
+      const ensureFilesApplied = () => {
+        if (filesApplied) return;
+        filesApplied = true;
+        applyTurnFiles(turn, options.cwd, firstOutboundRaw);
+      };
+
+      const finish = (overrides: {
+        exitCode: number | null;
+        timedOut?: boolean;
+        idleTimedOut?: boolean;
+        aborted?: boolean;
+      }) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve({
+          exitCode: overrides.exitCode,
+          stdout: stdoutLines.length > 0 ? `${stdoutLines.join('\n')}\n` : '',
+          stderr: stderrLines.length > 0 ? `${stderrLines.join('\n')}\n` : '',
+          timedOut: Boolean(overrides.timedOut),
+          idleTimedOut: Boolean(overrides.idleTimedOut),
+          aborted: Boolean(overrides.aborted),
+        });
+      };
+
+      const failScript = (message: string) => {
+        if (settled) return;
+        emitDiagnostic(message);
+        finish({ exitCode: 1 });
+      };
+
+      const idleMs = options.idleTimeoutMs ?? 0;
+      const totalMs = options.timeoutMs ?? 0;
+      const expectOutboundMs = this.options.expectOutboundTimeoutMs ?? 0;
+
+      const resetIdle = () => {
+        cancelTimer(idleTimer);
+        idleTimer = null;
+        if (settled || idleMs <= 0) return;
+        idleTimer = scheduleTimer(() => {
+          idleTimer = null;
+          const waitingNote =
+            cursor < entries.length && entries[cursor].type === 'expect_outbound'
+              ? ` while waiting for expect_outbound at entry ${cursor}`
+              : '';
+          emitDiagnostic(`ReplayCliRunner: idle timed out after ${idleMs}ms${waitingNote}`);
+          finish({ exitCode: null, idleTimedOut: true });
+        }, idleMs);
+      };
+
+      if (totalMs > 0) {
+        totalTimer = scheduleTimer(() => {
+          totalTimer = null;
+          const waitingNote =
+            cursor < entries.length && entries[cursor].type === 'expect_outbound'
+              ? ` while waiting for expect_outbound at entry ${cursor}`
+              : '';
+          emitDiagnostic(`ReplayCliRunner: timed out after ${totalMs}ms${waitingNote}`);
+          finish({ exitCode: null, timedOut: true });
+        }, totalMs);
+      }
+
+      resetIdle();
+      options.onKeepAlive?.(() => {
+        if (!settled) resetIdle();
+      });
+      options.signal?.addEventListener('abort', onAbort, { once: true });
+
+      const matchExpectedOutbound = (
+        expectedFrame: unknown,
+        actualLine: string,
+        entryIndex: number,
+      ): { matched: boolean; diagnosis: string } => {
+        if (typeof expectedFrame === 'string' && !isJsonStringLiteral(expectedFrame)) {
+          if (actualLine.trim() !== expectedFrame.trim()) {
+            return {
+              matched: false,
+              diagnosis: `value_mismatch at [${entryIndex}] (stdin) (root): Raw text frame differs`,
+            };
+          }
+          return { matched: true, diagnosis: 'Matched' };
+        }
+        const res = matcher.matchMessage(expectedFrame, actualLine, {
+          direction: 'stdin',
+          messageIndex: entryIndex,
+        });
+        return { matched: res.matched, diagnosis: res.diagnosis };
+      };
+
+      const serializeInboundFrame = (frame: unknown): string => {
+        if (typeof frame === 'string') {
+          if (isJsonStringLiteral(frame)) {
+            const parsed = JSON.parse(frame) as unknown;
+            const rewritten = matcher.rewriteCorrelatedFrame(parsed, { direction: 'stdout' });
+            return JSON.stringify(rewritten);
+          }
+          return frame;
+        }
+        const rewritten = matcher.rewriteCorrelatedFrame(frame, { direction: 'stdout' });
+        return JSON.stringify(rewritten);
+      };
+
+      const completeAtExit = (exitEntry: Extract<ReplayScriptEntry, { type: 'exit' }>) => {
+        if (outboundQueue.length > 0) {
+          failScript(
+            `ReplayCliRunner: unexpected outbound frame at entry ${cursor} (${outboundQueue.length} extra frame(s) after script completed)`,
+          );
+          return;
+        }
+        ensureFilesApplied();
+        emitTurnStderr();
+        pendingExitEntry = exitEntry;
+        if (stdinEnded) {
+          cancelTimer(exitTimer);
+          exitTimer = null;
+          finish({
+            exitCode: exitEntry.exitCode,
+            timedOut: exitEntry.timedOut,
+            idleTimedOut: exitEntry.idleTimedOut,
+            aborted: exitEntry.aborted,
+          });
+          return;
+        }
+        if (!exitTimer) {
+          exitTimer = scheduleTimer(() => {
+            exitTimer = null;
+            if (outboundQueue.length > 0) {
+              failScript(
+                `ReplayCliRunner: unexpected outbound frame at entry ${cursor} (${outboundQueue.length} extra frame(s) after script completed)`,
+              );
+              return;
+            }
+            finish({
+              exitCode: exitEntry.exitCode,
+              timedOut: exitEntry.timedOut,
+              idleTimedOut: exitEntry.idleTimedOut,
+              aborted: exitEntry.aborted,
+            });
+          }, 0);
+        }
+      };
+
+      const advance = () => {
+        if (advancing || settled || waitingForEmitTimer) return;
+        advancing = true;
+        try {
+          while (!settled && !waitingForEmitTimer) {
+            if (pendingExitEntry) {
+              if (outboundQueue.length > 0) {
+                cancelTimer(exitTimer);
+                exitTimer = null;
+                failScript(
+                  `ReplayCliRunner: unexpected outbound frame at entry ${cursor} (${outboundQueue.length} extra frame(s) after script completed)`,
+                );
+                return;
+              }
+              if (stdinEnded) {
+                const exitEntry = pendingExitEntry;
+                cancelTimer(exitTimer);
+                exitTimer = null;
+                finish({
+                  exitCode: exitEntry.exitCode,
+                  timedOut: exitEntry.timedOut,
+                  idleTimedOut: exitEntry.idleTimedOut,
+                  aborted: exitEntry.aborted,
+                });
+              }
+              return;
+            }
+
+            if (cursor >= entries.length) {
+              failScript(`ReplayCliRunner: script ended without exit at entry ${cursor}`);
+              return;
+            }
+
+            const entry = entries[cursor];
+            if (!entry || typeof entry !== 'object') {
+              failScript(`ReplayCliRunner: invalid script entry at ${cursor}`);
+              return;
+            }
+
+            if (entry.type === 'expect_outbound') {
+              if (outboundQueue.length === 0) {
+                if (stdinEnded) {
+                  failScript(
+                    `ReplayCliRunner: missing expected outbound frame at entry ${cursor} (stdin closed before script completed)`,
+                  );
+                  return;
+                }
+                if (!expectOutboundTimer && expectOutboundMs > 0) {
+                  expectOutboundTimer = scheduleTimer(() => {
+                    expectOutboundTimer = null;
+                    emitDiagnostic(
+                      `ReplayCliRunner: timed out waiting for expect_outbound at entry ${cursor} after ${expectOutboundMs}ms`,
+                    );
+                    finish({ exitCode: null, timedOut: true });
+                  }, expectOutboundMs);
+                }
+                return;
+              }
+
+              cancelTimer(expectOutboundTimer);
+              expectOutboundTimer = null;
+
+              const actualLine = outboundQueue.shift()!;
+              if (!firstOutboundRaw) firstOutboundRaw = actualLine;
+              const check = matchExpectedOutbound(entry.frame, actualLine, cursor);
+              if (!check.matched) {
+                failScript(`ReplayCliRunner: outbound frame mismatch at entry ${cursor}: ${check.diagnosis}`);
+                return;
+              }
+              cursor += 1;
+              continue;
+            }
+
+            if (entry.type === 'emit_inbound') {
+              if (outboundQueue.length > 0) {
+                failScript(`ReplayCliRunner: unexpected outbound frame before emit_inbound at entry ${cursor}`);
+                return;
+              }
+              const emitNow = () => {
+                if (settled) return;
+                if (outboundQueue.length > 0) {
+                  failScript(`ReplayCliRunner: unexpected outbound frame before emit_inbound at entry ${cursor}`);
+                  return;
+                }
+                ensureFilesApplied();
+                const line = serializeInboundFrame(entry.frame);
+                stdoutLines.push(line);
+                cursor += 1;
+                resetIdle();
+                options.onStdoutLine?.(line);
+              };
+
+              if (
+                typeof entry.afterMs === 'number' &&
+                Number.isFinite(entry.afterMs) &&
+                entry.afterMs > 0
+              ) {
+                waitingForEmitTimer = true;
+                emitTimer = scheduleTimer(() => {
+                  emitTimer = null;
+                  waitingForEmitTimer = false;
+                  if (settled) return;
+                  advancing = true;
+                  try {
+                    emitNow();
+                  } finally {
+                    advancing = false;
+                  }
+                  advance();
+                }, entry.afterMs);
+                return;
+              }
+
+              emitNow();
+              continue;
+            }
+
+            if (entry.type === 'exit') {
+              if (cursor !== entries.length - 1) {
+                failScript(`ReplayCliRunner: entries remain after exit at entry ${cursor}`);
+                return;
+              }
+              cursor += 1;
+              completeAtExit(entry);
+              return;
+            }
+            failScript(`ReplayCliRunner: invalid script entry at ${cursor}`);
+            return;
+          }
+        } finally {
+          advancing = false;
+        }
+      };
+
+      const controls = {
+        writeStdin: (data: string) => {
+          if (settled || stdinEnded) return;
+          resetIdle();
+          stdinRemainder += data;
+          const parts = stdinRemainder.split(/\r?\n/);
+          stdinRemainder = parts.pop() ?? '';
+          let added = false;
+          for (const part of parts) {
+            if (part.trim().length > 0) {
+              outboundQueue.push(part);
+              added = true;
+            }
+          }
+          if (added) {
+            if (waitingForEmitTimer) {
+              failScript(`ReplayCliRunner: unexpected outbound frame before emit_inbound at entry ${cursor}`);
+            } else {
+              advance();
+            }
+          }
+        },
+        endStdin: () => {
+          if (settled || stdinEnded) return;
+          stdinEnded = true;
+          const trailing = stdinRemainder.trim();
+          stdinRemainder = '';
+          if (trailing.length > 0) {
+            outboundQueue.push(trailing);
+          }
+          advance();
+        },
+        kill: () => {
+          if (settled) return;
+          if (pendingExitEntry && outboundQueue.length === 0) {
+            const exitEntry = pendingExitEntry;
+            finish({
+              exitCode: exitEntry.exitCode,
+              timedOut: exitEntry.timedOut,
+              idleTimedOut: exitEntry.idleTimedOut,
+              aborted: exitEntry.aborted,
+            });
+            return;
+          }
+          finish({ exitCode: null, aborted: Boolean(options.signal?.aborted) });
+        },
+      };
+
+      try {
+        if (attachSpawnProxy) {
+          attachSpawnProxy(controls);
+        } else {
+          options.onSpawn?.(controls);
+        }
+      } catch (err) {
+        cleanup();
+        reject(err);
+        return;
+      }
+
+      if (!settled && options.stdinData !== undefined) {
+        if (options.stdinData.length > 0) {
+          controls.writeStdin(options.stdinData);
+        }
+        controls.endStdin();
+      }
+
+      if (!settled) {
+        advance();
+      }
+    });
   }
 }
