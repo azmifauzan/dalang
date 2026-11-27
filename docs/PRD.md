@@ -1,6 +1,6 @@
 # PRD: DALANG
 
-Nov 18, 2026 · @Fauzan · Updated through v0.14.8, Nov 26, 2026
+Nov 18, 2026 · @Fauzan · Updated through v0.14.8, Nov 27, 2026
 
 ## Summary
 
@@ -315,7 +315,7 @@ Each phase must be useful on its own before the next one starts.
 | v0.14.6 | Clearer approval prompts | A merge or Auto replace question says what it needs, why the task is ready, and what y and n each do | Released in v0.14.6. Also ships `replay-matching`, a v0.15 task DALANG merged while running v0.15. |
 | v0.14.7 | Plans wait for approval, merge conflicts and scope requests go back to the task, restarts continue work | A phase asked for in one Auto message shows its plan and executors before anything runs, and a conflict, a missing file, or a restart no longer stops the run | Released in v0.14.7. Closes B2, B9, B10, B13 (R3, R9, R10) before the v0.15 run continues; the v0.15 section names the T3 Code design to follow for each remaining item. |
 | v0.14.8 | Security fixes for the 0.14.7 merge conflict and scope request paths | A tampered task worktree runs no git outside the sandbox, and a scope request can add only the literal files it names | Released in v0.14.8. Use it instead of v0.14.7. |
-| v0.15 | Reliability and parity: fatal provider errors fail fast, restart recovery, session protocol replay, waiting view, room and web parity, merge conflicts handled, structured questions | B1, B6 to B8, and B12 are closed with tests that failed before the fix, R1 follows the T3 Code design, and typecheck, tests, and build pass | Planned |
+| v0.15 | Reliability and parity: fatal provider errors fail fast, restart recovery, session protocol replay, waiting view, room and web parity, merge conflicts handled, structured questions, commands while busy, result summary | B1, B6 to B8, B12, B16, and B17 are closed with tests that failed before the fix, R1 follows the T3 Code design, and typecheck, tests, and build pass | Planned |
 | v0.16 | Speed: per-project events, output hub, paged history, block-wise streaming | Recordings show improvement over the baseline; render and payload budgets pass | Planned |
 | v0.17 | Agent tools: DALANG browser, browser evidence at the gate, per-project MCP allowlist | An executor tests a dev server in the browser on all three providers, and Gate 2 shows the evidence | Planned |
 | v0.18, v0.19 | Telegram bridge, then Slack bridge | See [the chat app plan](#v012-v013-v018-v019-terminal-room-auto-and-chat-apps) | Planned |
@@ -1027,6 +1027,8 @@ The first run of v0.15 from one prompt inside DALANG found more bugs. This pass 
 | B13 | A fix round failed because the review asked for a file outside `files_allowed` | No file scope per task | Shipped in v0.14.7 (R10) |
 | B14 | A new Auto plan in the same chat asked to discard "another session" that was this chat | One thread per task; a new message while it works is queued or steers it (`docs/user/composer.md`) | Fixed in v0.14.6 |
 | B15 | Rows of the terminal room overlapped and the header lost its title line | No terminal UI | Fixed in v0.14.5 (tabs counted as zero columns) |
+| B16 | While the Lead answers, the room ignores Enter for every command except `/stop` and `/exit`, with no message, although `/config` and `/model` are still suggested | A follow-up sent while the agent works is queued or steers the turn; provider slash commands wait for the turn to finish, and T3 Code's own commands such as `/model` work on any line (`docs/user/composer.md`) | U4 |
+| B17 | An executor at work shows no detail, and the end of a task or run is easy to miss and does not say what changed | A finished turn folds under "Worked for {duration}" (`apps/web/src/components/chat/MessagesTimeline.logic.ts`), and the turn diff shows only that turn's own edits, commits, and conflict fixes (`docs/user/source-control.md`) | Detail while working is U1; the closing summary is U5 |
 
 #### Evidence from early use
 
@@ -1043,6 +1045,8 @@ Read from a copy of a maintainer's local database and logs.
 | B7 | Raw JSON in streamed replies | The agent writes a progress message, then the JSON answer; the joined text does not start with `{`, so `liveReplyText` returns it raw (reproduced; four turns in the logs). Affects the room and the web UI |
 | B8 | Waiting gives no feedback | The room shows only `Working`, `Thinking`, or `Running a command`: no target, elapsed time, step history, or startup phase |
 | B9 | A merge conflict stops the run | During the v0.15 run, a change merged into the main branch while `restart-idle` ran touched the same test file. Merging the passed task failed with a conflict, the gate only showed the git error, and answering yes again failed the same way |
+| B16 | Commands are ignored while the Lead answers | During the v0.15 run on 0.14.6, `/config` could not be opened while the Lead was writing. The Enter handler of the room returns early for every input except `/stop` and `/exit` while a message is being sent (from reading the code) |
+| B17 | No detail while an executor works, no clear result at the end | Same run: one activity line while the executor works; the `Finished [task]` report is one paragraph styled like any other row, and the closing note of v0.14.5 holds only counts and task IDs |
 
 #### Decisions
 
@@ -1061,7 +1065,7 @@ Read from a copy of a maintainer's local database and logs.
 
 #### v0.15: reliability and parity
 
-Done when: B1, B6 to B8, and B12 are closed, each with a replay or unit test that failed before the fix; items R1, R2, R5, R7, R8, U1 to U3, and F6 are in place (R3, R9, and R10 shipped in v0.14.7), and R1 follows the T3 Code design named in its row; and typecheck, tests, and build pass. B3 was fixed in v0.14.4, B5 belongs to v0.16, and B4 is confirmed in R6. Everything in this list can be done and checked inside the repository, without live providers. Live verification is R6 below and is not part of the implementation work.
+Done when: B1, B6 to B8, B12, B16, and B17 are closed, each with a replay or unit test that failed before the fix; items R1, R2, R5, R7, R8, U1 to U5, and F6 are in place (R3, R9, and R10 shipped in v0.14.7), and R1 follows the T3 Code design named in its row; and typecheck, tests, and build pass. B3 was fixed in v0.14.4, B5 belongs to v0.16, and B4 is confirmed in R6. Everything in this list can be done and checked inside the repository, without live providers. Live verification is R6 below and is not part of the implementation work.
 
 | Order | Item | Scope |
 | --- | --- | --- |
@@ -1069,7 +1073,7 @@ Done when: B1, B6 to B8, and B12 are closed, each with a replay or unit test tha
 | 2 | R2 | Fatal provider errors fail fast (B1): per-adapter fatal stderr patterns end the turn with a message and a fix, and every failed or timed-out turn shows the last stderr lines, as T3 Code's `makeStderrTail` does. Find the cause of B1 (Codex's own sandbox in `app-server`, Ask running without DALANG's bwrap, or AppArmor blocking unprivileged user namespaces) |
 | 3 | R3 | Startup recovery (B2), following T3 Code's `RestartContinuation.ts`. **Shipped in v0.14.7** (outside the v0.15 run): a `working` session with no live run returns to idle with one chat note (`restart-idle`), and a task a restart cut short continues on its branch, in the same CLI session when there is one, with one fixed continue prompt; at most three continuations in five minutes. Nothing left for v0.15 |
 | 4 | R1 | Session protocol replay (B6), in T3 Code's format (`effect-codex-app-server/src/replay.ts`): a transcript is a linear list of `expect_outbound` (what DALANG must write to stdin, compared after removing ids listed per provider), `emit_inbound` (a stdout line, with an optional delay), and `exit`. `recordings.mjs` converts a recording into this list once; the runner does not reorder or infer. Already merged: `replay-matching` |
-| 5 | U1 | Waiting view (B8), the same in the room and the web UI: header (role, provider, model, elapsed time), start and resume phases from protocol signals, steps with targets (file, search pattern, command) and durations, agent progress messages as dimmed rows, the streamed answer below; finished steps fold into one expandable summary |
+| 5 | U1 | Waiting view (B8), the same in the room and the web UI: header (role, provider, model, elapsed time), start and resume phases from protocol signals, steps with targets (file, search pattern, command) and durations, agent progress messages as dimmed rows, the streamed answer below; finished steps fold into one expandable summary. It covers every running role: Lead, executor (including fix rounds), and reviewer, with one block per run when several run at once |
 | 6 | U2 | Token streaming in the web UI from `lead.text` |
 | 7 | R5 | Room and web parity: one scenario list used by `browser-replay.test.ts` and a room test in a pseudo-terminal, with the same transcripts |
 | 8 | R7 | Small reliability items: asynchronous run logs; foreign-key indexes, `busy_timeout`, and `synchronous = NORMAL` (schema v17); WebSocket heartbeat and reconnect; `client_request_id` for `delegate_task`; webhook dedupe by delivery id |
@@ -1077,6 +1081,8 @@ Done when: B1, B6 to B8, and B12 are closed, each with a replay or unit test tha
 | 10 | R9 | Merge conflicts (B9). **Shipped in v0.14.7**: a conflicting merge into the main branch goes back to the task. DALANG merges the main branch into the task branch, commits the conflict markers, moves the task's base, and continues the task with a note naming the files; verify, review, and the merge gate run again. Nested repositories still stop at the git error |
 | 11 | R10 | Scope requests (B13). **Shipped in v0.14.7**: an executor that needs files outside `files_allowed` reports them in `needs_files` with status `blocked`; the room and the web UI ask the user to allow them, and on yes they join the task's scope and the task continues on its branch |
 | 12 | U3 | Structured questions (B12), in the shape of T3 Code's `UserInputQuestion`: the Lead can return `question` with a header, the question, and options (label and description), plus whether a custom answer or several choices are allowed. The room shows a numbered choice list in the approval box, the web UI shows buttons, and the answer goes back to the Lead |
+| 13 | U4 | Commands while busy (B16): in the room, `/config`, `/model`, `/help`, `/diff`, and other commands that only read or change settings work while the Lead answers or a task runs; a model change applies to the next message. A command or message that has to wait is refused with a visible reason and stays in the composer. No message queue in v0.15. The web UI follows the same rule |
+| 14 | U5 | Result summary (B17), in the room and the web UI: a finished or failed task shows one block, set apart from log rows, with the outcome, what was done, the changed files with line counts, the verify and review results, the duration, and the next step. The closing note of a run repeats the outcome and one summary line per task. Built from stored task results, reviews, and diffs, with no extra model call |
 
 ##### R6: manual verification by the operator
 
