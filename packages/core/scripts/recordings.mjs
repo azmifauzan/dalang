@@ -238,7 +238,7 @@ function convertOrderedEventsToEntries(events, recording) {
       if (emittedAny) {
         lastEmittedAtMs = atMs;
       }
-      if (stdinBuffer.trim().length === 0 || event.data.trim().length > 0) {
+      if (parts.length > 0 || stdinBuffer.trim().length === 0) {
         sawStdoutAfterPendingStdin = false;
       }
     } else if (event.direction === 'stdin_end') {
@@ -275,16 +275,24 @@ function convertOrderedEventsToEntries(events, recording) {
   return entries;
 }
 
-function hasUnterminatedTrailingStdin(rawWrites) {
-  if (!Array.isArray(rawWrites) || rawWrites.length === 0) return false;
+function findUnterminatedTrailingStdinStartMs(rawWrites) {
+  if (!Array.isArray(rawWrites) || rawWrites.length === 0) return null;
   let buffer = '';
+  let pendingStartAtMs = null;
   for (const write of rawWrites) {
     if (!write || typeof write.data !== 'string') continue;
+    const atMs = isFiniteNonNegativeNumber(write.atMs) ? write.atMs : undefined;
+    const prevHadContent = buffer.trim().length > 0;
     buffer += write.data;
     const parts = buffer.split(/\r?\n/);
     buffer = parts.pop() ?? '';
+    if (parts.length > 0) {
+      pendingStartAtMs = buffer.trim().length > 0 ? (atMs ?? 0) : null;
+    } else if (!prevHadContent && buffer.trim().length > 0) {
+      pendingStartAtMs = atMs ?? 0;
+    }
   }
-  return buffer.trim().length > 0;
+  return buffer.trim().length > 0 ? pendingStartAtMs : null;
 }
 
 function mergeLegacyInteractiveStreams(recording) {
@@ -374,9 +382,9 @@ function mergeLegacyInteractiveStreams(recording) {
     }
   }
 
-  if (hasUnterminatedTrailingStdin(rawWrites) && stdinFrames.length > 0) {
-    const trailingFrame = stdinFrames[stdinFrames.length - 1];
-    const hasStdoutAtOrAfter = stdoutTimesMs.some((t) => t >= trailingFrame.atMs);
+  const unterminatedStartMs = findUnterminatedTrailingStdinStartMs(rawWrites);
+  if (unterminatedStartMs !== null && stdinFrames.length > 0) {
+    const hasStdoutAtOrAfter = stdoutTimesMs.some((t) => t >= unterminatedStartMs);
     if (hasStdoutAtOrAfter) {
       throw new Error(
         `Cannot convert interactive recording "${label}": unterminated stdin frame is followed by stdout without a newline or stdin_end event, so its cross-direction position cannot be determined.`,

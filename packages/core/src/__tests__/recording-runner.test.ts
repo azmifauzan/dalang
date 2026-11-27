@@ -73,6 +73,7 @@ describe('RecordingCliRunner', () => {
   }
 
   afterEach(() => {
+    vi.restoreAllMocks();
     for (const d of tempDirs.splice(0)) {
       fs.rmSync(d, { recursive: true, force: true });
     }
@@ -130,6 +131,7 @@ describe('RecordingCliRunner', () => {
   });
 
   it('records cross-direction order accurately even when stdin writes and stdout replies happen synchronously in the same millisecond', async () => {
+    vi.spyOn(performance, 'now').mockReturnValue(1000);
     const dir = makeTempDir('dalang-rec-sync-');
     const recDir = path.join(dir, 'rec');
 
@@ -190,6 +192,7 @@ describe('RecordingCliRunner', () => {
   });
 
   it('records stdin_end so an unterminated stdin frame closed before stdout stays ordered before its response', async () => {
+    vi.spyOn(performance, 'now').mockReturnValue(1000);
     const dir = makeTempDir('dalang-rec-stdin-end-');
     const recDir = path.join(dir, 'rec');
 
@@ -245,6 +248,7 @@ describe('recordings.mjs linear replay converter', () => {
   }
 
   afterEach(() => {
+    vi.restoreAllMocks();
     for (const d of tempDirs.splice(0)) {
       fs.rmSync(d, { recursive: true, force: true });
     }
@@ -592,6 +596,35 @@ describe('recordings.mjs linear replay converter', () => {
         stdinWrites: [{ atMs: 5, data: '{"jsonrpc":"2.0","id":1,"method":"initialize"}' }],
         stdoutLines: ['{"jsonrpc":"2.0","id":1,"result":{"ok":true}}'],
         stdoutTimesMs: [12],
+        exitCode: 0,
+      }),
+    ).toThrow(/unterminated stdin frame is followed by stdout/i);
+
+    // 0c. Partial stdin write after interleaved stdout without newline or stdin_end in `events`
+    expect(() =>
+      convertRecordingToReplayEntries({
+        id: 'partial-after-interleaved-stdout',
+        provider: 'codex',
+        events: [
+          { direction: 'stdin', atMs: 5, data: '{"id":' },
+          { direction: 'stdout', atMs: 9, data: 'ready' },
+          { direction: 'stdin', atMs: 12, data: '1}' },
+        ],
+        exitCode: 0,
+      }),
+    ).toThrow(/unterminated stdin frame is followed by stdout/i);
+
+    // 0d. Partial stdin write after interleaved stdout without newline in legacy recording
+    expect(() =>
+      convertRecordingToReplayEntries({
+        id: 'legacy-partial-after-interleaved-stdout',
+        provider: 'codex',
+        stdinWrites: [
+          { atMs: 5, data: '{"id":' },
+          { atMs: 12, data: '1}' },
+        ],
+        stdoutLines: ['ready'],
+        stdoutTimesMs: [9],
         exitCode: 0,
       }),
     ).toThrow(/unterminated stdin frame is followed by stdout/i);
