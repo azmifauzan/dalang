@@ -320,6 +320,7 @@ Each phase must be useful on its own before the next one starts.
 | v0.14.11 | Fewer fix rounds for medium and high tasks, no verify rerun by the reviewer, time split per run | A medium or high task's executor checks its work as the reviewer will, and every executor run logs where its time went | Released in v0.14.11. Starts P1 and P4. The first-review pass rate is not measured yet |
 | v0.14.12 | Background server, DALANG files kept out of user history, project check before merge, reference images and unchecked items, fixes for the terminal room and worktree setup | Closing any terminal stops nothing; no `.dalang/` file reaches the user's branch; the approved project check must pass before review | Released in v0.14.12. Closes B26 to B33. Needs live confirmation of the project check and references with real agents |
 | v0.15 | Reliability and parity: fatal provider errors fail fast, restart recovery, session protocol replay, waiting view, room and web parity, merge conflicts handled, structured questions, commands while busy, result summary, continue fixing after a failed review | B1, B6 to B8, B12, and B16 to B22 are closed with tests that failed before the fix, R1 follows the T3 Code design, and typecheck, tests, and build pass | Planned |
+| v0.15.1 | Context between tasks: shared decisions and findings, research before editing for medium and high tasks, handoff notes when a task stops | Later tasks receive the earlier tasks' decisions; fewer fix rounds and file re-reads than the v0.15 baseline, measured with P4 | Planned |
 | v0.16 | Speed: per-project events, output hub, paged history, block-wise streaming | Recordings show improvement over the baseline; render and payload budgets pass | Planned |
 | v0.17 | Agent tools: DALANG browser, browser evidence at the gate, per-project MCP allowlist | An executor tests a dev server in the browser on all three providers, and Gate 2 shows the evidence | Planned |
 | v0.18, v0.19 | Telegram bridge, then Slack bridge | See [the chat app plan](#v012-v013-v018-v019-terminal-room-auto-and-chat-apps) | Planned |
@@ -1124,6 +1125,23 @@ Items added while the first v0.15 plan was running (the R5 expansion and U7 to U
 ##### R6: manual verification by the operator
 
 Not a task for the Lead or the executors. After v0.15 is released, the user runs structured dogfooding: Ask, Quick, and Full × Claude, Codex, and Antigravity × room and web, on scratch copies of three real repositories (one of them this repository, one a workspace with nested repositories), with `DALANG_RECORD_DIR` set. It uses live providers and quota. It includes internet access per provider (D6) and confirms B4. Every failure becomes a fix and a replay transcript.
+
+#### v0.15.1: context between tasks (planned 27 Nov 2026)
+
+Ideas taken from [agent-orchestration](https://github.com/madebyaris/agent-orchestration) (MIT), an MCP server in which agents share memory, claim tasks, lock files, and record research and handoffs through tools they choose to call. DALANG takes the ideas, not the code or a dependency, and enforces them itself: an agent that skips a tool call must not be able to skip them. Read from its README and file list on 27 Nov 2026; its code was not studied.
+
+Why: in the v0.15 run 13 of 16 tasks failed their first review, executors read the same files again up to 23 times in one run, and a later task's executor sees only merged code, not what earlier tasks decided or found (B25). Starts after P4, so that every item below is measured against the v0.15 numbers.
+
+| Order | Item | Scope |
+| --- | --- | --- |
+| 1 | C1 | Shared decisions and findings: `result.json` gains `decisions` and `findings` (short items: what was decided and why, traps found, conventions confirmed). DALANG stores them per session and adds the ones that touch a task's files or goal to its prompt, with a size limit. The user sees them in the room and the web UI and can remove one. Nothing is written into the user's repository (B31) |
+| 2 | C2 | Research before editing, for medium and high tasks: the executor first writes what it understands, the files it will change, and the edge cases, then edits. DALANG keeps it with the run and shows it, and the reviewer gets it. Measured against P1 alone: kept only if it lowers fix rounds by more than it adds to run time |
+| 3 | C3 | Handoff notes: when a task stops, fails, or ends a fix round, the executor records what is done, what is left, and why. A continued task (U7), a task restarted after a server restart (R3), or a task moved to another provider gets the notes, not only the reviewer's findings |
+
+Not taken: agents registering themselves, claiming tasks, and locking files through MCP calls (DALANG assigns tasks, and `files_allowed` with the overlap rule does the locking, without extra agent turns); complexity from keywords (the Lead sets it); per-task Markdown documentation in the repository (U5 covers the summary, and B31 keeps DALANG's files out of the repository).
+
+Done when: C1 to C3 are in place with tests, each executor prompt stays within a stated size limit, and a recorded run of comparable work shows fewer fix rounds or fewer re-reads per run than the v0.15 baseline, with the time split from P4.
+
 
 #### v0.16: speed
 
