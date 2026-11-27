@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -201,3 +202,18 @@ export function handleVerifyAndReviewCalls(
   return null;
 }
 
+
+/**
+ * Whether a test may start a real bwrap here. It cannot inside DALANG's own sandbox (verify and
+ * integration commands run there), nor where unprivileged user namespaces are off. The checks on the
+ * bwrap arguments run everywhere; only the real kernel check needs this.
+ */
+export function canRunRealBwrap(): boolean {
+  if (process.platform !== 'linux') return false;
+  try {
+    execFileSync('/usr/bin/bwrap', ['--ro-bind', '/', '/', '/bin/true'], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}

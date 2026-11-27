@@ -23,6 +23,7 @@ import { ProfileService } from '../services/profiles.js';
 import { ProjectService } from '../services/project.js';
 import { SettingsService } from '../services/settings.js';
 import {
+  canRunRealBwrap,
   cleanupTempDirs,
   handleLeadCalls,
   handleVerifyAndReviewCalls,
@@ -744,7 +745,7 @@ describe('bwrap sandbox for a project kept under /tmp', () => {
         const idx = inv.args.indexOf(mainGit);
         expect(idx).toBeGreaterThan(inv.args.indexOf('/tmp'));
         expect(inv.args[idx - 1]).toBe('--ro-bind');
-        if (process.platform === 'linux' && fs.existsSync('/usr/bin/bwrap')) {
+        if (canRunRealBwrap()) {
           // Real run: without the mount git prints "not a git repository".
           const out = execFileSync(inv.command, inv.args, { encoding: 'utf8' });
           expect(out).toBe('');

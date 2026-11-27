@@ -195,6 +195,9 @@ async function launchHeadlessChrome(binary: string, startUrl: string): Promise<{
   };
 }
 
+/** 100 ms steps. A cold page load on a busy machine took longer than the earlier 6 to 8 seconds. */
+const WAIT_STEPS = 250;
+
 describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner', () => {
   it('runs upgrade path (existing project), 5-step shell, Config 6 tabs, Statistics, Work stage, i18n, theme, update notice, and mobile drawer', async () => {
     const transcript: ReplayTranscript = {
@@ -387,7 +390,7 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
         const browser = await launchHeadlessChrome(chromeBin, server.url);
         try {
           const waitForText = async (needle: string) => {
-            for (let i = 0; i < 60; i++) {
+            for (let i = 0; i < WAIT_STEPS; i++) {
               const text = await browser.cdp.evalJs<string>("document.body?.innerText ?? ''");
               if (text.includes(needle)) return text;
               await new Promise((r) => setTimeout(r, 100));
@@ -742,7 +745,7 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
         const browser = await launchHeadlessChrome(chromeBin, server.url);
         try {
           const waitForText = async (needle: string) => {
-            for (let i = 0; i < 60; i++) {
+            for (let i = 0; i < WAIT_STEPS; i++) {
               const text = await browser.cdp.evalJs<string>("document.body?.innerText ?? ''");
               if (text.includes(needle)) return text;
               await new Promise((r) => setTimeout(r, 100));
@@ -1135,7 +1138,7 @@ describe('v0.6 + v0.7 browser scenarios on a real server with the replay runner'
           };
         });
         try {
-          const waitForText = async (needle: string, timeoutSteps = 80) => {
+          const waitForText = async (needle: string, timeoutSteps = WAIT_STEPS) => {
             for (let i = 0; i < timeoutSteps; i++) {
               const text = await browser.cdp.evalJs<string>("document.body?.innerText ?? ''");
               if (text.includes(needle)) return text;

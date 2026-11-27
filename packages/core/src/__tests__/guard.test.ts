@@ -7,6 +7,7 @@ import { ProviderRegistry } from '../adapters/registry.js';
 import { ProfileService } from '../services/profiles.js';
 import { SettingsService } from '../services/settings.js';
 import {
+  canRunRealBwrap,
   cleanupTempDirs,
   shellCommand,
   handleLeadCalls,
@@ -479,7 +480,7 @@ describe('v0.3 Kawal: Reviewer, Fix Loop, Guard Diff/Merge, Integration, Profile
 
     try {
       // Real bwrap --ro-bind kernel check on Linux.
-      if (process.platform === 'linux' && fs.existsSync('/usr/bin/bwrap')) {
+      if (canRunRealBwrap()) {
         const res = execFileSync(
           '/usr/bin/bwrap',
           [
