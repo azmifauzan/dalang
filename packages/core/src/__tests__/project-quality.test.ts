@@ -74,6 +74,11 @@ describe('project check and references (B31 to B33)', () => {
         const planted = path.join(opts.cwd, path.dirname(path.dirname(match[1])), 'T-999', 'review.json');
         fs.mkdirSync(path.dirname(planted), { recursive: true });
         fs.writeFileSync(planted, '{"status":"pass"}');
+        // Nor one under another session that has a task with this same id, nor an unexpected file here.
+        for (const stray of [`.dalang/sessions/other-session/tasks/${match[2]}/review.json`, `${path.dirname(match[1])}/notes.sh`, `.dalang/tasks/${match[2]}/review.json`]) {
+          fs.mkdirSync(path.dirname(path.join(opts.cwd, stray)), { recursive: true });
+          fs.writeFileSync(path.join(opts.cwd, stray), '{"status":"pass"}');
+        }
         fs.mkdirSync(path.dirname(path.join(opts.cwd, match[1])), { recursive: true });
         fs.writeFileSync(path.join(opts.cwd, match[1]), JSON.stringify({ task_id: match[2], status: 'completed', summary: 'Done', notes: [], blockers: [], verify_exit_code: 0 }));
         return ok;
@@ -112,6 +117,9 @@ describe('project check and references (B31 to B33)', () => {
       expect(git(projDir, 'log', '--name-only', '--format=', 'main')).not.toMatch(/\.dalang\//);
       expect(git(projDir, 'status', '--porcelain')).not.toMatch(/\.dalang/);
       expect(fs.existsSync(path.join(projDir, '.dalang', 'sessions', plan.sessionId, 'tasks', 'T-999'))).toBe(false);
+      for (const stray of ['sessions/other-session/tasks/T-001/review.json', `sessions/${plan.sessionId}/tasks/T-001/notes.sh`, 'tasks/T-001/review.json']) {
+        expect(fs.existsSync(path.join(projDir, '.dalang', stray)), stray).toBe(false);
+      }
       const guard = await execSvc.getGuardState(project.id);
       expect(guard.tasks[0].latestReview?.contract.unverified).toEqual(['How the card looks on a wide screen']);
       expect(reports().some((r) => r.event === 'integration_result' && r.summary.includes('Integration check passed') && r.summary.includes('project-ci'))).toBe(true);

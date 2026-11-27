@@ -1389,33 +1389,29 @@ export class ExecutionService {
   /**
    * A task's result and review files are written in its worktree and are no longer committed (B31), so a
    * copy goes to the project's `.dalang/`, where they stay readable after the worktree is removed.
+   * The worktree is the agent's to write: only the files DALANG itself expects, from this task's own
+   * folder in its own session, are copied. Anything else there could replace another task's record.
    */
-  private keepTaskArtifacts(worktreePath: string, projectPath: string): void {
-    // The worktree is the agent's to write, so only this task's own folder is copied: another task's
-    // result or review must not be replaceable from here. The worktree folder is named after the task.
-    const own = `/tasks/${path.basename(worktreePath)}/`;
-    const copy = (relative: string) => {
-      const source = path.join(worktreePath, relative);
-      let stat: fs.Stats;
+  private keepTaskArtifacts(worktreePath: string, projectPath: string, relTaskDir: string): void {
+    ensureDalangIgnore(projectPath);
+    let names: string[];
+    try {
+      names = fs.readdirSync(path.join(worktreePath, relTaskDir));
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      if (!/^(result\.json|answer\.md|review(-round-\d+)?\.json)$/.test(name)) continue;
+      const source = path.join(worktreePath, relTaskDir, name);
       try {
-        stat = fs.lstatSync(source);
-      } catch {
-        return;
-      }
-      if (stat.isDirectory()) {
-        // Logs are written in the project already.
-        if (!/(^|\/)(logs|tmp)$/.test(relative)) for (const name of fs.readdirSync(source)) copy(`${relative}/${name}`);
-        return;
-      }
-      if (!stat.isFile() || stat.size > 5_000_000 || !`/${relative}`.includes(own)) return;
-      try {
-        writeArtifactFile(projectPath, path.join(projectPath, relative), readArtifactFile(worktreePath, source), 'replace');
+        const stat = fs.lstatSync(source);
+        if (!stat.isFile() || stat.size > 5_000_000) continue;
+        // Both helpers refuse a path that leaves their root through a link.
+        writeArtifactFile(projectPath, path.join(projectPath, relTaskDir, name), readArtifactFile(worktreePath, source), 'replace');
       } catch {
         // A link or an unreadable file an agent left behind is not copied.
       }
-    };
-    ensureDalangIgnore(projectPath);
-    copy('.dalang');
+    }
   }
 
   private async createWorkspaceGitCheckpoints(
@@ -1424,13 +1420,14 @@ export class ExecutionService {
     commitMessage: string,
     hiddenRefId: string,
     hiddenMessage: string,
+    relTaskDir: string,
   ): Promise<{ rootCommitSha: string; rootHiddenRef: string | null }> {
     const nestedNames = this.getNestedRepoNames(repos);
     let rootCommitSha = '';
     let rootHiddenRef: string | null = null;
     for (const repo of repos) {
       if (!fs.existsSync(repo.worktreePath)) continue;
-      if (repo.repoPath === '.') this.keepTaskArtifacts(repo.worktreePath, repo.mainRepoPath);
+      if (repo.repoPath === '.') this.keepTaskArtifacts(repo.worktreePath, repo.mainRepoPath, relTaskDir);
       const ck = await createGitCheckpoint(
         repo.worktreePath,
         repo.repoPath === '.' ? commitMessage : `${commitMessage} [${repo.repoPath}]`,
@@ -3907,6 +3904,8 @@ export class ExecutionService {
           `dalang: ${opts.task.externalId} (${opts.kind} ${succeeded ? 'completed' : 'failed'})`,
           `after-${runId}`,
           `dalang: hidden checkpoint ${opts.task.externalId} (${opts.kind} ${finalRunStatus})`,
+          // The task's own folder, as DALANG built it: the result file sits directly in it.
+          path.posix.dirname(opts.relResultPath),
         );
       const finishedAt = new Date().toISOString();
       const usageFields = usageDbFields(profile.provider, profile.model || null, capturedUsage);
@@ -5228,7 +5227,7 @@ export class ExecutionService {
         worktreePath: opts.worktreePath,
       });
       const reviewNestedNames = this.getNestedRepoNames(reviewTaskRepos);
-      this.keepTaskArtifacts(opts.worktreePath, opts.projectPath);
+      this.keepTaskArtifacts(opts.worktreePath, opts.projectPath, opts.relTaskDir);
       const checkpointAfter = await createGitCheckpoint(
         opts.worktreePath,
         `dalang: ${opts.task.externalId} review round ${opts.round} (${finalContract.status})`,
