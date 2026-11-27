@@ -2,6 +2,11 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
+## Unreleased
+
+- **Fewer fix rounds, aimed at large tasks.** The executor of a medium or high task, and of every fix round, now checks its work the way the reviewer will before it finishes: each acceptance criterion against the actual change, edge cases and error paths, callers, and tests. In the v0.15 run 13 of 16 tasks failed their first review, and each fix round cost another run and review. Low tasks skip the check: on a benchmark it added 15 to 25 seconds to a task that passed anyway. The reviewer no longer tries to rerun the verify command in its read-only workspace, since DALANG already ran it.
+- **Each executor run logs where its time went**: `[dalang] Time:` with slot wait, worktree setup, agent, and DALANG's own work (about 0.4 seconds on a small task).
+
 ## 0.14.10 (Project worktree setup), 27 Nov
 
 - **A project says how its task worktrees are prepared.** DALANG proposes a setup command from `t3.json`, `conductor.json`, or `.cursor/environment.json`, from the Lead, or from `composer.lock`, and the local files named in `.worktreeinclude`. You approve it once per project in the room (`/setup`) or the web UI. Before, only JavaScript dependencies were installed, so a PHP project failed its build and every agent set itself up again. A plain JavaScript project sees no new question.

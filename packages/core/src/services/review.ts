@@ -118,6 +118,21 @@ export function validateReviewTurnOutput(opts: {
   };
 }
 
+/**
+ * What the reviewer checks, given to the executor of a medium or high task and of every fix round (B25, P1). In the v0.15 run 13 of 16
+ * tasks failed their first review, and each fix round cost another executor run and review.
+ */
+export function selfReviewBlock(isAnswer: boolean): string {
+  return [
+    `Before you write the result, review your own work as the independent reviewer will. It fails the task for any unmet acceptance criterion and for any critical or major defect:`,
+    `- Check each acceptance criterion against your actual ${isAnswer ? 'answer' : 'changes'}, one by one, not against your plan.`,
+    isAnswer
+      ? `- Check facts, references, and every part of the question the goal asks about.`
+      : `- Check edge cases and error paths (empty, missing, invalid, boundary values, concurrency or restarts where they apply), callers of what you changed, and that new behaviour has tests that would fail without your change.`,
+    `- Fix what you find now. The reviewer gives no credit for intent.`,
+  ].join('\n');
+}
+
 export function buildReviewPrompt(opts: {
   task: TaskDTO;
   profile: AgentProfileDTO;
@@ -227,6 +242,9 @@ export function buildReviewPrompt(opts: {
         ? `- Verify every acceptance criterion against the diff and project files.`
         : `- No verify command was run. Judge every acceptance criterion directly from the diff and project files.`,
     hasVerify ? `- If verify exit code is non-zero, status MUST be "fail".` : '',
+    hasVerify && isReadOnly
+      ? `- DALANG already ran the verify command in this worktree; its real output is above. Do not run it or other commands that write files again: this workspace is read-only, so they fail for that reason alone.`
+      : '',
     isAnswer
       ? `- If any project file outside .dalang/ was modified, record a finding and fail.`
       : `- If files were modified outside files_allowed without justification, record a finding and fail.`,
@@ -305,6 +323,9 @@ export function buildFixPrompt(opts: {
     verifySection,
     ``,
     scopeSection,
+    ``,
+    `Fix the cause of each finding, not only the example it names: the next review checks the same places again.`,
+    selfReviewBlock(isAnswer),
     ``,
     finishLine,
     JSON.stringify(jsonSchema, null, 2),

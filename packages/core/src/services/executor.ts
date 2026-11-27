@@ -148,6 +148,7 @@ import {
   readArtifactWithGitFallback,
   tailOutput,
   validateReviewTurnOutput,
+  selfReviewBlock,
 } from './review.js';
 import {
   computeTaskWaves,
@@ -3383,6 +3384,8 @@ export class ExecutionService {
       };
       opts.execHandle.controller.signal.addEventListener('abort', onParentAbort, { once: true });
 
+      // Where the run's time goes (B25, P4): written to its log when it ends.
+      const timing = { start: Date.now(), slot: 0, setup: 0, agent: 0 };
       try {
         if (!lease) lease = this.limiter.tryAcquire(profileAccountKey, profile.maxParallel);
         if (!lease) {
@@ -3395,6 +3398,7 @@ export class ExecutionService {
             opts.execHandle.controller.signal,
           );
         }
+        timing.slot = Date.now() - timing.start;
 
         const mcpUrl =
           opts.task.delegationDepth < MAX_DELEGATION_DEPTH && providerSupportsDelegation(profile.provider)
@@ -3456,6 +3460,7 @@ export class ExecutionService {
           `[dalang] Starting ${opts.kind} for ${opts.task.externalId} (${opts.task.title}) in worktree (${opts.branchName}) with profile "${profile.name}" (${profile.provider}${profile.model ? `/${profile.model}` : ''})`,
         );
         if (opts.routeNote) emitDalangLine(`[dalang] ${opts.routeNote}`);
+        const setupStarted = Date.now();
         const setup = await this.prepareWorktree(
           opts.projectId,
           getReposForCoder().map((r) => r.worktreePath),
@@ -3472,6 +3477,8 @@ export class ExecutionService {
           });
         }
 
+        timing.setup = Date.now() - setupStarted;
+        const agentStarted = Date.now();
         const turn = await adapter.runTurn({
           projectPath: opts.worktreePath,
           prompt: setup.agentNote ? `${promptText}\n\n${setup.agentNote}` : promptText,
@@ -3495,6 +3502,7 @@ export class ExecutionService {
             ? { mcp: { url: mcpUrl, bearerToken: delegationScope.token } }
             : {}),
         });
+        timing.agent = Date.now() - agentStarted;
 
         capturedSessionId = turn.sessionId ?? capturedSessionId;
         exitCode = turn.exitCode;
@@ -3836,6 +3844,13 @@ export class ExecutionService {
       emitDalangLine(
         `[dalang] Finished ${opts.kind} for ${opts.task.externalId} -> ${finalRunStatus} (checkpoint ${checkpointAfterSha.slice(0, 7)})`,
       );
+      if (timing) {
+        const sec = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
+        const total = Date.now() - timing.start;
+        emitDalangLine(
+          `[dalang] Time: ${sec(total)} total; slot wait ${sec(timing.slot)}, worktree setup ${sec(timing.setup)}, agent ${sec(timing.agent)}, DALANG before and after the agent ${sec(Math.max(0, total - timing.slot - timing.setup - timing.agent))}`,
+        );
+      }
       this.events?.emitEvent({
         type: 'run.finished',
         projectId: opts.projectId,
@@ -5448,6 +5463,9 @@ export class ExecutionService {
       ``,
       verifyBlock,
       delegationBlock,
+      ``,
+      // A low task usually passes as it is; the check cost a small task 15 to 25 seconds on the benchmark.
+      task.complexity === 'low' ? '' : selfReviewBlock(isAnswer),
       ``,
       `When done, write a JSON file directly to "${relResultPath}" matching this JSON Schema:`,
       JSON.stringify(jsonSchema, null, 2),
