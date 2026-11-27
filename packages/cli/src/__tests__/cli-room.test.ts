@@ -935,6 +935,20 @@ describe('Ink terminal room E2E (Quick task from plan to merge with no browser)'
     expect(planGate?.prompt).toBe('Approve Plan v2 (2 task(s)) and start work?');
     expect(planGate?.no).toContain('send a message to change it');
 
+    // An undecided worktree setup is asked before the plan is approved (U11).
+    const setupGate = detectPendingGate(
+      { session: { id: 's1', mode: 'auto' }, messages: [], briefs: [], plan: { version: 1, status: 'draft', tasks: [{ needsSplit: false }] } } as never,
+      null,
+      { approved: null, needsApproval: true, warnings: [], hasSnapshot: false, proposal: { command: 'composer install', maintenanceCommand: null, source: 'composer.lock', files: ['.env'], warnings: ['.env may hold secrets'] } },
+    );
+    expect(setupGate).toMatchObject({ kind: 'workspace_setup', command: 'composer install', files: ['.env'] });
+    expect(setupGate?.context).toContain('Warning: .env may hold secrets');
+
+    // Antigravity's own events name what the agent is doing, instead of the last DALANG line.
+    expect(extractActivityPreview('{"sessionUpdate":"tool_call","name":"run_command","args":{"CommandLine":"php artisan migrate --force"}}')).toBe('Running: php artisan migrate --force');
+    expect(extractActivityPreview('{"sessionUpdate":"tool_call_update","name":"read_file","args":{"Path":"/w/app/Http/Index.php"}}')).toBe('Reading files: Http/Index.php');
+    expect(extractActivityPreview('{"sessionUpdate":"agent_thought_chunk"}')).toBe('Thinking');
+
     // A task that failed its last review can continue on its work; one waiting on it cannot yet (U7).
     const stuck = (id: string, status: string, dependsOn: string[]) =>
       ({ id, externalId: id, status, dependsOn, delegationDepth: 0, branchName: `dalang/${id}`, rejectionNote: 'One finding left', needsSplit: false });

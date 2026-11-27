@@ -27,7 +27,7 @@ function v17Database(extraSql = ''): string {
 
 function namesById(file: string): Record<string, string> {
   const conn = openDatabase(file);
-  expect(conn.sqlite.pragma('user_version', { simple: true })).toBe(18);
+  expect(conn.sqlite.pragma('user_version', { simple: true })).toBe(19);
   const names = Object.fromEntries(new ProfileService(conn.db).listProfiles().map((p) => [p.id, p.name]));
   conn.close();
   return names;

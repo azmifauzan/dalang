@@ -7,6 +7,7 @@ import { z } from 'zod';
 import {
   AllowTaskScopeInputSchema,
   ContinueTaskInputSchema,
+  WorkspaceSetupConfigSchema,
   ApproveMergeInputSchema,
   AssignTaskProfileInputSchema,
   BriefContentSchema,
@@ -456,6 +457,17 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
       })
       .parse(req.body);
     return { project: projectService.updateSettings(req.params.id, body) };
+  });
+
+  // What prepares a task worktree: DALANG proposes, the user decides.
+  app.get<{ Params: { id: string } }>('/api/projects/:id/workspace-setup', async (req) => {
+    return executionService.getWorkspaceSetup(req.params.id);
+  });
+  app.put<{ Params: { id: string } }>('/api/projects/:id/workspace-setup', async (req) => {
+    return executionService.setWorkspaceSetup(req.params.id, WorkspaceSetupConfigSchema.parse(req.body ?? {}));
+  });
+  app.delete<{ Params: { id: string } }>('/api/projects/:id/workspace-setup/snapshot', async (req) => {
+    return executionService.resetWorkspaceSnapshot(req.params.id);
   });
 
   app.get<{ Params: { id: string } }>('/api/projects/:id/project-md', async (req) => {

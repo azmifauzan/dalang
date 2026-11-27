@@ -2,6 +2,15 @@
 
 Use `dalang` for the terminal team room or `dalang web` for the browser workspace. Both use the same projects and conversations. [Install and start Dalang](INSTALL.md)
 
+## Preparing task worktrees
+
+Each task starts in a fresh git worktree: no dependencies, generated files, or local files. For a locked JavaScript project DALANG installs the dependencies itself. Anything else is the project's own setup, which you approve once:
+
+- **Setup command.** DALANG proposes one from `t3.json` (`scripts` with `runOnWorktreeCreate`), `conductor.json` (`scripts.setup`), `.cursor/environment.json` (`install`), the Lead's plan, or `composer.lock`. The room asks before the plan is approved; the web UI shows a **Task worktree setup** panel in the chat and in Guard. You can type any command, for any language. It runs in the sandbox, with empty package caches.
+- **Local files.** List git-ignored files such as `.env` in `.worktreeinclude` (gitignore syntax), or with `/setup files`. Only approved files are copied. A copied secret can be read by the agent and sent to its AI provider, and a copied database setting points tasks at that database. Prefer a development-only `.env`.
+- **Snapshots.** After a successful setup, DALANG keeps the ignored files and folders it produced (never `.env` files) under its data directory and copies them into the next task's worktree. Then it runs the maintenance command, or the setup command again if you gave none. Set a maintenance command when your installer deletes what is there first, as `npm ci` does. A changed command, manifest, or lockfile starts over.
+- **Failures** appear in the room with the command and its last output. The agent is told and goes on.
+
 ## Terminal team room
 
 Run `dalang` in an interactive terminal to open the team room. If a Dalang server is already running on `DALANG_PORT` (default `4173`), `dalang` attaches to it; otherwise it starts the server in the same process and stops it when you exit. Use `dalang room --port <number>` for a server on another port. Run `dalang web` for the browser workspace. When stdin or stdout is not a terminal, `dalang` runs `dalang web` instead.
@@ -55,6 +64,7 @@ Run `dalang` in an interactive terminal to open the team room. If a Dalang serve
 | `/resume [n\|id]` | Pick an earlier session of this project from a list, newest first, and continue it |
 | `/update [check\|clis\|all]` | Check for or install the latest Dalang release (prompting `/restart` when updated), update all connected agent CLIs (`clis`), or update both (`all`) |
 | `/restart` | Restart the room and return to the selected project, session, mode, and model. An embedded server refuses while an agent or task is active |
+| `/setup [approve\|set <cmd>\|maintenance <cmd>\|files <paths>\|off\|reset]` | Show or change what prepares each task worktree of this project. `reset` drops the saved snapshot |
 | `/mouse` | Toggle mouse capture to allow ordinary text selection or wheel scrolling |
 | `/diff [taskId]` | Open the task diff (or answer text for answer tasks) in `$PAGER` (`less -R`, or `more` on Windows) |
 | `/merge [taskId]` | Merge a file task (or accept an answer task) that is waiting for approval |

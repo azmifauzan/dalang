@@ -29,7 +29,7 @@ export function getDbDataDir(db: DalangDb): string | null {
   return dbDataDirs.get(db) ?? null;
 }
 
-const SCHEMA_VERSION = 18;
+const SCHEMA_VERSION = 19;
 
 const BOOTSTRAP_SQL = `
 PRAGMA journal_mode = WAL;
@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS projects (
   lead_provider TEXT NOT NULL DEFAULT 'claude-code',
   lead_model TEXT,
   integration_command TEXT,
+  workspace_setup_json TEXT,
   push_after_merge INTEGER NOT NULL DEFAULT 0,
   create_pr_after_merge INTEGER NOT NULL DEFAULT 0,
   git_remote TEXT,
@@ -1371,6 +1372,8 @@ export function openDatabase(dbFilePath: string = getDbPath()): DbConnection {
   if (upgrading && storedVersion < 15) migrateToV15(sqlite);
   if (upgrading && storedVersion < 16) migrateToV16(sqlite);
   if (upgrading && storedVersion < 17) migrateToV17(sqlite);
+  // v19: what prepares a task worktree, as the user approved it.
+  if (upgrading && storedVersion < 19) addColumnIfMissing(sqlite, 'projects', 'workspace_setup_json', 'TEXT');
   sqlite.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_task_repos_task_repo ON task_repos(task_id, repo_path);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_run_repo_checkpoints_run_repo ON run_repo_checkpoints(run_id, repo_path);

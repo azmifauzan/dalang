@@ -57,6 +57,8 @@ import type {
   UpdateStatusDTO,
   UpdateTaskInput,
   UsageStatisticsResponseDTO,
+  WorkspaceSetupConfig,
+  WorkspaceSetupDTO,
 } from '@dalang/shared';
 
 function withSessionQuery(url: string, sessionId?: string | null): string {
@@ -117,6 +119,12 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(body),
     }),
+
+  getWorkspaceSetup: (id: string) => request<WorkspaceSetupDTO>(`/api/projects/${id}/workspace-setup`),
+  setWorkspaceSetup: (id: string, config: WorkspaceSetupConfig) =>
+    request<WorkspaceSetupDTO>(`/api/projects/${id}/workspace-setup`, { method: 'PUT', body: JSON.stringify(config) }),
+  resetWorkspaceSnapshot: (id: string) =>
+    request<WorkspaceSetupDTO>(`/api/projects/${id}/workspace-setup/snapshot`, { method: 'DELETE' }),
 
   // PROJECT.md & symlinks
   getProjectMd: (id: string) =>

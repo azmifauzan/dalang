@@ -5,6 +5,9 @@ import { and, desc, eq, gte, inArray, ne, or } from 'drizzle-orm';
 import { z } from 'zod';
 import {
   findProfileByRef,
+  WorkspaceSetupConfigSchema,
+  type WorkspaceSetupConfig,
+  type WorkspaceSetupDTO,
   MAX_REVIEW_ROUNDS,
   buildAccountKey,
   DEFAULT_MAX_SUBTASKS_PER_TASK,
@@ -83,9 +86,20 @@ import {
 import { formatZodError } from './contract.js';
 import { localizeVerifyCommand } from './verify-command.js';
 import { detectWorktreeSetup, isNodeModulesIgnored } from './worktree-setup.js';
+import {
+  copyApprovedFiles,
+  describeFileRisks,
+  isLocalFilePath,
+  proposeWorkspaceSetup,
+  restoreSnapshot,
+  saveSnapshot,
+  snapshotKey,
+  withFreshCaches,
+} from './workspace-setup.js';
 import { describeRunOutcome } from './run-outcome.js';
 import type { DalangEventBus } from './events.js';
 import {
+  assertWorktreeSafe,
   assertRepoConfigSafe,
   branchExists,
   createGitCheckpoint,
@@ -577,15 +591,102 @@ export class ExecutionService {
     return parts.join(' ');
   }
 
-  /**
-   * Installs locked dependencies in a fresh task worktree and its nested repositories before the
-   * agent starts, so verify commands find their tools. A failure is logged and the run goes on.
-   */
-  private async prepareWorktreeDependencies(
+  private snapshotDir(projectId: string): string {
+    return path.join(path.dirname(this.worktreesRoot), 'snapshots', projectId);
+  }
+
+  private approvedSetup(row: typeof projects.$inferSelect): WorkspaceSetupConfig | null {
+    if (!row.workspaceSetupJson) return null;
+    try {
+      const parsed = WorkspaceSetupConfigSchema.safeParse(JSON.parse(row.workspaceSetupJson));
+      return parsed.success ? parsed.data : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** The setup command the Lead put in this project's latest plan, if any. */
+  private leadSetupCommand(project: typeof projects.$inferSelect): string | null {
+    const plan = this.db.select().from(plans).where(eq(plans.projectId, project.id)).orderBy(desc(plans.createdAt)).get();
+    if (!plan?.filePath) return null;
+    try {
+      const raw = JSON.parse(readArtifactFile(project.path, path.join(project.path, plan.filePath))) as { setup_command?: unknown };
+      return typeof raw.setup_command === 'string' ? raw.setup_command : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async getWorkspaceSetup(projectId: string): Promise<WorkspaceSetupDTO> {
+    const project = this.getProjectRow(projectId);
+    const approved = this.approvedSetup(project);
+    // Proposing walks the checkout, so it runs only while there is a decision to make.
+    const proposal = approved
+      ? null
+      : await proposeWorkspaceSetup(project.path, this.leadSetupCommand(project)).catch(() => null);
+    const dir = this.snapshotDir(projectId);
+    return {
+      approved,
+      proposal,
+      needsApproval: !approved && proposal !== null,
+      warnings: describeFileRisks(project.path, approved?.files ?? proposal?.files ?? []),
+      hasSnapshot: fs.existsSync(dir) && fs.readdirSync(dir).some((name) => !name.endsWith('.tmp')),
+    };
+  }
+
+  /** Saves the user's decision. Only the user calls this: it decides what runs and what is copied. */
+  async setWorkspaceSetup(projectId: string, input: WorkspaceSetupConfig): Promise<WorkspaceSetupDTO> {
+    this.getProjectRow(projectId);
+    const config = WorkspaceSetupConfigSchema.parse(input);
+    const bad = config.files.find((file) => !isLocalFilePath(file));
+    if (bad) throw new Error(`Not a file inside the project: ${bad}. List plain paths, without patterns.`);
+    this.db
+      .update(projects)
+      .set({ workspaceSetupJson: JSON.stringify(config), updatedAt: new Date().toISOString() })
+      .where(eq(projects.id, projectId))
+      .run();
+    return this.getWorkspaceSetup(projectId);
+  }
+
+  async resetWorkspaceSnapshot(projectId: string): Promise<WorkspaceSetupDTO> {
+    this.getProjectRow(projectId);
+    fs.rmSync(this.snapshotDir(projectId), { recursive: true, force: true });
+    return this.getWorkspaceSetup(projectId);
+  }
+
+  /** Runs one setup command in the sandbox. Returns null on success, or what went wrong. */
+  private async runSetupStep(
+    cwd: string,
+    command: string,
+    label: string,
+    log: (line: string) => void,
+    signal: AbortSignal,
+  ): Promise<string | null> {
+    log(`[dalang] Preparing worktree: ${label}`);
+    const tail: string[] = [];
+    const res = await this.registry.runShellCommand(cwd, command, {
+      signal,
+      timeoutMs: 900_000,
+      idleTimeoutMs: 300_000,
+      onLogLine: (line) => {
+        tail.push(line);
+        if (tail.length > 15) tail.shift();
+      },
+    });
+    if (res.exitCode === 0) return null;
+    for (const line of tail) log(`[dalang]   ${line}`);
+    log(`[dalang] Worktree setup failed (exit ${res.exitCode ?? 'timeout'}); the agent continues without it.`);
+    return `\`${label}\` exited with ${res.exitCode ?? 'a timeout'}:\n${tail.slice(-6).join('\n')}`;
+  }
+
+  /** The built-in install for locked JavaScript projects, used when the project has no command of its own. */
+  private async installLockedDependencies(
     repoDirs: string[],
     log: (line: string) => void,
     signal: AbortSignal,
-  ): Promise<void> {
+  ): Promise<{ ran: string[]; failures: string[] }> {
+    const ran: string[] = [];
+    const failures: string[] = [];
     for (const dir of repoDirs) {
       const steps = detectWorktreeSetup(dir);
       if (steps.length && !(await isNodeModulesIgnored(dir))) {
@@ -596,25 +697,111 @@ export class ExecutionService {
       // once per worktree, not on every fix round. A reset worktree is recreated and set up again.
       if (steps.length) fs.mkdirSync(path.join(dir, 'node_modules'), { recursive: true });
       for (const step of steps) {
-        if (signal.aborted) return;
-        log(`[dalang] Preparing worktree: ${step.command}${dir === repoDirs[0] ? '' : ` (in ${path.basename(dir)}/)`}`);
-        const tail: string[] = [];
-        const res = await this.registry.runShellCommand(step.cwd, step.command, {
-          signal,
-          timeoutMs: 900_000,
-          idleTimeoutMs: 300_000,
-          onLogLine: (line) => {
-            tail.push(line);
-            if (tail.length > 15) tail.shift();
-          },
-        });
-        if (res.exitCode !== 0) {
-          for (const line of tail) log(`[dalang]   ${line}`);
-          log(`[dalang] Worktree setup failed (exit ${res.exitCode ?? 'timeout'}); the agent continues without it.`);
+        if (signal.aborted) return { ran, failures };
+        const where = dir === repoDirs[0] ? '' : ` (in ${path.basename(dir)}/)`;
+        const failure = await this.runSetupStep(step.cwd, step.command, `${step.command}${where}`, log, signal);
+        if (failure) {
+          failures.push(failure);
           break;
         }
+        ran.push(`${step.plain}${where}`);
       }
     }
+    return { ran, failures };
+  }
+
+  /**
+   * Prepares a task worktree before the agent starts: the approved local files, then the project's
+   * command (from a snapshot when one matches), or the built-in JavaScript install. Returns what to
+   * tell the agent and, when something ran, what to tell the user. A failure never stops the run.
+   */
+  private async prepareWorktree(
+    projectId: string,
+    worktreePaths: string[],
+    log: (line: string) => void,
+    signal: AbortSignal,
+  ): Promise<{ agentNote: string; report: string | null }> {
+    const project = this.getProjectRow(projectId);
+    const config = this.approvedSetup(project);
+    const root = worktreePaths[0];
+    const started = Date.now();
+    const seconds = () => `${Math.max(1, Math.round((Date.now() - started) / 1000))}s`;
+    const failureNote = (detail: string) =>
+      `DALANG tried to prepare this worktree and it failed:\n${detail}\nPrepare only what your task needs. If you cannot, report the task as blocked and say why.`;
+
+    // An agent may have run here before, so git runs in this worktree only after it is checked.
+    const gitSafe = config
+      ? await assertWorktreeSafe(project.path, root).then(() => true, (err: unknown) => {
+          log(`[dalang] Skipping local files and the setup snapshot: ${err instanceof Error ? err.message : String(err)}`);
+          return false;
+        })
+      : false;
+    const copied = config && gitSafe ? await copyApprovedFiles(project.path, root, config.files) : [];
+    if (copied.length > 0) log(`[dalang] Copied local files into the worktree: ${copied.join(', ')}`);
+
+    if (!config?.command) {
+      const built = await this.installLockedDependencies(worktreePaths, log, signal);
+      if (built.failures.length > 0) {
+        return {
+          agentNote: failureNote(built.failures.join('\n')),
+          report: `Worktree setup failed after ${seconds()}. The agent continues without it.\n${built.failures.join('\n')}\nGive this project its own command with /setup set <command>, or in the web UI.`,
+        };
+      }
+      return built.ran.length > 0
+        ? {
+            agentNote: `DALANG already prepared this worktree with: ${built.ran.join('; ')}. Do not install those dependencies again.`,
+            report: `Worktree ready in ${seconds()}: ${built.ran.join('; ')}.`,
+          }
+        : { agentNote: '', report: null };
+    }
+
+    // The mark lives in the worktree's git admin folder: never committed, not writable from the sandbox,
+    // and removed with the worktree. A recreated worktree is set up again, and so is a changed command.
+    const mark = gitSafe
+      ? path.join((await openSafeGit(root).raw(['rev-parse', '--absolute-git-dir'])).trim(), 'dalang-setup.json')
+      : null;
+    if (mark && fs.existsSync(mark)) {
+      const done = JSON.parse(fs.readFileSync(mark, 'utf8')) as { command: string; agentNote: string };
+      if (done.command === config.command) return { agentNote: done.agentNote, report: null };
+    }
+    const dir = this.snapshotDir(projectId);
+    let restored = false;
+    try {
+      if (gitSafe) restored = await restoreSnapshot(root, dir, await snapshotKey(root, config));
+    } catch (err) {
+      log(`[dalang] Could not restore the setup snapshot: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    const command = restored && config.maintenanceCommand ? config.maintenanceCommand : config.command;
+    const failure = await this.runSetupStep(root, withFreshCaches(command), command, log, signal);
+    if (signal.aborted) return { agentNote: '', report: null };
+
+    const agentNote = failure
+      ? failureNote(failure)
+      : `DALANG already prepared this worktree with the project's setup command (${command})${copied.length ? ` and copied ${copied.join(', ')}` : ''}. Do not repeat that setup.`;
+    if (mark) fs.writeFileSync(mark, JSON.stringify({ command: config.command, agentNote }));
+    if (failure) {
+      // A snapshot that leads to a failure would fail every later task the same way.
+      if (restored) fs.rmSync(dir, { recursive: true, force: true });
+      return {
+        agentNote,
+        report: `Worktree setup failed after ${seconds()}. The agent continues without it.\n${failure}\nChange the command with /setup set <command>, or in the web UI.`,
+      };
+    }
+    const ready = seconds();
+    let kept = '';
+    if (!restored && gitSafe) {
+      try {
+        await assertWorktreeSafe(project.path, root);
+        // Only a checkout whose manifests match the project's own may seed later tasks.
+        const key = await snapshotKey(root, config);
+        if (key === (await snapshotKey(project.path, config)) && (await saveSnapshot(root, dir, key, config.files))) {
+          kept = ' Saved a snapshot for the next tasks.';
+        }
+      } catch (err) {
+        log(`[dalang] Could not save a setup snapshot: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    return { agentNote, report: `Worktree ready in ${ready}${restored ? ' from the snapshot' : ''}.${kept}` };
   }
 
   async recoverEmptyFailedWork(projectId: string): Promise<void> {
@@ -3197,6 +3384,7 @@ export class ExecutionService {
       opts.execHandle.controller.signal.addEventListener('abort', onParentAbort, { once: true });
 
       try {
+        if (!lease) lease = this.limiter.tryAcquire(profileAccountKey, profile.maxParallel);
         if (!lease) {
           emitDalangLine(
             `[dalang] Waiting for parallel slot on ${profileAccountKey} (max ${profile.maxParallel})...`,
@@ -3268,15 +3456,25 @@ export class ExecutionService {
           `[dalang] Starting ${opts.kind} for ${opts.task.externalId} (${opts.task.title}) in worktree (${opts.branchName}) with profile "${profile.name}" (${profile.provider}${profile.model ? `/${profile.model}` : ''})`,
         );
         if (opts.routeNote) emitDalangLine(`[dalang] ${opts.routeNote}`);
-        await this.prepareWorktreeDependencies(
+        const setup = await this.prepareWorktree(
+          opts.projectId,
           getReposForCoder().map((r) => r.worktreePath),
           emitDalangLine,
           opts.execHandle.controller.signal,
         );
+        if (setup.report) {
+          this.postRoomReport(opts.projectId, opts.sessionId, null, 'status', {
+            event: 'setup_result',
+            taskId: opts.task.id,
+            externalId: opts.task.externalId,
+            taskTitle: opts.task.title,
+            summary: `[${opts.task.externalId}] ${setup.report}`,
+          });
+        }
 
         const turn = await adapter.runTurn({
           projectPath: opts.worktreePath,
-          prompt: promptText,
+          prompt: setup.agentNote ? `${promptText}\n\n${setup.agentNote}` : promptText,
           sessionId: sessionToResume,
           model: profile.model || null,
           effort: profile.effort,

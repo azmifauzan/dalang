@@ -2,6 +2,15 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
+## 0.14.10 (Project worktree setup), 27 Nov
+
+- **A project says how its task worktrees are prepared.** DALANG proposes a setup command from `t3.json`, `conductor.json`, or `.cursor/environment.json`, from the Lead, or from `composer.lock`, and the local files named in `.worktreeinclude`. You approve it once per project in the room (`/setup`) or the web UI. Before, only JavaScript dependencies were installed, so a PHP project failed its build and every agent set itself up again. A plain JavaScript project sees no new question.
+- **Snapshots.** After a successful setup, DALANG keeps the ignored files and folders it produced and starts the next task from them. A change in the setup command or in a dependency manifest or lockfile makes a new snapshot. An optional maintenance command runs after a restore. On a scratch clone of a Laravel and Vue project, preparing took 79s the first time, 80s from a snapshot with the full command (`npm ci` deletes the restored folder), and 18s with the maintenance command. `/setup reset` drops it. `.env` files are never kept in a snapshot.
+- **Setup is no longer silent.** The room shows how long it took, or the failing command and its output, and the executor is told what was prepared or what failed.
+- **The room shows what an Antigravity agent is doing**: the command it runs or the file it reads. It used to stay on `Installing dependencies` while the agent worked.
+- **A run says it waits for an agent slot only when none is free.**
+- Schema v19; the upgrade only adds a column.
+
 ## 0.14.9 (Continue work that stopped short), 27 Nov
 
 - **A task that stops short can continue.** After its last review round, or after a failed or stopped run, the room asks to continue it, and the web UI has a button. Its branch stays, and the executor gets every open review finding. Before this, the choices were to start over, which deleted the work, or to merge with the findings open.

@@ -307,7 +307,9 @@ describe('v0.5 Replay runner scenarios (process-only replacement)', () => {
       expect(setupIdx).toBeLessThan(firstCoderIdx);
       expect(ctx.runner.invocations[setupIdx].cwd).toContain(path.join('T-001'));
       // Once installed, later rounds in the same worktree do not install again.
-      expect(ctx.runner.invocations.filter((i) => i.innerArgs.join(' ').includes('npm ci')).length).toBe(1);
+      // Agent turns are left out: their prompt names what DALANG already installed.
+      expect(ctx.runner.invocations.filter((i) => i.matchedTurnId === undefined && i.innerArgs.join(' ').includes('npm ci')).length).toBe(1);
+      expect(ctx.runner.invocations[firstCoderIdx].innerArgs.join(' ')).toContain('DALANG already prepared this worktree with: npm ci');
       expect(ctx.leadSvc.getPlan(ctx.project.id)!.tasks[0].status).toBe('awaiting_merge');
     } finally {
       ctx.conn.close();

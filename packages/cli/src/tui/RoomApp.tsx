@@ -12,6 +12,7 @@ import type {
   SessionDetailDTO,
   SessionMode,
   SessionSummaryDTO,
+  WorkspaceSetupDTO,
 } from '@dalang/shared';
 import { DALANG_VERSION, DEFAULT_USAGE_REFRESH_MINUTES } from '@dalang/shared';
 import { RoomApiClient, type ServerEvent } from './client.js';
@@ -170,6 +171,7 @@ export function RoomApp({
   const [detail, setDetail] = useState<SessionDetailDTO | null>(null);
   const [execution, setExecution] = useState<ExecutionStateDTO | null>(null);
   const [guard, setGuard] = useState<GuardStateDTO | null>(null);
+  const [workspaceSetup, setWorkspaceSetup] = useState<WorkspaceSetupDTO | null>(null);
   const [profiles, setProfiles] = useState<AgentProfileDTO[]>([]);
   const [mode, setMode] = useState<SessionMode>('auto');
   const [providerStatus, setProviderStatus] = useState<ProviderStatus[] | null>(null);
@@ -321,12 +323,15 @@ export function RoomApp({
     async (projectId: string, sessionId: string | null) => {
       const refresh = ++refreshSequenceRef.current;
       try {
-        const [{ sessions: sessList }, execState, guardState] = await Promise.all([
+        const [{ sessions: sessList }, execState, guardState, setupState] = await Promise.all([
           client.listSessions(projectId),
           client.getExecutionState(projectId, sessionId ?? undefined).catch(() => null),
           client.getGuardState(projectId, sessionId ?? undefined).catch(() => null),
+          // Never holds back the rest of the room, whatever goes wrong with it.
+          (async () => client.getWorkspaceSetup(projectId))().catch(() => null),
         ]);
         if (refresh !== refreshSequenceRef.current) return;
+        setWorkspaceSetup(setupState);
         setSessions(sessList);
         setExecution(execState);
         setGuard(guardState);
@@ -587,8 +592,8 @@ export function RoomApp({
   }, [ready, authNeeded, wsReconnectEpoch, client, refreshSessionState, liveReplies]);
 
   const pendingGate: PendingGate | null = useMemo(
-    () => detectPendingGate(detail, guard),
-    [detail, guard],
+    () => detectPendingGate(detail, guard, workspaceSetup),
+    [detail, guard, workspaceSetup],
   );
 
   const titleSession = activeSession?.id === activeSessionId && activeSession.projectId === activeProjectId
@@ -743,6 +748,15 @@ export function RoomApp({
           await runWithUnconfinedSupport(`[${pendingGate.externalId}] with more files`, async (allowUnconfined) => {
             await client.allowTaskScope(activeProjectId, pendingGate.taskId, { files: pendingGate.files, allowUnconfined });
           });
+        } else if (pendingGate.kind === 'workspace_setup') {
+          const config = accept
+            ? { command: pendingGate.command, maintenanceCommand: pendingGate.maintenanceCommand, files: pendingGate.files }
+            : { command: null, maintenanceCommand: null, files: [] };
+          setWorkspaceSetup(await client.setWorkspaceSetup(activeProjectId, config));
+          pushNotice(
+            accept ? 'Worktree setup saved for this project.' : 'Keeping the built-in setup. Change it with /setup.',
+            { badge: 'SETUP' },
+          );
         } else if (pendingGate.kind === 'continue_task') {
           if (!accept) {
             pushNotice(`[${pendingGate.externalId}] stays as it is. Answer y when you want it to continue.`, { badge: 'GUARD' });
@@ -1281,6 +1295,55 @@ export function RoomApp({
             } finally {
               setSending(false);
             }
+            return;
+          }
+
+          case 'setup': {
+            if (!activeProjectId) {
+              pushNotice('No project selected.', { isError: true });
+              return;
+            }
+            const sub = cmd.args[0]?.toLowerCase();
+            const value = cmd.rawArgs.slice((cmd.args[0] ?? '').length).trim();
+            let state = await client.getWorkspaceSetup(activeProjectId);
+            const current = state.approved ?? { command: null, maintenanceCommand: null, files: [] };
+            if (sub === 'reset') {
+              state = await client.resetWorkspaceSnapshot(activeProjectId);
+            } else if (sub) {
+              const next =
+                sub === 'approve' && state.proposal
+                  ? { command: state.proposal.command, maintenanceCommand: state.proposal.maintenanceCommand, files: state.proposal.files }
+                  : sub === 'set' && value
+                    ? { ...current, command: value }
+                    : sub === 'maintenance'
+                      ? { ...current, maintenanceCommand: value || null }
+                      : sub === 'files'
+                        ? { ...current, files: cmd.args.slice(1) }
+                        : sub === 'off'
+                          ? { command: null, maintenanceCommand: null, files: [] }
+                          : null;
+              if (!next) {
+                pushNotice('Usage: /setup [approve|set <command>|maintenance <command>|files <paths>|off|reset]', { isError: true });
+                return;
+              }
+              state = await client.setWorkspaceSetup(activeProjectId, next);
+            }
+            setWorkspaceSetup(state);
+            pushNotice(
+              [
+                state.approved
+                  ? `Setup command: ${state.approved.command ?? 'built-in JavaScript install'}`
+                  : 'Setup: not decided; the built-in JavaScript install runs.',
+                state.approved?.maintenanceCommand ? `After a snapshot: ${state.approved.maintenanceCommand}` : '',
+                state.approved?.files.length ? `Local files: ${state.approved.files.join(', ')}` : '',
+                !state.approved && state.proposal
+                  ? `Proposed (${state.proposal.source}): ${[state.proposal.command, state.proposal.files.join(', ')].filter(Boolean).join(' · ')}  Use /setup approve.`
+                  : '',
+                `Snapshot: ${state.hasSnapshot ? 'saved (/setup reset to drop it)' : 'none'}`,
+                ...state.warnings.map((w) => `Warning: ${w}`),
+              ].filter(Boolean).join('\n'),
+              { badge: 'SETUP' },
+            );
             return;
           }
 

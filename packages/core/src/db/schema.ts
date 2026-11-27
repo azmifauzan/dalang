@@ -8,6 +8,7 @@ export const projects = sqliteTable('projects', {
   leadProvider: text('lead_provider').notNull().default('claude-code'),
   leadModel: text('lead_model'),
   integrationCommand: text('integration_command'),
+  workspaceSetupJson: text('workspace_setup_json'),
   pushAfterMerge: integer('push_after_merge', { mode: 'boolean' }).notNull().default(false),
   createPrAfterMerge: integer('create_pr_after_merge', { mode: 'boolean' }).notNull().default(false),
   gitRemote: text('git_remote'),

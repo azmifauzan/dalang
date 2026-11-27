@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
+import { WorkspaceSetupPanel } from './WorkspaceSetupPanel.js';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ChatImage, ProjectSummary, ProviderId, RoomReportContent, SessionMode, SessionSummaryDTO } from '@dalang/shared';
 import { useI18n } from '../i18n/index.js';
@@ -223,6 +224,7 @@ export function AskSessionView({
               aria-label={t('sessions.mode.ask')}
               className="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-3"
             >
+              <WorkspaceSetupPanel projectId={project.id} onlyWhenUndecided />
               <ChatTranscript
                 messages={messages}
                 session={session}

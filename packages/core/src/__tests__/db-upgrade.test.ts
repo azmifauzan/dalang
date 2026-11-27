@@ -18,7 +18,7 @@ function getTableIndexColumns(sqlite: Database.Database, table: string): Map<str
 }
 
 function expectV17PragmasAndFkIndexes(sqlite: Database.Database): void {
-  expect(sqlite.pragma('user_version', { simple: true })).toBe(18);
+  expect(sqlite.pragma('user_version', { simple: true })).toBe(19);
   expect(sqlite.pragma('busy_timeout', { simple: true })).toBe(5000);
   expect(sqlite.pragma('synchronous', { simple: true })).toBe(1); // NORMAL
   expect(sqlite.pragma('journal_mode', { simple: true })).toBe('wal');
@@ -88,7 +88,7 @@ describe('database upgrade', () => {
     fresh.close();
 
     const upgraded = openDatabase(file);
-    expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(18);
+    expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(19);
     const runCols = (upgraded.sqlite.pragma('table_info(runs)') as Array<{ name: string }>).map((c) => c.name);
     expect(runCols).toContain('worktree_path');
     expect(runCols).toContain('input_tokens');
@@ -293,7 +293,7 @@ describe('database upgrade', () => {
     // Open and trigger v8 -> v9 upgrade
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(18);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(19);
 
       // Project A: 1 Full working session preserving brief, plan, tasks, messages, and moved artifacts
       const sessionsA = upgraded.sqlite
@@ -397,7 +397,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(18);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(19);
       const names = (
         upgraded.sqlite.prepare('SELECT name FROM agent_profiles ORDER BY name').all() as Array<{ name: string }>
       ).map((r) => r.name);
@@ -432,7 +432,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(18);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(19);
       const taskCols = (upgraded.sqlite.pragma('table_info(tasks)') as Array<{ name: string }>).map((c) => c.name);
       expect(taskCols).toContain('delegated_by_run_id');
       expect(taskCols).toContain('delegation_depth');
@@ -456,7 +456,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(18);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(19);
       const taskRepoCols = (
         upgraded.sqlite.pragma('table_info(task_repos)') as Array<{ name: string }>
       ).map((c) => c.name);
@@ -509,7 +509,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(18);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(19);
       const autoCols = (
         upgraded.sqlite.pragma('table_info(automations)') as Array<{ name: string }>
       ).map((c) => c.name);
@@ -566,7 +566,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(18);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(19);
       const msgCols = (
         upgraded.sqlite.pragma('table_info(messages)') as Array<{ name: string }>
       ).map((c) => c.name);
@@ -739,7 +739,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(18);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(19);
 
       const oldTask = upgraded.sqlite
         .prepare(`SELECT external_id, output_kind, verify FROM tasks WHERE id = 't-old'`)

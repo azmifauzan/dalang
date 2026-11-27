@@ -1,6 +1,6 @@
 # PRD: DALANG
 
-Nov 18, 2026 · @Fauzan · Updated through v0.14.9, Nov 27, 2026
+Nov 18, 2026 · @Fauzan · Updated through v0.14.10, Nov 27, 2026
 
 ## Summary
 
@@ -316,6 +316,7 @@ Each phase must be useful on its own before the next one starts.
 | v0.14.7 | Plans wait for approval, merge conflicts and scope requests go back to the task, restarts continue work | A phase asked for in one Auto message shows its plan and executors before anything runs, and a conflict, a missing file, or a restart no longer stops the run | Released in v0.14.7. Closes B2, B9, B10, B13 (R3, R9, R10) before the v0.15 run continues; the v0.15 section names the T3 Code design to follow for each remaining item. |
 | v0.14.8 | Security fixes for the 0.14.7 merge conflict and scope request paths | A tampered task worktree runs no git outside the sandbox, and a scope request can add only the literal files it names | Released in v0.14.8. Use it instead of v0.14.7. |
 | v0.14.9 | Continue work that stopped short, up to 6 review rounds, seeded profiles named after their role (schema v18), test suite passes inside the sandbox | A task stopped after its last review continues on its branch with all findings and reaches the merge gate, and the final v0.15 verify command passes inside the DALANG sandbox | Released in v0.14.9. Closes B19 apart from the Retry and reject warnings, and ships U6. |
+| v0.14.10 | Project worktree setup with approval, local files, snapshots, and visible results; live activity for Antigravity agents | A PHP project's approved setup prepares each task worktree, the next task starts from a snapshot, and a failed setup is shown in the room | Released in v0.14.10. Schema v19. Ships U11 and closes B23 and B24. Internet only during setup was dropped: the agent CLI needs the network in the same sandbox |
 | v0.15 | Reliability and parity: fatal provider errors fail fast, restart recovery, session protocol replay, waiting view, room and web parity, merge conflicts handled, structured questions, commands while busy, result summary, continue fixing after a failed review | B1, B6 to B8, B12, and B16 to B22 are closed with tests that failed before the fix, R1 follows the T3 Code design, and typecheck, tests, and build pass | Planned |
 | v0.16 | Speed: per-project events, output hub, paged history, block-wise streaming | Recordings show improvement over the baseline; render and payload budgets pass | Planned |
 | v0.17 | Agent tools: DALANG browser, browser evidence at the gate, per-project MCP allowlist | An executor tests a dev server in the browser on all three providers, and Gate 2 shows the evidence | Planned |
@@ -1034,6 +1035,7 @@ The first run of v0.15 from one prompt inside DALANG found more bugs. This pass 
 | B20 | A run says it is waiting for an agent slot when a slot is free, and the room can keep showing it after the run has started | A "starting" phase comes from provider signals and lasts until the first output (`packages/client-runtime/src/state/threadExecution.ts`) | U9 |
 | B21 | A failed integration run after a merge posts nothing in the chat, and in this repository it fails for a reason outside the merged code | Approvals, questions, and errors are always shown (`docs/user/activity-log.md`) | U8 |
 | B22 | The Lead is not asked again while a run goes on: a task that fails its last review, a failed integration run, or the end of the run gets no assessment | Not compared | U10 |
+| B23 | Only JavaScript dependencies were prepared in a task worktree: a Laravel project failed its build with no notice, and each agent set the project up again | The project declares setup scripts that run when a worktree is created (`docs/user/t3-json.md`); Claude Code and Conductor copy files listed in `.worktreeinclude`; Codex cloud caches the state after setup and runs a maintenance script on it | U11 |
 
 #### Evidence from early use
 
@@ -1057,6 +1059,8 @@ Read from a copy of a maintainer's local database and logs.
 | B20 | A misleading slot wait | With two slots, both fix rounds logged `Waiting for parallel slot on antigravity (max 2)` and then started; the room showed `Waiting for an agent slot`. From the code, a run without a pre-acquired slot writes that line before it asks for one, even when one is free. The text also does not say what holds the slots: the count is per provider account, the limit per profile |
 | B21 | Integration failures are silent and partly false | In the v0.15 run, the integration run after a merge (`pnpm test`) failed with 213 core tests passed and 2 failed: both sandbox tests, with `bwrap: No permissions to create a new namespace`. From the code, the integration command runs inside the DALANG sandbox, so a test that starts its own sandbox cannot. `pnpm test` stopped at the core package, so the server and CLI tests did not run. No chat message was found; on `integration.finished` the room only reloads its data. Three earlier integration runs also failed (one with exit 124, a timeout); their causes were not checked |
 | B22 | Nobody watches the run as a whole | From the code, execution never starts a Lead turn. The Lead plans, then works again only when the user sends a message. Verify and review judge one task at a time |
+| B23 | Worktree setup knows one stack | In a Laravel project, `npm run build` failed in two task worktrees at `artisan`; the log said the agent continues without it, and both agents installed the PHP dependencies themselves |
+| B24 | Antigravity activity is not shown | The room stayed on `Installing dependencies` while two Antigravity agents ran commands. From the code, their `sessionUpdate` lines were not recognized |
 
 #### Decisions
 
@@ -1098,6 +1102,7 @@ Done when: B1, B6 to B8, B12, and B16 to B22 are closed, each with a replay or u
 | 17 | U8 | Integration results (B21), in the room and the web UI: every integration run posts its result in the chat and the web UI; a failure shows the command, the exit code, the failing output, and which packages did not run. A failure caused by the sandbox is reported as an environment problem, not as a fault of the merged code, and a check that needs to start its own sandbox has a way to run that the user approves; DALANG never leaves the sandbox on its own. Already done outside the v0.15 run: the two tests that start their own sandbox now skip only that real run inside a sandbox, so `pnpm test` passes there and the final v0.15 verify can pass |
 | 18 | U9 | Slot waits (B20), in the room and the web UI: a run says it waits for a slot only when none is free (B20), names the account, how many runs hold it, and the profile's limit, and drops the text as soon as it gets the slot; a task that waits is shown as waiting, not running |
 | 19 | U10 | Run supervision (B22): when a task fails its last review or fails, when an integration run fails, and when the run ends, the Lead gets one turn to assess the state and propose next steps. It changes nothing without the user's approval, the turn does not replace the plan or delete work, and it uses quota only at these events |
+| 20 | U11 | Task worktree setup per project (B23, B24). **Done outside the v0.15 run** in v0.14.10: do not plan a task for it. An approved setup command and local files, proposals from files the repository already has or from the Lead, snapshots with an optional maintenance command and a reset, setup results and duration in the room, a setup note in the executor prompt, and live Antigravity activity |
 
 Items added while the first v0.15 plan was running (the R5 expansion and U7 to U10) go into a follow-up plan, one or more small tasks per item, in this order: U8, so that later merges are checked correctly; the R5 inventory; U7; U9; the rest of R5; and U10 last, because it builds on U7 and U8.
 

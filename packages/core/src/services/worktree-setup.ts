@@ -17,6 +17,8 @@ export interface WorktreeSetupStep {
   /** Directory the command runs in (a worktree root or a nested repository inside it). */
   cwd: string;
   command: string;
+  /** The same install without DALANG's throwaway cache, for messages to people and agents. */
+  plain: string;
 }
 
 // ponytail: JavaScript lockfiles only; add other ecosystems (uv, poetry, bundler) when a project needs them.
@@ -25,7 +27,7 @@ export interface WorktreeSetupStep {
 // Windows (cmd.exe) gets the plain commands; a cache write that fails there is only logged.
 const FRESH_CACHE = `D=$(mktemp -d) && trap 'rm -rf "$D"' EXIT && `;
 
-function lockfileInstall(dir: string, posix: boolean): { manager: string; command: string } | null {
+function lockfileInstall(dir: string, posix: boolean): { manager: string; command: string; plain: string } | null {
   const has = (file: string) => fs.existsSync(path.join(dir, file));
   let manager: string;
   let plain: string;
@@ -52,7 +54,7 @@ function lockfileInstall(dir: string, posix: boolean): { manager: string; comman
   } else {
     return null;
   }
-  return { manager, command: posix ? FRESH_CACHE + cached : plain };
+  return { manager, command: posix ? FRESH_CACHE + cached : plain, plain };
 }
 
 function readPackageJson(dir: string): { scripts?: Record<string, unknown>; workspaces?: unknown } | null {
@@ -68,15 +70,20 @@ function readPackageJson(dir: string): { scripts?: Record<string, unknown>; work
  * installed. A workspace with a root `build` script is also built, because its packages usually
  * import each other's build output (`dist`), which a fresh checkout does not have.
  */
-export function detectWorktreeSetup(dir: string, posix = process.platform !== 'win32'): WorktreeSetupStep[] {
+export function detectWorktreeSetup(
+  dir: string,
+  posix = process.platform !== 'win32',
+  /** Answer for a fresh checkout of `dir`, whatever is installed in it now. */
+  asFresh = false,
+): WorktreeSetupStep[] {
   const pkg = readPackageJson(dir);
-  if (!pkg || fs.existsSync(path.join(dir, 'node_modules'))) return [];
+  if (!pkg || (!asFresh && fs.existsSync(path.join(dir, 'node_modules')))) return [];
   const lock = lockfileInstall(dir, posix);
   if (!lock) return [];
-  const steps: WorktreeSetupStep[] = [{ cwd: dir, command: lock.command }];
+  const steps: WorktreeSetupStep[] = [{ cwd: dir, command: lock.command, plain: lock.plain }];
   const isWorkspace = fs.existsSync(path.join(dir, 'pnpm-workspace.yaml')) || pkg.workspaces !== undefined;
   if (isWorkspace && typeof pkg.scripts?.build === 'string') {
-    steps.push({ cwd: dir, command: `${lock.manager} run build` });
+    steps.push({ cwd: dir, command: `${lock.manager} run build`, plain: `${lock.manager} run build` });
   }
   return steps;
 }

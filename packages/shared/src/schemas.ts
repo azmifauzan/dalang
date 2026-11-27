@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const DALANG_VERSION = '0.14.9';
+export const DALANG_VERSION = '0.14.10';
 
 export const MAX_DELEGATION_DEPTH = 1;
 export const DEFAULT_MAX_SUBTASKS_PER_TASK = 6;
@@ -160,6 +160,8 @@ export const PlanContractSchema = z
     brief_version: z.number().int().min(1).default(1),
     milestones: z.array(PlanMilestoneSchema).min(1),
     tasks: z.array(PlanTaskContractSchema).min(1),
+    /** What prepares a fresh checkout, as the Lead read it from the repository. The user approves it before it runs. */
+    setup_command: z.string().trim().max(2000).nullable().optional(),
   })
   .superRefine((plan, ctx) => {
     const issue = (message: string) => ctx.addIssue({ code: 'custom', message });
@@ -578,6 +580,7 @@ export type RoomReportEvent =
   | 'run_finished'
   | 'run_stopped'
   | 'merge_conflict'
+  | 'setup_result'
   | 'scope_request'
   | 'task_started'
   | 'task_finished'
@@ -828,6 +831,34 @@ export const ReorderRoutingRulesInputSchema = z.object({
   ruleIds: z.array(z.string().min(1)).min(1),
 });
 export type ReorderRoutingRulesInput = z.infer<typeof ReorderRoutingRulesInputSchema>;
+
+const SetupCommandSchema = z.string().trim().max(4000).nullable().transform((v) => v || null);
+export const WorkspaceSetupConfigSchema = z.object({
+  /** Runs in each new task worktree. Null keeps DALANG's built-in JavaScript install. */
+  command: SetupCommandSchema,
+  /** Runs instead of `command` after a snapshot was restored. */
+  maintenanceCommand: SetupCommandSchema.default(null),
+  /** Git-ignored local files copied from the project into each task worktree. */
+  files: z.array(z.string().trim().min(1)).max(50).default([]),
+});
+export type WorkspaceSetupConfig = z.infer<typeof WorkspaceSetupConfigSchema>;
+
+export interface WorkspaceSetupProposal {
+  command: string | null;
+  maintenanceCommand: string | null;
+  source: string;
+  files: string[];
+  warnings: string[];
+}
+
+export interface WorkspaceSetupDTO {
+  /** What the user decided, or null when they have not decided yet. */
+  approved: WorkspaceSetupConfig | null;
+  proposal: WorkspaceSetupProposal | null;
+  needsApproval: boolean;
+  warnings: string[];
+  hasSnapshot: boolean;
+}
 
 export const ContinueTaskInputSchema = z.object({
   note: z.string().trim().max(4000).optional(),

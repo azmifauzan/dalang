@@ -15,6 +15,7 @@ export const SLASH_COMMANDS: SlashCommandDef[] = [
   { name: 'resume', usage: '/resume [n|id]', description: 'Pick a previous session to continue' },
   { name: 'update', usage: '/update [check|clis|all]', description: 'Check/install DALANG update or update all connected CLIs' },
   { name: 'restart', usage: '/restart', description: 'Restart DALANG and return to this session' },
+  { name: 'setup', usage: '/setup [approve|set <cmd>|maintenance <cmd>|files <paths>|off|reset]', description: 'What prepares each task worktree of this project' },
   { name: 'model', usage: '/model', description: "Choose the Lead's model from every connected provider" },
   { name: 'config', usage: '/config', description: 'Language, limits refresh, agent CLIs, and the agent team' },
   { name: 'wizard', usage: '/wizard', description: 'Open the setup wizard again' },

@@ -10,6 +10,7 @@ import type {
 } from '@dalang/shared';
 import { useI18n } from '../i18n/index.js';
 import { api } from '@/lib/api';
+import { WorkspaceSetupPanel } from './WorkspaceSetupPanel.js';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -405,6 +406,8 @@ export function GuardView({ project, sessionId, onGoToWork }: GuardViewProps) {
           </div>
         )}
       </section>
+
+      <WorkspaceSetupPanel projectId={project.id} />
 
       {/* Main Split Workspace */}
       {sortedEntries.length === 0 ? (

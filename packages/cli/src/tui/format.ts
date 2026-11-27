@@ -14,6 +14,7 @@ import type {
   RoomReportContent,
   SessionDetailDTO,
   TaskOutputKind,
+  WorkspaceSetupDTO,
 } from '@dalang/shared';
 
 function displayTaskRole(role: string): string {
@@ -42,6 +43,7 @@ export type PendingGate = GateText &
     // A task asked for files outside its files_allowed (R10).
     | { kind: 'scope_request'; taskId: string; externalId: string; files: string[] }
     | { kind: 'continue_task'; taskId: string; externalId: string }
+    | { kind: 'workspace_setup'; command: string | null; maintenanceCommand: string | null; files: string[] }
     | {
         kind: 'approve_merge';
         taskId: string;
@@ -79,6 +81,7 @@ function mergeContext(entry: GuardTaskEntryDTO, messages: DiscussMessageDTO[]): 
 export function detectPendingGate(
   detail: SessionDetailDTO | null,
   guard: GuardStateDTO | null,
+  setup: WorkspaceSetupDTO | null = null,
 ): PendingGate | null {
   if (!detail) return null;
 
@@ -172,6 +175,26 @@ export function detectPendingGate(
       prompt: `Approve Brief v${latestBrief.version} "${latestBrief.content.title}" and generate a plan?`,
       yes: 'approve',
       no: 'keep the brief as a draft',
+    };
+  }
+
+  // 4b. What prepares each task worktree is decided before work runs, once per project.
+  if (setup?.needsApproval && setup.proposal && detail.plan) {
+    const { command, maintenanceCommand, files, source, warnings } = setup.proposal;
+    return {
+      kind: 'workspace_setup',
+      command,
+      maintenanceCommand,
+      files,
+      prompt: 'Use this to prepare every task worktree of this project?',
+      context: [
+        command ? `Command (from ${source}), run in the sandbox: ${command}` : '',
+        maintenanceCommand ? `After a snapshot is restored: ${maintenanceCommand}` : '',
+        files.length ? `Local files copied into each worktree: ${files.join(', ')}` : '',
+        ...warnings.map((w) => `Warning: ${w}`),
+      ].filter(Boolean).join('\n'),
+      yes: 'use it from now on',
+      no: 'keep the built-in setup · change it later with /setup',
     };
   }
 
@@ -505,16 +528,39 @@ function toolActivity(name: unknown): string {
   return 'Using a tool';
 }
 
+const clipActivity = (text: string) => {
+  const flat = stripControl(text).replace(/\s+/g, ' ').trim();
+  return flat.length > 70 ? `${flat.slice(0, 69)}…` : flat;
+};
+
+/** What an ACP tool call is working on: the command, the file, or its title. */
+function acpActivity(update: Record<string, unknown>): string {
+  const args = (update.args ?? update.rawInput) as Record<string, unknown> | null | undefined;
+  if (typeof args?.CommandLine === 'string') return `Running: ${clipActivity(args.CommandLine)}`;
+  const base = toolActivity(update.name ?? update.title);
+  const file = typeof args?.Path === 'string' ? args.Path.split(/[\\/]/).slice(-2).join('/') : null;
+  if (file) return `${base}: ${clipActivity(file)}`;
+  return typeof update.title === 'string' ? `${base}: ${clipActivity(update.title)}` : base;
+}
+
 export function extractActivityPreview(rawLine: string): string | null {
   const trimmed = rawLine.trim();
   if (trimmed.startsWith('[dalang] Running verify command:')) return 'Running verification';
-  if (trimmed.startsWith('[dalang] Preparing worktree:')) return 'Installing dependencies';
+  if (trimmed.startsWith('[dalang] Preparing worktree:')) return `Preparing the worktree: ${clipActivity(trimmed.slice(28))}`;
+  if (/^\[dalang\] (Worktree setup failed|Starting (execute|fix) )/.test(trimmed)) return 'Starting the agent';
   if (trimmed.startsWith('[dalang] Waiting for parallel slot')) return 'Waiting for an agent slot';
   if (trimmed.startsWith('[dalang] Waiting for in-flight delegated subtasks')) return 'Waiting for delegated tasks';
   if (!trimmed.startsWith('{')) return null;
   try {
     const obj = JSON.parse(trimmed) as Record<string, unknown>;
     if (obj.type === 'provider.error' && obj.retrying === true) return 'Provider is reconnecting';
+    // Antigravity (ACP) writes each session update as its own line.
+    switch (obj.sessionUpdate) {
+      case 'agent_message_chunk': return 'Writing a response';
+      case 'agent_thought_chunk': return 'Thinking';
+      case 'tool_call':
+      case 'tool_call_update': return acpActivity(obj);
+    }
     if (obj.type === 'assistant') {
       const content = (obj.message as { content?: unknown } | null)?.content;
       if (Array.isArray(content)) {

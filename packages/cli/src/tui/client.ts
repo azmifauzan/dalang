@@ -24,6 +24,8 @@ import type {
   UpdateRoutingRuleInput,
   UpdateSettingsInput,
   UpdateStatusDTO,
+  WorkspaceSetupConfig,
+  WorkspaceSetupDTO,
 } from '@dalang/shared';
 
 export interface ServerEvent {
@@ -294,6 +296,21 @@ export class RoomApiClient {
       `/api/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/approve-merge`,
       { method: 'POST', body: JSON.stringify(opts) },
     );
+  }
+
+  getWorkspaceSetup(projectId: string): Promise<WorkspaceSetupDTO> {
+    return this.request(`/api/projects/${encodeURIComponent(projectId)}/workspace-setup`);
+  }
+
+  setWorkspaceSetup(projectId: string, config: WorkspaceSetupConfig): Promise<WorkspaceSetupDTO> {
+    return this.request(`/api/projects/${encodeURIComponent(projectId)}/workspace-setup`, {
+      method: 'PUT',
+      body: JSON.stringify(config),
+    });
+  }
+
+  resetWorkspaceSnapshot(projectId: string): Promise<WorkspaceSetupDTO> {
+    return this.request(`/api/projects/${encodeURIComponent(projectId)}/workspace-setup/snapshot`, { method: 'DELETE' });
   }
 
   continueTask(projectId: string, taskId: string, opts: { allowUnconfined?: boolean } = {}): Promise<{ task: TaskDTO }> {
