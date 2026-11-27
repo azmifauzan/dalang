@@ -221,6 +221,7 @@ export const en = {
   'setup.save': 'Use this setup',
   'setup.builtin': 'Use the built-in setup',
   'setup.resetSnapshot': 'Reset snapshot',
+  'room.report.task_waiting': 'Waiting to continue',
   'room.report.scope_request': 'Needs files',
   'guard.mergeConflictSentBack': 'Merging [{task}] conflicted with the main branch. It went back to its executor to resolve the conflict; verify and review run again before you are asked to merge.',
   'room.report.merge_conflict': 'Merge conflict',

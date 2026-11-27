@@ -58,6 +58,9 @@ import {
   LOW_LIMIT_PERCENT,
   stripControl,
   wrapTimelineLine,
+  gateContextLimit,
+  gateContextRows,
+  toRows,
 } from './format.js';
 
 export interface RoomAppProps {
@@ -227,7 +230,7 @@ export function RoomApp({
       text: string | string[],
       opts: { isError?: boolean; badge?: string | null; author?: string } = {},
     ) => {
-      const lines = (Array.isArray(text) ? text : text.split('\n')).map(stripControl);
+      const lines = (Array.isArray(text) ? text : [text]).flatMap(toRows);
       setNotices((prev) => [
         ...prev.slice(-40),
         {
@@ -592,8 +595,8 @@ export function RoomApp({
   }, [ready, authNeeded, wsReconnectEpoch, client, refreshSessionState, liveReplies]);
 
   const pendingGate: PendingGate | null = useMemo(
-    () => detectPendingGate(detail, guard, workspaceSetup),
-    [detail, guard, workspaceSetup],
+    () => detectPendingGate(detail, guard, workspaceSetup, execution),
+    [detail, guard, workspaceSetup, execution],
   );
 
   const titleSession = activeSession?.id === activeSessionId && activeSession.projectId === activeProjectId
@@ -1718,7 +1721,7 @@ export function RoomApp({
       // Two columns of timeline padding plus the two-space indent.
       const lineWidth = termSize.cols - 4;
       const body = msg.markdown
-        ? markdownRows(msg.lines.join('\n'), lineWidth)
+        ? markdownRows(msg.lines.join('\n'), lineWidth, msg.keepBreaks)
         : msg.lines.flatMap((line) => wrapTimelineLine(line, lineWidth));
       body.forEach((row, idx) => {
         rows.push({
@@ -1762,15 +1765,6 @@ export function RoomApp({
     completions.length > 0
       ? Math.min(completions.length, POPUP_SIZE) + 2 + (completions.length > POPUP_SIZE ? 1 : 0)
       : 0;
-  // Border rows plus the gate's own lines: heading, question, optional context, and the y/n keys.
-  // Same order as the render below: sandbox prompt, then a gate, then the update notice.
-  const gateRows = pendingUnconfinedAction
-    ? 3
-    : pendingGate
-      ? 5 + (pendingGate.context ? 1 : 0)
-      : pendingRestartVersion
-        ? 3
-        : 0;
   const turn = activeSession?.id === activeSessionId && activeSession.projectId === activeProjectId
     ? activeSession.turn
     : null;
@@ -1779,6 +1773,21 @@ export function RoomApp({
     : [];
   const activeRun = activeRuns.at(-1);
   const liveRows = turn || activeRun || sending ? 1 : 0;
+  // Border rows plus the gate's own lines: heading, question, optional context, and the y/n keys.
+  // Same order as the render below: sandbox prompt, then a gate, then the update notice.
+  // Box border and padding take four columns.
+  const gateRowsText = gateContextRows(
+    pendingGate?.context,
+    termSize.cols - 4,
+    gateContextLimit(termSize.rows - 1, popupRows + liveRows),
+  );
+  const gateRows = pendingUnconfinedAction
+    ? 3
+    : pendingGate
+      ? 5 + gateRowsText.length
+      : pendingRestartVersion
+        ? 3
+        : 0;
   // Header 6 rows, composer 3, footer 1.
   const chromeRows = 10 + popupRows + gateRows + liveRows;
   // The root box is one row shorter than the terminal (so the last line never scrolls the screen);
@@ -2026,8 +2035,10 @@ export function RoomApp({
           <Text bold color="yellow" wrap="truncate-end">
             {pendingGate.alsoWaiting ? `NEEDS YOUR APPROVAL · ${pendingGate.alsoWaiting} more waiting` : 'NEEDS YOUR APPROVAL'}
           </Text>
-          <Text bold wrap="truncate-middle">{pendingGate.prompt}</Text>
-          {pendingGate.context ? <Text dimColor wrap="truncate-end">{pendingGate.context}</Text> : null}
+          <Text bold wrap="truncate-middle">{toRows(pendingGate.prompt).join(' ')}</Text>
+          {gateRowsText.map((row, index) => (
+            <Text key={index} dimColor wrap="truncate-end">{row}</Text>
+          ))}
           <Text wrap="truncate-end">
             <Text bold color="green">y</Text>
             <Text>{` + Enter: ${pendingGate.yes}  ·  `}</Text>

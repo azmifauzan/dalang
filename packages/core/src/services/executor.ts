@@ -2526,13 +2526,26 @@ export class ExecutionService {
       .where(eq(tasks.id, task.id))
       .run();
     this.events?.emitEvent({ type: 'plan.updated', projectId, sessionId: sid });
-    await this.startExecution(projectId, {
-      sessionId: sid,
-      taskId: task.id,
-      resumeSession: true,
-      allowUnconfined: Boolean(input.allowUnconfined),
-      continueBranch: true,
-    } as Partial<StartExecutionInput>);
+    try {
+      await this.startExecution(projectId, {
+        sessionId: sid,
+        taskId: task.id,
+        resumeSession: true,
+        allowUnconfined: Boolean(input.allowUnconfined),
+        continueBranch: true,
+      } as Partial<StartExecutionInput>);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // The files are allowed; only the start has to wait for the task that uses some of them.
+      if (!/files_allowed overlaps with/.test(message)) throw err;
+      this.postRoomReport(projectId, sid, null, 'status', {
+        event: 'task_waiting',
+        taskId: task.id,
+        externalId: task.externalId,
+        taskTitle: task.title,
+        summary: `The files are allowed for [${task.externalId}]. It cannot start yet: ${message.replace(/^Cannot run [^:]+: /, '')} DALANG asks to continue it then.`,
+      });
+    }
     return { task: this.leadService.getPlan(projectId, sid)!.tasks.find((t) => t.id === task.id)! };
   }
 

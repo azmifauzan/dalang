@@ -590,7 +590,8 @@ export type RoomReportEvent =
   | 'task_merged'
   | 'task_accepted'
   | 'task_rejected'
-  | 'task_steered';
+  | 'task_steered'
+  | 'task_waiting';
 
 export interface RoomReportContent {
   event: RoomReportEvent;

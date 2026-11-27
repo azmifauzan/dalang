@@ -15,6 +15,7 @@ import type {
   SessionDetailDTO,
   TaskOutputKind,
   WorkspaceSetupDTO,
+  ExecutionStateDTO,
 } from '@dalang/shared';
 
 function displayTaskRole(role: string): string {
@@ -82,6 +83,7 @@ export function detectPendingGate(
   detail: SessionDetailDTO | null,
   guard: GuardStateDTO | null,
   setup: WorkspaceSetupDTO | null = null,
+  execution: Pick<ExecutionStateDTO, 'dispatchPreviews'> | null = null,
 ): PendingGate | null {
   if (!detail) return null;
 
@@ -218,8 +220,16 @@ export function detectPendingGate(
   // 6. A task that stopped short can continue on its own work (U7). Last, so it never hides another question.
   if (detail.plan?.status === 'approved') {
     const done = new Set(detail.plan.tasks.filter((t) => t.status === 'done').map((t) => t.externalId));
+    // A task whose files overlap one that is running or waiting cannot start now, so asking would only
+    // fail and ask again. The question comes back when the other task is out of the way.
+    const busy = new Set(
+      detail.plan.tasks.filter((t) => ['running', 'reviewing', 'awaiting_merge', 'review_failed'].includes(t.status)).map((t) => t.externalId),
+    );
+    const blocked = new Set(
+      (execution?.dispatchPreviews ?? []).filter((p) => p.overlappingTasks.some((id) => busy.has(id))).map((p) => p.taskId),
+    );
     const stuck = detail.plan.tasks.filter(
-      (t) => t.delegationDepth === 0 && Boolean(t.branchName) &&
+      (t) => t.delegationDepth === 0 && Boolean(t.branchName) && !blocked.has(t.id) &&
         ['review_failed', 'failed', 'stopped'].includes(t.status) && t.dependsOn.every((dep) => done.has(dep)),
     );
     const task = stuck[0];
@@ -317,6 +327,8 @@ export interface FormattedRoomMessage {
   lines: string[];
   isError: boolean;
   markdown?: boolean;
+  /** For agent reports: a single line break stays a line break instead of joining a paragraph. */
+  keepBreaks?: boolean;
 }
 
 function formatClock(iso: string): string {
@@ -485,10 +497,13 @@ export function formatRoomMessage(msg: DiscussMessageDTO): FormattedRoomMessage 
     time,
     // A tab is zero columns wide to Ink but up to eight in the terminal, so the row would wrap and shift
     // every row under it. Incremental rendering then keeps the shifted leftovers on screen.
-    lines: lines.length > 0 ? lines.map((line) => stripControl(line).replace(/\t/g, '    ')) : [''],
+    // The room sizes the screen by these entries, so each must be one row's worth of text (B26): agent text
+    // such as a review finding carries line breaks that would otherwise add rows nobody counted.
+    lines: lines.length > 0 ? lines.flatMap(toRows) : [''],
     isError: msg.type === 'error',
-    markdown: msg.role !== 'user' && msg.role !== 'system' &&
-      (msg.type === 'ask' || (msg.type !== 'error' && typeof msg.content === 'string')),
+    markdown: isAgentProse(msg) || (msg.role !== 'user' && msg.role !== 'system' &&
+      (msg.type === 'ask' || (msg.type !== 'error' && typeof msg.content === 'string'))),
+    keepBreaks: isAgentProse(msg),
   };
 }
 
@@ -497,6 +512,41 @@ export function formatRoomMessage(msg: DiscussMessageDTO): FormattedRoomMessage 
  * The timeline scrolls by row, so long replies must become several rows instead of being cut off.
  * ponytail: counts code points, not display cells; wide CJK or emoji can still overflow by a few columns.
  */
+/**
+ * Reports whose text an agent wrote: reviewers and executors write Markdown. Other reports hold commands
+ * and file paths, where `*` and `_` must stay as typed.
+ */
+function isAgentProse(msg: DiscussMessageDTO): boolean {
+  const event = msg.type === 'report' && msg.content && typeof msg.content === 'object' ? (msg.content as RoomReportContent).event : null;
+  return event === 'review_verdict' || event === 'task_finished';
+}
+
+/** Splits text at line breaks and makes tabs spaces; control sequences are removed. */
+export function toRows(text: string): string[] {
+  return text.split(/\r\n|\r|\n/).map((line) => stripControl(line).replace(/\t/g, '    '));
+}
+
+/** The most rows a question's context takes in the room. */
+export const GATE_CONTEXT_MAX_ROWS = 8;
+
+/**
+ * How many context rows fit: what is left of the screen after the header, composer, and footer (10), the
+ * question's own rows (5), anything else open below the chat, and the 6 rows the chat always keeps.
+ */
+export function gateContextLimit(screenRows: number, otherRows: number): number {
+  return Math.max(1, Math.min(GATE_CONTEXT_MAX_ROWS, screenRows - 10 - 5 - 6 - otherRows));
+}
+
+/**
+ * A gate's context as the exact rows the room draws, wrapped so a command is readable before the user
+ * approves it. Longer text is cut with a row that says how much is left.
+ */
+export function gateContextRows(context: string | undefined, width: number, max = GATE_CONTEXT_MAX_ROWS): string[] {
+  const rows = (context ? toRows(context) : []).filter((line) => line.trim()).flatMap((line) => wrapTimelineLine(line, width));
+  if (rows.length <= max) return rows;
+  return [...rows.slice(0, max - 1), `… ${rows.length - max + 1} more line(s); the full text is in the chat above, or /setup, /diff`];
+}
+
 export function wrapTimelineLine(line: string, width: number): string[] {
   const max = Math.max(10, Math.floor(width));
   const chars = Array.from(line);

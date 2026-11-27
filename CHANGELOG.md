@@ -2,6 +2,13 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
+## Unreleased
+
+- **Long review findings no longer break the terminal room.** A finding with several lines was counted as one row, so the screen overflowed: text landed on top of other text and the input box lost its shape. Every message line is now one row. A question box fits the terminal's height: its text wraps, and what does not fit is cut with a note.
+- **Reviewer and executor reports show formatted Markdown** in the room and the web UI. Command reports stay as typed.
+- **A question no longer repeats after `y`.** The room asked to continue a task whose files overlapped a running task, so each `y` failed and it asked again. It now asks once the other task is out of the way. Allowing files in that situation keeps your answer and says what it waits for.
+- **A pnpm setup command works after a snapshot is restored.** Since 0.14.11 it failed with `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`. Setup commands now run with `CI=true`. Until you update, `/setup off` uses the built-in install.
+
 ## 0.14.11 (Fewer fix rounds, time per run), 27 Nov
 
 Also ships 0.14.10, which was not published on its own.

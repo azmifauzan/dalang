@@ -223,6 +223,7 @@ export const id: Record<TranslationKey, string> = {
   'setup.save': 'Pakai persiapan ini',
   'setup.builtin': 'Pakai persiapan bawaan',
   'setup.resetSnapshot': 'Hapus snapshot',
+  'room.report.task_waiting': 'Menunggu dilanjutkan',
   'room.report.scope_request': 'Butuh file',
   'guard.mergeConflictSentBack': 'Merge [{task}] bentrok dengan branch utama. Tugas dikembalikan ke pelaksananya untuk menyelesaikan konflik; verifikasi dan tinjauan berjalan lagi sebelum Anda diminta merge.',
   'room.report.merge_conflict': 'Konflik merge',

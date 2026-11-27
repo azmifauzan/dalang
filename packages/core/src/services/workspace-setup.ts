@@ -230,6 +230,9 @@ export async function restoreSnapshot(worktreePath: string, projectDir: string, 
 export function withFreshCaches(command: string, posix = process.platform !== 'win32'): string {
   if (!posix) return command;
   const caches = [
+    // No terminal is attached. Without this, pnpm aborts after a snapshot restore: the new store makes
+    // it want to remove node_modules, and it will not do that without a confirmation or CI.
+    'CI=true',
     'npm_config_cache="$D/npm"',
     // npm warns about pnpm's setting, so it is set only for commands that name pnpm.
     ...(/\bpnpm\b/.test(command) ? ['npm_config_store_dir="$D/pnpm"'] : []),

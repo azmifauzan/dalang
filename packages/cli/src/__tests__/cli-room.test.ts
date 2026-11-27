@@ -1,3 +1,4 @@
+import { markdownRows } from '../tui/markdown.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -26,6 +27,8 @@ import {
   extractActivityPreview,
   formatProviderStats,
   formatRoomMessage,
+  gateContextLimit,
+  gateContextRows,
   providerStatChips,
   stripControl,
   wrapTimelineLine,
@@ -935,6 +938,28 @@ describe('Ink terminal room E2E (Quick task from plan to merge with no browser)'
     expect(planGate?.prompt).toBe('Approve Plan v2 (2 task(s)) and start work?');
     expect(planGate?.no).toContain('send a message to change it');
 
+    // A multi-line finding becomes one entry per row (B26): the room sizes the screen by these entries.
+    const multiline = formatRoomMessage({
+      id: 'ml', sessionId: 's1', role: 'agent', type: 'report', createdAt: '',
+      content: {
+        event: 'review_verdict', summary: 'Review round 1: FAIL\n**Earlier findings:**',
+        findings: [{ severity: 'major', file: 'a.php', note: '**Problem:** one range.\r\n\n**When it happens:**\n\tevery load' }],
+      },
+    } as never);
+    expect(multiline.lines.filter((line) => /[\r\n\t]/.test(line))).toEqual([]);
+    expect(multiline.lines).toContain('**When it happens:**');
+
+    // A question's context is drawn as counted rows: line breaks split, long text wraps, the rest is cut with a note.
+    expect(gateContextRows('one\n\ntwo', 80)).toEqual(['one', 'two']);
+    const long = gateContextRows(`Command: ${'word '.repeat(300)}\nWarning: secrets`, 80);
+    expect(long).toHaveLength(8);
+    expect(long.at(-1)).toMatch(/more line\(s\)/);
+    expect(long.every((row) => !row.includes('\n') && row.length <= 80)).toBe(true);
+    // On a short terminal the question gets only what the screen has left, so the composer stays whole.
+    expect(gateContextLimit(23, 0)).toBe(2);
+    expect(gateContextLimit(35, 0)).toBe(8);
+    expect(gateContextLimit(12, 4)).toBe(1);
+
     // An undecided worktree setup is asked before the plan is approved (U11).
     const setupGate = detectPendingGate(
       { session: { id: 's1', mode: 'auto' }, messages: [], briefs: [], plan: { version: 1, status: 'draft', tasks: [{ needsSplit: false }] } } as never,
@@ -962,6 +987,24 @@ describe('Ink terminal room E2E (Quick task from plan to merge with no browser)'
       null,
     );
     expect(continueGate).toMatchObject({ kind: 'continue_task', taskId: 'T-001', context: 'One finding left', alsoWaiting: 0 });
+
+    // It is not asked while its files overlap a running task: answering would fail and ask again.
+    const overlapping = {
+      session: { id: 's1', mode: 'auto' }, messages: [], briefs: [],
+      plan: { version: 1, status: 'approved', tasks: [stuck('T-001', 'stopped', []), stuck('T-003', 'running', [])] },
+    } as never;
+    const previews = { dispatchPreviews: [{ taskId: 'T-001', overlappingTasks: ['T-003'] }] } as never;
+    expect(detectPendingGate(overlapping, null, null, previews)).toBeNull();
+    expect(detectPendingGate(overlapping, null, null, { dispatchPreviews: [{ taskId: 'T-001', overlappingTasks: [] }] } as never)?.kind).toBe('continue_task');
+
+    // A reviewer's Markdown is rendered, and its single line breaks stay; command reports stay as typed.
+    const verdict = formatRoomMessage({ id: 'v', sessionId: 's1', role: 'agent', type: 'report', createdAt: '', content: { event: 'review_verdict', summary: '**Fix:** done\n- one `a`\nplain line' } } as never);
+    expect(verdict).toMatchObject({ markdown: true, keepBreaks: true });
+    const rows = markdownRows(verdict.lines.join('\n'), 80, true).join('\n').replace(/\x1b\[[0-9;]*m/g, '');
+    expect(rows).not.toContain('**');
+    expect(rows).toContain('Fix: done');
+    expect(markdownRows('first line\nsecond line', 80, true)).toHaveLength(2);
+    expect(formatRoomMessage({ id: 'c', sessionId: 's1', role: 'agent', type: 'report', createdAt: '', content: { event: 'verify_result', summary: 'pnpm test src/**/*.ts' } } as never).markdown).toBe(false);
 
     // A failed task that asked for files outside its scope gets an Allow gate.
     const scopeGate = detectPendingGate(

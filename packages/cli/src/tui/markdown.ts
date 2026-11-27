@@ -6,12 +6,12 @@ import { stripControl } from './format.js';
 type Block = ReturnType<typeof fromMarkdown>['children'][number];
 type Inline = Extract<Block, { type: 'paragraph' }>['children'][number];
 
-function inlineText(nodes: Inline[]): string {
+function inlineText(nodes: Inline[], softBreak = ' '): string {
   return nodes.map((node) => {
     switch (node.type) {
-      case 'text': return stripControl(node.value).replace(/\n/g, ' ');
-      case 'strong': return chalk.bold(inlineText(node.children));
-      case 'emphasis': return chalk.italic(inlineText(node.children));
+      case 'text': return stripControl(node.value).replace(/\n/g, softBreak);
+      case 'strong': return chalk.bold(inlineText(node.children, softBreak));
+      case 'emphasis': return chalk.italic(inlineText(node.children, softBreak));
       case 'inlineCode': return chalk.cyan(stripControl(node.value));
       case 'link': {
         const label = inlineText(node.children);
@@ -28,15 +28,15 @@ function inlineText(nodes: Inline[]): string {
   }).join('');
 }
 
-function blockRows(node: Block, width: number): string[] {
+function blockRows(node: Block, width: number, softBreak = ' '): string[] {
   const wrap = (text: string) => wrapAnsi(text, Math.max(1, width), { hard: true }).split('\n');
   switch (node.type) {
     case 'heading': return wrap(chalk.bold(inlineText(node.children)));
-    case 'paragraph': return wrap(inlineText(node.children));
-    case 'blockquote': return node.children.flatMap((child) => blockRows(child, width - 2).map((row) => `│ ${row}`));
+    case 'paragraph': return wrap(inlineText(node.children, softBreak));
+    case 'blockquote': return node.children.flatMap((child) => blockRows(child, width - 2, softBreak).map((row) => `│ ${row}`));
     case 'list': return node.children.flatMap((item, index) => {
       const bullet = node.ordered ? `${(node.start ?? 1) + index}. ` : '• ';
-      return item.children.flatMap((child) => blockRows(child, width - bullet.length))
+      return item.children.flatMap((child) => blockRows(child, width - bullet.length, softBreak))
         .map((row, line) => `${line === 0 ? bullet : ' '.repeat(bullet.length)}${row}`);
     });
     case 'code': return wrapAnsi(stripControl(node.value), Math.max(1, width - 2), { hard: true, trim: false, wordWrap: false })
@@ -47,7 +47,7 @@ function blockRows(node: Block, width: number): string[] {
   }
 }
 
-export function markdownRows(text: string, width: number): string[] {
-  const blocks = fromMarkdown(text).children.map((block) => blockRows(block, width)).filter((rows) => rows.length > 0);
+export function markdownRows(text: string, width: number, keepBreaks = false): string[] {
+  const blocks = fromMarkdown(text).children.map((block) => blockRows(block, width, keepBreaks ? '\n' : ' ')).filter((rows) => rows.length > 0);
   return blocks.flatMap((rows, index) => index === 0 ? rows : ['', ...rows]);
 }

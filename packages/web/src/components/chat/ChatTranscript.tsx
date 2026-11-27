@@ -231,7 +231,12 @@ export function ChatTranscript({
                 custom
               ) : report ? (
                 <div className="space-y-1.5 text-sm">
-                  <p className="whitespace-pre-wrap">{formatReportSummary(report)}</p>
+                  {report.event === 'review_verdict' || report.event === 'task_finished' ? (
+                    // Reviewers and executors write Markdown.
+                    <Markdown>{formatReportSummary(report)}</Markdown>
+                  ) : (
+                    <p className="whitespace-pre-wrap">{formatReportSummary(report)}</p>
+                  )}
                   {continueRequest?.messageIds.includes(msg.id) && (
                     <div className="flex flex-wrap items-center gap-3">
                       <Button type="button" onClick={() => continueRequest.onContinue(msg.id)} disabled={continueRequest.pending}>

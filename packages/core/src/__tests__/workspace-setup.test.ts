@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { RoomReportContent } from '@dalang/shared';
 import type { CliRunner, RunCommandResult } from '../adapters/types.js';
-import { copyApprovedFiles, proposeWorkspaceSetup } from '../services/workspace-setup.js';
+import { copyApprovedFiles, proposeWorkspaceSetup, withFreshCaches } from '../services/workspace-setup.js';
 import {
   cleanupTempDirs,
   handleLeadCalls,
@@ -75,6 +75,12 @@ describe('worktree setup proposal (U11)', () => {
     const copied = await copyApprovedFiles(main, wt, ['.env', 'link.txt', 'tracked.txt', '../x', '/etc/hosts', '.git/config', 'linked/new.txt']);
     expect(copied).toEqual(['.env']);
     expect(fs.existsSync(path.join(outside, 'new.txt'))).toBe(false);
+  });
+});
+
+describe('setup command environment', () => {
+  it('runs without a terminal: CI is set, so pnpm may rebuild a restored node_modules', () => {
+    expect(withFreshCaches('pnpm install --frozen-lockfile', true)).toMatch(/export CI=true /);
   });
 });
 
