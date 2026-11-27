@@ -64,6 +64,7 @@ import { registerAuth } from './auth.js';
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
 const LOOPBACK_IPS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+const DEFAULT_WS_HEARTBEAT_INTERVAL_MS = 20_000;
 
 function isLoopbackIp(ip: string | undefined): boolean {
   if (!ip) return false;
@@ -78,6 +79,7 @@ export interface CreateServerOptions {
   currentVersion?: string;
   enableScheduler?: boolean;
   schedulerTickIntervalMs?: number;
+  wsHeartbeatIntervalMs?: number;
 }
 
 export async function createDalangServer(options: CreateServerOptions = {}): Promise<{
@@ -290,25 +292,131 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     return { update: await updateCheckService.getStatus({ force }) };
   });
 
-  // WebSocket live event stream
-  const openSockets = new Set<{ close: (code?: number) => void }>();
+  // WebSocket live event stream with heartbeat liveness checks
+  const wsHeartbeatIntervalMs = options.wsHeartbeatIntervalMs ?? DEFAULT_WS_HEARTBEAT_INTERVAL_MS;
+  let wsClosing = false;
+  let wsHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  const stopWsHeartbeat = () => {
+    if (wsHeartbeatTimer) {
+      clearInterval(wsHeartbeatTimer);
+      wsHeartbeatTimer = null;
+    }
+  };
+  const openSockets = new Set<{
+    socket: {
+      readyState: number;
+      OPEN: number;
+      ping: () => void;
+      close: (code?: number) => void;
+      terminate: () => void;
+    };
+    alive: boolean;
+    canAccess: () => boolean;
+    cleanup: () => void;
+  }>();
+  const ensureWsHeartbeat = () => {
+    if (wsClosing || wsHeartbeatTimer || wsHeartbeatIntervalMs <= 0) return;
+    wsHeartbeatTimer = setInterval(() => {
+      for (const entry of Array.from(openSockets)) {
+        if (!entry.canAccess()) {
+          entry.cleanup();
+          try {
+            entry.socket.close(4401);
+          } catch {
+            // ignore
+          }
+          continue;
+        }
+        if (entry.socket.readyState !== entry.socket.OPEN) {
+          entry.cleanup();
+          continue;
+        }
+        if (!entry.alive) {
+          entry.cleanup();
+          try {
+            entry.socket.terminate();
+          } catch {
+            // ignore
+          }
+          continue;
+        }
+        entry.alive = false;
+        try {
+          entry.socket.ping();
+        } catch {
+          entry.cleanup();
+          try {
+            entry.socket.terminate();
+          } catch {
+            // ignore
+          }
+        }
+      }
+    }, wsHeartbeatIntervalMs);
+    wsHeartbeatTimer.unref?.();
+  };
+
+  app.addHook('onClose', async () => {
+    wsClosing = true;
+    stopWsHeartbeat();
+  });
+
   app.get('/ws', { websocket: true }, (socket, req) => {
-    openSockets.add(socket);
-    const untrack = auth.trackSocket(req, () => socket.close(4401));
-    const unsubscribe = events.onEvent((event) => {
-      if (!auth.canAccess(req)) {
+    if (wsClosing) {
+      try {
+        socket.close(1001);
+      } catch {
+        // ignore
+      }
+      return;
+    }
+    let cleaned = false;
+    let unsubscribe = () => {};
+    let untrack = () => {};
+    const entry = {
+      socket,
+      alive: true,
+      canAccess: () => auth.canAccess(req),
+      cleanup: () => {
+        if (cleaned) return;
+        cleaned = true;
+        openSockets.delete(entry);
+        unsubscribe();
+        untrack();
+        if (openSockets.size === 0) {
+          stopWsHeartbeat();
+        }
+      },
+    };
+    openSockets.add(entry);
+    untrack = auth.trackSocket(req, () => {
+      entry.cleanup();
+      try {
         socket.close(4401);
+      } catch {
+        // ignore
+      }
+    });
+    unsubscribe = events.onEvent((event) => {
+      if (!auth.canAccess(req)) {
+        entry.cleanup();
+        try {
+          socket.close(4401);
+        } catch {
+          // ignore
+        }
         return;
       }
       if (socket.readyState === socket.OPEN) {
         socket.send(JSON.stringify(event));
       }
     });
-    socket.on('close', () => {
-      openSockets.delete(socket);
-      unsubscribe();
-      untrack();
+    ensureWsHeartbeat();
+
+    socket.on('pong', () => {
+      entry.alive = true;
     });
+    socket.on('close', entry.cleanup);
   });
 
   // Projects (F-01, F-02)
@@ -947,11 +1055,14 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     events,
     automationService,
     close: async () => {
+      wsClosing = true;
+      stopWsHeartbeat();
       await automationService.stop();
       await Promise.all([executionService.stopAll(), leadService.stopAllTurns()]);
-      for (const s of openSockets) {
+      for (const entry of Array.from(openSockets)) {
+        entry.cleanup();
         try {
-          s.close(1001);
+          entry.socket.close(1001);
         } catch {
           // ignore
         }
@@ -973,6 +1084,7 @@ export async function startDalangServer(opts: {
   currentVersion?: string;
   enableScheduler?: boolean;
   schedulerTickIntervalMs?: number;
+  wsHeartbeatIntervalMs?: number;
 } = {}): Promise<{ url: string; automationService: AutomationService; close: () => Promise<void> }> {
   const port = opts.port ?? Number(process.env.DALANG_PORT || 4173);
   const { app, automationService, close } = await createDalangServer({
@@ -983,6 +1095,7 @@ export async function startDalangServer(opts: {
     currentVersion: opts.currentVersion,
     enableScheduler: opts.enableScheduler,
     schedulerTickIntervalMs: opts.schedulerTickIntervalMs,
+    wsHeartbeatIntervalMs: opts.wsHeartbeatIntervalMs,
   });
 
   // Docker forwards a host loopback port to the container interface. The Host/Origin guard still applies.

@@ -7,7 +7,7 @@ import { render } from 'ink';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { CliRunner, RunCommandOptions, RunCommandResult } from '@dalang/core';
 import { liveReplyText, parseLiveReply } from '@dalang/shared';
-import { startDalangServer } from '@dalang/server';
+import { createDalangServer, startDalangServer } from '@dalang/server';
 import { resolveCliCommand } from '../cli.js';
 import { RoomApiClient, probeServerHealth } from '../tui/client.js';
 import { KAYON_ICON } from '../tui/icon.js';
@@ -1010,5 +1010,440 @@ describe('Ink terminal room E2E (Quick task from plan to merge with no browser)'
     });
     expect(acceptedMsg.badge).toBe('TASK ACCEPTED');
     expect(acceptedMsg.lines.join('\n')).toContain('All good.');
+  });
+});
+
+describe('WebSocket reconnect and cleanup (R7)', () => {
+  it('uses bounded exponential backoff, resets after open, stops on 4401, and cleans up listeners on unsubscribe', () => {
+    const origWebSocket = globalThis.WebSocket;
+    const origSetTimeout = globalThis.setTimeout;
+    const origClearTimeout = globalThis.clearTimeout;
+
+    type Listener = (ev?: unknown) => void;
+    class FakeWebSocket {
+      static instances: FakeWebSocket[] = [];
+      readonly listeners = new Map<string, Set<Listener>>();
+      closed = false;
+
+      constructor(_url: string, _opts?: unknown) {
+        FakeWebSocket.instances.push(this);
+      }
+
+      addEventListener(type: string, fn: Listener) {
+        let set = this.listeners.get(type);
+        if (!set) {
+          set = new Set();
+          this.listeners.set(type, set);
+        }
+        set.add(fn);
+      }
+
+      removeEventListener(type: string, fn: Listener) {
+        this.listeners.get(type)?.delete(fn);
+      }
+
+      emit(type: string, ev: unknown = {}) {
+        for (const fn of Array.from(this.listeners.get(type) ?? [])) {
+          fn(ev);
+        }
+      }
+
+      listenerCount(): number {
+        let total = 0;
+        for (const set of this.listeners.values()) total += set.size;
+        return total;
+      }
+
+      close() {
+        this.closed = true;
+      }
+    }
+
+    const scheduledDelays: number[] = [];
+    const pendingTimers = new Map<number, () => void>();
+    let nextTimerId = 1;
+
+    globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+    globalThis.setTimeout = ((fn: () => void, delay?: number) => {
+      const id = nextTimerId++;
+      scheduledDelays.push(Number(delay ?? 0));
+      pendingTimers.set(id, fn);
+      return { id, unref() {} } as unknown as ReturnType<typeof setTimeout>;
+    }) as typeof setTimeout;
+    globalThis.clearTimeout = ((handle: ReturnType<typeof setTimeout> | undefined) => {
+      const id = (handle as unknown as { id?: number } | undefined)?.id;
+      if (id !== undefined) pendingTimers.delete(id);
+    }) as typeof clearTimeout;
+
+    const flushNextTimer = () => {
+      const first = pendingTimers.entries().next().value as [number, () => void] | undefined;
+      if (!first) throw new Error('Expected a scheduled reconnect timer');
+      pendingTimers.delete(first[0]);
+      first[1]();
+    };
+
+    try {
+      const client = new RoomApiClient(4173);
+      const statuses: boolean[] = [];
+      const events: string[] = [];
+
+      const unsubscribe = client.connectEvents(
+        (ev) => events.push(ev.type),
+        (ok) => statuses.push(ok),
+        { baseDelayMs: 40, maxDelayMs: 120 },
+      );
+
+      // Repeated disconnects increase backoff exponentially and cap at maxDelayMs.
+      for (let i = 0; i < 4; i++) {
+        const ws = FakeWebSocket.instances[i];
+        expect(ws.listenerCount()).toBe(4);
+        ws.emit('close', { code: 1006 });
+        expect(ws.listenerCount()).toBe(0);
+        flushNextTimer();
+      }
+      expect(scheduledDelays).toEqual([40, 80, 120, 120]);
+
+      // Opening resets backoff back to baseDelayMs.
+      const openedWs = FakeWebSocket.instances[4];
+      openedWs.emit('open');
+      openedWs.emit('message', { data: JSON.stringify({ type: 'plan.updated' }) });
+      expect(events).toEqual(['plan.updated']);
+      expect(statuses.at(-1)).toBe(true);
+
+      openedWs.emit('close', { code: 1001 });
+      expect(scheduledDelays.at(-1)).toBe(40);
+      expect(pendingTimers.size).toBe(1);
+
+      // Unsubscribe cancels pending timer, detaches listeners, and prevents further callbacks.
+      unsubscribe();
+      expect(pendingTimers.size).toBe(0);
+      const statusCountAfterUnsub = statuses.length;
+      openedWs.emit('message', { data: JSON.stringify({ type: 'ignored' }) });
+      openedWs.emit('close', { code: 1006 });
+      expect(events).toEqual(['plan.updated']);
+      expect(statuses.length).toBe(statusCountAfterUnsub);
+
+      // Access revocation (4401) stops reconnect scheduling and notifies onAuthRequired.
+      FakeWebSocket.instances = [];
+      scheduledDelays.length = 0;
+      let authRequiredCount = 0;
+      const unsubAuth = client.connectEvents(() => {}, (ok) => statuses.push(ok), {
+        baseDelayMs: 40,
+        maxDelayMs: 120,
+        onAuthRequired: () => {
+          authRequiredCount += 1;
+        },
+      });
+      const authWs = FakeWebSocket.instances[0];
+      authWs.emit('open');
+      authWs.emit('close', { code: 4401 });
+      expect(authWs.listenerCount()).toBe(0);
+      expect(pendingTimers.size).toBe(0);
+      expect(scheduledDelays).toEqual([]);
+      expect(authRequiredCount).toBe(1);
+      unsubAuth();
+    } finally {
+      globalThis.WebSocket = origWebSocket;
+      globalThis.setTimeout = origSetTimeout;
+      globalThis.clearTimeout = origClearTimeout;
+    }
+  });
+
+  it('reconnects RoomApiClient and RoomApp after a local server restart, reloads active state, and cleans up on unmount', async () => {
+    const dbDir = mkTmp('dalang-tui-reconnect-db-');
+    const dbPath = path.join(dbDir, 'dalang.db');
+    const repoDir = mkTmp('dalang-tui-reconnect-repo-');
+
+    const server1 = await createDalangServer({
+      dbPath,
+      enableScheduler: false,
+      wsHeartbeatIntervalMs: 1000,
+    });
+    let server1Closed = false;
+    cleanups.push(async () => {
+      if (!server1Closed) await server1.close();
+    });
+
+    const createdProj = await server1.app.inject({
+      method: 'POST',
+      url: '/api/projects',
+      payload: { mode: 'create', name: 'reconnect-demo', path: repoDir, initGitIfMissing: true },
+    });
+    expect(createdProj.statusCode).toBe(201);
+    const projectId = createdProj.json().project.id as string;
+
+    const createdSess = await server1.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/sessions`,
+      payload: { mode: 'ask', title: 'Room Before Restart' },
+    });
+    expect(createdSess.statusCode).toBe(201);
+    const sessionId = createdSess.json().session.id as string;
+
+    await server1.app.listen({ host: '127.0.0.1', port: 0 });
+    const addr = server1.app.server.address();
+    const port = typeof addr === 'object' && addr ? addr.port : 0;
+    expect(port).toBeGreaterThan(0);
+
+    const client = new RoomApiClient(port);
+
+    // Also attach a direct connectEvents subscriber to verify live events before & after restart.
+    const statusLog: boolean[] = [];
+    const receivedEvents: string[] = [];
+    const unsubDirect = client.connectEvents(
+      (ev) => receivedEvents.push(ev.type),
+      (connected) => statusLog.push(connected),
+      { baseDelayMs: 40, maxDelayMs: 120 },
+    );
+    cleanups.push(async () => unsubDirect());
+
+    const waitUntil = async (predicate: () => boolean, timeoutMs = 8000, label = 'condition') => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (predicate()) return;
+        await new Promise((r) => setTimeout(r, 30));
+      }
+      throw new Error(`Timed out waiting for ${label}`);
+    };
+
+    await waitUntil(() => statusLog.at(-1) === true, 5000, 'direct client initial connect');
+    server1.events.emitEvent({ type: 'sessions.updated', projectId });
+    await waitUntil(() => receivedEvents.includes('sessions.updated'), 5000, 'event before restart');
+
+    // Mount RoomApp on the existing session.
+    const stdout = new PassThrough();
+    Object.assign(stdout, { columns: 110, rows: 32, isTTY: true });
+    let screen = '';
+    stdout.on('data', (chunk) => {
+      screen += chunk.toString('utf8');
+    });
+    const stdin = new PassThrough();
+    Object.assign(stdin, { isTTY: true, setRawMode: () => {} });
+
+    const inst = render(
+      React.createElement(RoomApp, {
+        client,
+        embedded: false,
+        cwd: repoDir,
+        initialRoom: { projectId, sessionId, mode: 'quick', modelChoice: null },
+        openBrowser: () => {},
+        onOpenPager: async () => ({ ok: true }),
+      }),
+      {
+        stdout: stdout as unknown as NodeJS.WriteStream,
+        stdin: stdin as unknown as NodeJS.ReadStream,
+        exitOnCtrlC: false,
+        patchConsole: false,
+      },
+    );
+    let unmounted = false;
+    cleanups.push(async () => {
+      if (!unmounted) {
+        inst.unmount();
+        unmounted = true;
+      }
+      stdout.end();
+      stdin.end();
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    const wsClientCount = (app: unknown) =>
+      (app as { websocketServer: { clients: Set<unknown> } }).websocketServer.clients.size;
+
+    await waitUntil(
+      () =>
+        screen.includes('Room Before Restart') &&
+        screen.includes('· live') &&
+        wsClientCount(server1.app) === 2,
+      8000,
+      'RoomApp initial load and live socket',
+    );
+
+    // Shut down server #1 -> clients observe disconnect.
+    server1Closed = true;
+    await server1.close();
+    await waitUntil(() => statusLog.at(-1) === false, 5000, 'disconnect status');
+
+    // Restart server #2 on the same port and DB. Rename the session BEFORE listen so no WS event
+    // is broadcast for it: RoomApp must reload active state on reconnect to display the new title.
+    const server2 = await createDalangServer({
+      dbPath,
+      enableScheduler: false,
+      wsHeartbeatIntervalMs: 1000,
+    });
+    cleanups.push(server2.close);
+
+    const renamed = await server2.app.inject({
+      method: 'PATCH',
+      url: `/api/projects/${projectId}/sessions/${sessionId}`,
+      payload: { title: 'Room After Reconnect' },
+    });
+    expect(renamed.statusCode).toBe(200);
+
+    await server2.app.listen({ host: '127.0.0.1', port });
+
+    await waitUntil(
+      () =>
+        statusLog.at(-1) === true &&
+        wsClientCount(server2.app) === 2 &&
+        screen.includes('Room After Reconnect'),
+      10_000,
+      'RoomApp reconnect and active-state reload',
+    );
+
+    // Confirm live events work again after reconnect.
+    server2.events.emitEvent({ type: 'plan.updated', projectId });
+    await waitUntil(() => receivedEvents.includes('plan.updated'), 5000, 'event after reconnect');
+
+    // Unsubscribing direct client and unmounting RoomApp closes all sockets cleanly.
+    unsubDirect();
+    inst.unmount();
+    unmounted = true;
+
+    await waitUntil(() => wsClientCount(server2.app) === 0, 5000, 'clean disconnect after unmount');
+    const eventCountAfterCleanup = receivedEvents.length;
+    const statusCountAfterCleanup = statusLog.length;
+    server2.events.emitEvent({ type: 'sessions.updated', projectId });
+    await new Promise((r) => setTimeout(r, 60));
+    expect(receivedEvents.length).toBe(eventCountAfterCleanup);
+    expect(statusLog.length).toBe(statusCountAfterCleanup);
+  });
+
+  it('prompts for login in RoomApp when access is revoked (4401) and restores the live subscription after sign-in', async () => {
+    const dbDir = mkTmp('dalang-tui-auth-db-');
+    const dbPath = path.join(dbDir, 'dalang.db');
+    const repoDir = mkTmp('dalang-tui-auth-repo-');
+    const password = 'a long local password';
+
+    const server = await createDalangServer({
+      dbPath,
+      enableScheduler: false,
+      wsHeartbeatIntervalMs: 1000,
+    });
+    cleanups.push(server.close);
+
+    const createdProj = await server.app.inject({
+      method: 'POST',
+      url: '/api/projects',
+      payload: { mode: 'create', name: 'auth-room-demo', path: repoDir, initGitIfMissing: true },
+    });
+    expect(createdProj.statusCode).toBe(201);
+    const projectId = createdProj.json().project.id as string;
+
+    const createdSess = await server.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/sessions`,
+      payload: { mode: 'ask', title: 'Auth Recovery Session' },
+    });
+    expect(createdSess.statusCode).toBe(201);
+    const sessionId = createdSess.json().session.id as string;
+
+    await server.app.listen({ host: '127.0.0.1', port: 0 });
+    const addr = server.app.server.address();
+    const port = typeof addr === 'object' && addr ? addr.port : 0;
+    expect(port).toBeGreaterThan(0);
+
+    const client = new RoomApiClient(port);
+    const wsClientCount = () =>
+      (server.app as unknown as { websocketServer: { clients: Set<unknown> } }).websocketServer.clients.size;
+
+    const stdout = new PassThrough();
+    Object.assign(stdout, { columns: 110, rows: 32, isTTY: true });
+    let screen = '';
+    stdout.on('data', (chunk) => {
+      screen += chunk.toString('utf8');
+    });
+    const stdin = new PassThrough();
+    Object.assign(stdin, { isTTY: true, setRawMode: () => {} });
+
+    const inst = render(
+      React.createElement(RoomApp, {
+        client,
+        embedded: false,
+        cwd: repoDir,
+        initialRoom: { projectId, sessionId, mode: 'quick', modelChoice: null },
+        openBrowser: () => {},
+        onOpenPager: async () => ({ ok: true }),
+      }),
+      {
+        stdout: stdout as unknown as NodeJS.WriteStream,
+        stdin: stdin as unknown as NodeJS.ReadStream,
+        exitOnCtrlC: false,
+        patchConsole: false,
+      },
+    );
+    let unmounted = false;
+    cleanups.push(async () => {
+      if (!unmounted) {
+        inst.unmount();
+        unmounted = true;
+      }
+      stdout.end();
+      stdin.end();
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    const waitUntil = async (predicate: () => boolean, timeoutMs = 8000, label = 'condition') => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (predicate()) return;
+        await new Promise((r) => setTimeout(r, 30));
+      }
+      throw new Error(`Timed out waiting for ${label}. Last screen tail:\n${screen.slice(-1000)}`);
+    };
+
+    await waitUntil(
+      () =>
+        screen.includes('Auth Recovery Session') &&
+        screen.includes('[QUICK]') &&
+        screen.includes('· live') &&
+        wsClientCount() === 1,
+      8000,
+      'initial authenticated RoomApp session with restored initialRoom mode',
+    );
+
+    // Enable login from another view -> server revokes the open room socket with 4401.
+    const enabled = await server.app.inject({
+      method: 'PUT',
+      url: '/api/auth/settings',
+      payload: { enabled: true, password },
+    });
+    expect(enabled.statusCode).toBe(200);
+    const adminCookie = String(enabled.headers['set-cookie']).split(';')[0];
+
+    await waitUntil(
+      () => wsClientCount() === 0 && screen.includes('sign in required'),
+      8000,
+      'RoomApp login prompt after 4401 revocation',
+    );
+
+    // Sign in through the RoomApp password prompt and verify the live subscription is restored.
+    stdin.write(`${password}\r`);
+
+    await waitUntil(
+      () => wsClientCount() === 1,
+      8000,
+      'restored authenticated WebSocket after sign-in',
+    );
+
+    // Emit a live update after sign-in to prove the restored subscription receives events.
+    const renamed = await server.app.inject({
+      method: 'PATCH',
+      url: `/api/projects/${projectId}/sessions/${sessionId}`,
+      headers: { cookie: adminCookie },
+      payload: { title: 'Live After Reauth' },
+    });
+    expect(renamed.statusCode).toBe(200);
+    server.events.emitEvent({ type: 'sessions.updated', projectId });
+
+    await waitUntil(
+      () => screen.includes('Live After Reauth'),
+      8000,
+      'live session update received after RoomApp re-authentication',
+    );
+
+    inst.unmount();
+    unmounted = true;
+    await waitUntil(() => wsClientCount() === 0, 5000, 'WS closed after RoomApp unmount');
   });
 });

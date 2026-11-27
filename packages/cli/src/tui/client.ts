@@ -46,6 +46,12 @@ export interface ServerEvent {
   [key: string]: unknown;
 }
 
+export interface ConnectEventsOptions {
+  baseDelayMs?: number;
+  maxDelayMs?: number;
+  onAuthRequired?: () => void;
+}
+
 export interface ChatResponseDTO {
   session: SessionSummaryDTO;
   mode: SessionMode;
@@ -390,31 +396,67 @@ export class RoomApiClient {
   connectEvents(
     onEvent: (event: ServerEvent) => void,
     onStatus?: (connected: boolean) => void,
+    options?: ConnectEventsOptions,
   ): () => void {
     const wsUrl = this.baseUrl.replace(/^http/, 'ws') + '/ws';
+    const baseDelayMs = Math.max(10, options?.baseDelayMs ?? 500);
+    const maxDelayMs = Math.max(baseDelayMs, options?.maxDelayMs ?? 10_000);
     let closed = false;
     let socket: WebSocket | null = null;
+    let detachSocket: (() => void) | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let reconnectAttempt = 0;
+
+    const clearReconnectTimer = () => {
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+    };
+
+    const scheduleReconnect = () => {
+      if (closed || reconnectTimer) return;
+      const delay = Math.min(maxDelayMs, baseDelayMs * 2 ** Math.min(reconnectAttempt, 10));
+      reconnectAttempt += 1;
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connect();
+      }, delay);
+      reconnectTimer.unref?.();
+    };
 
     const connect = () => {
       if (closed) return;
+      clearReconnectTimer();
+      detachSocket?.();
+      detachSocket = null;
+
+      let current: WebSocket;
       try {
         const WsCtor = globalThis.WebSocket as unknown as new (
           url: string,
           opts?: unknown,
         ) => WebSocket;
-        socket = this.cookieHeader
+        current = this.cookieHeader
           ? new WsCtor(wsUrl, { headers: { Cookie: this.cookieHeader } })
           : new WsCtor(wsUrl);
       } catch {
+        socket = null;
+        onStatus?.(false);
         scheduleReconnect();
         return;
       }
 
-      socket.addEventListener('open', () => {
+      socket = current;
+
+      const onOpen = () => {
+        if (closed || current !== socket) return;
+        reconnectAttempt = 0;
         onStatus?.(true);
-      });
-      socket.addEventListener('message', (msg) => {
+      };
+
+      const onMessage = (msg: { data: unknown }) => {
+        if (closed || current !== socket) return;
         try {
           const text = typeof msg.data === 'string' ? msg.data : String(msg.data);
           const parsed = JSON.parse(text) as ServerEvent;
@@ -424,33 +466,46 @@ export class RoomApiClient {
         } catch {
           // ignore malformed frames
         }
-      });
-      socket.addEventListener('close', () => {
-        onStatus?.(false);
-        if (!closed) scheduleReconnect();
-      });
-      socket.addEventListener('error', () => {
-        onStatus?.(false);
-      });
-    };
+      };
 
-    const scheduleReconnect = () => {
-      if (closed || reconnectTimer) return;
-      reconnectTimer = setTimeout(() => {
-        reconnectTimer = null;
-        connect();
-      }, 1500);
-      reconnectTimer.unref?.();
+      const onClose = (ev: { code?: number }) => {
+        if (closed || current !== socket) return;
+        detachSocket?.();
+        detachSocket = null;
+        socket = null;
+        onStatus?.(false);
+        if (ev.code === 4401) {
+          options?.onAuthRequired?.();
+          return;
+        }
+        scheduleReconnect();
+      };
+
+      const onError = () => {
+        if (closed || current !== socket) return;
+        onStatus?.(false);
+      };
+
+      current.addEventListener('open', onOpen);
+      current.addEventListener('message', onMessage);
+      current.addEventListener('close', onClose);
+      current.addEventListener('error', onError);
+
+      detachSocket = () => {
+        current.removeEventListener('open', onOpen);
+        current.removeEventListener('message', onMessage);
+        current.removeEventListener('close', onClose);
+        current.removeEventListener('error', onError);
+      };
     };
 
     connect();
 
     return () => {
       closed = true;
-      if (reconnectTimer) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-      }
+      clearReconnectTimer();
+      detachSocket?.();
+      detachSocket = null;
       if (socket) {
         try {
           socket.close();

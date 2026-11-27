@@ -162,6 +162,7 @@ export function RoomApp({
 
   // Room data
   const [wsConnected, setWsConnected] = useState(false);
+  const [wsReconnectEpoch, setWsReconnectEpoch] = useState(0);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [sessions, setSessions] = useState<SessionSummaryDTO[]>([]);
@@ -369,15 +370,24 @@ export function RoomApp({
       setProjects(projList);
       setProfiles(profList);
 
-      const matched = projList.find((p) => p.id === initialRoom?.projectId) ?? matchProjectForCwd(projList, cwd) ?? projList[0] ?? null;
+      const currentProjectId = activeProjectIdRef.current;
+      const currentSessionId = activeSessionIdRef.current;
+      const isInitialBootstrap = currentProjectId === null;
+      const targetProjectId = currentProjectId ?? initialRoom?.projectId ?? null;
+      const matched = projList.find((p) => p.id === targetProjectId) ?? matchProjectForCwd(projList, cwd) ?? projList[0] ?? null;
       if (matched) {
         setActiveProjectId(matched.id);
-        const restored = matched.id === initialRoom?.projectId ? initialRoom.sessionId : null;
+        const restored =
+          matched.id === currentProjectId
+            ? currentSessionId
+            : matched.id === initialRoom?.projectId
+              ? initialRoom.sessionId
+              : null;
         const sessionList = restored ? await client.listSessions(matched.id, true) : null;
         const sessionId = sessionList?.sessions.some((s) => s.id === restored) ? restored : null;
         setActiveSessionId(sessionId);
         await refreshSessionState(matched.id, sessionId);
-        if (initialRoom) {
+        if (isInitialBootstrap && initialRoom) {
           setMode(initialRoom.mode);
           setModelChoice(initialRoom.modelChoice);
         }
@@ -457,6 +467,38 @@ export function RoomApp({
   // Subscribe to live WebSocket events once authenticated & ready
   useEffect(() => {
     if (!ready || authNeeded) return;
+    let cancelled = false;
+    let checkingAuth = false;
+    let resubscribeIfAuthed = false;
+    const verifyAuth = (needsResubscribe: boolean) => {
+      if (cancelled) return;
+      if (needsResubscribe) resubscribeIfAuthed = true;
+      if (checkingAuth || typeof client.authStatus !== 'function') return;
+      checkingAuth = true;
+      void client
+        .authStatus()
+        .then((auth) => {
+          if (cancelled) return;
+          if (auth.enabled && !auth.authenticated) {
+            setAuthNeeded(true);
+            return;
+          }
+          if (resubscribeIfAuthed) {
+            resubscribeIfAuthed = false;
+            setWsReconnectEpoch((n) => n + 1);
+          }
+        })
+        .catch(() => {
+          if (!cancelled && resubscribeIfAuthed) {
+            resubscribeIfAuthed = false;
+            setWsReconnectEpoch((n) => n + 1);
+          }
+        })
+        .finally(() => {
+          checkingAuth = false;
+        });
+    };
+
     const unsubscribe = client.connectEvents(
       (event: ServerEvent) => {
         const pid = activeProjectIdRef.current;
@@ -529,11 +571,20 @@ export function RoomApp({
         if (!connected) {
           setActivityPreviews(new Map());
           liveReplies.clear();
+          verifyAuth(false);
         }
       },
+      {
+        onAuthRequired: () => {
+          verifyAuth(true);
+        },
+      },
     );
-    return unsubscribe;
-  }, [ready, authNeeded, client, refreshSessionState, liveReplies]);
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [ready, authNeeded, wsReconnectEpoch, client, refreshSessionState, liveReplies]);
 
   const pendingGate: PendingGate | null = useMemo(
     () => detectPendingGate(detail, guard),

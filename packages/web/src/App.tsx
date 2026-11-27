@@ -414,19 +414,111 @@ function AppShell({ authEnabled }: { authEnabled: boolean }) {
       });
   };
 
-  // WebSocket live updates
+  // Persist pending reload across project switches while disconnected so the replacement socket still reloads active state.
+  const wsNeedsReloadRef = useRef(false);
+
+  // WebSocket live updates with bounded reconnect and active-state reload
   useEffect(() => {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${proto}//${window.location.host}/ws`;
-    let ws: WebSocket | null = null;
-    let closedByEffect = false;
+    const BASE_RECONNECT_DELAY_MS = 500;
+    const MAX_RECONNECT_DELAY_MS = 10_000;
 
-    try {
-      ws = new WebSocket(wsUrl);
-      ws.onclose = () => {
-        if (!closedByEffect) qc.invalidateQueries({ queryKey: ['auth-status'] });
+    let ws: WebSocket | null = null;
+    let detachSocket: (() => void) | null = null;
+    let reconnectTimer: number | null = null;
+    let closedByEffect = false;
+    let reconnectAttempt = 0;
+
+    const clearReconnectTimer = () => {
+      if (reconnectTimer !== null) {
+        window.clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+    };
+
+    const resetTransientLiveState = () => {
+      setLiveBySession({});
+      setNewestLiveSessionId(null);
+      setRunLogsByRunId({});
+    };
+
+    const reloadActiveState = () => {
+      resetTransientLiveState();
+      void qc.invalidateQueries({ queryKey: ['projects'] });
+      void qc.invalidateQueries({ queryKey: ['providers-status'] });
+      void qc.invalidateQueries({ queryKey: ['statistics'] });
+      void qc.invalidateQueries({ queryKey: ['automations'] });
+      void qc.invalidateQueries({ queryKey: ['automation-runs'] });
+      if (activeProjectId) {
+        void qc.invalidateQueries({ queryKey: ['sessions', activeProjectId] });
+        void qc.invalidateQueries({ queryKey: ['session-detail', activeProjectId] });
+        void qc.invalidateQueries({ queryKey: ['discuss', activeProjectId] });
+        void qc.invalidateQueries({ queryKey: ['briefs', activeProjectId] });
+        void qc.invalidateQueries({ queryKey: ['plan', activeProjectId] });
+        void qc.invalidateQueries({ queryKey: ['execution', activeProjectId] });
+        void qc.invalidateQueries({ queryKey: ['guard', activeProjectId] });
+        void qc.invalidateQueries({ queryKey: ['task-diff', activeProjectId] });
+        void qc.invalidateQueries({ queryKey: ['run-log', activeProjectId] });
+      }
+    };
+
+    const scheduleReconnect = () => {
+      if (closedByEffect || reconnectTimer !== null) return;
+      const delay = Math.min(
+        MAX_RECONNECT_DELAY_MS,
+        BASE_RECONNECT_DELAY_MS * 2 ** Math.min(reconnectAttempt, 10),
+      );
+      reconnectAttempt += 1;
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = null;
+        connect();
+      }, delay);
+    };
+
+    const connect = () => {
+      if (closedByEffect) return;
+      clearReconnectTimer();
+      detachSocket?.();
+      detachSocket = null;
+
+      let socket: WebSocket;
+      try {
+        socket = new WebSocket(wsUrl);
+      } catch {
+        // WebSocket optional when running static preview
+        return;
+      }
+
+      ws = socket;
+
+      const onOpen = () => {
+        if (closedByEffect || socket !== ws) return;
+        reconnectAttempt = 0;
+        if (wsNeedsReloadRef.current) {
+          wsNeedsReloadRef.current = false;
+          reloadActiveState();
+        }
       };
-      ws.onmessage = (ev) => {
+
+      const onClose = (ev: CloseEvent) => {
+        if (closedByEffect || socket !== ws) return;
+        detachSocket?.();
+        detachSocket = null;
+        ws = null;
+        wsNeedsReloadRef.current = true;
+        resetTransientLiveState();
+        void qc.invalidateQueries({ queryKey: ['auth-status'] });
+        if (ev.code === 4401) return;
+        scheduleReconnect();
+      };
+
+      const onError = () => {
+        // `close` always follows a failed/dropped socket and handles cleanup + reconnect.
+      };
+
+      const onMessage = (ev: MessageEvent) => {
+        if (closedByEffect || socket !== ws) return;
         try {
           const msg = JSON.parse(ev.data as string) as {
             type: string;
@@ -640,15 +732,66 @@ function AppShell({ authEnabled }: { authEnabled: boolean }) {
           // ignore malformed event
         }
       };
-    } catch {
-      // WebSocket optional when running static preview
-    }
+
+      socket.addEventListener('open', onOpen);
+      socket.addEventListener('message', onMessage);
+      socket.addEventListener('close', onClose);
+      socket.addEventListener('error', onError);
+
+      detachSocket = () => {
+        socket.removeEventListener('open', onOpen);
+        socket.removeEventListener('message', onMessage);
+        socket.removeEventListener('close', onClose);
+        socket.removeEventListener('error', onError);
+      };
+    };
+
+    const closeCurrentSocket = () => {
+      detachSocket?.();
+      detachSocket = null;
+      if (ws) {
+        try {
+          ws.close();
+        } catch {
+          // ignore
+        }
+        ws = null;
+      }
+    };
+
+    const onOnline = () => {
+      if (closedByEffect || ws) return;
+      reconnectAttempt = 0;
+      clearReconnectTimer();
+      connect();
+    };
+
+    const onPageHide = () => {
+      clearReconnectTimer();
+      closeCurrentSocket();
+      resetTransientLiveState();
+      wsNeedsReloadRef.current = true;
+    };
+
+    const onPageShow = (ev: PageTransitionEvent) => {
+      if (!ev.persisted || closedByEffect || ws) return;
+      reconnectAttempt = 0;
+      clearReconnectTimer();
+      connect();
+    };
+
+    window.addEventListener('online', onOnline);
+    window.addEventListener('pagehide', onPageHide);
+    window.addEventListener('pageshow', onPageShow);
+    connect();
 
     return () => {
       closedByEffect = true;
-      if (ws && closedByEffect) {
-        ws.close();
-      }
+      clearReconnectTimer();
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('pagehide', onPageHide);
+      window.removeEventListener('pageshow', onPageShow);
+      closeCurrentSocket();
     };
   }, [activeProjectId, authEnabled, qc]);
 
