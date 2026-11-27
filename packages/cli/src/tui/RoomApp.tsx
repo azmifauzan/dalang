@@ -743,6 +743,14 @@ export function RoomApp({
           await runWithUnconfinedSupport(`[${pendingGate.externalId}] with more files`, async (allowUnconfined) => {
             await client.allowTaskScope(activeProjectId, pendingGate.taskId, { files: pendingGate.files, allowUnconfined });
           });
+        } else if (pendingGate.kind === 'continue_task') {
+          if (!accept) {
+            pushNotice(`[${pendingGate.externalId}] stays as it is. Answer y when you want it to continue.`, { badge: 'GUARD' });
+            return;
+          }
+          await runWithUnconfinedSupport(`continue [${pendingGate.externalId}]`, async (allowUnconfined) => {
+            await client.continueTask(activeProjectId, pendingGate.taskId, { allowUnconfined });
+          });
         } else if (pendingGate.kind === 'approve_merge') {
           const isAnswer = pendingGate.output === 'answer';
           if (!accept) {

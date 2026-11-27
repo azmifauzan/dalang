@@ -146,6 +146,15 @@ export function WorkView({
     },
   });
 
+  // A failed review continues with every open finding, which a plain resume does not carry.
+  const continueMutation = useMutation({
+    mutationFn: (taskId: string) => api.continueTask(project.id, taskId, allowUnconfined),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['execution', project.id] });
+      qc.invalidateQueries({ queryKey: ['plan', project.id] });
+    },
+  });
+
   const runTaskMutation = useMutation({
     mutationFn: ({ taskId, resumeSession }: { taskId: string; resumeSession?: boolean }) =>
       api.runTask(project.id, taskId, { allowUnconfined, resumeSession }),
@@ -434,7 +443,7 @@ export function WorkView({
                     const canResume =
                       canRunFresh &&
                       Boolean(resumableRun) &&
-                      (task.status === 'stopped' || task.status === 'failed');
+                      (task.status === 'stopped' || task.status === 'failed' || task.status === 'review_failed');
                     const childSubtasks = subtasksByParentId.get(task.taskId) ?? [];
 
                     return (
@@ -535,10 +544,9 @@ export function WorkView({
                                   variant="outline"
                                   disabled={runTaskMutation.isPending}
                                   onClick={() =>
-                                    runTaskMutation.mutate({
-                                      taskId: task.taskId,
-                                      resumeSession: true,
-                                    })
+                                    task.status === 'review_failed'
+                                      ? continueMutation.mutate(task.taskId)
+                                      : runTaskMutation.mutate({ taskId: task.taskId, resumeSession: true })
                                   }
                                 >
                                   {t('work.resumeSession')}

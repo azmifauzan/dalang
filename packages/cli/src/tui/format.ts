@@ -41,6 +41,7 @@ export type PendingGate = GateText &
     | { kind: 'auto_work' }
     // A task asked for files outside its files_allowed (R10).
     | { kind: 'scope_request'; taskId: string; externalId: string; files: string[] }
+    | { kind: 'continue_task'; taskId: string; externalId: string }
     | {
         kind: 'approve_merge';
         taskId: string;
@@ -187,6 +188,31 @@ export function detectPendingGate(
         context: auto ? 'The tasks, their order, and their executors are in the plan above.' : undefined,
         yes: 'approve and start',
         no: auto ? 'keep it as a draft · or send a message to change it' : 'keep the plan as a draft',
+      };
+    }
+  }
+
+  // 6. A task that stopped short can continue on its own work (U7). Last, so it never hides another question.
+  if (detail.plan?.status === 'approved') {
+    const done = new Set(detail.plan.tasks.filter((t) => t.status === 'done').map((t) => t.externalId));
+    const stuck = detail.plan.tasks.filter(
+      (t) => t.delegationDepth === 0 && Boolean(t.branchName) &&
+        ['review_failed', 'failed', 'stopped'].includes(t.status) && t.dependsOn.every((dep) => done.has(dep)),
+    );
+    const task = stuck[0];
+    if (task) {
+      const reviewFailed = task.status === 'review_failed';
+      return {
+        kind: 'continue_task',
+        taskId: task.id,
+        externalId: task.externalId,
+        prompt: reviewFailed
+          ? `[${task.externalId}] failed its last review. Continue fixing it on the work it already has?`
+          : `[${task.externalId}] ${task.status}. Continue it on the work it already has?`,
+        context: task.rejectionNote ?? undefined,
+        yes: reviewFailed ? 'run another fix and review' : 'continue',
+        no: `leave it · /diff ${task.externalId} to see the changes`,
+        alsoWaiting: stuck.length - 1,
       };
     }
   }

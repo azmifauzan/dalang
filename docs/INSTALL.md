@@ -157,7 +157,7 @@ Dalang upgrades its database the first time a newer version starts, from any ear
 | v0.12.0 | v15 | Adds `author_profile_id` and `kind` to messages for role reports and team-room feeds |
 | v0.14.0 | v16 | Adds `output_kind` (`files` or `answer`) to tasks and automations, makes `verify` nullable across tasks, reviews, and automations, and refreshes untouched default role prompts |
 | v0.14.5 | v17 | Adds indexes on the foreign keys that pages read most, `client_request_id` on tasks, `delivery_id` on automation runs, and a `webhook_deliveries` table, all additive. Turns on `busy_timeout` and `synchronous = NORMAL` |
-| Unreleased | v18 | Renames the seeded `coder-small`, `coder-medium`, `coder-heavy`, and `qa` profiles to `executor-light`, `executor-medium`, `executor-heavy`, and `checker`; old names still resolve |
+| v0.14.9 | v18 | Renames the seeded `coder-small`, `coder-medium`, `coder-heavy`, and `qa` profiles to `executor-light`, `executor-medium`, `executor-heavy`, and `checker`; old names still resolve |
 
 An upgrade is one way. An older build refuses a newer database with `Database schema vN is newer than this DALANG build`, so restore your pre-upgrade backup to go back. A server that is still running keeps the old code and schema in memory, so restart it after updating.
 

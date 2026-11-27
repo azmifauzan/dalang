@@ -5,6 +5,7 @@ import { and, desc, eq, gte, inArray, ne, or } from 'drizzle-orm';
 import { z } from 'zod';
 import {
   findProfileByRef,
+  MAX_REVIEW_ROUNDS,
   buildAccountKey,
   DEFAULT_MAX_SUBTASKS_PER_TASK,
   MAX_DELEGATION_DEPTH,
@@ -2347,6 +2348,65 @@ export class ExecutionService {
     return { task: this.leadService.getPlan(projectId, sid)!.tasks.find((t) => t.id === task.id)! };
   }
 
+  /**
+   * Continues a task that stopped short (U7, B19): after its last review round, or after a failed or
+   * stopped run. Its branch and worktree stay, in the same CLI session when there is one; otherwise a
+   * fresh session continues on that branch. Verify, review, and the merge gate run as usual. Only the
+   * user calls this, so the automatic round limit still holds.
+   */
+  async continueTask(
+    projectId: string,
+    taskId: string,
+    input: { note?: string; allowUnconfined?: boolean } = {},
+  ): Promise<{ task: TaskDTO }> {
+    const sid = this.leadService.resolveSessionIdForTask(projectId, taskId);
+    const plan = sid ? this.leadService.getPlan(projectId, sid) : null;
+    const task = plan?.tasks.find((t) => t.id === taskId || t.externalId === taskId);
+    if (!plan || !sid || !task) throw new Error(`Task not found: ${taskId}`);
+    if (!['review_failed', 'failed', 'stopped'].includes(task.status) || !task.branchName) {
+      throw new Error(`Task ${task.externalId} is ${task.status} and has no unfinished work to continue.`);
+    }
+    // The task keeps only the first finding; the verdict report has them all.
+    const verdict = this.leadService
+      .getSessionDetail(projectId, sid)
+      .messages.filter((m) => m.type === 'report')
+      .map((m) => m.content as RoomReportContent)
+      .filter((c) => c.taskId === task.id && c.event === 'review_verdict')
+      .at(-1);
+    const findings =
+      task.status === 'review_failed'
+        ? (verdict?.findings ?? []).map((f) => `- [${f.severity}] ${f.file ? `${f.file}: ` : ''}${f.note}`)
+        : [];
+    const note = [
+      'Continue this task from the work already on this branch.',
+      findings.length > 0 ? `Fix these open review findings:\n${findings.join('\n')}` : (task.rejectionNote ?? ''),
+      input.note?.trim() ? `Note from the user: ${input.note.trim()}` : '',
+    ].filter(Boolean).join('\n');
+    const previous = { status: task.status, rejectionNote: task.rejectionNote ?? null };
+    const now = new Date().toISOString();
+    this.db.update(tasks).set({ status: 'stopped', rejectionNote: note, updatedAt: now }).where(eq(tasks.id, task.id)).run();
+    try {
+      await this.startExecution(projectId, {
+        sessionId: sid,
+        taskId: task.id,
+        resumeSession: true,
+        allowUnconfined: Boolean(input.allowUnconfined),
+        continueBranch: true,
+      } as Partial<StartExecutionInput>);
+    } catch (err) {
+      // Nothing started (a dependency, an overlap, a missing sandbox): leave the task as it was.
+      this.db.update(tasks).set({ ...previous, updatedAt: now }).where(eq(tasks.id, task.id)).run();
+      throw err;
+    }
+    this.db
+      .update(reviews)
+      .set({ humanDecision: 'rejected', humanNote: 'Sent back to continue fixing', decidedAt: now })
+      .where(and(eq(reviews.taskId, task.id), eq(reviews.humanDecision, 'pending')))
+      .run();
+    this.events?.emitEvent({ type: 'plan.updated', projectId, sessionId: sid });
+    return { task: this.leadService.getPlan(projectId, sid)!.tasks.find((t) => t.id === task.id)! };
+  }
+
   /** Last closing note posted per session, so a repeated check does not post the same note twice. */
   private readonly lastRunOutcome = new Map<string, string>();
 
@@ -3871,7 +3931,7 @@ export class ExecutionService {
       return 'failed';
     }
 
-    const maxRounds = Math.min(3, Math.max(1, initialReviewer.primary.maxReviewRounds || 2));
+    const maxRounds = Math.min(MAX_REVIEW_ROUNDS, Math.max(1, initialReviewer.primary.maxReviewRounds || 2));
 
     for (let round = 1; round <= maxRounds; round++) {
       if (ctx.execHandle.controller.signal.aborted) {

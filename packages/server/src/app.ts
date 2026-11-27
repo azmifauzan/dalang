@@ -6,6 +6,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
   AllowTaskScopeInputSchema,
+  ContinueTaskInputSchema,
   ApproveMergeInputSchema,
   AssignTaskProfileInputSchema,
   BriefContentSchema,
@@ -780,6 +781,15 @@ export async function createDalangServer(options: CreateServerOptions = {}): Pro
     async (req) => {
       const body = ApproveMergeInputSchema.parse(req.body ?? {});
       return executionService.approveMergeTask(req.params.id, req.params.taskId, body);
+    },
+  );
+
+  // A task that stopped short continues on its branch (U7).
+  app.post<{ Params: { id: string; taskId: string } }>(
+    '/api/projects/:id/tasks/:taskId/continue',
+    async (req) => {
+      const body = ContinueTaskInputSchema.parse(req.body ?? {});
+      return executionService.continueTask(req.params.id, req.params.taskId, body);
     },
   );
 

@@ -211,6 +211,7 @@ export const id: Record<TranslationKey, string> = {
   'room.report.task_accepted': 'Diterima',
   'room.report.task_rejected': 'Ditolak',
   'room.report.task_steered': 'Diarahkan',
+  'room.continueTask': 'Lanjutkan perbaikan (hasil dipertahankan)',
   'room.scopeAllow': 'Izinkan file ini dan lanjutkan',
   'room.report.scope_request': 'Butuh file',
   'guard.mergeConflictSentBack': 'Merge [{task}] bentrok dengan branch utama. Tugas dikembalikan ke pelaksananya untuk menyelesaikan konflik; verifikasi dan tinjauan berjalan lagi sebelum Anda diminta merge.',

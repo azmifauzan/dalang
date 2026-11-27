@@ -2,7 +2,11 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
-## Unreleased
+## 0.14.9 (Continue work that stopped short), 27 Nov
+
+- **A task that stops short can continue.** After its last review round, or after a failed or stopped run, the room asks to continue it, and the web UI has a button. Its branch stays, and the executor gets every open review finding. Before this, the choices were to start over, which deleted the work, or to merge with the findings open.
+- **More review rounds.** A reviewer profile can allow up to 6 rounds (was 3).
+- **The test suite passes inside the DALANG sandbox.** Two tests that start their own sandbox failed in every verify and integration run of this repository.
 
 - **Profile names match their roles.** The seeded profiles `coder-small`, `coder-medium`, `coder-heavy`, and `qa` are now `executor-light`, `executor-medium`, `executor-heavy`, and `checker`. A profile you renamed keeps your name, and a seeded profile keeps its old name if another profile already uses the new one. Old names still work in mentions, saved plans, automations, and MCP calls. Schema v18; ids do not change.
 

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const DALANG_VERSION = '0.14.8';
+export const DALANG_VERSION = '0.14.9';
 
 export const MAX_DELEGATION_DEPTH = 1;
 export const DEFAULT_MAX_SUBTASKS_PER_TASK = 6;
@@ -764,6 +764,9 @@ export const FallbackTargetSchema = z.object({
 });
 export type FallbackTarget = z.infer<typeof FallbackTargetSchema>;
 
+/** The most review rounds a task may run before it stops and asks the user. */
+export const MAX_REVIEW_ROUNDS = 6;
+
 const ProfileBaseFieldsSchema = z.object({
   name: z
     .string()
@@ -779,7 +782,7 @@ const ProfileBaseFieldsSchema = z.object({
   timeoutMs: z.number().int().min(5000).max(7_200_000),
   idleTimeoutMs: z.number().int().min(5000).max(3_600_000),
   maxParallel: z.number().int().min(1).max(16),
-  maxReviewRounds: z.number().int().min(1).max(3),
+  maxReviewRounds: z.number().int().min(1).max(MAX_REVIEW_ROUNDS),
   fallback: FallbackTargetSchema.nullable(),
   configDir: z.string().trim().max(500).nullable(),
 });
@@ -825,6 +828,12 @@ export const ReorderRoutingRulesInputSchema = z.object({
   ruleIds: z.array(z.string().min(1)).min(1),
 });
 export type ReorderRoutingRulesInput = z.infer<typeof ReorderRoutingRulesInputSchema>;
+
+export const ContinueTaskInputSchema = z.object({
+  note: z.string().trim().max(4000).optional(),
+  allowUnconfined: z.boolean().default(false),
+});
+export type ContinueTaskInput = z.infer<typeof ContinueTaskInputSchema>;
 
 export const AllowTaskScopeInputSchema = z.object({
   files: z.array(z.string().trim().min(1)).min(1),

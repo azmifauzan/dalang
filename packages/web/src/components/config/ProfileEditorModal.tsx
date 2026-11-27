@@ -1,3 +1,4 @@
+import { MAX_REVIEW_ROUNDS } from '@dalang/shared';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   splitEffortModel,
@@ -497,12 +498,12 @@ export function ProfileEditorModal({
                     name="maxReviewRounds"
                     type="number"
                     min={1}
-                    max={3}
+                    max={MAX_REVIEW_ROUNDS}
                     value={form.maxReviewRounds}
                     onChange={(e) =>
                       onChange((f) => ({
                         ...f,
-                        maxReviewRounds: Math.min(3, Math.max(1, Number(e.target.value) || 2)),
+                        maxReviewRounds: Math.min(MAX_REVIEW_ROUNDS, Math.max(1, Number(e.target.value) || 2)),
                       }))
                     }
                   />

@@ -92,6 +92,26 @@ export function AskSessionView({
     }
     return null;
   })();
+  // A task that stopped short can continue on its own work (U7). The button sits on its latest report.
+  const continueAsk = (() => {
+    const stuck = (planQuery.data?.plan?.tasks ?? []).filter(
+      (task) => task.branchName && ['review_failed', 'failed', 'stopped'].includes(task.status),
+    );
+    return stuck.flatMap((task) => {
+      if (task.id === scopeAsk?.taskId) return [];
+      const latest = (discussQuery.data?.messages ?? []).filter(
+        (m) => m.type === 'report' && (m.content as RoomReportContent | null)?.taskId === task.id,
+      ).at(-1);
+      return latest ? [{ taskId: task.id, messageId: latest.id }] : [];
+    });
+  })();
+  const continueMutation = useMutation({
+    mutationFn: (taskId: string) => api.continueTask(project.id, taskId),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ['plan', project.id, session?.id] });
+      qc.invalidateQueries({ queryKey: ['discuss', project.id, session?.id] });
+    },
+  });
   const allowScopeMutation = useMutation({
     mutationFn: (ask: { taskId: string; files: string[] }) => api.allowTaskScope(project.id, ask.taskId, ask.files),
     onSettled: () => {
@@ -208,6 +228,15 @@ export function AskSessionView({
                 session={session}
                 lastReplyRef={lastReplyRef}
                 onPromote={session ? (mode) => onPromoteSession(session.id, mode) : undefined}
+                continueRequest={{
+                  messageIds: continueAsk.map((ask) => ask.messageId),
+                  pending: continueMutation.isPending,
+                  error: continueMutation.isError ? (continueMutation.error as Error).message : null,
+                  onContinue: (messageId: string) => {
+                    const ask = continueAsk.find((item) => item.messageId === messageId);
+                    if (ask) continueMutation.mutate(ask.taskId);
+                  },
+                }}
                 scopeRequest={
                   scopeAsk
                     ? {

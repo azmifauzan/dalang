@@ -341,6 +341,12 @@ export const api = {
     request<{ guard: GuardStateDTO }>(withSessionQuery(`/api/projects/${id}/guard`, sessionId)),
   getTaskDiff: (id: string, taskId: string) =>
     request<{ diff: TaskDiffDTO }>(`/api/projects/${id}/tasks/${taskId}/diff`),
+  continueTask: (id: string, taskId: string, allowUnconfined = false) =>
+    request<{ task: TaskDTO }>(`/api/projects/${id}/tasks/${taskId}/continue`, {
+      method: 'POST',
+      body: JSON.stringify({ allowUnconfined }),
+    }),
+
   allowTaskScope: (id: string, taskId: string, files: string[]) =>
     request<{ task: TaskDTO }>(`/api/projects/${id}/tasks/${taskId}/allow-scope`, {
       method: 'POST',

@@ -209,6 +209,7 @@ export const en = {
   'room.report.task_accepted': 'Accepted',
   'room.report.task_rejected': 'Rejected',
   'room.report.task_steered': 'Steered',
+  'room.continueTask': 'Continue fixing (keeps the work)',
   'room.scopeAllow': 'Allow these files and continue',
   'room.report.scope_request': 'Needs files',
   'guard.mergeConflictSentBack': 'Merging [{task}] conflicted with the main branch. It went back to its executor to resolve the conflict; verify and review run again before you are asked to merge.',

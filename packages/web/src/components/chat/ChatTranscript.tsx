@@ -25,6 +25,7 @@ export function ChatTranscript({
   renderBody,
   planApproval,
   scopeRequest,
+  continueRequest,
 }: {
   messages: DiscussMessageDTO[];
   session: SessionSummaryDTO | null;
@@ -37,6 +38,7 @@ export function ChatTranscript({
   planApproval?: { version: number; pending: boolean; error: string | null; onApprove: () => void };
   /** A failed task that asked for more files: its latest scope request gets an Allow button. */
   scopeRequest?: { messageId: string; pending: boolean; error: string | null; onAllow: () => void };
+  continueRequest?: { messageIds: string[]; pending: boolean; error: string | null; onContinue: (messageId: string) => void };
 }) {
   const { t, formatTime } = useI18n();
 
@@ -230,6 +232,16 @@ export function ChatTranscript({
               ) : report ? (
                 <div className="space-y-1.5 text-sm">
                   <p className="whitespace-pre-wrap">{formatReportSummary(report)}</p>
+                  {continueRequest?.messageIds.includes(msg.id) && (
+                    <div className="flex flex-wrap items-center gap-3">
+                      <Button type="button" onClick={() => continueRequest.onContinue(msg.id)} disabled={continueRequest.pending}>
+                        {t('room.continueTask')}
+                      </Button>
+                      {continueRequest.error && (
+                        <span className="text-xs" style={{ color: 'var(--error)' }}>{continueRequest.error}</span>
+                      )}
+                    </div>
+                  )}
                   {scopeRequest && report.event === 'scope_request' && msg.id === scopeRequest.messageId && (
                     <div className="flex flex-wrap items-center gap-3">
                       <Button type="button" onClick={scopeRequest.onAllow} disabled={scopeRequest.pending}>

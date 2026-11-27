@@ -935,6 +935,20 @@ describe('Ink terminal room E2E (Quick task from plan to merge with no browser)'
     expect(planGate?.prompt).toBe('Approve Plan v2 (2 task(s)) and start work?');
     expect(planGate?.no).toContain('send a message to change it');
 
+    // A task that failed its last review can continue on its work; one waiting on it cannot yet (U7).
+    const stuck = (id: string, status: string, dependsOn: string[]) =>
+      ({ id, externalId: id, status, dependsOn, delegationDepth: 0, branchName: `dalang/${id}`, rejectionNote: 'One finding left', needsSplit: false });
+    const continueGate = detectPendingGate(
+      {
+        session: { id: 's1', mode: 'auto' },
+        messages: [],
+        briefs: [],
+        plan: { version: 1, status: 'approved', tasks: [stuck('T-002', 'stopped', ['T-001']), stuck('T-001', 'review_failed', [])] },
+      } as never,
+      null,
+    );
+    expect(continueGate).toMatchObject({ kind: 'continue_task', taskId: 'T-001', context: 'One finding left', alsoWaiting: 0 });
+
     // A failed task that asked for files outside its scope gets an Allow gate.
     const scopeGate = detectPendingGate(
       {

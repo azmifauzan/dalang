@@ -296,6 +296,13 @@ export class RoomApiClient {
     );
   }
 
+  continueTask(projectId: string, taskId: string, opts: { allowUnconfined?: boolean } = {}): Promise<{ task: TaskDTO }> {
+    return this.request(
+      `/api/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/continue`,
+      { method: 'POST', body: JSON.stringify(opts) },
+    );
+  }
+
   allowTaskScope(
     projectId: string,
     taskId: string,
