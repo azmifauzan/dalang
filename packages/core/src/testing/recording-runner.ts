@@ -11,6 +11,17 @@ import {
   type ReplayTurnEntry,
 } from './replay-runner.js';
 
+export type RecordedStreamEvent =
+  | {
+      direction: 'stdin' | 'stdout';
+      atMs: number;
+      data: string;
+    }
+  | {
+      direction: 'stdin_end';
+      atMs: number;
+    };
+
 /**
  * One recorded provider CLI invocation. The `match`, `stdoutLines`, `stderrLines`, and `exitCode`
  * fields form a `ReplayTurnEntry`, so a recording can be pasted into a replay transcript as is.
@@ -30,6 +41,8 @@ export interface CliRecording extends ReplayTurnEntry {
   stdinData?: string;
   /** Writes made through `onSpawn().writeStdin` (session protocols: stream-json, app-server, ACP). */
   stdinWrites: Array<{ atMs: number; data: string }>;
+  /** Cross-direction sequence of `stdin` writes and `stdout` lines in observed order. */
+  events?: RecordedStreamEvent[];
   timedOut: boolean;
   idleTimedOut: boolean;
   aborted: boolean;
@@ -77,12 +90,16 @@ export class RecordingCliRunner implements CliRunner {
     const stdoutTimesMs: number[] = [];
     const stderrLines: string[] = [];
     const stdinWrites: CliRecording['stdinWrites'] = [];
+    const events: RecordedStreamEvent[] = [];
 
     const wrapped: RunCommandOptions = {
       ...options,
       onStdoutLine: (line) => {
-        stdoutLines.push(redact(line));
-        stdoutTimesMs.push(elapsed());
+        const atMs = elapsed();
+        const redacted = redact(line);
+        stdoutLines.push(redacted);
+        stdoutTimesMs.push(atMs);
+        events.push({ direction: 'stdout', atMs, data: redacted });
         options.onStdoutLine?.(line);
       },
       onStderrLine: (line) => {
@@ -94,8 +111,16 @@ export class RecordingCliRunner implements CliRunner {
             options.onSpawn!({
               ...controls,
               writeStdin: (data) => {
-                stdinWrites.push({ atMs: elapsed(), data: redact(data) });
+                const atMs = elapsed();
+                const redacted = redact(data);
+                stdinWrites.push({ atMs, data: redacted });
+                events.push({ direction: 'stdin', atMs, data: redacted });
                 controls.writeStdin(data);
+              },
+              endStdin: () => {
+                const atMs = elapsed();
+                events.push({ direction: 'stdin_end', atMs });
+                controls.endStdin();
               },
             })
         : undefined,
@@ -120,6 +145,7 @@ export class RecordingCliRunner implements CliRunner {
       exitCode: result.exitCode ?? 1,
       ...(options.stdinData ? { stdinData: redact(options.stdinData) } : {}),
       stdinWrites,
+      events,
       timedOut: result.timedOut,
       idleTimedOut: result.idleTimedOut,
       aborted: result.aborted === true,
