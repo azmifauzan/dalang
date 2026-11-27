@@ -428,7 +428,7 @@ describe('Phase 0.4 parallel execution, worktrees, provider pool, quota fallback
 
     try {
       const profileSvc = new ProfileService(conn.db);
-      const claudeProf = profileSvc.listProfiles().find((p) => p.name === 'coder-heavy')!;
+      const claudeProf = profileSvc.listProfiles().find((p) => p.name === 'executor-heavy')!;
       profileSvc.updateProfile(claudeProf.id, { maxParallel: 1 });
 
       // Start T-001 + T-002 concurrently: T-001 occupies claude-code (maxParallel=1), T-002 hits 429 on codex

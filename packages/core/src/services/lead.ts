@@ -4,6 +4,7 @@ import path from 'node:path';
 import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import {
+  findProfileByRef,
   AskReplyContractSchema,
   MAX_CHAT_IMAGE_BYTES,
   BriefContentSchema,
@@ -3562,7 +3563,7 @@ export class LeadService {
     const profileRows = items.some((item) => item.task.profile) ? this.profiles.listProfiles() : [];
     const profileIdFor = (task: PlanTaskContract): string | null => {
       if (!task.profile) return null;
-      const match = profileRows.find((p) => p.name === task.profile || p.id === task.profile);
+      const match = findProfileByRef(profileRows, task.profile);
       if (!match) {
         throw new Error(
           `Task ${task.id} names an unknown executor profile "${task.profile}". Use one of: ${profileRows.map((p) => p.name).join(', ')}.`,

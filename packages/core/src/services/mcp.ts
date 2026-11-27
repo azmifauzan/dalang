@@ -115,7 +115,7 @@ export const MCP_TOOL_DEFINITIONS = [
         },
         profile: {
           type: 'string',
-          description: 'Optional DALANG agent profile name or id (e.g. coder-small, coder-medium, coder-heavy).',
+          description: 'Optional DALANG agent profile name or id (e.g. executor-light, executor-medium, executor-heavy).',
         },
         provider: {
           type: 'string',

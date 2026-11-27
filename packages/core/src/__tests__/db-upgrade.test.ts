@@ -18,7 +18,7 @@ function getTableIndexColumns(sqlite: Database.Database, table: string): Map<str
 }
 
 function expectV17PragmasAndFkIndexes(sqlite: Database.Database): void {
-  expect(sqlite.pragma('user_version', { simple: true })).toBe(17);
+  expect(sqlite.pragma('user_version', { simple: true })).toBe(18);
   expect(sqlite.pragma('busy_timeout', { simple: true })).toBe(5000);
   expect(sqlite.pragma('synchronous', { simple: true })).toBe(1); // NORMAL
   expect(sqlite.pragma('journal_mode', { simple: true })).toBe('wal');
@@ -88,7 +88,7 @@ describe('database upgrade', () => {
     fresh.close();
 
     const upgraded = openDatabase(file);
-    expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(17);
+    expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(18);
     const runCols = (upgraded.sqlite.pragma('table_info(runs)') as Array<{ name: string }>).map((c) => c.name);
     expect(runCols).toContain('worktree_path');
     expect(runCols).toContain('input_tokens');
@@ -126,7 +126,7 @@ describe('database upgrade', () => {
         .prepare(`SELECT complexity, fallback_provider AS p, fallback_model AS m, fallback_effort AS e FROM routing_rules WHERE role = 'engineer' ORDER BY sort_order`)
         .all() as Array<{ complexity: string; p: string | null; m: string | null; e: string | null }>;
       expect(rules.map((r) => r.complexity)).toEqual(['low', 'medium', 'high']);
-      // high pointed at coder-small (codex, low effort): the target keeps that CLI and effort.
+      // high pointed at executor-light (codex, low effort): the target keeps that CLI and effort.
       expect(rules.find((r) => r.complexity === 'high')).toMatchObject({ p: 'codex', e: 'low' });
       const lead = upgraded.sqlite.prepare(`SELECT fallback_provider AS p FROM agent_profiles WHERE id = 'profile-lead'`).get();
       expect(lead).toEqual({ p: 'antigravity' });
@@ -293,7 +293,7 @@ describe('database upgrade', () => {
     // Open and trigger v8 -> v9 upgrade
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(17);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(18);
 
       // Project A: 1 Full working session preserving brief, plan, tasks, messages, and moved artifacts
       const sessionsA = upgraded.sqlite
@@ -382,7 +382,7 @@ describe('database upgrade', () => {
     }
   });
 
-  it('upgrades a v10 database to v11 by provisioning coder-medium and qa profiles', () => {
+  it('upgrades a v10 database to v11 by provisioning the medium executor and checker profiles', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dalang-up11-'));
     const file = path.join(dir, 'dalang.db');
     const fresh = openDatabase(file);
@@ -397,11 +397,11 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(17);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(18);
       const names = (
         upgraded.sqlite.prepare('SELECT name FROM agent_profiles ORDER BY name').all() as Array<{ name: string }>
       ).map((r) => r.name);
-      expect(names).toEqual(['coder-heavy', 'coder-medium', 'coder-small', 'lead', 'qa', 'reviewer']);
+      expect(names).toEqual(['checker', 'executor-heavy', 'executor-light', 'executor-medium', 'lead', 'reviewer']);
 
       const mediumRule = upgraded.sqlite
         .prepare(`SELECT profile_id AS id FROM routing_rules WHERE role = 'engineer' AND complexity = 'medium'`)
@@ -432,7 +432,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(17);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(18);
       const taskCols = (upgraded.sqlite.pragma('table_info(tasks)') as Array<{ name: string }>).map((c) => c.name);
       expect(taskCols).toContain('delegated_by_run_id');
       expect(taskCols).toContain('delegation_depth');
@@ -456,7 +456,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(17);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(18);
       const taskRepoCols = (
         upgraded.sqlite.pragma('table_info(task_repos)') as Array<{ name: string }>
       ).map((c) => c.name);
@@ -509,7 +509,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(17);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(18);
       const autoCols = (
         upgraded.sqlite.pragma('table_info(automations)') as Array<{ name: string }>
       ).map((c) => c.name);
@@ -566,7 +566,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(17);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(18);
       const msgCols = (
         upgraded.sqlite.pragma('table_info(messages)') as Array<{ name: string }>
       ).map((c) => c.name);
@@ -739,7 +739,7 @@ describe('database upgrade', () => {
 
     const upgraded = openDatabase(file);
     try {
-      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(17);
+      expect(upgraded.sqlite.pragma('user_version', { simple: true })).toBe(18);
 
       const oldTask = upgraded.sqlite
         .prepare(`SELECT external_id, output_kind, verify FROM tasks WHERE id = 't-old'`)

@@ -105,7 +105,7 @@ describe('ExecutionService hardening', () => {
     const { conn, project, plan, execSvc } = await setupApprovedProject(runner);
     try {
       const profiles = new ProfileService(conn.db).listProfiles();
-      const heavy = profiles.find((p) => p.name === 'coder-heavy')!;
+      const heavy = profiles.find((p) => p.name === 'executor-heavy')!;
       conn.db.update(agentProfiles).set({ permissionMode: 'read-only' }).where(eq(agentProfiles.id, heavy.id)).run();
       execSvc.assignTaskProfile(project.id, plan.tasks[0].id, heavy.id);
 
@@ -208,9 +208,9 @@ describe('routing and scaffold', () => {
       const low = svc.resolveProfileForTask({ role: 'engineer', complexity: 'low', profileOverride: null });
       const high = svc.resolveProfileForTask({ role: 'engineer', complexity: 'high', profileOverride: null });
       const qa = svc.resolveProfileForTask({ role: 'qa', complexity: 'medium', profileOverride: null });
-      expect(low.primary.name).toBe('coder-small');
-      expect(high.primary.name).toBe('coder-heavy');
-      expect(qa.primary.name).toBe('qa');
+      expect(low.primary.name).toBe('executor-light');
+      expect(high.primary.name).toBe('executor-heavy');
+      expect(qa.primary.name).toBe('checker');
       expect(low.source).toBe('routing_rule');
     } finally {
       conn.close();

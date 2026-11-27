@@ -151,7 +151,7 @@ describe('v0.5 Replay runner scenarios (process-only replacement)', () => {
     ]);
 
     try {
-      // Route engineer/high to coder-heavy with a fallback to a second Claude account (its own config dir).
+      // Route engineer/high to executor-heavy with a fallback to a second Claude account (its own config dir).
       const rules = ctx.profileSvc.listRoutingRules();
       const highRule = rules.find((r) => r.role === 'engineer' && r.complexity === 'high')!;
       ctx.profileSvc.updateRoutingRule(highRule.id, {
@@ -174,7 +174,7 @@ describe('v0.5 Replay runner scenarios (process-only replacement)', () => {
       expect(failedPrimary.checkpointAfterRef).toMatch(/^refs\/dalang\/checkpoints\/failed-/);
       expect(succeededBackup.usedFallback).toBe(true);
       // The fallback keeps the primary profile (and its role instructions); only the account and model differ.
-      expect(succeededBackup.profileName).toBe('coder-heavy');
+      expect(succeededBackup.profileName).toBe('executor-heavy');
       expect(succeededBackup.accountKey).toContain(acct2Dir);
       expect(succeededBackup.inputTokens).toBe(1200);
       expect(succeededBackup.outputTokens).toBe(450);

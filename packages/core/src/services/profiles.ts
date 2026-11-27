@@ -1,3 +1,4 @@
+import { findProfileByRef } from '@dalang/shared';
 import crypto from 'node:crypto';
 import { asc, eq, or } from 'drizzle-orm';
 import type {
@@ -380,7 +381,8 @@ export class ProfileService {
       null;
 
     if (input.profileOverride) {
-      const overrideProfile = byId.get(input.profileOverride) ?? byName.get(input.profileOverride);
+      const overrideProfile = byId.get(input.profileOverride) ?? byName.get(input.profileOverride) ??
+        findProfileByRef([...byId.values()], input.profileOverride);
       if (overrideProfile) {
         const ruleTarget = matchedRule ? targetFromColumns(matchedRule) : null;
         return {

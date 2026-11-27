@@ -153,8 +153,8 @@ describe('team room mention routing and feed (v0.12)', () => {
       mention: 'reviewer',
       body: 'check edge cases',
     });
-    expect(parseLeadingMention('@coder-small: add unit test')).toEqual({
-      mention: 'coder-small',
+    expect(parseLeadingMention('@executor-light: add unit test')).toEqual({
+      mention: 'executor-light',
       body: 'add unit test',
     });
     expect(parseLeadingMention('plain message for lead')).toBeNull();
@@ -277,7 +277,7 @@ describe('team room mention routing and feed (v0.12)', () => {
               externalId: 'T-001',
               runId: 'run-uuid-1',
               profileId: 'profile-coder-small',
-              profileName: 'coder-small',
+              profileName: 'executor-light',
               kind: 'execute',
               canSteer: true,
             },
@@ -298,7 +298,7 @@ describe('team room mention routing and feed (v0.12)', () => {
     expect(steerRes.routedTo).toEqual({
       kind: 'steer',
       profileId: 'profile-coder-small',
-      profileName: 'coder-small',
+      profileName: 'executor-light',
       taskId: 'task-uuid-1',
       runId: 'run-uuid-1',
     });
@@ -315,7 +315,7 @@ describe('team room mention routing and feed (v0.12)', () => {
     expect(steerMsg.type).toBe('report');
     expect(steerMsg.kind).toBe('status');
     expect(steerMsg.authorProfileId).toBe('profile-coder-small');
-    expect(steerMsg.authorProfileName).toBe('coder-small');
+    expect(steerMsg.authorProfileName).toBe('executor-light');
     expect((steerMsg.content as RoomReportContent).event).toBe('task_steered');
 
     // 4. A running coder that cannot take steering refuses with 409 and writes nothing to the room
@@ -327,7 +327,7 @@ describe('team room mention routing and feed (v0.12)', () => {
           externalId: 'T-001',
           runId: 'run-uuid-1',
           profileId: 'profile-coder-small',
-          profileName: 'coder-small',
+          profileName: 'executor-light',
           kind: 'execute',
           canSteer: false,
         },
@@ -340,7 +340,7 @@ describe('team room mention routing and feed (v0.12)', () => {
       leadService.sendChatMessage(project.id, {
         sessionId,
         mode: 'ask',
-        message: '@coder-small stop touching the config',
+        message: '@executor-light stop touching the config',
       }),
     ).rejects.toMatchObject({ statusCode: 409 });
     expect(leadService.getDiscussState(project.id, sessionId).messages.length).toBe(before);
@@ -352,21 +352,21 @@ describe('team room mention routing and feed (v0.12)', () => {
     conns.push(conn);
     const profiles = new ProfileService(conn.db).listProfiles();
 
-    // Idle @coder -> Ask on coder-small
+    // Idle @coder -> Ask on executor-light
     const idleCoder = resolveMentionTarget('@coder explain index.ts', profiles, []);
     expect(idleCoder?.route).toBe('ask');
     if (idleCoder?.route === 'ask') {
-      expect(idleCoder.profile.name).toBe('coder-small');
+      expect(idleCoder.profile.name).toBe('executor-light');
     }
 
-    // Running @coder-heavy -> steer
+    // Running @executor-heavy -> steer
     const active = [
       {
         taskId: 't1',
         externalId: 'T-001',
         runId: 'r1',
         profileId: 'profile-coder-heavy',
-        profileName: 'coder-heavy',
+        profileName: 'executor-heavy',
         kind: 'execute' as const,
         canSteer: true,
       },
@@ -374,7 +374,7 @@ describe('team room mention routing and feed (v0.12)', () => {
     const steerAlias = resolveMentionTarget('@coder keep it concise', profiles, active);
     expect(steerAlias?.route).toBe('steer');
     if (steerAlias?.route === 'steer') {
-      expect(steerAlias.run.profileName).toBe('coder-heavy');
+      expect(steerAlias.run.profileName).toBe('executor-heavy');
     }
   });
 
@@ -536,7 +536,7 @@ describe('team room mention routing and feed (v0.12)', () => {
     ]);
 
     const finishedReport = reports.find((r) => r.content.event === 'task_finished')!;
-    expect(finishedReport.author).toBe('coder-small');
+    expect(finishedReport.author).toBe('executor-light');
     expect(finishedReport.content.diffStats?.filesChanged).toBeGreaterThanOrEqual(1);
     expect(finishedReport.content.diffStats?.insertions).toBeGreaterThanOrEqual(1);
 

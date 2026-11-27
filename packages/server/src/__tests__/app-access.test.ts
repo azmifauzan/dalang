@@ -229,11 +229,11 @@ it('resets the database and settings to factory defaults via POST /api/factory-r
 
     const profiles = (await app.inject('/api/profiles')).json().profiles as Array<{ name: string }>;
     expect(profiles.map((p) => p.name).sort()).toEqual([
-      'coder-heavy',
-      'coder-medium',
-      'coder-small',
+      'checker',
+      'executor-heavy',
+      'executor-light',
+      'executor-medium',
       'lead',
-      'qa',
       'reviewer',
     ]);
     expect((await app.inject('/api/routing')).json().rules).toHaveLength(6);

@@ -188,7 +188,7 @@ export function characterForProfile(
   complexity?: string | null,
 ): WayangCharacterId {
   const lower = `${profileName} ${role ?? ''}`.toLowerCase();
-  if (lower.includes('srikandi') || /\bqa\b/.test(lower) || lower.includes('tester')) {
+  if (lower.includes('srikandi') || /\b(qa|checker)\b/.test(lower) || lower.includes('tester')) {
     return 'srikandi';
   }
   if (lower.includes('review') || lower.includes('guard')) {

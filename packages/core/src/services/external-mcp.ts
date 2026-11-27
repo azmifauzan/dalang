@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { desc, eq, isNull } from 'drizzle-orm';
 import {
+  findProfileByRef,
   DALANG_VERSION,
   ExternalMcpApproveMergeInputSchema,
   ExternalMcpGetProjectInputSchema,
@@ -433,7 +434,7 @@ export class ExternalMcpService {
     const cleaned = ref?.trim();
     if (!cleaned) return null;
     const all = this.db.select().from(agentProfiles).all();
-    const matched = all.find((p) => p.id === cleaned || p.name === cleaned);
+    const matched = findProfileByRef(all, cleaned);
     if (!matched) {
       throw new Error(`Agent profile not found: ${cleaned}`);
     }

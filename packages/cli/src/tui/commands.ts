@@ -1,3 +1,4 @@
+import { findProfileByRef } from '@dalang/shared';
 import type { AgentProfileDTO, SessionSummaryDTO } from '@dalang/shared';
 
 export interface SlashCommandDef {
@@ -147,17 +148,11 @@ export function getComposerCompletions(
         detail: `steer running (${[...runningProfileNames].join(', ')})`,
       });
     }
-    if (query.length > 0 && 'coder'.startsWith(query)) {
-      items.push({
-        value: '@coder',
-        label: '@coder',
-        detail: `steer running (${[...runningProfileNames].join(', ')})`,
-      });
-    }
   }
 
-  const qaProfile = profiles.find((p) => p.name.toLowerCase() === 'qa');
-  if (qaProfile && query.length > 0 && 'checker'.startsWith(query)) {
+  // A renamed checker profile still gets the @checker alias; one named `checker` is listed below.
+  const qaProfile = findProfileByRef(profiles, 'qa');
+  if (qaProfile && qaProfile.name !== 'checker' && query.length > 0 && 'checker'.startsWith(query)) {
     const isRunning = runningProfileNames.has(qaProfile.name);
     items.push({
       value: '@checker',

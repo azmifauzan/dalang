@@ -1566,3 +1566,21 @@ export const ExternalMcpTriggerAutomationInputSchema = z.object({
   payload: z.string().max(16_000).optional(),
 });
 export type ExternalMcpTriggerAutomationInput = z.infer<typeof ExternalMcpTriggerAutomationInputSchema>;
+
+/** Seeded profile names before schema v18, with the id of the profile each one named. */
+export const LEGACY_PROFILE_NAMES: Readonly<Record<string, { id: string; name: string }>> = {
+  'coder-small': { id: 'profile-coder-small', name: 'executor-light' },
+  'coder-medium': { id: 'profile-coder-medium', name: 'executor-medium' },
+  'coder-heavy': { id: 'profile-coder-heavy', name: 'executor-heavy' },
+  qa: { id: 'profile-qa', name: 'checker' },
+};
+
+/**
+ * Finds a profile by id or name. A name from before v18 (in a saved plan, an automation, an MCP call,
+ * or a mention) finds the same seeded profile. A profile that really has that name wins.
+ */
+export function findProfileByRef<T extends { id: string; name: string }>(profiles: readonly T[], ref: string): T | undefined {
+  const exact = profiles.find((p) => p.id === ref || p.name === ref);
+  if (exact || !Object.hasOwn(LEGACY_PROFILE_NAMES, ref)) return exact;
+  return profiles.find((p) => p.id === LEGACY_PROFILE_NAMES[ref].id);
+}

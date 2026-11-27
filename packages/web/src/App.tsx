@@ -503,7 +503,7 @@ function AppShell({ authEnabled }: { authEnabled: boolean }) {
             qc.invalidateQueries({ queryKey: ['projects'] });
           } else if (msg.type === 'run.started' && msg.projectId && msg.runId) {
             const provider = msg.provider as ProviderId | undefined;
-            const profileName = msg.profileName ?? 'coder';
+            const profileName = msg.profileName ?? 'executor';
             runMetaByRunIdRef.current[msg.runId] = {
               taskId: msg.taskId ?? '',
               profileName,
@@ -534,7 +534,7 @@ function AppShell({ authEnabled }: { authEnabled: boolean }) {
             const parsed = parseRunLogActivity(msg.line, {
               projectId: msg.projectId,
               taskId: msg.taskId ?? meta?.taskId ?? '',
-              profileName: meta?.profileName ?? 'coder',
+              profileName: meta?.profileName ?? 'executor',
               provider: meta?.provider,
             });
             if (parsed) {
@@ -549,7 +549,7 @@ function AppShell({ authEnabled }: { authEnabled: boolean }) {
               timestamp: new Date().toISOString(),
               projectId: msg.projectId,
               taskId: msg.taskId ?? meta?.taskId,
-              character: characterForProfile(meta?.profileName ?? 'coder'),
+              character: characterForProfile(meta?.profileName ?? 'executor'),
               provider: meta?.provider,
               kind: ok ? 'completed' : 'failed',
               reason: msg.error ?? msg.status,
@@ -595,7 +595,7 @@ function AppShell({ authEnabled }: { authEnabled: boolean }) {
               projectId: msg.projectId,
               taskId: msg.taskId,
               taskExternalId: msg.externalId,
-              character: characterForProfile(msg.profileName ?? 'coder'),
+              character: characterForProfile(msg.profileName ?? 'executor'),
               provider,
               kind: 'delegated',
               title: msg.title,

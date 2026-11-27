@@ -39,10 +39,10 @@ type RoleKey = 'lead' | 'coderLight' | 'coderMedium' | 'coderHeavy' | 'qa' | 're
 /** Seeded profile that carries each role. The wizard edits these profiles in place. */
 const ROLE_PROFILE_NAME: Record<RoleKey, string> = {
   lead: 'lead',
-  coderLight: 'coder-small',
-  coderMedium: 'coder-medium',
-  coderHeavy: 'coder-heavy',
-  qa: 'qa',
+  coderLight: 'executor-light',
+  coderMedium: 'executor-medium',
+  coderHeavy: 'executor-heavy',
+  qa: 'checker',
   reviewer: 'reviewer',
 };
 const PROVIDER_ORDER: ProviderId[] = ['claude-code', 'codex', 'antigravity'];

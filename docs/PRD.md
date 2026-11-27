@@ -105,7 +105,7 @@ P0 = required in v1, P1 = should be in v1, P2 = after v1.
 
 | Field | Example | Notes |
 | --- | --- | --- |
-| `name` | `coder-small` | Unique profile name |
+| `name` | `executor-light` | Unique profile name |
 | `provider` | `codex` | One of `claude-code`, `codex`, `antigravity` |
 | `model` | free text + suggestions | Not hardcoded, because the model list changes and depends on subscription tier |
 | `effort` | `low` / `medium` / `high` | Translated to each CLI's flag where supported |
@@ -119,8 +119,8 @@ P0 = required in v1, P1 = should be in v1, P2 = after v1.
 ```yaml
 routing:
   - { role: lead,                        profile: lead }
-  - { role: engineer, complexity: low,   profile: coder-small, fallback: coder-heavy }
-  - { role: engineer, complexity: high,  profile: coder-heavy, fallback: lead }
+  - { role: engineer, complexity: low,   profile: executor-light, fallback: executor-heavy }
+  - { role: engineer, complexity: high,  profile: executor-heavy, fallback: lead }
   - { role: qa,                          profile: reviewer,    fallback: planner }
 ```
 
@@ -1083,6 +1083,7 @@ Done when: B1, B6 to B8, B12, B16, and B17 are closed, each with a replay or uni
 | 12 | U3 | Structured questions (B12), in the shape of T3 Code's `UserInputQuestion`: the Lead can return `question` with a header, the question, and options (label and description), plus whether a custom answer or several choices are allowed. The room shows a numbered choice list in the approval box, the web UI shows buttons, and the answer goes back to the Lead |
 | 13 | U4 | Commands while busy (B16): in the room, `/config`, `/model`, `/help`, `/diff`, and other commands that only read or change settings work while the Lead answers or a task runs; a model change applies to the next message. A command or message that has to wait is refused with a visible reason and stays in the composer. No message queue in v0.15. The web UI follows the same rule |
 | 14 | U5 | Result summary (B17), in the room and the web UI: a finished or failed task shows one block, set apart from log rows, with the outcome, what was done, the changed files with line counts, the verify and review results, the duration, and the next step. The closing note of a run repeats the outcome and one summary line per task. Built from stored task results, reviews, and diffs, with no extra model call |
+| 15 | U6 | Role names for the seeded profiles. **Done outside the v0.15 run, ships with v0.15**: do not plan a task for it. `coder-small`, `coder-medium`, `coder-heavy`, and `qa` are now `executor-light`, `executor-medium`, `executor-heavy`, and `checker`. v0.14.0 changed only display labels, so the old names still showed as authors, in plans, and in mentions. Schema v18 renames a seeded profile that still has its old name; ids stay, and old names still resolve in mentions, saved plans, automations, and MCP calls. This replaces the v0.14.0 non-goal of keeping profile names |
 
 ##### R6: manual verification by the operator
 

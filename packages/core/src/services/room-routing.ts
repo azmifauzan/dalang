@@ -1,3 +1,4 @@
+import { findProfileByRef } from '@dalang/shared';
 import type { AgentProfileDTO, RunKind } from '@dalang/shared';
 
 export interface ActiveCoderRunInfo {
@@ -72,7 +73,8 @@ export function resolveMentionTarget(
   const coderRuns = activeRuns.filter((r) => r.kind === 'execute' || r.kind === 'fix');
 
   // 1. Check active running executor tasks first: exact profile match or `@executor` / `@coder` / `@engineer` alias.
-  const exactActiveRun = coderRuns.find((r) => r.profileName.toLowerCase() === key);
+  const named = findProfileByRef(profiles, key);
+  const exactActiveRun = coderRuns.find((r) => r.profileName.toLowerCase() === key || r.profileId === named?.id);
   if (exactActiveRun) {
     return {
       route: 'steer',
@@ -97,7 +99,7 @@ export function resolveMentionTarget(
   }
 
   // 3. Exact profile name match -> idle Ask mode.
-  const exactProfile = profileByName.get(key);
+  const exactProfile = profileByName.get(key) ?? named;
   if (exactProfile) {
     if (exactProfile.id === 'profile-lead' || exactProfile.name.toLowerCase() === 'lead') {
       return { route: 'lead', body };
@@ -108,8 +110,9 @@ export function resolveMentionTarget(
   // 4. Role aliases for idle Ask mode (`@executor`, `@coder`, `@engineer`, `@reviewer`, `@checker`, `@qa`).
   if (key === 'executor' || key === 'coder' || key === 'engineer') {
     const coderProfile =
-      profileByName.get('coder-small') ??
-      profiles.find((p) => p.name.toLowerCase().startsWith('coder'));
+      findProfileByRef(profiles, 'executor-light') ??
+      findProfileByRef(profiles, 'coder-small') ??
+      profiles.find((p) => /^(executor|coder)/i.test(p.name));
     if (coderProfile) {
       return { route: 'ask', profile: coderProfile, body };
     }
@@ -121,7 +124,7 @@ export function resolveMentionTarget(
     if (rev) return { route: 'ask', profile: rev, body };
   }
   if (key === 'checker' || key === 'qa') {
-    const qa = profileByName.get('qa');
+    const qa = profileByName.get('checker') ?? findProfileByRef(profiles, 'qa');
     if (qa) return { route: 'ask', profile: qa, body };
   }
 

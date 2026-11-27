@@ -84,7 +84,7 @@ export const CORE_ROLE_SLOTS: readonly CoreRoleSlot[] = [
   {
     key: 'coderLight',
     profileId: 'profile-coder-small',
-    profileName: 'coder-small',
+    profileName: 'executor-light',
     cast: 'bima',
     titleKey: 'config.agents.role.coderSmallTitle',
     descKey: 'config.agents.role.coderSmallDesc',
@@ -98,7 +98,7 @@ export const CORE_ROLE_SLOTS: readonly CoreRoleSlot[] = [
   {
     key: 'coderMedium',
     profileId: 'profile-coder-medium',
-    profileName: 'coder-medium',
+    profileName: 'executor-medium',
     cast: 'gatotkaca',
     titleKey: 'config.agents.role.coderMediumTitle',
     descKey: 'config.agents.role.coderMediumDesc',
@@ -112,7 +112,7 @@ export const CORE_ROLE_SLOTS: readonly CoreRoleSlot[] = [
   {
     key: 'coderHeavy',
     profileId: 'profile-coder-heavy',
-    profileName: 'coder-heavy',
+    profileName: 'executor-heavy',
     cast: 'kresna',
     titleKey: 'config.agents.role.coderHeavyTitle',
     descKey: 'config.agents.role.coderHeavyDesc',
@@ -126,7 +126,7 @@ export const CORE_ROLE_SLOTS: readonly CoreRoleSlot[] = [
   {
     key: 'qa',
     profileId: 'profile-qa',
-    profileName: 'qa',
+    profileName: 'checker',
     cast: 'srikandi',
     titleKey: 'config.agents.role.qaTitle',
     descKey: 'config.agents.role.qaDesc',

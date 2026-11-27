@@ -101,7 +101,7 @@ const profile = (name: string, providerId: ProviderId, over: Partial<AgentProfil
 });
 
 const teamProfiles = (): AgentProfileDTO[] =>
-  ['lead', 'coder-small', 'coder-medium', 'coder-heavy', 'qa', 'reviewer'].map((n) => profile(n, 'claude-code'));
+  ['lead', 'executor-light', 'executor-medium', 'executor-heavy', 'checker', 'reviewer'].map((n) => profile(n, 'claude-code'));
 
 const rule = (
   id: string,
@@ -254,11 +254,11 @@ describe('model choice logic', () => {
   it('names the agents that are running now with their models', () => {
     expect(
       describeRunningAgents([
-        { status: 'running', profileName: 'coder-small', provider: 'antigravity', model: 'gemini-4-hydrogen', kind: 'execute' },
+        { status: 'running', profileName: 'executor-light', provider: 'antigravity', model: 'gemini-4-hydrogen', kind: 'execute' },
         { status: 'completed', profileName: 'lead', provider: 'claude-code', model: 'sonnet', kind: 'execute' },
         { status: 'running', profileName: 'reviewer', provider: 'codex', model: null, kind: 'review' },
       ]),
-    ).toEqual(['@coder-small Antigravity · gemini-4-hydrogen', '@reviewer Codex · CLI default']);
+    ).toEqual(['@executor-light Antigravity · gemini-4-hydrogen', '@reviewer Codex · CLI default']);
   });
 });
 

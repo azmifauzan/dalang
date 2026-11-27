@@ -4,6 +4,7 @@ import path from 'node:path';
 import { and, desc, eq, gte, inArray, ne, or } from 'drizzle-orm';
 import { z } from 'zod';
 import {
+  findProfileByRef,
   buildAccountKey,
   DEFAULT_MAX_SUBTASKS_PER_TASK,
   MAX_DELEGATION_DEPTH,
@@ -1451,9 +1452,7 @@ export class ExecutionService {
 
     if (profileOverride !== null) {
       const allProfiles = this.profiles.listProfiles();
-      const matched = allProfiles.find(
-        (p) => p.id === profileOverride || p.name === profileOverride,
-      );
+      const matched = findProfileByRef(allProfiles, profileOverride);
       if (!matched) {
         throw new Error(`Unknown agent profile: ${profileOverride}`);
       }
@@ -5247,9 +5246,7 @@ export class ExecutionService {
     let baseRouting: ReturnType<ExecutionService['routeTask']>;
 
     if (input.profile) {
-      const matched = allProfiles.find(
-        (p) => p.id === input.profile || p.name === input.profile,
-      );
+      const matched = findProfileByRef(allProfiles, input.profile);
       if (!matched) {
         const names = allProfiles.map((p) => p.name).join(', ');
         throw new Error(`Unknown agent profile "${input.profile}". Available profiles: ${names}`);

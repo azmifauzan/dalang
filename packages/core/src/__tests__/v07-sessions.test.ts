@@ -481,14 +481,14 @@ describe('Auto session mode', () => {
       runner.autoResponse = {
         answer: 'Revised plan.',
         auto_plan: { milestones: [{ id: 'M1', title: 'Fix' }], tasks: [
-          task('T-001', 'src/math.mjs', []), { ...task('T-002', 'src/math.test.mjs', ['T-001']), profile: 'coder-heavy' },
+          task('T-001', 'src/math.mjs', []), { ...task('T-002', 'src/math.test.mjs', ['T-001']), profile: 'executor-heavy' },
         ] },
       };
       await leadSvc.sendChatMessage(project.id, { sessionId: result.session.id, mode: 'auto', message: 'run T-002 on the heavy executor' });
       plan = leadSvc.getPlan(project.id, result.session.id);
       expect(plan?.version).toBe(2);
       expect(plan?.status).toBe('draft');
-      const heavy = conn.sqlite.prepare("select id from agent_profiles where name = 'coder-heavy'").get() as { id: string };
+      const heavy = conn.sqlite.prepare("select id from agent_profiles where name = 'executor-heavy'").get() as { id: string };
       expect(plan?.tasks[1].profileOverride).toBe(heavy.id);
       expect(plan?.tasks[0].profileOverride).toBeNull();
       expect(started).toEqual([]);
@@ -692,7 +692,7 @@ describe('Auto session mode', () => {
         externalId: 'db-v16',
         runId: 'r1',
         profileId: 'profile-coder-medium',
-        profileName: 'coder-medium',
+        profileName: 'executor-medium',
         kind: 'execute',
         canSteer: false,
       }],

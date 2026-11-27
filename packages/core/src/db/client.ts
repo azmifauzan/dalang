@@ -6,7 +6,7 @@ import { and, eq } from 'drizzle-orm';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { ensureDir, getDbPath } from '../paths.js';
 import { ensureDalangIgnore } from '../safe-fs.js';
-import type { ProviderId } from '@dalang/shared';
+import { LEGACY_PROFILE_NAMES, type ProviderId } from '@dalang/shared';
 import { extractAgyUsage } from '../adapters/antigravity.js';
 import { extractClaudeUsage } from '../adapters/claude.js';
 import { accumulateCodexUsage } from '../adapters/codex.js';
@@ -29,7 +29,7 @@ export function getDbDataDir(db: DalangDb): string | null {
   return dbDataDirs.get(db) ?? null;
 }
 
-const SCHEMA_VERSION = 17;
+const SCHEMA_VERSION = 18;
 
 const BOOTSTRAP_SQL = `
 PRAGMA journal_mode = WAL;
@@ -442,7 +442,7 @@ function seedDefaults(db: DalangDb): void {
     },
     {
       id: 'profile-coder-small',
-      name: 'coder-small',
+      name: 'executor-light',
       provider: 'codex',
       model: '',
       effort: 'low',
@@ -457,7 +457,7 @@ function seedDefaults(db: DalangDb): void {
     },
     {
       id: 'profile-coder-medium',
-      name: 'coder-medium',
+      name: 'executor-medium',
       provider: 'codex',
       model: '',
       effort: 'medium',
@@ -472,7 +472,7 @@ function seedDefaults(db: DalangDb): void {
     },
     {
       id: 'profile-coder-heavy',
-      name: 'coder-heavy',
+      name: 'executor-heavy',
       provider: 'claude-code',
       model: '',
       effort: 'high',
@@ -487,7 +487,7 @@ function seedDefaults(db: DalangDb): void {
     },
     {
       id: 'profile-qa',
-      name: 'qa',
+      name: 'checker',
       provider: 'antigravity',
       model: 'gemini-4-hydrogen-high',
       effort: 'high',
@@ -1420,6 +1420,9 @@ export function openDatabase(dbFilePath: string = getDbPath()): DbConnection {
   if (upgrading && storedVersion < 11) {
     migrateToV11(db);
   }
+  if (upgrading && storedVersion < 18) {
+    migrateToV18(sqlite);
+  }
   sqlite.pragma(`user_version = ${SCHEMA_VERSION}`);
 
   return {
@@ -1428,6 +1431,20 @@ export function openDatabase(dbFilePath: string = getDbPath()): DbConnection {
     dataDir,
     close: () => sqlite.close(),
   };
+}
+
+/**
+ * v18: the seeded profiles are named after their role (`executor-light`, `executor-medium`,
+ * `executor-heavy`, `checker`). Ids stay. A profile the user renamed keeps its name, and so does a
+ * seeded profile whose new name another profile already uses. Old names still resolve through
+ * `findProfileByRef`.
+ */
+function migrateToV18(sqlite: Database.Database): void {
+  const rename = sqlite.prepare(
+    `UPDATE agent_profiles SET name = @name WHERE id = @id AND name = @old
+       AND NOT EXISTS (SELECT 1 FROM agent_profiles WHERE lower(name) = @name)`,
+  );
+  for (const [old, { id, name }] of Object.entries(LEGACY_PROFILE_NAMES)) rename.run({ old, id, name });
 }
 
 /**
@@ -1778,14 +1795,14 @@ function migrateToV12(sqlite: Database.Database): void {
 }
 
 /**
- * v11: ensures dedicated `coder-medium` and `qa` profiles exist on upgraded databases and
+ * v11: ensures dedicated medium executor and checker profiles exist on upgraded databases and
  * points the seeded `engineer/medium` and `qa` routing rules at them when still using the
  * older shared `profile-coder-heavy` / `profile-reviewer` bindings.
  */
 function migrateToV11(db: DalangDb): void {
   const existing = db.select().from(schema.agentProfiles).all();
-  const hasMedium = existing.some((p) => p.id === 'profile-coder-medium' || p.name === 'coder-medium');
-  const hasQa = existing.some((p) => p.id === 'profile-qa' || p.name === 'qa');
+  const hasMedium = existing.some((p) => p.id === 'profile-coder-medium' || p.name === 'coder-medium' || p.name === 'executor-medium');
+  const hasQa = existing.some((p) => p.id === 'profile-qa' || p.name === 'qa' || p.name === 'checker');
   const now = new Date().toISOString();
 
   if (!hasMedium) {
@@ -1794,7 +1811,7 @@ function migrateToV11(db: DalangDb): void {
     db.insert(schema.agentProfiles)
       .values({
         id: 'profile-coder-medium',
-        name: 'coder-medium',
+        name: 'executor-medium',
         provider: primaryProvider,
         model: heavy?.model ?? '',
         effort: 'medium',
@@ -1831,7 +1848,7 @@ function migrateToV11(db: DalangDb): void {
     db.insert(schema.agentProfiles)
       .values({
         id: 'profile-qa',
-        name: 'qa',
+        name: 'checker',
         provider: primaryProvider,
         model: reviewer?.model ?? 'gemini-4-hydrogen-high',
         effort: reviewer?.effort ?? 'high',

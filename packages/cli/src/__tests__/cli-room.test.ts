@@ -254,7 +254,7 @@ describe('TUI commands, completions, and formatting', () => {
       },
       {
         id: 'profile-coder-small',
-        name: 'coder-small',
+        name: 'executor-light',
         provider: 'claude-code' as const,
         model: '',
         effort: 'low' as const,
@@ -275,10 +275,10 @@ describe('TUI commands, completions, and formatting', () => {
     expect(slashMatches.map((c) => c.value)).toEqual(['/mouse', '/mode', '/model', '/merge']);
     expect(applyComposerCompletion('/m', '/mode')).toBe('/mode ');
 
-    const mentionMatches = getComposerCompletions('@cod', profiles, new Set(['coder-small']));
-    expect(mentionMatches.map((c) => c.value)).toEqual(['@coder', '@coder-small']);
+    const mentionMatches = getComposerCompletions('@exec', profiles, new Set(['executor-light']));
+    expect(mentionMatches.map((c) => c.value)).toEqual(['@executor', '@executor-light']);
     expect(mentionMatches[1]?.detail).toContain('steer');
-    expect(applyComposerCompletion('@cod', '@coder-small')).toBe('@coder-small ');
+    expect(applyComposerCompletion('@exec', '@executor-light')).toBe('@executor-light ');
 
     const revMatches = getComposerCompletions('@rev', profiles, new Set());
     expect(revMatches[0]?.value).toBe('@reviewer');
@@ -293,7 +293,7 @@ describe('TUI commands, completions, and formatting', () => {
       type: 'report',
       kind: 'report',
       authorProfileId: 'profile-coder-small',
-      authorProfileName: 'coder-small',
+      authorProfileName: 'executor-light',
       content: {
         event: 'task_finished',
         summary: 'Finished [T-001]: Added greeting',
@@ -301,7 +301,7 @@ describe('TUI commands, completions, and formatting', () => {
       },
       createdAt: '2026-11-24T07:00:00.000Z',
     });
-    expect(formatted.author).toBe('@coder-small');
+    expect(formatted.author).toBe('@executor-light');
     expect(formatted.badge).toBe('TASK FINISHED');
     expect(formatted.lines.join('\n')).toContain('+3 -0');
 
@@ -792,10 +792,10 @@ describe('Ink terminal room E2E (Quick task from plan to merge with no browser)'
     expect(SLASH_COMMANDS.some((c) => c.name === 'accept')).toBe(true);
 
     const profiles = [
-      { id: 'profile-coder-small', name: 'coder-small', provider: 'codex' },
+      { id: 'profile-coder-small', name: 'executor-light', provider: 'codex' },
       { id: 'profile-qa', name: 'qa', provider: 'claude-code' },
     ] as never;
-    expect(getComposerCompletions('@ex', profiles, new Set(['coder-small'])).map((c) => c.value)).toContain('@executor');
+    expect(getComposerCompletions('@ex', profiles, new Set(['executor-light'])).map((c) => c.value)).toContain('@executor');
     expect(getComposerCompletions('@ch', profiles, new Set()).map((c) => c.value)).toContain('@checker');
 
     const gate = detectPendingGate(
@@ -909,17 +909,17 @@ describe('Ink terminal room E2E (Quick task from plan to merge with no browser)'
       content: {
         version: 2, taskCount: 2, awaitingApproval: true,
         tasks: [
-          { id: 'a', title: 'First', role: 'engineer', complexity: 'low', dependsOn: [], executor: 'coder-small · antigravity · gemini-4-hydrogen' },
-          { id: 'b', title: 'Second', role: 'engineer', complexity: 'high', dependsOn: ['a'], executor: 'coder-heavy · claude-code · opus' },
+          { id: 'a', title: 'First', role: 'engineer', complexity: 'low', dependsOn: [], executor: 'executor-light · antigravity · gemini-4-hydrogen' },
+          { id: 'b', title: 'Second', role: 'engineer', complexity: 'high', dependsOn: ['a'], executor: 'executor-heavy · claude-code · opus' },
         ],
       },
     } as never);
     expect(proposed.lines).toEqual([
       'Proposed plan: 2 task(s). Nothing runs until you approve it.',
       '  [a] First (executor · low)',
-      '      executor: coder-small · antigravity · gemini-4-hydrogen',
+      '      executor: executor-light · antigravity · gemini-4-hydrogen',
       '  [b] Second (executor · high)',
-      '      executor: coder-heavy · claude-code · opus',
+      '      executor: executor-heavy · claude-code · opus',
       '      after: a',
     ]);
     const planGate = detectPendingGate(

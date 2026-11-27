@@ -31,10 +31,10 @@ export const ROLE_KEYS: readonly RoleKey[] = [
 /** Seeded profile that carries each role. */
 export const ROLE_PROFILE_NAME: Record<RoleKey, string> = {
   lead: 'lead',
-  coderLight: 'coder-small',
-  coderMedium: 'coder-medium',
-  coderHeavy: 'coder-heavy',
-  qa: 'qa',
+  coderLight: 'executor-light',
+  coderMedium: 'executor-medium',
+  coderHeavy: 'executor-heavy',
+  qa: 'checker',
   reviewer: 'reviewer',
 };
 

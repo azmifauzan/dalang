@@ -286,8 +286,8 @@ export function authorColorFor(
   if (role === 'system') return 'gray';
   const name = (profileName ?? role).toLowerCase();
   if (name === 'lead') return 'yellow';
-  if (name.includes('review') || name === 'qa') return 'magenta';
-  if (name.includes('coder')) return 'green';
+  if (name.includes('review') || name === 'checker' || name === 'qa') return 'magenta';
+  if (name.includes('executor') || name.includes('coder')) return 'green';
   return 'blue';
 }
 

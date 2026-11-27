@@ -2,6 +2,10 @@
 
 Dates are 2026. Versions follow the phases in [docs/PRD.md](docs/PRD.md).
 
+## Unreleased
+
+- **Profile names match their roles.** The seeded profiles `coder-small`, `coder-medium`, `coder-heavy`, and `qa` are now `executor-light`, `executor-medium`, `executor-heavy`, and `checker`. A profile you renamed keeps your name, and a seeded profile keeps its old name if another profile already uses the new one. Old names still work in mentions, saved plans, automations, and MCP calls. Schema v18; ids do not change.
+
 ## 0.14.8 (Security fixes for 0.14.7), 26 Nov
 
 - **Use 0.14.8, not 0.14.7.** A security review of 0.14.7 found two problems in its new features, both fixed here.

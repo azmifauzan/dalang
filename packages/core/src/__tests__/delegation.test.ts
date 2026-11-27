@@ -1101,7 +1101,7 @@ describe('v0.8 agent delegation', () => {
 
       try {
         // Confirm the temporary database uses schema v17 with the partial unique index.
-        expect(Number(conn.sqlite.pragma('user_version', { simple: true }))).toBe(17);
+        expect(Number(conn.sqlite.pragma('user_version', { simple: true }))).toBe(18);
         const indexRow = conn.sqlite
           .prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_tasks_parent_client_request'`)
           .get() as { name: string } | undefined;
@@ -1373,7 +1373,7 @@ describe('v0.8 agent delegation', () => {
       const projDir = path.join(makeTempDir('dalang-del-parents-proj-'), 'app');
       const conn = openDatabase(path.join(dbDir, 'dalang.db'));
       try {
-        expect(Number(conn.sqlite.pragma('user_version', { simple: true }))).toBe(17);
+        expect(Number(conn.sqlite.pragma('user_version', { simple: true }))).toBe(18);
 
         const settingsSvc = new SettingsService(conn.db);
         const registry = new ProviderRegistry(runner, {

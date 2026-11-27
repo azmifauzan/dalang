@@ -104,7 +104,7 @@ export const ACTIVE_SOURCE_LABEL: Record<ActiveLeadModel['source'], string> = {
   profile: 'Lead profile',
 };
 
-/** One entry per agent that is running now: "@coder-small Antigravity · gemini-4-hydrogen". */
+/** One entry per agent that is running now: "@executor-light Antigravity · gemini-4-hydrogen". */
 export function describeRunningAgents(
   runs: Pick<TaskRunDTO, 'status' | 'profileName' | 'provider' | 'model' | 'kind'>[],
   providers: ProviderStatus[] = [],

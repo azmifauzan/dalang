@@ -26,7 +26,7 @@ describe('fallback target (CLI, model, effort)', () => {
       const viaRule = svc.resolveProfileForTask({ role: 'engineer', complexity: 'high', profileOverride: null });
       expect(viaRule.fallback).toMatchObject({
         id: heavy.id,
-        name: 'coder-heavy',
+        name: 'executor-heavy',
         provider: 'codex',
         model: 'gpt-x',
         effort: 'low',
@@ -40,7 +40,7 @@ describe('fallback target (CLI, model, effort)', () => {
       });
       const own = svc.resolveProfileForTask({ role: 'engineer', complexity: 'high', profileOverride: null });
       expect(own.fallback?.provider).toBe('antigravity');
-      expect(own.fallback?.name).toBe('coder-heavy');
+      expect(own.fallback?.name).toBe('executor-heavy');
     } finally {
       conn.close();
     }

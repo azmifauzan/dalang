@@ -1,3 +1,4 @@
+import { findProfileByRef } from '@dalang/shared';
 import crypto from 'node:crypto';
 import { desc, eq } from 'drizzle-orm';
 import type {
@@ -158,7 +159,7 @@ export class AutomationService {
     const cleaned = profileRef?.trim();
     if (!cleaned) return null;
     const all = this.db.select().from(agentProfiles).all();
-    const matched = all.find((p) => p.id === cleaned || p.name === cleaned);
+    const matched = findProfileByRef(all, cleaned);
     if (!matched) {
       throw Object.assign(new Error(`Agent profile not found: ${cleaned}`), { statusCode: 400 });
     }
